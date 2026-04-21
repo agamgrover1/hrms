@@ -116,6 +116,30 @@ app.post('/api/attendance/clock-in', async (req, res) => {
   } catch (err) { res.status(500).json({ error: 'Server error' }); }
 });
 
+app.post('/api/attendance/mark', async (req, res) => {
+  try {
+    const { employee_id, date, status, check_in, check_out } = req.body;
+    if (!employee_id || !date || !status) {
+      return res.status(400).json({ error: 'employee_id, date and status are required' });
+    }
+    const totalHours = check_in && check_out
+      ? Math.round(
+          ((new Date(`1970-01-01T${check_out}`) as any) - (new Date(`1970-01-01T${check_in}`) as any)) / 360000
+        ) / 10
+      : 0;
+    const rows = await sql`
+      INSERT INTO attendance_records (employee_id, date, check_in, check_out, status, total_hours)
+      VALUES (${employee_id}, ${date}, ${check_in ?? null}, ${check_out ?? null}, ${status}, ${totalHours})
+      ON CONFLICT (employee_id, date) DO UPDATE SET
+        check_in = ${check_in ?? null},
+        check_out = ${check_out ?? null},
+        status = ${status},
+        total_hours = ${totalHours}
+      RETURNING *`;
+    res.json(rows[0]);
+  } catch (err) { res.status(500).json({ error: 'Server error' }); }
+});
+
 app.post('/api/attendance/clock-out', async (req, res) => {
   try {
     const { employee_id } = req.body;

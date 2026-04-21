@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { Search, Filter, Plus, Mail, Phone, MapPin, ChevronRight, X } from 'lucide-react';
+import { Search, Filter, Plus, Mail, Phone, MapPin, ChevronRight, X, User, Pencil } from 'lucide-react';
 import { api } from '../services/api';
 import { departments } from '../data/mockData';
 
@@ -29,7 +29,14 @@ function EmployeeCard({ emp, index, onClick }: { emp: any; index: number; onClic
             <p className="text-xs text-gray-500 mt-0.5">{emp.designation}</p>
           </div>
         </div>
-        <ChevronRight size={16} className="text-gray-300 group-hover:text-primary-400 transition-colors mt-1" />
+        <div className="flex flex-col items-end gap-1">
+          {emp.employee_id && (
+            <span className="text-xs font-mono font-semibold text-primary-600 bg-primary-50 px-2 py-0.5 rounded-md">
+              {emp.employee_id}
+            </span>
+          )}
+          <ChevronRight size={16} className="text-gray-300 group-hover:text-primary-400 transition-colors" />
+        </div>
       </div>
       <div className="mt-4 space-y-1.5">
         <div className="flex items-center gap-2 text-xs text-gray-500"><Mail size={12} className="text-gray-400" /> {emp.email}</div>
@@ -46,14 +53,20 @@ function EmployeeCard({ emp, index, onClick }: { emp: any; index: number; onClic
   );
 }
 
-function EmployeeDetail({ emp, onClose }: { emp: any; onClose: () => void }) {
+function EmployeeDetail({ emp, onClose, onEdit }: { emp: any; onClose: () => void; onEdit: () => void }) {
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 backdrop-blur-sm p-4">
       <div className="bg-white rounded-2xl shadow-2xl w-full max-w-lg max-h-[90vh] overflow-y-auto">
         <div className="relative h-28 bg-gradient-to-r from-primary-500 to-primary-400 rounded-t-2xl">
-          <button onClick={onClose} className="absolute top-4 right-4 p-1.5 bg-white/20 hover:bg-white/30 rounded-lg transition-colors">
-            <X size={16} className="text-white" />
-          </button>
+          <div className="absolute top-4 right-4 flex gap-2">
+            <button onClick={onEdit}
+              className="flex items-center gap-1.5 px-3 py-1.5 bg-white/20 hover:bg-white/30 rounded-lg transition-colors text-white text-xs font-medium">
+              <Pencil size={13} /> Edit
+            </button>
+            <button onClick={onClose} className="p-1.5 bg-white/20 hover:bg-white/30 rounded-lg transition-colors">
+              <X size={16} className="text-white" />
+            </button>
+          </div>
         </div>
         <div className="px-6 pb-6">
           <div className="-mt-10 mb-4">
@@ -98,6 +111,338 @@ function EmployeeDetail({ emp, onClose }: { emp: any; onClose: () => void }) {
   );
 }
 
+const emptyForm = {
+  employee_id: '',
+  name: '',
+  email: '',
+  phone: '',
+  department: 'Engineering',
+  designation: '',
+  join_date: new Date().toISOString().split('T')[0],
+  location: '',
+  manager: '',
+  status: 'active',
+  salary: '',
+  ctc: '',
+};
+
+function AddEmployeeModal({ onClose, onSaved, existingEmployees }: {
+  onClose: () => void;
+  onSaved: (emp: any) => void;
+  existingEmployees: any[];
+}) {
+  const nextCode = (() => {
+    const nums = existingEmployees
+      .map(e => parseInt((e.employee_id || '').replace(/\D/g, ''), 10))
+      .filter(n => !isNaN(n));
+    const max = nums.length ? Math.max(...nums) : 0;
+    return `EMP${String(max + 1).padStart(3, '0')}`;
+  })();
+
+  const [form, setForm] = useState({ ...emptyForm, employee_id: nextCode });
+  const [error, setError] = useState('');
+  const [saving, setSaving] = useState(false);
+
+  const set = (k: string, v: string) => setForm(f => ({ ...f, [k]: v }));
+
+  const inputCls = 'w-full text-sm border border-gray-200 rounded-lg px-3 py-2.5 focus:outline-none focus:ring-2 focus:ring-primary-200 focus:border-primary-400 bg-white';
+  const labelCls = 'block text-xs font-medium text-gray-600 mb-1';
+
+  const handleSubmit = async (e: React.SyntheticEvent<HTMLFormElement>) => {
+    e.preventDefault();
+    setError('');
+    if (!form.employee_id.trim()) return setError('Employee ID is required.');
+    if (!form.name.trim()) return setError('Name is required.');
+    if (!form.email.trim()) return setError('Email is required.');
+    if (existingEmployees.some(e => e.employee_id === form.employee_id.trim().toUpperCase())) {
+      return setError(`Employee ID ${form.employee_id.toUpperCase()} is already taken.`);
+    }
+    setSaving(true);
+    try {
+      const initials = form.name.trim().split(' ').map(w => w[0]).join('').slice(0, 2).toUpperCase();
+      const payload = {
+        id: `e_${Date.now()}`,
+        ...form,
+        employee_id: form.employee_id.trim().toUpperCase(),
+        avatar: initials,
+        salary: Number(form.salary) || 0,
+        ctc: Number(form.ctc) || 0,
+      };
+      const created = await api.createEmployee(payload);
+      onSaved(created);
+    } catch (err: any) {
+      setError(err.message || 'Failed to save employee.');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 backdrop-blur-sm p-4">
+      <div className="bg-white rounded-2xl shadow-2xl w-full max-w-2xl max-h-[92vh] overflow-y-auto">
+        <div className="flex items-center justify-between px-6 py-4 border-b border-gray-100">
+          <div className="flex items-center gap-3">
+            <div className="w-9 h-9 rounded-lg bg-primary-50 flex items-center justify-center">
+              <User size={18} className="text-primary-600" />
+            </div>
+            <div>
+              <h2 className="text-base font-semibold text-gray-900">Add New Employee</h2>
+              <p className="text-xs text-gray-400">Fill in details to onboard a new team member</p>
+            </div>
+          </div>
+          <button onClick={onClose} className="p-1.5 hover:bg-gray-100 rounded-lg transition-colors">
+            <X size={18} className="text-gray-500" />
+          </button>
+        </div>
+
+        <form onSubmit={handleSubmit} className="p-6 space-y-5">
+          <div className="p-4 bg-primary-50 border border-primary-100 rounded-xl">
+            <label className="block text-xs font-semibold text-primary-700 mb-1">
+              Employee ID <span className="text-red-400">*</span>
+              <span className="ml-2 font-normal text-primary-500">(auto-suggested — you can change it)</span>
+            </label>
+            <input
+              type="text"
+              value={form.employee_id}
+              onChange={e => set('employee_id', e.target.value.toUpperCase())}
+              placeholder="e.g. EMP012"
+              className="w-full text-sm font-mono font-semibold border border-primary-200 rounded-lg px-3 py-2.5 bg-white focus:outline-none focus:ring-2 focus:ring-primary-300 focus:border-primary-400 tracking-widest"
+            />
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <div>
+              <label className={labelCls}>Full Name <span className="text-red-400">*</span></label>
+              <input type="text" value={form.name} onChange={e => set('name', e.target.value)} placeholder="e.g. Ravi Kumar" className={inputCls} />
+            </div>
+            <div>
+              <label className={labelCls}>Email Address <span className="text-red-400">*</span></label>
+              <input type="email" value={form.email} onChange={e => set('email', e.target.value)} placeholder="ravi@company.com" className={inputCls} />
+            </div>
+            <div>
+              <label className={labelCls}>Phone</label>
+              <input type="tel" value={form.phone} onChange={e => set('phone', e.target.value)} placeholder="+91 98765 43210" className={inputCls} />
+            </div>
+            <div>
+              <label className={labelCls}>Location / City</label>
+              <input type="text" value={form.location} onChange={e => set('location', e.target.value)} placeholder="e.g. Bangalore" className={inputCls} />
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <div>
+              <label className={labelCls}>Designation / Job Title <span className="text-red-400">*</span></label>
+              <input type="text" value={form.designation} onChange={e => set('designation', e.target.value)} placeholder="e.g. Software Engineer" className={inputCls} />
+            </div>
+            <div>
+              <label className={labelCls}>Manager</label>
+              <input type="text" value={form.manager} onChange={e => set('manager', e.target.value)} placeholder="e.g. Rahul Verma" className={inputCls} />
+            </div>
+            <div>
+              <label className={labelCls}>Department <span className="text-red-400">*</span></label>
+              <select value={form.department} onChange={e => set('department', e.target.value)} className={inputCls}>
+                {departments.map(d => <option key={d}>{d}</option>)}
+              </select>
+            </div>
+            <div>
+              <label className={labelCls}>Join Date</label>
+              <input type="date" value={form.join_date} onChange={e => set('join_date', e.target.value)} className={inputCls} />
+            </div>
+          </div>
+
+          <div>
+            <label className={labelCls}>Status</label>
+            <select value={form.status} onChange={e => set('status', e.target.value)} className={inputCls}>
+              <option value="active">Active</option>
+              <option value="inactive">Inactive</option>
+            </select>
+          </div>
+
+          <div>
+            <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-3">Compensation</p>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <div>
+                <label className={labelCls}>Monthly Gross Salary (₹)</label>
+                <input type="number" value={form.salary} onChange={e => set('salary', e.target.value)} placeholder="e.g. 80000" className={inputCls} />
+              </div>
+              <div>
+                <label className={labelCls}>Annual CTC (₹)</label>
+                <input type="number" value={form.ctc} onChange={e => set('ctc', e.target.value)} placeholder="e.g. 1200000" className={inputCls} />
+              </div>
+            </div>
+          </div>
+
+          {error && (
+            <p className="text-sm text-red-600 bg-red-50 border border-red-100 rounded-lg px-4 py-2.5">{error}</p>
+          )}
+
+          <div className="flex gap-3 pt-1">
+            <button type="button" onClick={onClose}
+              className="flex-1 px-4 py-2.5 text-sm font-medium text-gray-600 bg-gray-100 hover:bg-gray-200 rounded-lg transition-colors">
+              Cancel
+            </button>
+            <button type="submit" disabled={saving}
+              className="flex-1 px-4 py-2.5 text-sm font-medium text-white bg-primary-500 hover:bg-primary-600 rounded-lg transition-colors disabled:opacity-60 disabled:cursor-not-allowed">
+              {saving ? 'Saving…' : 'Add Employee'}
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  );
+}
+
+function EditEmployeeModal({ emp, onClose, onSaved }: {
+  emp: any;
+  onClose: () => void;
+  onSaved: (updated: any) => void;
+}) {
+  const [form, setForm] = useState({
+    name: emp.name || '',
+    email: emp.email || '',
+    phone: emp.phone || '',
+    department: emp.department || 'Engineering',
+    designation: emp.designation || '',
+    join_date: emp.join_date ? emp.join_date.split('T')[0] : new Date().toISOString().split('T')[0],
+    location: emp.location || '',
+    manager: emp.manager || '',
+    status: emp.status || 'active',
+    salary: String(emp.salary || ''),
+    ctc: String(emp.ctc || ''),
+  });
+  const [error, setError] = useState('');
+  const [saving, setSaving] = useState(false);
+
+  const set = (k: string, v: string) => setForm(f => ({ ...f, [k]: v }));
+
+  const inputCls = 'w-full text-sm border border-gray-200 rounded-lg px-3 py-2.5 focus:outline-none focus:ring-2 focus:ring-primary-200 focus:border-primary-400 bg-white';
+  const labelCls = 'block text-xs font-medium text-gray-600 mb-1';
+
+  const handleSubmit = async (e: React.SyntheticEvent<HTMLFormElement>) => {
+    e.preventDefault();
+    setError('');
+    if (!form.name.trim()) return setError('Name is required.');
+    if (!form.email.trim()) return setError('Email is required.');
+    if (!form.designation.trim()) return setError('Designation is required.');
+    setSaving(true);
+    try {
+      const updated = await api.updateEmployee(emp.id, {
+        ...form,
+        salary: Number(form.salary) || 0,
+        ctc: Number(form.ctc) || 0,
+      });
+      onSaved(updated);
+    } catch (err: any) {
+      setError(err.message || 'Failed to update employee.');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 backdrop-blur-sm p-4">
+      <div className="bg-white rounded-2xl shadow-2xl w-full max-w-2xl max-h-[92vh] overflow-y-auto">
+        <div className="flex items-center justify-between px-6 py-4 border-b border-gray-100">
+          <div className="flex items-center gap-3">
+            <div className="w-9 h-9 rounded-lg bg-amber-50 flex items-center justify-center">
+              <Pencil size={17} className="text-amber-600" />
+            </div>
+            <div>
+              <h2 className="text-base font-semibold text-gray-900">Edit Employee</h2>
+              <div className="flex items-center gap-2 mt-0.5">
+                <span className="text-xs font-mono font-semibold text-primary-600 bg-primary-50 px-2 py-0.5 rounded">{emp.employee_id}</span>
+                <span className="text-xs text-gray-400">{emp.name}</span>
+              </div>
+            </div>
+          </div>
+          <button onClick={onClose} className="p-1.5 hover:bg-gray-100 rounded-lg transition-colors">
+            <X size={18} className="text-gray-500" />
+          </button>
+        </div>
+
+        <form onSubmit={handleSubmit} className="p-6 space-y-5">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <div>
+              <label className={labelCls}>Full Name <span className="text-red-400">*</span></label>
+              <input type="text" value={form.name} onChange={e => set('name', e.target.value)} className={inputCls} />
+            </div>
+            <div>
+              <label className={labelCls}>Email Address <span className="text-red-400">*</span></label>
+              <input type="email" value={form.email} onChange={e => set('email', e.target.value)} className={inputCls} />
+            </div>
+            <div>
+              <label className={labelCls}>Phone</label>
+              <input type="tel" value={form.phone} onChange={e => set('phone', e.target.value)} className={inputCls} />
+            </div>
+            <div>
+              <label className={labelCls}>Location / City</label>
+              <input type="text" value={form.location} onChange={e => set('location', e.target.value)} className={inputCls} />
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <div>
+              <label className={labelCls}>Designation / Job Title <span className="text-red-400">*</span></label>
+              <input type="text" value={form.designation} onChange={e => set('designation', e.target.value)} className={inputCls} />
+            </div>
+            <div>
+              <label className={labelCls}>Manager</label>
+              <input type="text" value={form.manager} onChange={e => set('manager', e.target.value)} className={inputCls} />
+            </div>
+            <div>
+              <label className={labelCls}>Department <span className="text-red-400">*</span></label>
+              <select value={form.department} onChange={e => set('department', e.target.value)} className={inputCls}>
+                {departments.map(d => <option key={d}>{d}</option>)}
+              </select>
+            </div>
+            <div>
+              <label className={labelCls}>Join Date</label>
+              <input type="date" value={form.join_date} onChange={e => set('join_date', e.target.value)} className={inputCls} />
+            </div>
+          </div>
+
+          <div>
+            <label className={labelCls}>Status</label>
+            <select value={form.status} onChange={e => set('status', e.target.value)} className={inputCls}>
+              <option value="active">Active</option>
+              <option value="inactive">Inactive</option>
+            </select>
+          </div>
+
+          <div>
+            <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-3">Compensation</p>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <div>
+                <label className={labelCls}>Monthly Gross Salary (₹)</label>
+                <input type="number" value={form.salary} onChange={e => set('salary', e.target.value)} placeholder="e.g. 80000" className={inputCls} />
+              </div>
+              <div>
+                <label className={labelCls}>Annual CTC (₹)</label>
+                <input type="number" value={form.ctc} onChange={e => set('ctc', e.target.value)} placeholder="e.g. 1200000" className={inputCls} />
+              </div>
+            </div>
+          </div>
+
+          {error && (
+            <p className="text-sm text-red-600 bg-red-50 border border-red-100 rounded-lg px-4 py-2.5">{error}</p>
+          )}
+
+          <div className="flex gap-3 pt-1">
+            <button type="button" onClick={onClose}
+              className="flex-1 px-4 py-2.5 text-sm font-medium text-gray-600 bg-gray-100 hover:bg-gray-200 rounded-lg transition-colors">
+              Cancel
+            </button>
+            <button type="submit" disabled={saving}
+              className="flex-1 px-4 py-2.5 text-sm font-medium text-white bg-primary-500 hover:bg-primary-600 rounded-lg transition-colors disabled:opacity-60 disabled:cursor-not-allowed">
+              {saving ? 'Saving…' : 'Save Changes'}
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  );
+}
+
 export default function Employees() {
   const [employees, setEmployees] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
@@ -105,6 +450,8 @@ export default function Employees() {
   const [deptFilter, setDeptFilter] = useState('All');
   const [statusFilter, setStatusFilter] = useState('All');
   const [selected, setSelected] = useState<any | null>(null);
+  const [editing, setEditing] = useState<any | null>(null);
+  const [showAdd, setShowAdd] = useState(false);
 
   useEffect(() => {
     api.getEmployees().then(setEmployees).finally(() => setLoading(false));
@@ -113,7 +460,8 @@ export default function Employees() {
   const filtered = employees.filter(e => {
     const matchSearch = e.name.toLowerCase().includes(search.toLowerCase()) ||
       e.email.toLowerCase().includes(search.toLowerCase()) ||
-      e.designation.toLowerCase().includes(search.toLowerCase());
+      e.designation.toLowerCase().includes(search.toLowerCase()) ||
+      (e.employee_id || '').toLowerCase().includes(search.toLowerCase());
     const matchDept = deptFilter === 'All' || e.department === deptFilter;
     const matchStatus = statusFilter === 'All' || e.status === statusFilter;
     return matchSearch && matchDept && matchStatus;
@@ -124,7 +472,7 @@ export default function Employees() {
       <div className="flex flex-wrap items-center gap-3">
         <div className="relative flex-1 min-w-48">
           <Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
-          <input type="text" value={search} onChange={e => setSearch(e.target.value)} placeholder="Search employees..."
+          <input type="text" value={search} onChange={e => setSearch(e.target.value)} placeholder="Search by name, email or employee ID…"
             className="w-full pl-9 pr-4 py-2.5 text-sm bg-white border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-200 focus:border-primary-400" />
         </div>
         <div className="flex items-center gap-2">
@@ -141,7 +489,8 @@ export default function Employees() {
             <option>inactive</option>
           </select>
         </div>
-        <button className="ml-auto flex items-center gap-2 px-4 py-2.5 bg-primary-500 hover:bg-primary-600 text-white text-sm font-medium rounded-lg transition-colors shadow-sm">
+        <button onClick={() => setShowAdd(true)}
+          className="ml-auto flex items-center gap-2 px-4 py-2.5 bg-primary-500 hover:bg-primary-600 text-white text-sm font-medium rounded-lg transition-colors shadow-sm">
           <Plus size={15} /> Add Employee
         </button>
       </div>
@@ -161,7 +510,35 @@ export default function Employees() {
         </>
       )}
 
-      {selected && <EmployeeDetail emp={selected} onClose={() => setSelected(null)} />}
+      {selected && (
+        <EmployeeDetail
+          emp={selected}
+          onClose={() => setSelected(null)}
+          onEdit={() => { setEditing(selected); setSelected(null); }}
+        />
+      )}
+
+      {editing && (
+        <EditEmployeeModal
+          emp={editing}
+          onClose={() => setEditing(null)}
+          onSaved={updated => {
+            setEmployees(prev => prev.map(e => e.id === updated.id ? updated : e));
+            setEditing(null);
+          }}
+        />
+      )}
+
+      {showAdd && (
+        <AddEmployeeModal
+          existingEmployees={employees}
+          onClose={() => setShowAdd(false)}
+          onSaved={emp => {
+            setEmployees(prev => [...prev, emp]);
+            setShowAdd(false);
+          }}
+        />
+      )}
     </div>
   );
 }

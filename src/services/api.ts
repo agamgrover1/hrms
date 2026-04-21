@@ -30,6 +30,8 @@ export const api = {
   },
   clockIn: (employee_id: string) => request<any>('/attendance/clock-in', { method: 'POST', body: JSON.stringify({ employee_id }) }),
   clockOut: (employee_id: string) => request<any>('/attendance/clock-out', { method: 'POST', body: JSON.stringify({ employee_id }) }),
+  markAttendance: (data: { employee_id: string; date: string; status: string; check_in?: string; check_out?: string }) =>
+    request<any>('/attendance/mark', { method: 'POST', body: JSON.stringify(data) }),
 
   // Leave
   getLeaveRequests: (params?: { employee_id?: string; status?: string }) => {

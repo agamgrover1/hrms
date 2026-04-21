@@ -51,6 +51,7 @@ router.put('/:id', async (req, res) => {
     `;
     res.json(rows[0]);
   } catch (err) {
+    console.error('[PUT employee]', err);
     res.status(500).json({ error: 'Server error' });
   }
 });
