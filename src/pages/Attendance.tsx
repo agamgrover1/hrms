@@ -248,25 +248,30 @@ export default function Attendance() {
   return (
     <div className="space-y-5">
       {/* Clock In Widget */}
-      <div className="bg-gradient-to-br from-primary-500 to-primary-600 rounded-2xl p-6 text-white flex items-center justify-between">
+      <div className="rounded-2xl p-6 text-white flex items-center justify-between"
+        style={{ background: 'linear-gradient(135deg, #192250 0%, #111737 100%)' }}>
         <div>
-          <p className="text-primary-100 text-sm font-medium">
+          <p className="text-sm font-medium" style={{ color: 'rgba(255,255,255,0.55)' }}>
             {now.toLocaleDateString('en-IN', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' })}
           </p>
-          <p className="text-3xl font-bold mt-1 tabular-nums">
-            {new Date().toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' })}
-          </p>
-          {clocked && <p className="text-primary-100 text-xs mt-1">Clocked in at {clockTime}</p>}
+          <p className="text-3xl font-bold mt-1 tabular-nums">{new Date().toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' })}</p>
+          {clocked && <p className="text-xs mt-1" style={{ color: '#ff75b0' }}>Clocked in at {clockTime}</p>}
         </div>
         <div className="flex items-center gap-3">
           {isHROrAdmin && (
             <button onClick={() => setShowMark(true)}
-              className="flex items-center gap-2 px-4 py-2.5 bg-white/15 hover:bg-white/25 rounded-xl text-sm font-medium transition-all border border-white/20">
+              className="flex items-center gap-2 px-4 py-2.5 rounded-xl text-sm font-semibold transition-all"
+              style={{ background: 'rgba(238,39,112,0.2)', border: '1px solid rgba(238,39,112,0.4)', color: '#ff75b0' }}
+              onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = 'rgba(238,39,112,0.35)'; }}
+              onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = 'rgba(238,39,112,0.2)'; }}>
               <CalendarDays size={15} /> Mark Attendance
             </button>
           )}
           <button onClick={handleClock}
-            className={`px-6 py-3 rounded-xl font-semibold text-sm transition-all shadow-lg ${clocked ? 'bg-white/20 text-white cursor-default' : 'bg-white text-primary-600 hover:bg-primary-50 active:scale-95'}`}>
+            className={`px-6 py-3 rounded-xl font-semibold text-sm transition-all shadow-lg active:scale-95 ${clocked ? 'cursor-default' : ''}`}
+            style={clocked
+              ? { background: 'rgba(255,255,255,0.1)', color: 'rgba(255,255,255,0.6)' }
+              : { background: '#EE2770', color: '#fff', boxShadow: '0 4px 15px rgba(238,39,112,0.4)' }}>
             {clocked ? '✓ Clocked In' : 'Clock In'}
           </button>
         </div>

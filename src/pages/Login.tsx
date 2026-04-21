@@ -33,92 +33,127 @@ export default function Login() {
   };
 
   return (
-    <div className="min-h-screen bg-gray-50 flex">
-      {/* Left Panel */}
-      <div className="hidden lg:flex lg:w-1/2 bg-gradient-to-br from-primary-600 to-primary-500 flex-col justify-between p-12 relative overflow-hidden">
-        <div className="absolute inset-0 opacity-10">
-          <div className="absolute top-20 left-20 w-64 h-64 rounded-full border-2 border-white" />
-          <div className="absolute top-40 left-40 w-96 h-96 rounded-full border border-white" />
-          <div className="absolute bottom-20 right-10 w-48 h-48 rounded-full border-2 border-white" />
+    <div className="min-h-screen flex" style={{ background: '#f4f5f9' }}>
+      {/* Left Panel — navy brand */}
+      <div className="hidden lg:flex lg:w-[45%] flex-col justify-between p-12 relative overflow-hidden"
+        style={{ background: 'linear-gradient(160deg, #192250 0%, #111737 100%)' }}>
+
+        {/* Decorative circles */}
+        <div className="absolute inset-0 overflow-hidden pointer-events-none">
+          <div className="absolute -top-20 -right-20 w-80 h-80 rounded-full opacity-5"
+            style={{ background: '#EE2770' }} />
+          <div className="absolute top-1/3 -left-16 w-64 h-64 rounded-full opacity-5"
+            style={{ background: '#EE2770' }} />
+          <div className="absolute bottom-10 right-10 w-96 h-96 rounded-full opacity-[0.04]"
+            style={{ border: '2px solid #EE2770' }} />
+          <div className="absolute top-20 left-20 w-40 h-40 rounded-full opacity-[0.06]"
+            style={{ border: '1px solid #fff' }} />
         </div>
 
+        {/* Logo */}
         <div className="relative flex items-center gap-3">
-          <div className="w-10 h-10 rounded-xl bg-white/20 flex items-center justify-center">
-            <Building2 size={20} className="text-white" />
+          <div className="w-11 h-11 rounded-xl flex items-center justify-center shadow-lg"
+            style={{ background: '#EE2770' }}>
+            <Building2 size={22} className="text-white" />
           </div>
-          <span className="text-white text-xl font-bold">Digital Leap HRMS</span>
+          <div>
+            <p className="text-white font-bold text-lg leading-tight">Digital Leap</p>
+            <p className="text-xs font-semibold tracking-widest uppercase" style={{ color: '#EE2770' }}>HRMS</p>
+          </div>
         </div>
 
+        {/* Headline */}
         <div className="relative">
-          <h1 className="text-4xl font-bold text-white leading-tight mb-4">
+          <div className="w-10 h-1 rounded-full mb-6" style={{ background: '#EE2770' }} />
+          <h1 className="text-4xl font-bold text-white leading-tight mb-5">
             Manage your<br />workforce smarter.
           </h1>
-          <p className="text-primary-100 text-lg leading-relaxed">
+          <p className="text-base leading-relaxed" style={{ color: 'rgba(255,255,255,0.55)' }}>
             All-in-one HR platform for attendance, payroll, leaves, and performance management.
           </p>
 
-          <div className="mt-10 grid grid-cols-2 gap-4">
+          <div className="mt-10 grid grid-cols-2 gap-3">
             {[
               { label: 'Employees', value: '10+' },
               { label: 'Modules', value: '6' },
               { label: 'Departments', value: '7' },
               { label: 'Uptime', value: '99.9%' },
             ].map(({ label, value }) => (
-              <div key={label} className="bg-white/10 rounded-xl p-4 backdrop-blur-sm">
+              <div key={label} className="rounded-xl p-4"
+                style={{ background: 'rgba(255,255,255,0.06)', border: '1px solid rgba(255,255,255,0.1)' }}>
                 <p className="text-2xl font-bold text-white">{value}</p>
-                <p className="text-primary-100 text-sm mt-0.5">{label}</p>
+                <p className="text-xs mt-0.5" style={{ color: 'rgba(255,255,255,0.5)' }}>{label}</p>
               </div>
             ))}
           </div>
         </div>
 
-        <p className="relative text-primary-200 text-sm">© 2026 Digital Leap HRMS. All rights reserved.</p>
+        <p className="relative text-xs" style={{ color: 'rgba(255,255,255,0.3)' }}>
+          © 2026 Digital Leap HRMS. All rights reserved.
+        </p>
       </div>
 
-      {/* Right Panel */}
+      {/* Right Panel — login form */}
       <div className="flex-1 flex items-center justify-center p-8">
         <div className="w-full max-w-md">
+
           {/* Mobile logo */}
-          <div className="lg:hidden flex items-center gap-2 mb-8">
-            <div className="w-8 h-8 rounded-lg bg-primary-500 flex items-center justify-center">
-              <Building2 size={16} className="text-white" />
+          <div className="lg:hidden flex items-center gap-2.5 mb-10">
+            <div className="w-9 h-9 rounded-xl flex items-center justify-center"
+              style={{ background: '#EE2770' }}>
+              <Building2 size={18} className="text-white" />
             </div>
-            <span className="font-bold text-lg text-gray-900">Digital Leap HRMS</span>
+            <div>
+              <p className="font-bold text-sm leading-tight" style={{ color: '#192250' }}>Digital Leap</p>
+              <p className="text-xs font-semibold" style={{ color: '#EE2770' }}>HRMS</p>
+            </div>
           </div>
 
-          <h2 className="text-2xl font-bold text-gray-900">Welcome back</h2>
-          <p className="text-gray-500 mt-1 mb-8">Sign in to your account to continue</p>
+          <h2 className="text-2xl font-bold mb-1" style={{ color: '#192250' }}>Welcome back</h2>
+          <p className="text-gray-400 text-sm mb-8">Sign in to your account to continue</p>
 
           <form onSubmit={handleSubmit} className="space-y-4">
             <div>
-              <label className="text-sm font-medium text-gray-700 mb-1.5 block">Email address</label>
+              <label className="text-xs font-semibold mb-1.5 block uppercase tracking-wide"
+                style={{ color: '#192250' }}>Email address</label>
               <div className="relative">
-                <Mail size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
+                <Mail size={15} className="absolute left-3.5 top-1/2 -translate-y-1/2 text-gray-400" />
                 <input
                   type="email"
                   value={email}
                   onChange={e => setEmail(e.target.value)}
                   required
                   placeholder="you@company.com"
-                  className="w-full pl-10 pr-4 py-3 border border-gray-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-primary-200 focus:border-primary-400 transition-all"
+                  className="w-full pl-10 pr-4 py-3 border rounded-xl text-sm focus:outline-none transition-all bg-white"
+                  style={{
+                    borderColor: '#e2e4ed',
+                    '--tw-ring-color': '#192250',
+                  } as React.CSSProperties}
+                  onFocus={e => { e.target.style.borderColor = '#192250'; e.target.style.boxShadow = '0 0 0 3px rgba(25,34,80,0.08)'; }}
+                  onBlur={e => { e.target.style.borderColor = '#e2e4ed'; e.target.style.boxShadow = 'none'; }}
                 />
               </div>
             </div>
 
             <div>
-              <label className="text-sm font-medium text-gray-700 mb-1.5 block">Password</label>
+              <label className="text-xs font-semibold mb-1.5 block uppercase tracking-wide"
+                style={{ color: '#192250' }}>Password</label>
               <div className="relative">
-                <Lock size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
+                <Lock size={15} className="absolute left-3.5 top-1/2 -translate-y-1/2 text-gray-400" />
                 <input
                   type={showPass ? 'text' : 'password'}
                   value={password}
                   onChange={e => setPassword(e.target.value)}
                   required
                   placeholder="••••••••"
-                  className="w-full pl-10 pr-10 py-3 border border-gray-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-primary-200 focus:border-primary-400 transition-all"
+                  className="w-full pl-10 pr-10 py-3 border rounded-xl text-sm focus:outline-none transition-all bg-white"
+                  style={{ borderColor: '#e2e4ed' }}
+                  onFocus={e => { e.target.style.borderColor = '#192250'; e.target.style.boxShadow = '0 0 0 3px rgba(25,34,80,0.08)'; }}
+                  onBlur={e => { e.target.style.borderColor = '#e2e4ed'; e.target.style.boxShadow = 'none'; }}
                 />
-                <button type="button" onClick={() => setShowPass(!showPass)} className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600">
-                  {showPass ? <EyeOff size={16} /> : <Eye size={16} />}
+                <button type="button" onClick={() => setShowPass(!showPass)}
+                  className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600">
+                  {showPass ? <EyeOff size={15} /> : <Eye size={15} />}
                 </button>
               </div>
             </div>
@@ -133,27 +168,34 @@ export default function Login() {
             <button
               type="submit"
               disabled={loading}
-              className="w-full py-3 bg-primary-500 hover:bg-primary-600 disabled:opacity-60 text-white font-semibold rounded-xl transition-all shadow-sm text-sm mt-2"
+              className="w-full py-3 text-white font-semibold rounded-xl transition-all text-sm mt-2 disabled:opacity-60"
+              style={{ background: loading ? '#192250' : 'linear-gradient(135deg, #EE2770 0%, #d11f62 100%)', boxShadow: '0 4px 15px rgba(238,39,112,0.35)' }}
             >
-              {loading ? 'Signing in...' : 'Sign In'}
+              {loading ? 'Signing in…' : 'Sign In →'}
             </button>
           </form>
 
           {/* Demo credentials */}
-          <div className="mt-8 p-4 bg-gray-50 rounded-xl border border-gray-100">
-            <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-3">Demo Credentials</p>
+          <div className="mt-8 p-4 rounded-2xl" style={{ background: 'rgba(25,34,80,0.04)', border: '1px solid rgba(25,34,80,0.08)' }}>
+            <p className="text-xs font-bold uppercase tracking-wider mb-3" style={{ color: '#192250', opacity: 0.5 }}>
+              Demo Credentials
+            </p>
             <div className="space-y-2">
               {demoCredentials.map(({ role, email: e, password: p }) => (
                 <button
                   key={role}
                   onClick={() => fillDemo(e, p)}
-                  className="w-full flex items-center justify-between text-left px-3 py-2 bg-white rounded-lg border border-gray-100 hover:border-primary-200 hover:bg-primary-50 transition-all group"
+                  className="w-full flex items-center justify-between text-left px-3 py-2.5 bg-white rounded-xl transition-all group"
+                  style={{ border: '1px solid rgba(25,34,80,0.08)' }}
+                  onMouseEnter={ev => { (ev.currentTarget as HTMLElement).style.borderColor = '#EE2770'; (ev.currentTarget as HTMLElement).style.background = '#fff0f5'; }}
+                  onMouseLeave={ev => { (ev.currentTarget as HTMLElement).style.borderColor = 'rgba(25,34,80,0.08)'; (ev.currentTarget as HTMLElement).style.background = '#fff'; }}
                 >
                   <div>
-                    <p className="text-xs font-semibold text-gray-800 group-hover:text-primary-700">{role}</p>
-                    <p className="text-xs text-gray-400">{e}</p>
+                    <p className="text-xs font-bold" style={{ color: '#192250' }}>{role}</p>
+                    <p className="text-xs text-gray-400 mt-0.5">{e}</p>
                   </div>
-                  <span className="text-xs text-primary-500 font-medium opacity-0 group-hover:opacity-100 transition-opacity">Use →</span>
+                  <span className="text-xs font-semibold opacity-0 group-hover:opacity-100 transition-opacity"
+                    style={{ color: '#EE2770' }}>Use →</span>
                 </button>
               ))}
             </div>

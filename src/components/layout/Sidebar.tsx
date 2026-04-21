@@ -25,51 +25,74 @@ export default function Sidebar() {
   const navItems = allNavItems.filter(item => item.roles.includes(role));
 
   return (
-    <div className={`${collapsed ? 'w-16' : 'w-60'} transition-all duration-300 flex flex-col bg-white border-r border-gray-100 shadow-sm min-h-screen flex-shrink-0`}>
-      <div className={`flex items-center gap-3 px-4 py-5 border-b border-gray-100 ${collapsed ? 'justify-center' : ''}`}>
-        <div className="w-8 h-8 rounded-lg bg-primary-500 flex items-center justify-center flex-shrink-0">
+    <div
+      className={`${collapsed ? 'w-16' : 'w-60'} transition-all duration-300 flex flex-col min-h-screen flex-shrink-0`}
+      style={{ background: 'linear-gradient(180deg, #192250 0%, #141c43 100%)' }}
+    >
+      {/* Logo */}
+      <div className={`flex items-center gap-3 px-4 py-5 ${collapsed ? 'justify-center' : ''}`}
+        style={{ borderBottom: '1px solid rgba(255,255,255,0.08)' }}>
+        <div className="w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0"
+          style={{ background: '#EE2770' }}>
           <Building2 size={16} className="text-white" />
         </div>
-        {!collapsed && <span className="font-bold text-lg text-gray-900 tracking-tight">Digital Leap HRMS</span>}
+        {!collapsed && (
+          <div className="leading-tight">
+            <p className="font-bold text-white text-sm tracking-wide">Digital Leap</p>
+            <p className="text-xs font-semibold" style={{ color: '#EE2770' }}>HRMS</p>
+          </div>
+        )}
       </div>
 
+      {/* Role badge */}
       {!collapsed && (
-        <div className="px-4 py-2 border-b border-gray-100">
-          <span className={`text-xs font-semibold px-2 py-0.5 rounded-full capitalize
-            ${role === 'admin' ? 'bg-red-50 text-red-600' : role === 'hr_manager' ? 'bg-primary-50 text-primary-600' : 'bg-gray-100 text-gray-500'}
-          `}>
+        <div className="px-4 py-2.5" style={{ borderBottom: '1px solid rgba(255,255,255,0.08)' }}>
+          <span className="text-xs font-semibold px-2.5 py-1 rounded-full"
+            style={{
+              background: role === 'admin' ? 'rgba(238,39,112,0.2)' : 'rgba(255,255,255,0.1)',
+              color: role === 'admin' ? '#ff75b0' : 'rgba(255,255,255,0.6)',
+            }}>
             {role === 'hr_manager' ? 'HR Manager' : role.charAt(0).toUpperCase() + role.slice(1)}
           </span>
         </div>
       )}
 
-      <nav className="flex-1 py-4 px-2 space-y-1">
+      {/* Nav */}
+      <nav className="flex-1 py-4 px-2 space-y-0.5">
         {navItems.map(({ to, icon: Icon, label }) => (
           <NavLink
             key={to}
             to={to}
             end={to === '/'}
             className={({ isActive }) =>
-              `flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-all duration-150 group
-              ${isActive ? 'bg-primary-50 text-primary-600' : 'text-gray-500 hover:bg-gray-50 hover:text-gray-800'}
-              ${collapsed ? 'justify-center' : ''}`
+              `flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-all duration-150 group relative
+              ${collapsed ? 'justify-center' : ''}
+              ${isActive ? 'text-white' : 'text-white/50 hover:text-white/80'}`
             }
+            style={({ isActive }) => isActive ? {
+              background: 'rgba(238,39,112,0.18)',
+              boxShadow: 'inset 3px 0 0 #EE2770',
+            } : {}}
           >
             {({ isActive }) => (
               <>
-                <Icon size={18} className={isActive ? 'text-primary-600' : 'text-gray-400 group-hover:text-gray-600'} />
+                <Icon
+                  size={18}
+                  style={{ color: isActive ? '#EE2770' : undefined }}
+                  className={isActive ? '' : 'group-hover:text-white/80 transition-colors'}
+                />
                 {!collapsed && <span>{label}</span>}
-                {!collapsed && isActive && <span className="ml-auto w-1.5 h-1.5 rounded-full bg-primary-500" />}
               </>
             )}
           </NavLink>
         ))}
       </nav>
 
-      <div className="px-2 pb-4 space-y-1 border-t border-gray-100 pt-3">
+      {/* Collapse toggle */}
+      <div className="px-2 pb-4 pt-3" style={{ borderTop: '1px solid rgba(255,255,255,0.08)' }}>
         <button
           onClick={() => setCollapsed(!collapsed)}
-          className={`flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium text-gray-500 hover:bg-gray-50 transition-all w-full ${collapsed ? 'justify-center' : ''}`}
+          className={`flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium text-white/40 hover:text-white/70 hover:bg-white/5 transition-all w-full ${collapsed ? 'justify-center' : ''}`}
         >
           {collapsed ? <ChevronRight size={18} /> : <><ChevronLeft size={18} /><span>Collapse</span></>}
         </button>
