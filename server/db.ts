@@ -1,5 +1,4 @@
 import { neon } from '@neondatabase/serverless';
-import 'dotenv/config';
 
 let _sql: ReturnType<typeof neon> | null = null;
 

@@ -14,7 +14,16 @@ const allowedOrigins = process.env.CORS_ORIGIN
   ? process.env.CORS_ORIGIN.split(',')
   : ['http://localhost:3030', 'http://localhost:3031'];
 
-app.use(cors({ origin: allowedOrigins }));
+app.use(cors({
+  origin: (origin, cb) => {
+    // Allow same-origin (Vercel), localhost, or explicitly listed origins
+    if (!origin || allowedOrigins.includes(origin) || origin.endsWith('.vercel.app')) {
+      cb(null, true);
+    } else {
+      cb(new Error('Not allowed by CORS'));
+    }
+  },
+}));
 app.use(express.json());
 
 app.use('/api/auth', authRoutes);
