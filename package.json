@@ -8,6 +8,7 @@
     "server": "tsx watch server/index.ts",
     "seed": "tsx server/seed.ts",
     "build": "tsc -b && vite build",
+    "vercel-build": "tsc -b && vite build && node_modules/.bin/esbuild api/_handler.ts --bundle --platform=node --target=node20 --format=esm --outfile=api/index.js",
     "lint": "eslint .",
     "preview": "vite preview"
   },
