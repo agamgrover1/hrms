@@ -8,7 +8,7 @@
     "server": "tsx watch server/index.ts",
     "seed": "tsx server/seed.ts",
     "build": "tsc -b && vite build",
-    "vercel-build": "tsc -b && vite build",
+    "vercel-build": "vite build",
     "lint": "eslint .",
     "preview": "vite preview"
   },
