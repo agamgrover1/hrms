@@ -54,7 +54,7 @@ export const api = {
   },
   getEmployeePayroll: (employee_id: string) => request<any[]>(`/payroll/${employee_id}`),
 
-  // Performance
+  // Performance (legacy goals/reviews)
   getGoals: (employee_id?: string) => {
     const qs = employee_id ? `?employee_id=${employee_id}` : '';
     return request<any[]>(`/performance/goals${qs}`);
@@ -65,6 +65,27 @@ export const api = {
     const qs = employee_id ? `?employee_id=${employee_id}` : '';
     return request<any[]>(`/performance/reviews${qs}`);
   },
+
+  // Monthly performance
+  getMonthlyPerformance: (employee_id: string, year?: number) => {
+    const qs = new URLSearchParams({ employee_id });
+    if (year) qs.set('year', String(year));
+    return request<any[]>(`/performance/monthly?${qs}`);
+  },
+  saveMonthlyPerformance: (data: {
+    employee_id: string; reviewer_id?: string; reviewer_name?: string;
+    month: number; year: number;
+    productivity: number; quality: number; teamwork: number; attendance_score: number; initiative: number;
+    overall_score: number; comments?: string;
+  }) => request<any>('/performance/monthly', { method: 'POST', body: JSON.stringify(data) }),
+
+  // Performance notes (private)
+  getPerformanceNotes: (employee_id: string) =>
+    request<any[]>(`/performance/notes?employee_id=${employee_id}`),
+  addPerformanceNote: (data: { employee_id: string; note_date: string; note_text: string; note_type: string; created_by_id?: string; created_by_name?: string }) =>
+    request<any>('/performance/notes', { method: 'POST', body: JSON.stringify(data) }),
+  deletePerformanceNote: (id: string) =>
+    request<any>(`/performance/notes/${id}`, { method: 'DELETE' }),
 
   // Users
   getUsers: () => request<any[]>('/users'),

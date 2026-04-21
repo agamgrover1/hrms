@@ -1,13 +1,15 @@
 import { useState, useEffect } from 'react';
-import { Clock, Calendar, DollarSign, User, CheckCircle, XCircle, AlertCircle, Plus, X } from 'lucide-react';
+import { Clock, Calendar, DollarSign, User, CheckCircle, XCircle, AlertCircle, Plus, X, Target } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
 import { api } from '../../services/api';
+import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Cell } from 'recharts';
 
 const tabs = [
   { key: 'overview', label: 'Overview', icon: User },
   { key: 'attendance', label: 'Attendance', icon: Clock },
   { key: 'leave', label: 'My Leaves', icon: Calendar },
   { key: 'payslip', label: 'Pay Slip', icon: DollarSign },
+  { key: 'performance', label: 'Performance', icon: Target },
 ];
 
 const statusConfig = {
@@ -84,30 +86,35 @@ export default function MyPortal() {
   const [leaves, setLeaves] = useState<any[]>([]);
   const [payroll, setPayroll] = useState<any | null>(null);
   const [balance, setBalance] = useState<any>({ casual: 0, sick: 0, earned: 0 });
+  const [monthlyPerf, setMonthlyPerf] = useState<any[]>([]);
+  const [empDbId, setEmpDbId] = useState('');
 
   // Resolve employee record id from employee_id_ref
   const empRef = user?.employee_id_ref;
+  const currentYear = new Date().getFullYear();
 
   useEffect(() => {
     if (!empRef) return;
-    // Find the employee db id by their employee_id
     api.getEmployees().then(emps => {
       const emp = emps.find(e => e.employee_id === empRef);
       if (!emp) return;
+      setEmpDbId(emp.id);
       const now = new Date();
       Promise.all([
         api.getAttendance({ employee_id: emp.id, month: now.getMonth() + 1, year: now.getFullYear() }),
         api.getLeaveRequests({ employee_id: emp.id }),
         api.getEmployeePayroll(emp.id),
         api.getLeaveBalance(emp.id).catch(() => ({ casual: 10, sick: 7, earned: 15 })),
-      ]).then(([att, lv, pay, bal]) => {
+        api.getMonthlyPerformance(emp.id, currentYear),
+      ]).then(([att, lv, pay, bal, perf]) => {
         setAttendance(att);
         setLeaves(lv);
         setPayroll(Array.isArray(pay) ? pay[0] : pay);
         setBalance(bal);
+        setMonthlyPerf(perf);
       });
     });
-  }, [empRef]);
+  }, [empRef, currentYear]);
 
   const presentDays = attendance.filter(r => r.status === 'present').length;
   const lateDays = attendance.filter(r => r.status === 'late').length;
@@ -260,6 +267,103 @@ export default function MyPortal() {
             )}
           </div>
           {applyLeave && <ApplyLeaveModal onClose={() => setApplyLeave(false)} onSubmit={handleApplyLeave} />}
+        </div>
+      )}
+
+      {/* Performance */}
+      {tab === 'performance' && (
+        <div className="space-y-4">
+          {/* Summary cards */}
+          {(() => {
+            const reviewed = monthlyPerf.length;
+            const avg = reviewed ? Math.round(monthlyPerf.reduce((a, r) => a + r.overall_score, 0) / reviewed) : 0;
+            const best = monthlyPerf.length ? monthlyPerf.reduce((a, b) => a.overall_score > b.overall_score ? a : b) : null;
+            const MONTHS_SHORT = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+
+            function perfColor(s: number) {
+              if (s >= 85) return '#16a34a';
+              if (s >= 70) return '#192250';
+              if (s >= 50) return '#d97706';
+              return '#dc2626';
+            }
+
+            const chartData = MONTHS_SHORT.map((m, idx) => {
+              const rec = monthlyPerf.find(r => r.month === idx + 1);
+              return { month: m, score: rec ? rec.overall_score : null };
+            });
+
+            return (
+              <>
+                <div className="grid grid-cols-3 gap-3">
+                  <div className="bg-white rounded-xl p-4 border border-gray-100 shadow-sm text-center">
+                    <p className="text-2xl font-black" style={{ color: reviewed ? perfColor(avg) : '#d1d5db' }}>{reviewed ? avg : '—'}</p>
+                    <p className="text-xs text-gray-400 mt-1">Avg YTD Score</p>
+                  </div>
+                  <div className="bg-white rounded-xl p-4 border border-gray-100 shadow-sm text-center">
+                    <p className="text-2xl font-black" style={{ color: '#192250' }}>{reviewed}/12</p>
+                    <p className="text-xs text-gray-400 mt-1">Reviews Done</p>
+                  </div>
+                  <div className="bg-white rounded-xl p-4 border border-gray-100 shadow-sm text-center">
+                    <p className="text-2xl font-black" style={{ color: '#16a34a' }}>{best ? MONTHS_SHORT[best.month - 1] : '—'}</p>
+                    <p className="text-xs text-gray-400 mt-1">Best Month</p>
+                  </div>
+                </div>
+
+                <div className="bg-white rounded-xl border border-gray-100 shadow-sm p-5">
+                  <h3 className="font-bold text-sm mb-4" style={{ color: '#192250' }}>Monthly Performance — {currentYear}</h3>
+                  <ResponsiveContainer width="100%" height={180}>
+                    <BarChart data={chartData} barSize={22}>
+                      <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" vertical={false} />
+                      <XAxis dataKey="month" tick={{ fontSize: 10, fill: '#9ca3af' }} axisLine={false} tickLine={false} />
+                      <YAxis domain={[0, 100]} tick={{ fontSize: 10, fill: '#9ca3af' }} axisLine={false} tickLine={false} width={24} />
+                      <Tooltip
+                        formatter={(val: any) => [val ?? '—', 'Score']}
+                        contentStyle={{ borderRadius: 8, border: '1px solid #e5e7eb', fontSize: 12 }}
+                      />
+                      <Bar dataKey="score" radius={[4, 4, 0, 0]}>
+                        {chartData.map((entry, idx) => (
+                          <Cell key={idx} fill={entry.score != null ? perfColor(entry.score) : '#e5e7eb'} />
+                        ))}
+                      </Bar>
+                    </BarChart>
+                  </ResponsiveContainer>
+                </div>
+
+                <div className="bg-white rounded-xl border border-gray-100 shadow-sm overflow-hidden">
+                  <div className="px-5 py-3 border-b border-gray-100">
+                    <h3 className="font-bold text-sm" style={{ color: '#192250' }}>Score Breakdown</h3>
+                  </div>
+                  <table className="w-full text-sm">
+                    <thead>
+                      <tr style={{ background: '#f8f9fc' }}>
+                        {['Month', 'Prod.', 'Quality', 'Teamwork', 'Attendance', 'Initiative', 'Overall'].map(h => (
+                          <th key={h} className="text-center px-3 py-2.5 text-xs font-semibold text-gray-400 uppercase tracking-wide first:text-left">{h}</th>
+                        ))}
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {monthlyPerf.length === 0 ? (
+                        <tr><td colSpan={7} className="text-center text-gray-400 text-sm py-10">No reviews yet for {currentYear}</td></tr>
+                      ) : monthlyPerf.map(r => (
+                        <tr key={r.id} className="border-t border-gray-50 hover:bg-gray-50/50">
+                          <td className="px-3 py-3 font-semibold" style={{ color: '#192250' }}>{MONTHS_SHORT[r.month - 1]}</td>
+                          {[r.productivity, r.quality, r.teamwork, r.attendance_score, r.initiative].map((v, i) => (
+                            <td key={i} className="px-3 py-3 text-center font-bold tabular-nums" style={{ color: perfColor(v) }}>{v}</td>
+                          ))}
+                          <td className="px-3 py-3 text-center">
+                            <span className="inline-flex px-2 py-0.5 rounded-full text-xs font-bold"
+                              style={{ background: `${perfColor(r.overall_score)}18`, color: perfColor(r.overall_score) }}>
+                              {r.overall_score}
+                            </span>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </>
+            );
+          })()}
         </div>
       )}
 
