@@ -46,7 +46,7 @@ export default function Login() {
           <div className="w-10 h-10 rounded-xl bg-white/20 flex items-center justify-center">
             <Building2 size={20} className="text-white" />
           </div>
-          <span className="text-white text-xl font-bold">HRFlow</span>
+          <span className="text-white text-xl font-bold">Digital Leap HRMS</span>
         </div>
 
         <div className="relative">
@@ -72,7 +72,7 @@ export default function Login() {
           </div>
         </div>
 
-        <p className="relative text-primary-200 text-sm">© 2026 HRFlow. All rights reserved.</p>
+        <p className="relative text-primary-200 text-sm">© 2026 Digital Leap HRMS. All rights reserved.</p>
       </div>
 
       {/* Right Panel */}
@@ -83,7 +83,7 @@ export default function Login() {
             <div className="w-8 h-8 rounded-lg bg-primary-500 flex items-center justify-center">
               <Building2 size={16} className="text-white" />
             </div>
-            <span className="font-bold text-lg text-gray-900">HRFlow</span>
+            <span className="font-bold text-lg text-gray-900">Digital Leap HRMS</span>
           </div>
 
           <h2 className="text-2xl font-bold text-gray-900">Welcome back</h2>

@@ -30,7 +30,7 @@ export default function Sidebar() {
         <div className="w-8 h-8 rounded-lg bg-primary-500 flex items-center justify-center flex-shrink-0">
           <Building2 size={16} className="text-white" />
         </div>
-        {!collapsed && <span className="font-bold text-lg text-gray-900 tracking-tight">HRFlow</span>}
+        {!collapsed && <span className="font-bold text-lg text-gray-900 tracking-tight">Digital Leap HRMS</span>}
       </div>
 
       {!collapsed && (

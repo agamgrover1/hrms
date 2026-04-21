@@ -33,7 +33,7 @@ interface AuthContextType {
 }
 
 const AuthContext = createContext<AuthContextType | null>(null);
-const SESSION_KEY = 'hrflow_session';
+const SESSION_KEY = 'digitalleap_hrms_session';
 
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<AppUser | null>(() => {

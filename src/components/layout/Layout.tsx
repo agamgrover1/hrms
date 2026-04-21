@@ -15,7 +15,7 @@ const pageTitles: Record<string, string> = {
 
 export default function Layout() {
   const location = useLocation();
-  const title = pageTitles[location.pathname] || 'HRFlow';
+  const title = pageTitles[location.pathname] || 'Digital Leap HRMS';
 
   return (
     <div className="flex min-h-screen bg-gray-50">
