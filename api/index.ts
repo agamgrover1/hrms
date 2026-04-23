@@ -52,6 +52,9 @@ async function runStartupMigrations() {
   _migrated = true;
   try {
     await sql`ALTER TABLE employees ADD COLUMN IF NOT EXISTS probation_end_date DATE`;
+    await sql`ALTER TABLE employees ADD COLUMN IF NOT EXISTS biometric_id TEXT`;
+    await sql`ALTER TABLE attendance_records ADD COLUMN IF NOT EXISTS source TEXT DEFAULT 'manual'`;
+    await sql`ALTER TABLE attendance_records ADD COLUMN IF NOT EXISTS biometric_sync_id TEXT`;
     await sql`ALTER TABLE leave_balances ADD COLUMN IF NOT EXISTS full_day INTEGER NOT NULL DEFAULT 0`;
     await sql`ALTER TABLE leave_balances ADD COLUMN IF NOT EXISTS short_leave INTEGER NOT NULL DEFAULT 0`;
     await sql`ALTER TABLE leave_balances ADD COLUMN IF NOT EXISTS last_credited_month INTEGER`;
@@ -282,8 +285,12 @@ async function runBiometricSyncV(trigger: string, triggeredBy?: string, targetDa
   if (body.Error === true) throw new Error(`eTimeOffice: ${body.Msg ?? 'Unknown'}`);
   const records: any[] = body.InOutPunchData ?? [];
 
-  const empRows = await sql`SELECT id, employee_id FROM employees` as any[];
-  const empMap  = new Map(empRows.map((e: any) => [e.employee_id, e.id]));
+  const empRows = await sql`SELECT id, employee_id, biometric_id FROM employees` as any[];
+  const empMap  = new Map<string, string>();
+  for (const e of empRows) {
+    if (e.biometric_id) empMap.set(String(e.biometric_id).trim(), e.id);
+    else empMap.set(String(e.employee_id).trim(), e.id);
+  }
   const syncId  = crypto.randomUUID();
   let updated = 0, created = 0;
 

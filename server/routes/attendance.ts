@@ -7,6 +7,7 @@ const router = Router();
 // ── Boot-time migrations ────────────────────────────────────────────────────
 ;(async () => {
   try {
+    await sql`ALTER TABLE employees ADD COLUMN IF NOT EXISTS biometric_id TEXT`;
     await sql`ALTER TABLE attendance_records ADD COLUMN IF NOT EXISTS source TEXT DEFAULT 'manual'`;
     await sql`ALTER TABLE attendance_records ADD COLUMN IF NOT EXISTS biometric_sync_id TEXT`;
     await sql`
@@ -120,9 +121,13 @@ export async function runBiometricSync(
   const records: any[] = body.InOutPunchData ?? [];
   console.log(`[biometric] Got ${records.length} records from eTimeOffice for ${etDate}`);
 
-  // Load our employees — Empcode in eTimeOffice = employee_id in our DB (e.g. DL0007)
-  const empRows = await sql`SELECT id, employee_id FROM employees` as any[];
-  const empMap = new Map<string, string>(empRows.map((e: any) => [e.employee_id, e.id]));
+  // Match on biometric_id if set, otherwise fall back to employee_id
+  const empRows = await sql`SELECT id, employee_id, biometric_id FROM employees` as any[];
+  const empMap = new Map<string, string>();
+  for (const e of empRows) {
+    if (e.biometric_id) empMap.set(String(e.biometric_id).trim(), e.id);
+    else empMap.set(String(e.employee_id).trim(), e.id);
+  }
 
   const syncId = randomUUID();
   let recordsUpdated = 0;

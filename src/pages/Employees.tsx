@@ -143,6 +143,7 @@ function EmployeeDetail({ emp, onClose, onEdit, onDelete }: { emp: any; onClose:
               { label: 'Reporting Manager', value: emp.manager || '—' },
               { label: 'Join Date', value: emp.join_date ? new Date(emp.join_date).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' }) : '—' },
               { label: 'Status', value: emp.status?.charAt(0).toUpperCase() + emp.status?.slice(1) },
+              { label: 'Biometric ID', value: emp.biometric_id || '— not set —' },
             ].map(({ label, value }) => (
               <div key={label}>
                 <p className="text-xs text-gray-400 font-medium">{label}</p>
@@ -242,6 +243,7 @@ function EmployeeDetail({ emp, onClose, onEdit, onDelete }: { emp: any; onClose:
 
 const emptyForm = {
   employee_id: '',
+  biometric_id: '',
   name: '',
   email: '',
   phone: '',
@@ -300,6 +302,7 @@ function AddEmployeeModal({ onClose, onSaved, existingEmployees }: {
         id: `e_${Date.now()}`,
         ...form,
         employee_id: form.employee_id.trim().toUpperCase(),
+        biometric_id: form.biometric_id.trim() || null,
         avatar: initials,
         salary: Number(form.salary) || 0,
         ctc: Number(form.ctc) || 0,
@@ -335,18 +338,33 @@ function AddEmployeeModal({ onClose, onSaved, existingEmployees }: {
         </div>
 
         <form onSubmit={handleSubmit} className="p-6 space-y-5">
-          <div className="p-4 bg-primary-50 border border-primary-100 rounded-xl">
-            <label className="block text-xs font-semibold text-primary-700 mb-1">
-              Employee ID <span className="text-red-400">*</span>
-              <span className="ml-2 font-normal text-primary-500">(auto-suggested — you can change it)</span>
-            </label>
-            <input
-              type="text"
-              value={form.employee_id}
-              onChange={e => set('employee_id', e.target.value.toUpperCase())}
-              placeholder="e.g. EMP012"
-              className="w-full text-sm font-mono font-semibold border border-primary-200 rounded-lg px-3 py-2.5 bg-white focus:outline-none focus:ring-2 focus:ring-primary-300 focus:border-primary-400 tracking-widest"
-            />
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <div className="p-4 bg-primary-50 border border-primary-100 rounded-xl">
+              <label className="block text-xs font-semibold text-primary-700 mb-1">
+                Employee ID <span className="text-red-400">*</span>
+                <span className="ml-2 font-normal text-primary-500">(auto-suggested)</span>
+              </label>
+              <input
+                type="text"
+                value={form.employee_id}
+                onChange={e => set('employee_id', e.target.value.toUpperCase())}
+                placeholder="e.g. DL0012"
+                className="w-full text-sm font-mono font-semibold border border-primary-200 rounded-lg px-3 py-2.5 bg-white focus:outline-none focus:ring-2 focus:ring-primary-300 focus:border-primary-400 tracking-widest"
+              />
+            </div>
+            <div className="p-4 bg-amber-50 border border-amber-100 rounded-xl">
+              <label className="block text-xs font-semibold text-amber-700 mb-1">
+                Biometric ID
+                <span className="ml-2 font-normal text-amber-500">(eTimeOffice Empcode, e.g. DL0007)</span>
+              </label>
+              <input
+                type="text"
+                value={form.biometric_id}
+                onChange={e => set('biometric_id', e.target.value)}
+                placeholder="Leave blank if same as Employee ID"
+                className="w-full text-sm font-mono border border-amber-200 rounded-lg px-3 py-2.5 bg-white focus:outline-none focus:ring-2 focus:ring-amber-200 focus:border-amber-400 tracking-widest"
+              />
+            </div>
           </div>
 
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
@@ -497,6 +515,7 @@ function EditEmployeeModal({ emp, onClose, onSaved, allEmployees }: {
     status: emp.status || 'active',
     salary: String(emp.salary || ''),
     ctc: String(emp.ctc || ''),
+    biometric_id: emp.biometric_id || '',
     next_appraisal_month: String(emp.next_appraisal_month || ''),
     next_appraisal_year: String(emp.next_appraisal_year || ''),
   });
@@ -520,6 +539,7 @@ function EditEmployeeModal({ emp, onClose, onSaved, allEmployees }: {
         ...form,
         salary: Number(form.salary) || 0,
         ctc: Number(form.ctc) || 0,
+        biometric_id: form.biometric_id.trim() || null,
         reporting_manager_id: form.reporting_manager_id || null,
         next_appraisal_month: form.next_appraisal_month ? Number(form.next_appraisal_month) : null,
         next_appraisal_year:  form.next_appraisal_year  ? Number(form.next_appraisal_year)  : null,
@@ -554,6 +574,20 @@ function EditEmployeeModal({ emp, onClose, onSaved, allEmployees }: {
         </div>
 
         <form onSubmit={handleSubmit} className="p-6 space-y-5">
+          {/* Biometric ID */}
+          <div className="p-4 bg-amber-50 border border-amber-100 rounded-xl">
+            <label className="block text-xs font-semibold text-amber-700 mb-1">
+              Biometric ID (eTimeOffice Empcode)
+            </label>
+            <input
+              type="text"
+              value={form.biometric_id}
+              onChange={e => set('biometric_id', e.target.value)}
+              placeholder="e.g. DL0007 — leave blank if same as Employee ID"
+              className="w-full text-sm font-mono border border-amber-200 rounded-lg px-3 py-2.5 bg-white focus:outline-none focus:ring-2 focus:ring-amber-200 focus:border-amber-400 tracking-widest"
+            />
+            <p className="text-xs text-amber-600 mt-1.5">Used to match this employee's attendance data from the biometric device. Check eTimeOffice for the exact Empcode.</p>
+          </div>
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
             <div>
               <label className={labelCls}>Full Name <span className="text-red-400">*</span></label>
