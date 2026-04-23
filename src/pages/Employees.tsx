@@ -82,7 +82,7 @@ function EmployeeDetail({ emp, onClose, onEdit }: { emp: any; onClose: () => voi
               { label: 'Email', value: emp.email },
               { label: 'Phone', value: emp.phone },
               { label: 'Location', value: emp.location },
-              { label: 'Manager', value: emp.manager },
+              { label: 'Reporting Manager', value: emp.manager || '—' },
               { label: 'Join Date', value: emp.join_date ? new Date(emp.join_date).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' }) : '—' },
               { label: 'Status', value: emp.status?.charAt(0).toUpperCase() + emp.status?.slice(1) },
             ].map(({ label, value }) => (
@@ -121,6 +121,7 @@ const emptyForm = {
   join_date: new Date().toISOString().split('T')[0],
   location: '',
   manager: '',
+  reporting_manager_id: '',
   status: 'active',
   salary: '',
   ctc: '',
@@ -133,10 +134,10 @@ function AddEmployeeModal({ onClose, onSaved, existingEmployees }: {
 }) {
   const nextCode = (() => {
     const nums = existingEmployees
-      .map(e => parseInt((e.employee_id || '').replace(/\D/g, ''), 10))
+      .map(e => parseInt((e.employee_id || '').replace(/^DL/i, '').replace(/\D/g, ''), 10))
       .filter(n => !isNaN(n));
     const max = nums.length ? Math.max(...nums) : 0;
-    return `EMP${String(max + 1).padStart(3, '0')}`;
+    return `DL${String(max + 1).padStart(4, '0')}`;
   })();
 
   const [form, setForm] = useState({ ...emptyForm, employee_id: nextCode });
@@ -167,6 +168,7 @@ function AddEmployeeModal({ onClose, onSaved, existingEmployees }: {
         avatar: initials,
         salary: Number(form.salary) || 0,
         ctc: Number(form.ctc) || 0,
+        reporting_manager_id: form.reporting_manager_id || null,
       };
       const created = await api.createEmployee(payload);
       onSaved(created);
@@ -235,8 +237,21 @@ function AddEmployeeModal({ onClose, onSaved, existingEmployees }: {
               <input type="text" value={form.designation} onChange={e => set('designation', e.target.value)} placeholder="e.g. Software Engineer" className={inputCls} />
             </div>
             <div>
-              <label className={labelCls}>Manager</label>
-              <input type="text" value={form.manager} onChange={e => set('manager', e.target.value)} placeholder="e.g. Rahul Verma" className={inputCls} />
+              <label className={labelCls}>Reporting Manager</label>
+              <select
+                value={form.reporting_manager_id}
+                onChange={e => {
+                  const mgr = existingEmployees.find(x => x.id === e.target.value);
+                  set('reporting_manager_id', e.target.value);
+                  set('manager', mgr?.name ?? '');
+                }}
+                className={inputCls}
+              >
+                <option value="">— No Manager —</option>
+                {existingEmployees.map(x => (
+                  <option key={x.id} value={x.id}>{x.name} ({x.designation})</option>
+                ))}
+              </select>
             </div>
             <div>
               <label className={labelCls}>Department <span className="text-red-400">*</span></label>
@@ -292,10 +307,11 @@ function AddEmployeeModal({ onClose, onSaved, existingEmployees }: {
   );
 }
 
-function EditEmployeeModal({ emp, onClose, onSaved }: {
+function EditEmployeeModal({ emp, onClose, onSaved, allEmployees }: {
   emp: any;
   onClose: () => void;
   onSaved: (updated: any) => void;
+  allEmployees: any[];
 }) {
   const [form, setForm] = useState({
     name: emp.name || '',
@@ -306,6 +322,7 @@ function EditEmployeeModal({ emp, onClose, onSaved }: {
     join_date: emp.join_date ? emp.join_date.split('T')[0] : new Date().toISOString().split('T')[0],
     location: emp.location || '',
     manager: emp.manager || '',
+    reporting_manager_id: emp.reporting_manager_id || '',
     status: emp.status || 'active',
     salary: String(emp.salary || ''),
     ctc: String(emp.ctc || ''),
@@ -332,6 +349,7 @@ function EditEmployeeModal({ emp, onClose, onSaved }: {
         ...form,
         salary: Number(form.salary) || 0,
         ctc: Number(form.ctc) || 0,
+        reporting_manager_id: form.reporting_manager_id || null,
         next_appraisal_month: form.next_appraisal_month ? Number(form.next_appraisal_month) : null,
         next_appraisal_year:  form.next_appraisal_year  ? Number(form.next_appraisal_year)  : null,
       });
@@ -390,8 +408,21 @@ function EditEmployeeModal({ emp, onClose, onSaved }: {
               <input type="text" value={form.designation} onChange={e => set('designation', e.target.value)} className={inputCls} />
             </div>
             <div>
-              <label className={labelCls}>Manager</label>
-              <input type="text" value={form.manager} onChange={e => set('manager', e.target.value)} className={inputCls} />
+              <label className={labelCls}>Reporting Manager</label>
+              <select
+                value={form.reporting_manager_id}
+                onChange={e => {
+                  const mgr = allEmployees.find(x => x.id === e.target.value);
+                  set('reporting_manager_id', e.target.value);
+                  set('manager', mgr?.name ?? '');
+                }}
+                className={inputCls}
+              >
+                <option value="">— No Manager —</option>
+                {allEmployees.filter(x => x.id !== emp.id).map(x => (
+                  <option key={x.id} value={x.id}>{x.name} ({x.designation})</option>
+                ))}
+              </select>
             </div>
             <div>
               <label className={labelCls}>Department <span className="text-red-400">*</span></label>
@@ -558,6 +589,7 @@ export default function Employees() {
       {editing && (
         <EditEmployeeModal
           emp={editing}
+          allEmployees={employees}
           onClose={() => setEditing(null)}
           onSaved={updated => {
             setEmployees(prev => prev.map(e => e.id === updated.id ? updated : e));

@@ -24,3 +24,16 @@ export async function notifyEmployeeUser(employeeDbId: string, type: string, tit
     await Promise.all((users as any[]).map(u => notifyUser(u.id, type, title, body)));
   } catch { /* non-fatal */ }
 }
+
+// Notify the reporting manager of an employee. Falls back to all HR/admin if no manager set.
+export async function notifyManagerOfEmployee(employeeDbId: string, type: string, title: string, body?: string) {
+  try {
+    const empRows = await sql`SELECT reporting_manager_id FROM employees WHERE id = ${employeeDbId}`;
+    const managerId = (empRows as any[])[0]?.reporting_manager_id;
+    if (managerId) {
+      await notifyEmployeeUser(managerId, type, title, body);
+    } else {
+      await notifyAdminsAndHR(type, title, body);
+    }
+  } catch { /* non-fatal */ }
+}

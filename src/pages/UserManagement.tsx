@@ -1,8 +1,9 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { Plus, Edit2, Trash2, X, Eye, EyeOff, Shield, Users, UserCheck, Search, ToggleLeft, ToggleRight } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import type { AppUser, Role } from '../context/AuthContext';
 import { departments } from '../data/mockData';
+import { api } from '../services/api';
 
 const roleConfig: Record<Role, { label: string; color: string; icon: typeof Shield }> = {
   admin: { label: 'Admin', color: 'bg-red-50 text-red-600 border-red-200', icon: Shield },
@@ -19,11 +20,13 @@ interface UserFormData {
   designation: string;
   employeeId: string;
   avatar: string;
+  reporting_manager_id: string;
 }
 
 const defaultForm: UserFormData = {
   name: '', email: '', password: '', role: 'employee',
   department: '', designation: '', employeeId: '', avatar: '',
+  reporting_manager_id: '',
 };
 
 function UserModal({
@@ -39,9 +42,14 @@ function UserModal({
 }) {
   const [form, setForm] = useState<UserFormData>(
     existing
-      ? { name: existing.name, email: existing.email, password: existing.password ?? '', role: existing.role, department: existing.department, designation: existing.designation, employeeId: existing.employee_id_ref ?? existing.employeeId ?? '', avatar: existing.avatar }
+      ? { name: existing.name, email: existing.email, password: existing.password ?? '', role: existing.role, department: existing.department, designation: existing.designation, employeeId: existing.employee_id_ref ?? existing.employeeId ?? '', avatar: existing.avatar, reporting_manager_id: (existing as any).reporting_manager_id ?? '' }
       : defaultForm
   );
+  const [employees, setEmployees] = useState<any[]>([]);
+
+  useEffect(() => {
+    api.getEmployees().then(setEmployees).catch(() => {});
+  }, []);
   const [showPass, setShowPass] = useState(false);
   const [error, setError] = useState('');
 
@@ -116,6 +124,16 @@ function UserModal({
               <label className="text-xs font-medium text-gray-500 mb-1.5 block">Designation *</label>
               <input value={form.designation} onChange={e => set('designation', e.target.value)} placeholder="e.g. Software Engineer"
                 className="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-primary-200 focus:border-primary-400" />
+            </div>
+            <div className="col-span-2">
+              <label className="text-xs font-medium text-gray-500 mb-1.5 block">Reporting Manager</label>
+              <select value={form.reporting_manager_id} onChange={e => set('reporting_manager_id', e.target.value)}
+                className="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-primary-200 focus:border-primary-400 bg-white">
+                <option value="">— No Manager —</option>
+                {employees.map(emp => (
+                  <option key={emp.id} value={emp.id}>{emp.name} ({emp.designation})</option>
+                ))}
+              </select>
             </div>
           </div>
 

@@ -72,6 +72,14 @@ await sql`ALTER TABLE appraisal_goals ALTER COLUMN month SET DEFAULT 1`;
 await sql`ALTER TABLE employees ADD COLUMN IF NOT EXISTS next_appraisal_month INTEGER`;
 await sql`ALTER TABLE employees ADD COLUMN IF NOT EXISTS next_appraisal_year INTEGER`;
 
+// Reporting manager (FK to employees.id — can be any employee)
+await sql`ALTER TABLE employees ADD COLUMN IF NOT EXISTS reporting_manager_id VARCHAR(50)`;
+
+// 2-step leave approval: manager approval fields
+await sql`ALTER TABLE leave_requests ADD COLUMN IF NOT EXISTS manager_status VARCHAR(20) DEFAULT 'pending'`;
+await sql`ALTER TABLE leave_requests ADD COLUMN IF NOT EXISTS manager_id VARCHAR(50)`;
+await sql`ALTER TABLE leave_requests ADD COLUMN IF NOT EXISTS manager_approved_at TIMESTAMPTZ`;
+
 // Notifications table
 await sql`
   CREATE TABLE IF NOT EXISTS notifications (

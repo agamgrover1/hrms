@@ -11,11 +11,37 @@ const leaveTypes = [
   { key: 'paternity', label: 'Paternity', color: 'bg-purple-100 text-purple-600' },
 ];
 
-const statusConfig = {
-  pending: { label: 'Pending', icon: Clock, color: 'bg-amber-50 text-amber-600 border-amber-200' },
-  approved: { label: 'Approved', icon: Check, color: 'bg-green-50 text-green-600 border-green-200' },
-  rejected: { label: 'Rejected', icon: X, color: 'bg-red-50 text-red-500 border-red-200' },
-};
+
+function LeaveStatusBadge({ req }: { req: any }) {
+  if (req.status === 'approved') {
+    return (
+      <span className="inline-flex items-center gap-1 text-xs px-2.5 py-1 rounded-full border font-medium bg-green-50 text-green-600 border-green-200">
+        <Check size={11} /> Approved
+      </span>
+    );
+  }
+  if (req.status === 'rejected') {
+    const byMgr = req.manager_status === 'rejected';
+    return (
+      <span className="inline-flex items-center gap-1 text-xs px-2.5 py-1 rounded-full border font-medium bg-red-50 text-red-500 border-red-200">
+        <X size={11} /> {byMgr ? 'Rejected by Manager' : 'Rejected'}
+      </span>
+    );
+  }
+  // status = pending
+  if (req.manager_status === 'approved') {
+    return (
+      <span className="inline-flex items-center gap-1 text-xs px-2.5 py-1 rounded-full border font-medium bg-blue-50 text-blue-600 border-blue-200">
+        <Clock size={11} /> Pending HR ✓Mgr
+      </span>
+    );
+  }
+  return (
+    <span className="inline-flex items-center gap-1 text-xs px-2.5 py-1 rounded-full border font-medium bg-amber-50 text-amber-600 border-amber-200">
+      <Clock size={11} /> Awaiting Manager
+    </span>
+  );
+}
 
 function ApplyModal({ onClose, onSubmit }: { onClose: () => void; onSubmit: (data: any) => void }) {
   const [form, setForm] = useState({ type: 'casual', from: '', to: '', reason: '' });
@@ -157,7 +183,6 @@ export default function Leave() {
             </thead>
             <tbody>
               {displayed.map(req => {
-                const cfg = statusConfig[req.status as keyof typeof statusConfig];
                 const typeConfig = leaveTypes.find(t => t.key === req.type);
                 return (
                   <tr key={req.id} className="border-b border-gray-50 hover:bg-gray-50/50 transition-colors">
@@ -185,9 +210,7 @@ export default function Leave() {
                       {new Date(req.applied_on).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' })}
                     </td>
                     <td className="px-4 py-3">
-                      <span className={`inline-flex items-center gap-1 text-xs px-2.5 py-1 rounded-full border font-medium ${cfg?.color}`}>
-                        <cfg.icon size={11} /> {cfg?.label}
-                      </span>
+                      <LeaveStatusBadge req={req} />
                     </td>
                     <td className="px-4 py-3">
                       {req.status === 'pending' && (

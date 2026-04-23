@@ -66,9 +66,14 @@ app.post('/api/auth/login', async (req, res) => {
 });
 
 // ── Employees ─────────────────────────────────────────────────────────────
-app.get('/api/employees', async (_req, res) => {
+app.get('/api/employees', async (req, res) => {
   try {
-    res.json(await sql`SELECT * FROM employees ORDER BY name`);
+    const { reporting_manager_id } = req.query as any;
+    if (reporting_manager_id) {
+      res.json(await sql`SELECT * FROM employees WHERE reporting_manager_id = ${reporting_manager_id} ORDER BY name`);
+    } else {
+      res.json(await sql`SELECT * FROM employees ORDER BY name`);
+    }
   } catch (err) { res.status(500).json({ error: 'Server error' }); }
 });
 
@@ -82,10 +87,10 @@ app.get('/api/employees/:id', async (req, res) => {
 
 app.post('/api/employees', async (req, res) => {
   try {
-    const { id, name, email, phone, department, designation, employee_id, join_date, location, manager, status, avatar, salary, ctc } = req.body;
+    const { id, name, email, phone, department, designation, employee_id, join_date, location, manager, reporting_manager_id, status, avatar, salary, ctc } = req.body;
     const rows = await sql`
-      INSERT INTO employees (id, name, email, phone, department, designation, employee_id, join_date, location, manager, status, avatar, salary, ctc)
-      VALUES (${id}, ${name}, ${email}, ${phone}, ${department}, ${designation}, ${employee_id}, ${join_date}, ${location}, ${manager}, ${status ?? 'active'}, ${avatar}, ${salary}, ${ctc})
+      INSERT INTO employees (id, name, email, phone, department, designation, employee_id, join_date, location, manager, reporting_manager_id, status, avatar, salary, ctc)
+      VALUES (${id}, ${name}, ${email}, ${phone}, ${department}, ${designation}, ${employee_id}, ${join_date}, ${location}, ${manager ?? null}, ${reporting_manager_id ?? null}, ${status ?? 'active'}, ${avatar}, ${salary}, ${ctc})
       RETURNING *`;
     res.status(201).json(rows[0]);
   } catch (err: any) {
@@ -96,10 +101,12 @@ app.post('/api/employees', async (req, res) => {
 
 app.put('/api/employees/:id', async (req, res) => {
   try {
-    const { name, email, phone, department, designation, location, manager, status, salary, ctc, next_appraisal_month, next_appraisal_year } = req.body;
+    const { name, email, phone, department, designation, location, manager, reporting_manager_id, status, salary, ctc, next_appraisal_month, next_appraisal_year } = req.body;
     const rows = await sql`
       UPDATE employees SET name=${name}, email=${email}, phone=${phone}, department=${department},
-        designation=${designation}, location=${location}, manager=${manager}, status=${status}, salary=${salary}, ctc=${ctc},
+        designation=${designation}, location=${location}, manager=${manager ?? null},
+        reporting_manager_id=${reporting_manager_id ?? null},
+        status=${status}, salary=${salary}, ctc=${ctc},
         next_appraisal_month=${next_appraisal_month ?? null}, next_appraisal_year=${next_appraisal_year ?? null}
       WHERE id=${req.params.id} RETURNING *`;
     res.json(rows[0]);
@@ -178,9 +185,16 @@ app.post('/api/attendance/clock-out', async (req, res) => {
 // ── Leave ─────────────────────────────────────────────────────────────────
 app.get('/api/leave/requests', async (req, res) => {
   try {
-    const { employee_id, status } = req.query as any;
+    const { employee_id, status, reporting_manager_id } = req.query as any;
     let rows;
-    if (employee_id) {
+    if (reporting_manager_id) {
+      rows = await sql`
+        SELECT lr.* FROM leave_requests lr
+        JOIN employees e ON e.id = lr.employee_id
+        WHERE e.reporting_manager_id = ${reporting_manager_id}
+          AND lr.manager_status = 'pending' AND lr.status = 'pending'
+        ORDER BY lr.applied_on DESC`;
+    } else if (employee_id) {
       rows = await sql`SELECT * FROM leave_requests WHERE employee_id=${employee_id} ORDER BY applied_on DESC`;
     } else if (status) {
       rows = await sql`SELECT * FROM leave_requests WHERE status=${status} ORDER BY applied_on DESC`;
@@ -196,16 +210,49 @@ app.post('/api/leave/requests', async (req, res) => {
     const { employee_id, employee_name, type, from_date, to_date, days, reason } = req.body;
     const id = `l_${Date.now()}`;
     const rows = await sql`
-      INSERT INTO leave_requests (id, employee_id, employee_name, type, from_date, to_date, days, reason, status)
-      VALUES (${id}, ${employee_id}, ${employee_name}, ${type}, ${from_date}, ${to_date}, ${days}, ${reason}, 'pending')
+      INSERT INTO leave_requests (id, employee_id, employee_name, type, from_date, to_date, days, reason, status, manager_status)
+      VALUES (${id}, ${employee_id}, ${employee_name}, ${type}, ${from_date}, ${to_date}, ${days}, ${reason}, 'pending', 'pending')
       RETURNING *`;
     const from = new Date(from_date).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' });
     const to   = new Date(to_date).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' });
-    notifyAdminsAndHR('leave_applied', 'New Leave Request', `${employee_name} applied for ${days}-day ${type} leave (${from} – ${to})`);
+    // Notify reporting manager; fallback to HR/admin
+    const empRows = await sql`SELECT reporting_manager_id FROM employees WHERE id=${employee_id}`.catch(() => []);
+    const mgr = (empRows as any[])[0]?.reporting_manager_id;
+    if (mgr) {
+      notifyEmployeeUser(mgr, 'leave_applied', 'New Leave Request', `${employee_name} applied for ${days}-day ${type} leave (${from} – ${to})`);
+    } else {
+      notifyAdminsAndHR('leave_applied', 'New Leave Request', `${employee_name} applied for ${days}-day ${type} leave (${from} – ${to})`);
+    }
     res.status(201).json(rows[0]);
   } catch (err) { res.status(500).json({ error: 'Server error' }); }
 });
 
+// Manager first-level approval
+app.patch('/api/leave/requests/:id/manager-approve', async (req, res) => {
+  try {
+    const { status, manager_id } = req.body;
+    if (status === 'rejected') {
+      const rows = await sql`UPDATE leave_requests SET manager_status='rejected', manager_id=${manager_id ?? null}, manager_approved_at=NOW(), status='rejected' WHERE id=${req.params.id} RETURNING *`;
+      if (!rows.length) return res.status(404).json({ error: 'Not found' });
+      const leave = rows[0] as any;
+      const from = new Date(leave.from_date).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' });
+      const to   = new Date(leave.to_date).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' });
+      notifyEmployeeUser(leave.employee_id, 'leave_rejected', 'Leave Rejected by Manager',
+        `Your ${leave.type} leave (${from} – ${to}, ${leave.days} day${leave.days > 1 ? 's' : ''}) was rejected by your manager.`);
+      return res.json(leave);
+    }
+    const rows = await sql`UPDATE leave_requests SET manager_status='approved', manager_id=${manager_id ?? null}, manager_approved_at=NOW() WHERE id=${req.params.id} RETURNING *`;
+    if (!rows.length) return res.status(404).json({ error: 'Not found' });
+    const leave = rows[0] as any;
+    const from = new Date(leave.from_date).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' });
+    const to   = new Date(leave.to_date).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' });
+    notifyAdminsAndHR('leave_applied', 'Leave Needs HR Approval',
+      `${leave.employee_name}'s ${leave.type} leave (${from} – ${to}) approved by manager — awaiting your final approval.`);
+    res.json(leave);
+  } catch (err) { res.status(500).json({ error: 'Server error' }); }
+});
+
+// HR final approval
 app.patch('/api/leave/requests/:id', async (req, res) => {
   try {
     const { status } = req.body;
@@ -216,8 +263,7 @@ app.patch('/api/leave/requests/:id', async (req, res) => {
     const to   = new Date(leave.to_date).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' });
     notifyEmployeeUser(leave.employee_id, status === 'approved' ? 'leave_approved' : 'leave_rejected',
       status === 'approved' ? 'Leave Approved' : 'Leave Rejected',
-      `Your ${leave.type} leave (${from} – ${to}, ${leave.days} day${leave.days > 1 ? 's' : ''}) has been ${status}.`
-    );
+      `Your ${leave.type} leave (${from} – ${to}, ${leave.days} day${leave.days > 1 ? 's' : ''}) has been ${status}.`);
     res.json(leave);
   } catch (err) { res.status(500).json({ error: 'Server error' }); }
 });

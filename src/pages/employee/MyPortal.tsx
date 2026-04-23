@@ -1,18 +1,27 @@
 import { useState, useEffect } from 'react';
-import { Clock, Calendar, DollarSign, User, CheckCircle, XCircle, AlertCircle, Plus, X, Target, FileText, Lock, Trash2, Save } from 'lucide-react';
+import { Clock, Calendar, DollarSign, User, CheckCircle, XCircle, AlertCircle, Plus, X, Target, FileText, Lock, Trash2, Save, Users } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
 import { api } from '../../services/api';
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Cell } from 'recharts';
 import { GoalCard, GOAL_STATUSES, GOAL_STATUS_CONFIG } from '../Performance';
 import type { GoalStatus } from '../Performance';
 
-const tabs = [
+const baseTabs = [
   { key: 'overview',     label: 'Overview',     icon: User },
   { key: 'attendance',   label: 'Attendance',   icon: Clock },
   { key: 'leave',        label: 'My Leaves',    icon: Calendar },
   { key: 'payslip',      label: 'Pay Slip',     icon: DollarSign },
   { key: 'performance',  label: 'Performance',  icon: Target },
 ];
+
+const SCORE_CATEGORIES = [
+  { key: 'productivity',        label: 'Productivity' },
+  { key: 'quality',             label: 'Quality of Work' },
+  { key: 'teamwork',            label: 'Teamwork' },
+  { key: 'attendance_score',    label: 'Attendance' },
+  { key: 'initiative',          label: 'Initiative' },
+  { key: 'client_satisfaction', label: 'Client Satisfaction' },
+] as const;
 
 const MONTHS_SHORT = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
 const PERF_COLS = ['Prod.', 'Quality', 'Teamwork', 'Attend.', 'Initiative', 'Client Sat.'];
@@ -113,6 +122,18 @@ export default function MyPortal() {
   // Self-status edits: key = "year-month", value = array of employee_status strings
   const [selfStatusEdits, setSelfStatusEdits] = useState<Record<string, string[]>>({});
   const [savingSelfStatus, setSavingSelfStatus] = useState<Record<string, boolean>>({});
+
+  // My Team state (shown when this employee is a reporting manager for others)
+  const [teamMembers, setTeamMembers] = useState<any[]>([]);
+  const [teamPendingLeaves, setTeamPendingLeaves] = useState<any[]>([]);
+  const [teamPerf, setTeamPerf] = useState<Record<string, any[]>>({});
+  const [approvingLeave, setApprovingLeave] = useState<Record<string, boolean>>({});
+  const [showTeamReview, setShowTeamReview] = useState<any | null>(null); // employee record
+  const [teamReviewScores, setTeamReviewScores] = useState<Record<string, number>>({
+    productivity: 75, quality: 75, teamwork: 75, attendance_score: 75, initiative: 75, client_satisfaction: 75,
+  });
+  const [teamReviewComment, setTeamReviewComment] = useState('');
+  const [savingTeamReview, setSavingTeamReview] = useState(false);
 
   const empRef = user?.employee_id_ref;
   const now = new Date();
@@ -319,6 +340,69 @@ export default function MyPortal() {
     const rec = monthlyPerf.find(r => r.month === idx + 1);
     return { month: m, score: rec ? rec.overall_score : null };
   });
+
+  // Load team data once empDbId is known
+  useEffect(() => {
+    if (!empDbId) return;
+    api.getTeamMembers(empDbId).then(members => {
+      setTeamMembers(members);
+      if (members.length === 0) return;
+      api.getLeaveRequests({ reporting_manager_id: empDbId }).then(leavs =>
+        setTeamPendingLeaves(leavs.filter((l: any) => l.manager_status === 'pending'))
+      );
+      members.forEach((m: any) => {
+        api.getMonthlyPerformance(m.id, currentYear).then(perf =>
+          setTeamPerf(prev => ({ ...prev, [m.id]: perf }))
+        );
+      });
+    });
+  }, [empDbId, currentYear]);
+
+  const tabs = [
+    ...baseTabs,
+    ...(teamMembers.length > 0 ? [{ key: 'myteam', label: 'My Team', icon: Users }] : []),
+  ];
+
+  const handleManagerApproveLeave = async (leaveId: string, status: 'approved' | 'rejected') => {
+    setApprovingLeave(prev => ({ ...prev, [leaveId]: true }));
+    try {
+      await api.managerApproveLeave(leaveId, { status, manager_id: empDbId });
+      setTeamPendingLeaves(prev => prev.filter(l => l.id !== leaveId));
+    } catch { /* ignore */ } finally {
+      setApprovingLeave(prev => ({ ...prev, [leaveId]: false }));
+    }
+  };
+
+  const handleSaveTeamReview = async () => {
+    if (!showTeamReview || !empDbId) return;
+    setSavingTeamReview(true);
+    try {
+      const overall = Math.round(Object.values(teamReviewScores).reduce((a, b) => a + b, 0) / SCORE_CATEGORIES.length);
+      await api.saveMonthlyPerformance({
+        employee_id: showTeamReview.id,
+        reviewer_id: empDbId,
+        reviewer_name: user?.name,
+        month: currentMonth,
+        year: currentYear,
+        productivity: teamReviewScores.productivity,
+        quality: teamReviewScores.quality,
+        teamwork: teamReviewScores.teamwork,
+        attendance_score: teamReviewScores.attendance_score,
+        initiative: teamReviewScores.initiative,
+        client_satisfaction: teamReviewScores.client_satisfaction,
+        overall_score: overall,
+        comments: teamReviewComment,
+      });
+      api.getMonthlyPerformance(showTeamReview.id, currentYear).then(perf =>
+        setTeamPerf(prev => ({ ...prev, [showTeamReview.id]: perf }))
+      );
+      setShowTeamReview(null);
+      setTeamReviewComment('');
+      setTeamReviewScores({ productivity: 75, quality: 75, teamwork: 75, attendance_score: 75, initiative: 75, client_satisfaction: 75 });
+    } catch { /* ignore */ } finally {
+      setSavingTeamReview(false);
+    }
+  };
 
   return (
     <div className="space-y-5">
@@ -743,6 +827,181 @@ export default function MyPortal() {
               <p className="text-xs text-gray-300 mt-1">Your manager will open the appraisal window when it's time</p>
             </div>
           )}
+        </div>
+      )}
+
+      {/* ── My Team ── */}
+      {tab === 'myteam' && (
+        <div className="space-y-5">
+
+          {/* Pending leave approvals */}
+          <div className="bg-white rounded-2xl border border-gray-100 shadow-sm overflow-hidden">
+            <div className="px-5 py-4 border-b border-gray-100 flex items-center justify-between">
+              <h3 className="font-bold text-sm flex items-center gap-2" style={{ color: '#192250' }}>
+                <Calendar size={15} style={{ color: '#EE2770' }} /> Pending Leave Requests
+              </h3>
+              {teamPendingLeaves.length > 0 && (
+                <span className="text-xs font-bold px-2 py-0.5 rounded-full" style={{ background: '#fef3c7', color: '#92400e' }}>
+                  {teamPendingLeaves.length} pending
+                </span>
+              )}
+            </div>
+            {teamPendingLeaves.length === 0 ? (
+              <p className="text-center text-gray-400 text-sm py-10">No pending leave requests from your team.</p>
+            ) : (
+              <div className="divide-y divide-gray-50">
+                {teamPendingLeaves.map(l => (
+                  <div key={l.id} className="flex items-center justify-between px-5 py-4">
+                    <div className="flex items-center gap-3">
+                      <div className="w-9 h-9 rounded-xl flex items-center justify-center text-sm font-bold"
+                        style={{ background: 'rgba(25,34,80,0.08)', color: '#192250' }}>
+                        {l.employee_name?.split(' ').map((n: string) => n[0]).join('').slice(0, 2)}
+                      </div>
+                      <div>
+                        <p className="text-sm font-semibold text-gray-800">{l.employee_name}</p>
+                        <p className="text-xs text-gray-400 mt-0.5 capitalize">
+                          {l.type} leave · {l.days}d ·{' '}
+                          {new Date(l.from_date).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' })}
+                          {l.from_date !== l.to_date && ` – ${new Date(l.to_date).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' })}`}
+                        </p>
+                        {l.reason && <p className="text-xs text-gray-400 mt-0.5 italic">"{l.reason}"</p>}
+                      </div>
+                    </div>
+                    <div className="flex gap-2">
+                      <button
+                        onClick={() => handleManagerApproveLeave(l.id, 'approved')}
+                        disabled={approvingLeave[l.id]}
+                        className="px-3 py-1.5 text-xs font-semibold rounded-lg disabled:opacity-50 transition-colors"
+                        style={{ background: '#dcfce7', color: '#15803d' }}>
+                        {approvingLeave[l.id] ? '…' : 'Approve'}
+                      </button>
+                      <button
+                        onClick={() => handleManagerApproveLeave(l.id, 'rejected')}
+                        disabled={approvingLeave[l.id]}
+                        className="px-3 py-1.5 text-xs font-semibold rounded-lg disabled:opacity-50 transition-colors"
+                        style={{ background: '#fee2e2', color: '#dc2626' }}>
+                        {approvingLeave[l.id] ? '…' : 'Reject'}
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+
+          {/* Team members + performance */}
+          <div className="bg-white rounded-2xl border border-gray-100 shadow-sm overflow-hidden">
+            <div className="px-5 py-4 border-b border-gray-100">
+              <h3 className="font-bold text-sm flex items-center gap-2" style={{ color: '#192250' }}>
+                <Users size={15} style={{ color: '#EE2770' }} /> Team Members
+              </h3>
+            </div>
+            <div className="divide-y divide-gray-50">
+              {teamMembers.map(member => {
+                const perf = teamPerf[member.id] ?? [];
+                const latest = perf.length ? perf.reduce((a: any, b: any) => (a.month > b.month ? a : b)) : null;
+                return (
+                  <div key={member.id} className="flex items-center justify-between px-5 py-4">
+                    <div className="flex items-center gap-3">
+                      <div className="w-10 h-10 rounded-xl flex items-center justify-center text-sm font-bold"
+                        style={{ background: 'rgba(25,34,80,0.08)', color: '#192250' }}>
+                        {member.name?.split(' ').map((n: string) => n[0]).join('').slice(0, 2)}
+                      </div>
+                      <div>
+                        <p className="text-sm font-semibold text-gray-800">{member.name}</p>
+                        <p className="text-xs text-gray-400 mt-0.5">{member.designation} · {member.department}</p>
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-4">
+                      {latest ? (
+                        <div className="text-center">
+                          <p className="text-lg font-black" style={{ color: perfColor(latest.overall_score) }}>
+                            {latest.overall_score}
+                          </p>
+                          <p className="text-xs text-gray-400">
+                            {MONTHS_SHORT[latest.month - 1]} score
+                          </p>
+                        </div>
+                      ) : (
+                        <p className="text-xs text-gray-300">No review yet</p>
+                      )}
+                      <button
+                        onClick={() => {
+                          setShowTeamReview(member);
+                          setTeamReviewScores({ productivity: 75, quality: 75, teamwork: 75, attendance_score: 75, initiative: 75, client_satisfaction: 75 });
+                          setTeamReviewComment('');
+                        }}
+                        className="px-3 py-1.5 text-xs font-semibold rounded-lg transition-colors"
+                        style={{ background: 'rgba(25,34,80,0.07)', color: '#192250' }}>
+                        + Review
+                      </button>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Team Review Modal */}
+      {showTeamReview && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 backdrop-blur-sm p-4">
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-lg overflow-hidden">
+            <div className="px-6 py-5 text-white flex items-center justify-between"
+              style={{ background: 'linear-gradient(135deg, #192250 0%, #141c43 100%)' }}>
+              <div>
+                <h3 className="font-bold text-base">Monthly Review</h3>
+                <p className="text-sm mt-0.5" style={{ color: 'rgba(255,255,255,0.6)' }}>
+                  {showTeamReview.name} · {MONTHS_SHORT[currentMonth - 1]} {currentYear}
+                </p>
+              </div>
+              <button onClick={() => setShowTeamReview(null)}>
+                <X size={18} className="text-white/60 hover:text-white" />
+              </button>
+            </div>
+            <div className="p-6 space-y-4 max-h-[70vh] overflow-y-auto">
+              {SCORE_CATEGORIES.map(({ key, label }) => (
+                <div key={key}>
+                  <div className="flex justify-between mb-1.5">
+                    <label className="text-xs font-semibold text-gray-600">{label}</label>
+                    <span className="text-xs font-bold" style={{ color: perfColor(teamReviewScores[key]) }}>
+                      {teamReviewScores[key]}
+                    </span>
+                  </div>
+                  <input type="range" min={0} max={100}
+                    value={teamReviewScores[key]}
+                    onChange={e => setTeamReviewScores(s => ({ ...s, [key]: Number(e.target.value) }))}
+                    className="w-full h-1.5 rounded-full appearance-none cursor-pointer"
+                    style={{ accentColor: perfColor(teamReviewScores[key]) }}
+                  />
+                </div>
+              ))}
+              <div>
+                <label className="text-xs font-semibold text-gray-600 block mb-1.5">Overall Score</label>
+                <div className="text-2xl font-black" style={{ color: perfColor(Math.round(Object.values(teamReviewScores).reduce((a, b) => a + b, 0) / SCORE_CATEGORIES.length)) }}>
+                  {Math.round(Object.values(teamReviewScores).reduce((a, b) => a + b, 0) / SCORE_CATEGORIES.length)}
+                </div>
+              </div>
+              <div>
+                <label className="text-xs font-semibold text-gray-600 block mb-1.5">Comments (optional)</label>
+                <textarea value={teamReviewComment} onChange={e => setTeamReviewComment(e.target.value)}
+                  rows={3} placeholder="Add feedback for this team member..."
+                  className="w-full border border-gray-200 rounded-xl px-3 py-2.5 text-sm resize-none focus:outline-none focus:border-gray-300" />
+              </div>
+              <div className="flex gap-3 pt-2">
+                <button onClick={() => setShowTeamReview(null)}
+                  className="flex-1 py-2.5 border border-gray-200 rounded-xl text-sm font-semibold text-gray-600 hover:bg-gray-50">
+                  Cancel
+                </button>
+                <button onClick={handleSaveTeamReview} disabled={savingTeamReview}
+                  className="flex-1 py-2.5 text-white rounded-xl text-sm font-semibold disabled:opacity-60"
+                  style={{ background: 'linear-gradient(135deg, #192250 0%, #141c43 100%)' }}>
+                  {savingTeamReview ? 'Saving…' : 'Save Review'}
+                </button>
+              </div>
+            </div>
+          </div>
         </div>
       )}
     </div>
