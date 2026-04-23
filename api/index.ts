@@ -351,6 +351,20 @@ app.post('/api/performance/appraisal-goals/submit', async (req, res) => {
   } catch (err) { res.status(500).json({ error: 'Server error' }); }
 });
 
+app.patch('/api/performance/appraisal-goals/self-update', async (req, res) => {
+  try {
+    const { employee_id, year, month, employee_statuses } = req.body;
+    const existing = await sql`SELECT * FROM appraisal_goals WHERE employee_id=${employee_id} AND year=${year} AND month=${month}`;
+    if (!existing.length) return res.status(404).json({ error: 'Not found' });
+    const goals = [...((existing[0] as any).goals ?? [])];
+    for (const { index, employee_status } of (employee_statuses ?? [])) {
+      if (goals[index] !== undefined) goals[index] = { ...goals[index], employee_status };
+    }
+    const rows = await sql`UPDATE appraisal_goals SET goals=${JSON.stringify(goals)}, updated_at=NOW() WHERE employee_id=${employee_id} AND year=${year} AND month=${month} RETURNING *`;
+    res.json(rows[0]);
+  } catch (err) { res.status(500).json({ error: 'Server error' }); }
+});
+
 app.put('/api/performance/appraisal-goals/admin', async (req, res) => {
   try {
     const { employee_id, year, month, goals } = req.body;

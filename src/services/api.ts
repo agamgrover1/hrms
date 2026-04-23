@@ -100,6 +100,8 @@ export const api = {
     request<any>('/performance/appraisal-goals/submit', { method: 'POST', body: JSON.stringify(data) }),
   adminSaveAppraisalGoals: (data: { employee_id: string; year: number; month: number; goals: any[] }) =>
     request<any>('/performance/appraisal-goals/admin', { method: 'PUT', body: JSON.stringify(data) }),
+  selfUpdateGoalStatuses: (data: { employee_id: string; year: number; month: number; employee_statuses: { index: number; employee_status: string }[] }) =>
+    request<any>('/performance/appraisal-goals/self-update', { method: 'PATCH', body: JSON.stringify(data) }),
 
   // Users
   getUsers: () => request<any[]>('/users'),

@@ -5,7 +5,7 @@ import {
 import {
   Target, TrendingUp, Award, Calendar, Plus, X, Trash2,
   ChevronDown, MessageSquare, Edit3, CheckCircle, AlertCircle, Info,
-  Lock, FileText, ChevronRight, Save, Circle, RefreshCw, Minus, Check
+  FileText, ChevronRight, Circle, RefreshCw, Minus, Check
 } from 'lucide-react';
 import { api } from '../services/api';
 import { useAuth } from '../context/AuthContext';
@@ -37,9 +37,16 @@ export const GOAL_STATUS_CONFIG: Record<GoalStatus, { label: string; color: stri
 
 // ─── Read-only goal card (used on both admin view + employee MyPortal) ───────
 export function GoalCard({ goal, index }: { goal: any; index: number }) {
-  const status: GoalStatus = goal.status ?? 'not_started';
-  const cfg = GOAL_STATUS_CONFIG[status];
-  const Icon = cfg.icon;
+  const managerStatus: GoalStatus = goal.status ?? 'not_started';
+  const empStatus: GoalStatus    = goal.employee_status ?? 'not_started';
+  const managerCfg = GOAL_STATUS_CONFIG[managerStatus];
+  const empCfg     = GOAL_STATUS_CONFIG[empStatus];
+  const ManagerIcon = managerCfg.icon;
+  const EmpIcon     = empCfg.icon;
+
+  const hasEmployeeStatus = !!goal.employee_status && goal.employee_status !== 'not_started';
+  const hasManagerStatus  = !!goal.status && goal.status !== 'not_started';
+
   return (
     <div className="flex gap-3 p-4 rounded-xl border" style={{ borderColor: '#e2e4ed', background: '#fafbff' }}>
       <div className="w-6 h-6 rounded-full flex items-center justify-center text-xs font-bold flex-shrink-0 mt-0.5"
@@ -47,17 +54,30 @@ export function GoalCard({ goal, index }: { goal: any; index: number }) {
         {index + 1}
       </div>
       <div className="flex-1 min-w-0">
-        <div className="flex items-start justify-between gap-3 flex-wrap">
-          <p className="font-semibold text-sm" style={{ color: '#192250' }}>{goal.title}</p>
-          <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-xs font-semibold flex-shrink-0"
-            style={{ background: cfg.bg, color: cfg.color, border: `1px solid ${cfg.border}` }}>
-            <Icon size={11} /> {cfg.label}
-          </span>
-        </div>
+        <p className="font-semibold text-sm" style={{ color: '#192250' }}>{goal.title}</p>
         {goal.description && <p className="text-xs text-gray-500 mt-1">{goal.description}</p>}
         {goal.success_criteria && (
           <p className="text-xs text-gray-400 mt-1 italic">Target: {goal.success_criteria}</p>
         )}
+
+        {/* Status badges */}
+        {(hasEmployeeStatus || hasManagerStatus) && (
+          <div className="flex flex-wrap gap-2 mt-2.5">
+            {hasEmployeeStatus && (
+              <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-xs font-semibold"
+                style={{ background: empCfg.bg, color: empCfg.color, border: `1px solid ${empCfg.border}` }}>
+                <EmpIcon size={10} /> Self: {empCfg.label}
+              </span>
+            )}
+            {hasManagerStatus && (
+              <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-xs font-semibold"
+                style={{ background: managerCfg.bg, color: managerCfg.color, border: `1px solid ${managerCfg.border}` }}>
+                <ManagerIcon size={10} /> Manager: {managerCfg.label}
+              </span>
+            )}
+          </div>
+        )}
+
         {goal.reviewer_comment && (
           <div className="mt-2 px-3 py-2 rounded-lg text-xs" style={{ background: 'rgba(25,34,80,0.05)', color: '#374151' }}>
             <span className="font-semibold" style={{ color: '#192250' }}>Reviewer: </span>
@@ -401,9 +421,24 @@ function AdminGoalsModal({ record, onSave, onClose }: {
                 </button>
               </div>
 
-              {/* Status selector */}
+              {/* Employee self-status (read-only reference) */}
+              {g.employee_status && g.employee_status !== 'not_started' && (() => {
+                const empCfg = GOAL_STATUS_CONFIG[g.employee_status as GoalStatus];
+                const EmpIcon = empCfg?.icon;
+                return empCfg ? (
+                  <div className="px-4 pb-2">
+                    <p className="text-xs font-semibold uppercase tracking-wide mb-1.5" style={{ color: '#6b7280' }}>Employee Self-Assessment</p>
+                    <span className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold border"
+                      style={{ background: empCfg.bg, color: empCfg.color, borderColor: empCfg.border }}>
+                      <EmpIcon size={11} /> {empCfg.label}
+                    </span>
+                  </div>
+                ) : null;
+              })()}
+
+              {/* Manager status selector */}
               <div className="px-4 pb-3">
-                <p className="text-xs font-semibold uppercase tracking-wide mb-2" style={{ color: '#6b7280' }}>Goal Status</p>
+                <p className="text-xs font-semibold uppercase tracking-wide mb-2" style={{ color: '#6b7280' }}>Final Status (Manager)</p>
                 <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
                   {GOAL_STATUSES.map(s => {
                     const cfg = GOAL_STATUS_CONFIG[s];

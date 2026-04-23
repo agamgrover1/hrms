@@ -1,9 +1,10 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect } from 'react';
 import { Clock, Calendar, DollarSign, User, CheckCircle, XCircle, AlertCircle, Plus, X, Target, FileText, Lock, Trash2, Save } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
 import { api } from '../../services/api';
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Cell } from 'recharts';
-import { GoalCard } from '../Performance';
+import { GoalCard, GOAL_STATUSES, GOAL_STATUS_CONFIG } from '../Performance';
+import type { GoalStatus } from '../Performance';
 
 const tabs = [
   { key: 'overview',     label: 'Overview',     icon: User },
@@ -109,6 +110,10 @@ export default function MyPortal() {
   const [goalsError, setGoalsError] = useState('');
   const [empRecord, setEmpRecord] = useState<any | null>(null);
 
+  // Self-status edits: key = "year-month", value = array of employee_status strings
+  const [selfStatusEdits, setSelfStatusEdits] = useState<Record<string, string[]>>({});
+  const [savingSelfStatus, setSavingSelfStatus] = useState<Record<string, boolean>>({});
+
   const empRef = user?.employee_id_ref;
   const now = new Date();
   const currentYear = now.getFullYear();
@@ -209,6 +214,105 @@ export default function MyPortal() {
     } catch (e: any) {
       setGoalsError(e.message ?? 'Submit failed');
     } finally { setSubmittingGoals(false); }
+  };
+
+  const handleSaveSelfStatus = async (appraisal: any) => {
+    const key = `${appraisal.year}-${appraisal.month}`;
+    const statuses = selfStatusEdits[key];
+    if (!statuses || !empDbId) return;
+    setSavingSelfStatus(s => ({ ...s, [key]: true }));
+    try {
+      const employee_statuses = statuses.map((employee_status, index) => ({ index, employee_status }));
+      const updated = await api.selfUpdateGoalStatuses({
+        employee_id: empDbId,
+        year: appraisal.year,
+        month: appraisal.month,
+        employee_statuses,
+      });
+      setAllAppraisals(prev => prev.map(a =>
+        a.year === appraisal.year && a.month === appraisal.month ? updated : a
+      ));
+    } catch { /* ignore */ } finally {
+      setSavingSelfStatus(s => ({ ...s, [key]: false }));
+    }
+  };
+
+  const renderGoalSelfEditor = (appraisal: any) => {
+    const apKey = `${appraisal.year}-${appraisal.month}`;
+    const goals: any[] = appraisal.goals ?? [];
+    const statuses: GoalStatus[] = (selfStatusEdits[apKey] ?? goals.map((g: any) => g.employee_status ?? 'not_started')) as GoalStatus[];
+    const isSaving = savingSelfStatus[apKey] ?? false;
+    return (
+      <div className="space-y-3">
+        {goals.map((g: any, i: number) => {
+          const empStatus = statuses[i] ?? 'not_started';
+          const managerStatus: GoalStatus | null = g.status ?? null;
+          const managerCfg = managerStatus ? GOAL_STATUS_CONFIG[managerStatus] : null;
+          const ManagerIcon = managerCfg?.icon;
+          return (
+            <div key={i} className="border rounded-xl overflow-hidden" style={{ borderColor: '#e2e4ed', background: '#fafbff' }}>
+              <div className="flex gap-2.5 p-4 pb-3">
+                <div className="w-6 h-6 rounded-full flex items-center justify-center text-xs font-bold flex-shrink-0"
+                  style={{ background: 'rgba(238,39,112,0.12)', color: '#EE2770' }}>{i + 1}</div>
+                <div className="flex-1 min-w-0">
+                  <p className="font-semibold text-sm" style={{ color: '#192250' }}>{g.title}</p>
+                  {g.description && <p className="text-xs text-gray-500 mt-1">{g.description}</p>}
+                  {g.success_criteria && <p className="text-xs text-gray-400 mt-1 italic">Target: {g.success_criteria}</p>}
+                </div>
+              </div>
+              <div className="px-4 pb-3">
+                <p className="text-xs font-semibold uppercase tracking-wide mb-2" style={{ color: '#6b7280' }}>Your Progress</p>
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                  {GOAL_STATUSES.map(s => {
+                    const cfg = GOAL_STATUS_CONFIG[s];
+                    const Icon = cfg.icon;
+                    const active = empStatus === s;
+                    return (
+                      <button key={s}
+                        onClick={() => setSelfStatusEdits(prev => ({
+                          ...prev,
+                          [apKey]: statuses.map((x, j) => j === i ? s : x),
+                        }))}
+                        className="flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs font-semibold border transition-all"
+                        style={active
+                          ? { background: cfg.bg, color: cfg.color, borderColor: cfg.border }
+                          : { background: '#f9fafb', color: '#9ca3af', borderColor: '#e5e7eb' }}>
+                        <Icon size={11} /> {cfg.label}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+              {(managerCfg || g.reviewer_comment) && (
+                <div className="px-4 pb-4 space-y-2">
+                  {managerCfg && ManagerIcon && (
+                    <div className="flex items-center gap-2">
+                      <span className="text-xs text-gray-400 font-semibold">Manager:</span>
+                      <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-xs font-semibold"
+                        style={{ background: managerCfg.bg, color: managerCfg.color, border: `1px solid ${managerCfg.border}` }}>
+                        <ManagerIcon size={10} /> {managerCfg.label}
+                      </span>
+                    </div>
+                  )}
+                  {g.reviewer_comment && (
+                    <div className="px-3 py-2 rounded-lg text-xs" style={{ background: 'rgba(25,34,80,0.05)', color: '#374151' }}>
+                      <span className="font-semibold" style={{ color: '#192250' }}>Reviewer: </span>{g.reviewer_comment}
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          );
+        })}
+        <div className="flex justify-end pt-1">
+          <button onClick={() => handleSaveSelfStatus(appraisal)} disabled={isSaving}
+            className="flex items-center gap-2 px-5 py-2.5 text-white rounded-xl text-sm font-semibold disabled:opacity-60 shadow-sm"
+            style={{ background: 'linear-gradient(135deg, #192250 0%, #141c43 100%)' }}>
+            <Save size={14} /> {isSaving ? 'Saving…' : 'Save My Progress'}
+          </button>
+        </div>
+      </div>
+    );
   };
 
   const chartData = MONTHS_SHORT.map((m, idx) => {
@@ -522,11 +626,9 @@ export default function MyPortal() {
                   <div className="space-y-3">
                     <div className="flex items-center gap-2 p-3 rounded-xl text-sm" style={{ background: '#f0fdf4', color: '#15803d', border: '1px solid #bbf7d0' }}>
                       <CheckCircle size={15} />
-                      <span>Submitted on {new Date(currentAppraisal.submitted_at).toLocaleDateString('en-IN', { day: 'numeric', month: 'long', year: 'numeric' })}. Only admin can make changes.</span>
+                      <span>Submitted on {new Date(currentAppraisal.submitted_at).toLocaleDateString('en-IN', { day: 'numeric', month: 'long', year: 'numeric' })}. Update your self-assessment below — admin sets the final status.</span>
                     </div>
-                    {(currentAppraisal.goals ?? []).map((g: any, i: number) => (
-                      <GoalCard key={i} goal={g} index={i} />
-                    ))}
+                    {renderGoalSelfEditor(currentAppraisal)}
                   </div>
                 ) : (
                   <div className="space-y-4">
@@ -621,10 +723,11 @@ export default function MyPortal() {
                         </span>
                       )}
                     </summary>
-                    <div className="px-5 pb-4 pt-2 space-y-3">
-                      {(appraisal.goals ?? []).map((g: any, i: number) => (
-                        <GoalCard key={i} goal={g} index={i} />
-                      ))}
+                    <div className="px-5 pb-4 pt-2">
+                      {appraisal.submitted
+                        ? renderGoalSelfEditor(appraisal)
+                        : <div className="space-y-3">{(appraisal.goals ?? []).map((g: any, i: number) => <GoalCard key={i} goal={g} index={i} />)}</div>
+                      }
                     </div>
                   </details>
                 ))}
