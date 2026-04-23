@@ -153,6 +153,11 @@ export default function MyPortal() {
   const [teamPerf, setTeamPerf] = useState<Record<string, any[]>>({});
   const [approvingLeave, setApprovingLeave] = useState<Record<string, boolean>>({});
   const [rejectLeaveTarget, setRejectLeaveTarget] = useState<string | null>(null);
+  // Team member leave viewer
+  const [viewLeavesFor, setViewLeavesFor] = useState<any | null>(null); // employee record
+  const [teamMemberLeaves, setTeamMemberLeaves] = useState<any[]>([]);
+  const [teamMemberBalance, setTeamMemberBalance] = useState<any | null>(null);
+  const [loadingMemberLeaves, setLoadingMemberLeaves] = useState(false);
   const [showTeamReview, setShowTeamReview] = useState<any | null>(null); // employee record
   const [teamReviewScores, setTeamReviewScores] = useState<Record<string, number>>({
     productivity: 75, quality: 75, teamwork: 75, attendance_score: 75, initiative: 75, client_satisfaction: 75,
@@ -387,6 +392,22 @@ export default function MyPortal() {
     ...baseTabs,
     ...(teamMembers.length > 0 ? [{ key: 'myteam', label: 'My Team', icon: Users }] : []),
   ];
+
+  const handleViewMemberLeaves = async (member: any) => {
+    if (viewLeavesFor?.id === member.id) { setViewLeavesFor(null); return; }
+    setViewLeavesFor(member);
+    setLoadingMemberLeaves(true);
+    try {
+      const [leaves, bal] = await Promise.all([
+        api.getLeaveRequests({ employee_id: member.id }),
+        api.getLeaveBalance(member.id).catch(() => null),
+      ]);
+      setTeamMemberLeaves(leaves);
+      setTeamMemberBalance(bal);
+    } finally {
+      setLoadingMemberLeaves(false);
+    }
+  };
 
   const handleManagerApproveLeave = async (leaveId: string, status: 'approved' | 'rejected', rejection_reason?: string) => {
     setApprovingLeave(prev => ({ ...prev, [leaveId]: true }));
@@ -1027,42 +1048,173 @@ export default function MyPortal() {
               {teamMembers.map(member => {
                 const perf = teamPerf[member.id] ?? [];
                 const latest = perf.length ? perf.reduce((a: any, b: any) => (a.month > b.month ? a : b)) : null;
+                const isViewingLeaves = viewLeavesFor?.id === member.id;
                 return (
-                  <div key={member.id} className="flex items-center justify-between px-5 py-4">
-                    <div className="flex items-center gap-3">
-                      <div className="w-10 h-10 rounded-xl flex items-center justify-center text-sm font-bold"
-                        style={{ background: 'rgba(25,34,80,0.08)', color: '#192250' }}>
-                        {member.name?.split(' ').map((n: string) => n[0]).join('').slice(0, 2)}
-                      </div>
-                      <div>
-                        <p className="text-sm font-semibold text-gray-800">{member.name}</p>
-                        <p className="text-xs text-gray-400 mt-0.5">{member.designation} · {member.department}</p>
-                      </div>
-                    </div>
-                    <div className="flex items-center gap-4">
-                      {latest ? (
-                        <div className="text-center">
-                          <p className="text-lg font-black" style={{ color: perfColor(latest.overall_score) }}>
-                            {latest.overall_score}
-                          </p>
-                          <p className="text-xs text-gray-400">
-                            {MONTHS_SHORT[latest.month - 1]} score
-                          </p>
+                  <div key={member.id}>
+                    <div className="flex items-center justify-between px-5 py-4">
+                      <div className="flex items-center gap-3">
+                        <div className="w-10 h-10 rounded-xl flex items-center justify-center text-sm font-bold"
+                          style={{ background: 'rgba(25,34,80,0.08)', color: '#192250' }}>
+                          {member.name?.split(' ').map((n: string) => n[0]).join('').slice(0, 2)}
                         </div>
-                      ) : (
-                        <p className="text-xs text-gray-300">No review yet</p>
-                      )}
-                      <button
-                        onClick={() => {
-                          setShowTeamReview(member);
-                          setTeamReviewScores({ productivity: 75, quality: 75, teamwork: 75, attendance_score: 75, initiative: 75, client_satisfaction: 75 });
-                          setTeamReviewComment('');
-                        }}
-                        className="px-3 py-1.5 text-xs font-semibold rounded-lg transition-colors"
-                        style={{ background: 'rgba(25,34,80,0.07)', color: '#192250' }}>
-                        + Review
-                      </button>
+                        <div>
+                          <p className="text-sm font-semibold text-gray-800">{member.name}</p>
+                          <p className="text-xs text-gray-400 mt-0.5">{member.designation} · {member.department}</p>
+                        </div>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        {latest ? (
+                          <div className="text-center mr-2">
+                            <p className="text-lg font-black" style={{ color: perfColor(latest.overall_score) }}>
+                              {latest.overall_score}
+                            </p>
+                            <p className="text-xs text-gray-400">{MONTHS_SHORT[latest.month - 1]} score</p>
+                          </div>
+                        ) : (
+                          <p className="text-xs text-gray-300 mr-2">No review yet</p>
+                        )}
+                        <button
+                          onClick={() => handleViewMemberLeaves(member)}
+                          className="px-3 py-1.5 text-xs font-semibold rounded-lg transition-colors"
+                          style={isViewingLeaves
+                            ? { background: '#EE2770', color: '#fff' }
+                            : { background: 'rgba(238,39,112,0.08)', color: '#EE2770' }}>
+                          {isViewingLeaves ? 'Hide Leaves' : 'View Leaves'}
+                        </button>
+                        <button
+                          onClick={() => {
+                            setShowTeamReview(member);
+                            setTeamReviewScores({ productivity: 75, quality: 75, teamwork: 75, attendance_score: 75, initiative: 75, client_satisfaction: 75 });
+                            setTeamReviewComment('');
+                          }}
+                          className="px-3 py-1.5 text-xs font-semibold rounded-lg transition-colors"
+                          style={{ background: 'rgba(25,34,80,0.07)', color: '#192250' }}>
+                          + Review
+                        </button>
+                      </div>
                     </div>
+
+                    {/* Expanded leave view for this team member */}
+                    {isViewingLeaves && (
+                      <div className="border-t border-gray-100 bg-gray-50/60 px-5 py-4">
+                        {loadingMemberLeaves ? (
+                          <div className="flex items-center gap-2 text-sm text-gray-400 py-4">
+                            <div className="w-4 h-4 border-2 border-gray-200 border-t-primary-400 rounded-full animate-spin" />
+                            Loading leaves…
+                          </div>
+                        ) : (
+                          <>
+                            {/* Balance summary */}
+                            {teamMemberBalance && (
+                              <div className="flex flex-wrap gap-2 mb-4">
+                                {teamMemberBalance.on_probation ? (
+                                  <>
+                                    <span className="inline-flex items-center gap-1.5 text-xs font-semibold px-3 py-1.5 rounded-lg bg-amber-100 text-amber-700">
+                                      On Probation · {teamMemberBalance.probation_short_remaining ?? 0} credits left
+                                    </span>
+                                  </>
+                                ) : (
+                                  <>
+                                    <span className="inline-flex items-center gap-1.5 text-xs font-semibold px-3 py-1.5 rounded-lg bg-blue-100 text-blue-700">
+                                      Full Day: {teamMemberBalance.full_day ?? 0}
+                                    </span>
+                                    <span className="inline-flex items-center gap-1.5 text-xs font-semibold px-3 py-1.5 rounded-lg bg-purple-100 text-purple-700">
+                                      Short/Half: {teamMemberBalance.short_leave ?? 0} credits
+                                    </span>
+                                    <span className="inline-flex items-center gap-1.5 text-xs font-semibold px-3 py-1.5 rounded-lg bg-green-100 text-green-700">
+                                      Confirmed
+                                    </span>
+                                  </>
+                                )}
+                              </div>
+                            )}
+
+                            {/* Leave history table */}
+                            {teamMemberLeaves.length === 0 ? (
+                              <p className="text-sm text-gray-400 py-2">No leave history found.</p>
+                            ) : (
+                              <div className="overflow-x-auto rounded-xl border border-gray-100 bg-white">
+                                <table className="w-full text-sm">
+                                  <thead>
+                                    <tr className="bg-gray-50 border-b border-gray-100">
+                                      {['Type', 'Duration', 'Days', 'Reason', 'Applied On', 'Status', 'Action Trail'].map(h => (
+                                        <th key={h} className="text-left text-xs font-semibold text-gray-500 px-3 py-2.5 uppercase tracking-wide whitespace-nowrap">{h}</th>
+                                      ))}
+                                    </tr>
+                                  </thead>
+                                  <tbody>
+                                    {teamMemberLeaves.map(l => {
+                                      const statusColors: Record<string, string> = {
+                                        approved: 'bg-green-50 text-green-700 border-green-200',
+                                        rejected: 'bg-red-50 text-red-600 border-red-200',
+                                        pending: 'bg-amber-50 text-amber-600 border-amber-200',
+                                      };
+                                      const appliedAt = l.created_at ? new Date(l.created_at) : null;
+                                      const appliedStr = appliedAt
+                                        ? appliedAt.toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' })
+                                          + ', ' + appliedAt.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', hour12: true })
+                                        : '—';
+                                      return (
+                                        <tr key={l.id} className="border-b border-gray-50 last:border-0">
+                                          <td className="px-3 py-2.5 capitalize text-gray-700 font-medium">{l.type.replace('_', ' ')}</td>
+                                          <td className="px-3 py-2.5 text-gray-600 whitespace-nowrap">
+                                            {new Date(l.from_date).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' })}
+                                            {l.from_date !== l.to_date && ` – ${new Date(l.to_date).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' })}`}
+                                          </td>
+                                          <td className="px-3 py-2.5 text-gray-700 font-medium">{l.days}d</td>
+                                          <td className="px-3 py-2.5 text-gray-500 max-w-[140px] truncate">{l.reason}</td>
+                                          <td className="px-3 py-2.5 text-xs text-gray-400 whitespace-nowrap">{appliedStr}</td>
+                                          <td className="px-3 py-2.5">
+                                            <span className={`text-xs px-2 py-1 rounded-full border font-medium ${statusColors[l.status] ?? 'bg-gray-50 text-gray-500 border-gray-200'}`}>
+                                              {l.status.charAt(0).toUpperCase() + l.status.slice(1)}
+                                            </span>
+                                          </td>
+                                          <td className="px-3 py-2.5 min-w-[180px]">
+                                            <div className="space-y-1">
+                                              {(l.manager_status === 'approved' || l.manager_status === 'rejected') && (
+                                                <div className="text-xs leading-tight">
+                                                  <span className={`font-semibold ${l.manager_status === 'approved' ? 'text-green-600' : 'text-red-500'}`}>
+                                                    {l.manager_status === 'approved' ? 'Mgr Approved' : 'Mgr Rejected'}
+                                                  </span>
+                                                  {l.manager_name && <span className="text-gray-500"> · {l.manager_name}</span>}
+                                                  {l.manager_approved_at && (
+                                                    <span className="text-gray-400 block">
+                                                      {new Date(l.manager_approved_at).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' })}
+                                                      {', '}{new Date(l.manager_approved_at).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', hour12: true })}
+                                                    </span>
+                                                  )}
+                                                  {l.manager_rejection_reason && <span className="text-red-400 italic block">"{l.manager_rejection_reason}"</span>}
+                                                </div>
+                                              )}
+                                              {l.hr_actioned_at && (
+                                                <div className="text-xs leading-tight">
+                                                  <span className={`font-semibold ${l.status === 'approved' ? 'text-green-600' : 'text-red-500'}`}>
+                                                    {l.status === 'approved' ? 'HR Approved' : 'HR Rejected'}
+                                                  </span>
+                                                  {l.hr_actioner_name && <span className="text-gray-500"> · {l.hr_actioner_name}</span>}
+                                                  <span className="text-gray-400 block">
+                                                    {new Date(l.hr_actioned_at).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' })}
+                                                    {', '}{new Date(l.hr_actioned_at).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', hour12: true })}
+                                                  </span>
+                                                  {l.rejection_reason && <span className="text-red-400 italic block">"{l.rejection_reason}"</span>}
+                                                </div>
+                                              )}
+                                              {!l.manager_approved_at && !l.hr_actioned_at && (
+                                                <span className="text-xs text-gray-400">Pending</span>
+                                              )}
+                                            </div>
+                                          </td>
+                                        </tr>
+                                      );
+                                    })}
+                                  </tbody>
+                                </table>
+                              </div>
+                            )}
+                          </>
+                        )}
+                      </div>
+                    )}
                   </div>
                 );
               })}

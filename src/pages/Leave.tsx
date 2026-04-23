@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { Plus, Check, X, Clock, Calendar, User } from 'lucide-react';
+import { Plus, Check, X, Clock, Calendar, User, ChevronDown } from 'lucide-react';
 import { api } from '../services/api';
 import { useAuth } from '../context/AuthContext';
 
@@ -37,7 +37,6 @@ function LeaveStatusBadge({ req }: { req: any }) {
       </span>
     );
   }
-  // status = pending
   if (req.manager_status === 'approved') {
     return (
       <span className="inline-flex items-center gap-1 text-xs px-2.5 py-1 rounded-full border font-medium bg-blue-50 text-blue-600 border-blue-200">
@@ -180,23 +179,94 @@ function ApplyModal({ onClose, onSubmit }: { onClose: () => void; onSubmit: (dat
   );
 }
 
+function EmployeeLeaveBalance({ balance }: { balance: any }) {
+  if (!balance) return null;
+  return (
+    <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-4">
+      {balance.on_probation ? (
+        <>
+          <div className="bg-amber-50 border border-amber-200 rounded-xl p-4">
+            <p className="text-xs font-semibold text-amber-600 uppercase tracking-wide">Status</p>
+            <p className="text-lg font-bold text-amber-700 mt-1">On Probation</p>
+            {balance.probation_end_date && (
+              <p className="text-xs text-amber-500 mt-0.5">
+                Ends {new Date(balance.probation_end_date).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' })}
+              </p>
+            )}
+          </div>
+          <div className="bg-amber-50 border border-amber-200 rounded-xl p-4">
+            <p className="text-xs font-semibold text-amber-600 uppercase tracking-wide">Probation Credits</p>
+            <p className="text-2xl font-bold text-amber-700 mt-1">{balance.probation_short_remaining ?? 0}</p>
+            <p className="text-xs text-amber-500 mt-0.5">remaining</p>
+          </div>
+          <div className="bg-gray-50 border border-gray-200 rounded-xl p-4 opacity-50">
+            <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide">Full Day</p>
+            <p className="text-2xl font-bold text-gray-400 mt-1">—</p>
+            <p className="text-xs text-gray-400 mt-0.5">post-probation</p>
+          </div>
+        </>
+      ) : (
+        <>
+          <div className="bg-blue-50 border border-blue-200 rounded-xl p-4">
+            <p className="text-xs font-semibold text-blue-600 uppercase tracking-wide">Full Day</p>
+            <p className="text-2xl font-bold text-blue-700 mt-1">{balance.full_day ?? 0}</p>
+            <p className="text-xs text-blue-500 mt-0.5">days available</p>
+          </div>
+          <div className="bg-purple-50 border border-purple-200 rounded-xl p-4">
+            <p className="text-xs font-semibold text-purple-600 uppercase tracking-wide">Short / Half Day</p>
+            <p className="text-2xl font-bold text-purple-700 mt-1">{balance.short_leave ?? 0}</p>
+            <p className="text-xs text-purple-500 mt-0.5">credits this month</p>
+          </div>
+          <div className="bg-green-50 border border-green-200 rounded-xl p-4">
+            <p className="text-xs font-semibold text-green-600 uppercase tracking-wide">Status</p>
+            <p className="text-lg font-bold text-green-700 mt-1">Confirmed</p>
+            <p className="text-xs text-green-500 mt-0.5">probation complete</p>
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
 export default function Leave() {
   const { user } = useAuth();
   const [tab, setTab] = useState<'all' | 'pending' | 'approved' | 'rejected'>('all');
   const [showApply, setShowApply] = useState(false);
   const [rejectTarget, setRejectTarget] = useState<string | null>(null);
   const [requests, setRequests] = useState<any[]>([]);
-  const [balance, setBalance] = useState<any>({ casual: 0, sick: 0, earned: 0 });
+  const [balance, setBalance] = useState<any>(null);
   const [loading, setLoading] = useState(true);
 
-  const loadRequests = () => api.getLeaveRequests().then(setRequests);
+  // Employee filter
+  const [employees, setEmployees] = useState<any[]>([]);
+  const [selectedEmpId, setSelectedEmpId] = useState('');
+  const [empBalance, setEmpBalance] = useState<any>(null);
+  const [loadingEmpBal, setLoadingEmpBal] = useState(false);
+
+  const loadRequests = (empId?: string) =>
+    api.getLeaveRequests(empId ? { employee_id: empId } : undefined).then(setRequests);
 
   useEffect(() => {
     Promise.all([
+      api.getEmployees().then(emps => setEmployees(emps)),
       loadRequests(),
       api.getLeaveBalance('e5').then(setBalance).catch(() => {}),
     ]).finally(() => setLoading(false));
   }, []);
+
+  // When an employee is selected, reload leaves + balance for that employee
+  useEffect(() => {
+    if (!selectedEmpId) {
+      setEmpBalance(null);
+      loadRequests();
+      return;
+    }
+    setLoadingEmpBal(true);
+    Promise.all([
+      loadRequests(selectedEmpId),
+      api.getLeaveBalance(selectedEmpId).then(setEmpBalance).catch(() => setEmpBalance(null)),
+    ]).finally(() => setLoadingEmpBal(false));
+  }, [selectedEmpId]);
 
   const displayed = tab === 'all' ? requests : requests.filter(r => r.status === tab);
 
@@ -220,26 +290,28 @@ export default function Leave() {
       employee_id: 'e5',
       employee_name: user?.name ?? 'HR Manager',
     });
-    await loadRequests();
+    await loadRequests(selectedEmpId || undefined);
   };
+
+  const selectedEmp = employees.find(e => e.id === selectedEmpId);
 
   return (
     <div className="space-y-5">
-      {/* Leave Balance */}
+      {/* Leave Balance (own) */}
       <div className="grid grid-cols-3 gap-4">
         <div className="bg-gradient-to-br from-blue-500 to-blue-400 rounded-xl p-5 text-white">
           <p className="text-white/70 text-sm font-medium">Full Day Leave</p>
-          <p className="text-4xl font-bold mt-2">{balance.full_day ?? 0}</p>
+          <p className="text-4xl font-bold mt-2">{balance?.full_day ?? 0}</p>
           <p className="text-white/60 text-xs mt-1">days (carry forward)</p>
         </div>
         <div className="bg-gradient-to-br from-purple-500 to-purple-400 rounded-xl p-5 text-white">
           <p className="text-white/70 text-sm font-medium">Short Leave / Half Day</p>
-          <p className="text-4xl font-bold mt-2">{balance.short_leave ?? 0}</p>
+          <p className="text-4xl font-bold mt-2">{balance?.short_leave ?? 0}</p>
           <p className="text-white/60 text-xs mt-1">credits this month</p>
         </div>
-        <div className={`rounded-xl p-5 text-white ${balance.on_probation ? 'bg-gradient-to-br from-amber-500 to-amber-400' : 'bg-gradient-to-br from-green-500 to-green-400'}`}>
-          <p className="text-white/70 text-sm font-medium">{balance.on_probation ? 'Probation Status' : 'Probation'}</p>
-          {balance.on_probation ? (
+        <div className={`rounded-xl p-5 text-white ${balance?.on_probation ? 'bg-gradient-to-br from-amber-500 to-amber-400' : 'bg-gradient-to-br from-green-500 to-green-400'}`}>
+          <p className="text-white/70 text-sm font-medium">{balance?.on_probation ? 'Probation Status' : 'Probation'}</p>
+          {balance?.on_probation ? (
             <>
               <p className="text-4xl font-bold mt-2">{balance.probation_short_remaining ?? 0}</p>
               <p className="text-white/60 text-xs mt-1">short leave credits left</p>
@@ -253,8 +325,25 @@ export default function Leave() {
         </div>
       </div>
 
-      {/* Toolbar */}
-      <div className="flex items-center justify-between">
+      {/* Employee filter + toolbar */}
+      <div className="flex flex-wrap items-center gap-3">
+        {/* Employee selector */}
+        <div className="relative">
+          <User size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 pointer-events-none" />
+          <select
+            value={selectedEmpId}
+            onChange={e => setSelectedEmpId(e.target.value)}
+            className="pl-8 pr-8 py-2.5 text-sm border border-gray-200 rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-primary-200 text-gray-700 appearance-none min-w-[200px]"
+          >
+            <option value="">All Employees</option>
+            {employees.map(e => (
+              <option key={e.id} value={e.id}>{e.name} ({e.employee_id})</option>
+            ))}
+          </select>
+          <ChevronDown size={13} className="absolute right-2.5 top-1/2 -translate-y-1/2 text-gray-400 pointer-events-none" />
+        </div>
+
+        {/* Status tabs */}
         <div className="flex gap-1 bg-gray-100 p-1 rounded-lg">
           {(['all', 'pending', 'approved', 'rejected'] as const).map(t => (
             <button key={t} onClick={() => setTab(t)}
@@ -268,11 +357,38 @@ export default function Leave() {
             </button>
           ))}
         </div>
-        <button onClick={() => setShowApply(true)}
-          className="flex items-center gap-2 px-4 py-2.5 bg-primary-500 hover:bg-primary-600 text-white text-sm font-medium rounded-lg transition-colors shadow-sm">
-          <Plus size={15} /> Apply Leave
-        </button>
+
+        <div className="ml-auto">
+          <button onClick={() => setShowApply(true)}
+            className="flex items-center gap-2 px-4 py-2.5 bg-primary-500 hover:bg-primary-600 text-white text-sm font-medium rounded-lg transition-colors shadow-sm">
+            <Plus size={15} /> Apply Leave
+          </button>
+        </div>
       </div>
+
+      {/* Selected employee balance card */}
+      {selectedEmpId && (
+        <div className="bg-white rounded-xl border border-gray-100 shadow-sm p-5">
+          <div className="flex items-center gap-2 mb-4">
+            <div className="w-8 h-8 rounded-full bg-primary-100 flex items-center justify-center text-primary-600 text-xs font-bold">
+              {selectedEmp?.name?.split(' ').map((n: string) => n[0]).join('').slice(0, 2)}
+            </div>
+            <div>
+              <p className="text-sm font-semibold text-gray-800">{selectedEmp?.name}</p>
+              <p className="text-xs text-gray-400">{selectedEmp?.designation} · {selectedEmp?.department}</p>
+            </div>
+            <span className="ml-auto text-xs text-gray-400">Leave Balance</span>
+          </div>
+          {loadingEmpBal ? (
+            <div className="flex items-center gap-2 text-sm text-gray-400 py-2">
+              <div className="w-4 h-4 border-2 border-gray-200 border-t-primary-400 rounded-full animate-spin" />
+              Loading balance…
+            </div>
+          ) : (
+            <EmployeeLeaveBalance balance={empBalance} />
+          )}
+        </div>
+      )}
 
       {/* Table */}
       <div className="bg-white rounded-xl border border-gray-100 shadow-sm overflow-hidden">
@@ -344,7 +460,9 @@ export default function Leave() {
           </div>
         )}
         {!loading && displayed.length === 0 && (
-          <div className="py-16 text-center text-gray-400 text-sm">No leave requests found.</div>
+          <div className="py-16 text-center text-gray-400 text-sm">
+            {selectedEmpId ? `No ${tab === 'all' ? '' : tab + ' '}leave requests for ${selectedEmp?.name}.` : 'No leave requests found.'}
+          </div>
         )}
       </div>
 
