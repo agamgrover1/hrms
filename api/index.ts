@@ -145,8 +145,20 @@ app.patch('/api/employees/:id/probation', async (req, res) => {
   try {
     await runStartupMigrations();
     const { probation_end_date } = req.body;
+
+    const empRows = await sql`SELECT join_date, probation_end_date FROM employees WHERE id=${req.params.id}`;
+    if (!empRows.length) return res.status(404).json({ error: 'Not found' });
+    const emp = empRows[0] as any;
+    const defaultEnd = emp.join_date
+      ? (() => { const d = new Date(emp.join_date); d.setMonth(d.getMonth() + 3); return d; })()
+      : null;
+    const effectiveEnd = emp.probation_end_date ? new Date(emp.probation_end_date) : defaultEnd;
+    const isConfirmed = effectiveEnd ? new Date() >= effectiveEnd : false;
+    if (isConfirmed && probation_end_date && new Date(probation_end_date) > new Date()) {
+      return res.status(400).json({ error: 'This employee has already completed probation and cannot be re-enrolled.' });
+    }
+
     const rows = await sql`UPDATE employees SET probation_end_date=${probation_end_date ?? null} WHERE id=${req.params.id} RETURNING *`;
-    if (!rows.length) return res.status(404).json({ error: 'Not found' });
     res.json(rows[0]);
   } catch (err: any) { res.status(500).json({ error: err.message || 'Server error' }); }
 });

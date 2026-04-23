@@ -171,24 +171,38 @@ function EmployeeDetail({ emp, onClose, onEdit, onDelete }: { emp: any; onClose:
                 {onProbation ? 'On Probation' : 'Confirmed'}
               </span>
             </div>
-            <label className="block text-xs text-gray-500 mb-1.5">Probation End Date</label>
-            <div className="flex gap-2">
-              <input
-                type="date"
-                value={probationEnd}
-                onChange={e => setProbationEnd(e.target.value)}
-                className="flex-1 text-sm border border-gray-200 rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-primary-200"
-              />
-              <button
-                onClick={handleSaveProbation}
-                disabled={savingProbation}
-                className="px-3 py-2 text-xs font-semibold text-white bg-primary-500 hover:bg-primary-600 rounded-lg disabled:opacity-60"
-              >
-                {savingProbation ? '…' : probationSaved ? '✓ Saved' : 'Save'}
-              </button>
-            </div>
-            <p className="text-xs text-gray-400 mt-1.5">Default: join date + 3 months. Override to end probation early or extend it.</p>
-            {probationError && <p className="text-xs text-red-500 mt-1.5">{probationError}</p>}
+            {onProbation ? (
+              <>
+                <label className="block text-xs text-gray-500 mb-1.5">Probation End Date</label>
+                <div className="flex gap-2">
+                  <input
+                    type="date"
+                    value={probationEnd}
+                    onChange={e => setProbationEnd(e.target.value)}
+                    className="flex-1 text-sm border border-gray-200 rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-primary-200"
+                  />
+                  <button
+                    onClick={handleSaveProbation}
+                    disabled={savingProbation}
+                    className="px-3 py-2 text-xs font-semibold text-white bg-primary-500 hover:bg-primary-600 rounded-lg disabled:opacity-60"
+                  >
+                    {savingProbation ? '…' : probationSaved ? '✓ Saved' : 'Save'}
+                  </button>
+                </div>
+                <p className="text-xs text-gray-400 mt-1.5">Set an earlier date to confirm the employee before 3 months.</p>
+                {probationError && <p className="text-xs text-red-500 mt-1.5">{probationError}</p>}
+              </>
+            ) : (
+              <div className="flex items-center gap-2 p-3 bg-green-50 rounded-lg">
+                <span className="text-green-500 text-base">✓</span>
+                <div>
+                  <p className="text-xs font-semibold text-green-700">Probation completed</p>
+                  <p className="text-xs text-green-600 mt-0.5">
+                    Confirmed on {effectiveEnd ? new Date(effectiveEnd).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' }) : '—'}
+                  </p>
+                </div>
+              </div>
+            )}
           </div>
 
           <div className="mt-4 p-4 border border-gray-100 rounded-xl">
