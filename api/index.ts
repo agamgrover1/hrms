@@ -266,12 +266,29 @@ app.patch('/api/leave/requests/:id', async (req, res) => {
     const rows = await sql`UPDATE leave_requests SET status=${status} WHERE id=${req.params.id} RETURNING *`;
     if (!rows.length) return res.status(404).json({ error: 'Not found' });
     const leave = rows[0] as any;
+    // Decrement leave balance when approved
+    if (status === 'approved') {
+      if (leave.type === 'casual') {
+        await sql`UPDATE leave_balances SET casual = GREATEST(0, casual - ${leave.days}) WHERE employee_id = ${leave.employee_id}`.catch(() => {});
+      } else if (leave.type === 'sick') {
+        await sql`UPDATE leave_balances SET sick = GREATEST(0, sick - ${leave.days}) WHERE employee_id = ${leave.employee_id}`.catch(() => {});
+      } else if (leave.type === 'earned') {
+        await sql`UPDATE leave_balances SET earned = GREATEST(0, earned - ${leave.days}) WHERE employee_id = ${leave.employee_id}`.catch(() => {});
+      }
+    }
     const from = new Date(leave.from_date).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' });
     const to   = new Date(leave.to_date).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' });
     notifyEmployeeUser(leave.employee_id, status === 'approved' ? 'leave_approved' : 'leave_rejected',
       status === 'approved' ? 'Leave Approved' : 'Leave Rejected',
       `Your ${leave.type} leave (${from} – ${to}, ${leave.days} day${leave.days > 1 ? 's' : ''}) has been ${status}.`);
     res.json(leave);
+  } catch (err) { res.status(500).json({ error: 'Server error' }); }
+});
+
+app.delete('/api/leave/requests/:id', async (req, res) => {
+  try {
+    await sql`DELETE FROM leave_requests WHERE id=${req.params.id}`;
+    res.json({ success: true });
   } catch (err) { res.status(500).json({ error: 'Server error' }); }
 });
 
