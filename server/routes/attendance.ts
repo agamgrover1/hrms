@@ -88,26 +88,25 @@ function deriveStatus(etStatus: string, inTime: string | null): string {
 export async function runBiometricSync(
   trigger: 'auto' | 'manual',
   triggeredBy?: string,
-  targetDate?: string
+  fromDate?: string,  // YYYY-MM-DD, defaults to today
+  toDate?: string     // YYYY-MM-DD, defaults to fromDate (single day)
 ): Promise<{ sync_id: string; records_updated: number; records_created: number; synced_at: string; date_range: string }> {
   const apiUrl = process.env.BIOMETRIC_API_URL;
-  const apiKey = process.env.BIOMETRIC_API_KEY; // base64 credential string (no "Basic " prefix stored)
+  const apiKey = process.env.BIOMETRIC_API_KEY;
   if (!apiUrl) throw new Error('BIOMETRIC_API_URL is not configured in .env');
 
-  const date = targetDate ?? new Date().toISOString().split('T')[0]; // YYYY-MM-DD
+  const today = new Date().toISOString().split('T')[0];
+  const from  = fromDate ?? today;
+  const to    = toDate   ?? from;
+  const dateRangeLabel = from === to ? from : `${from} to ${to}`;
 
-  // eTimeOffice expects DD/MM/YYYY (Indian date format)
-  const [yyyy, mm, dd] = date.split('-');
-  const etDate = `${dd}/${mm}/${yyyy}`;
-
-  const url = `${apiUrl}?Empcode=ALL&FromDate=${etDate}&ToDate=${etDate}`;
+  // eTimeOffice expects DD/MM/YYYY
+  const toEt = (d: string) => { const [y, m, dy] = d.split('-'); return `${dy}/${m}/${y}`; };
+  const url = `${apiUrl}?Empcode=ALL&FromDate=${toEt(from)}&ToDate=${toEt(to)}`;
   console.log(`[biometric] Fetching: ${url}`);
 
   const fetchRes = await fetch(url, {
-    headers: {
-      'Authorization': `Basic ${apiKey}`,
-      'Content-Type': 'application/json',
-    },
+    headers: { 'Authorization': `Basic ${apiKey}`, 'Content-Type': 'application/json' },
   });
 
   if (!fetchRes.ok) {
@@ -119,7 +118,7 @@ export async function runBiometricSync(
   if (body.Error === true) throw new Error(`eTimeOffice error: ${body.Msg ?? 'Unknown'}`);
 
   const records: any[] = body.InOutPunchData ?? [];
-  console.log(`[biometric] Got ${records.length} records from eTimeOffice for ${etDate}`);
+  console.log(`[biometric] Got ${records.length} records for ${dateRangeLabel}`);
 
   // Match on biometric_id if set, otherwise fall back to employee_id
   const empRows = await sql`SELECT id, employee_id, biometric_id FROM employees` as any[];
@@ -138,26 +137,31 @@ export async function runBiometricSync(
     if (!empCode) continue;
 
     const internalId = empMap.get(empCode);
-    if (!internalId) {
-      console.log(`[biometric] Unknown empcode: ${empCode} — skipping`);
-      continue;
+    if (!internalId) continue;
+
+    // Parse record's date from DateString (DD/MM/YYYY) → YYYY-MM-DD
+    const rawDs = String(rec.DateString ?? '').trim();
+    let recDate = today;
+    if (rawDs.includes('/')) {
+      const [rdd, rmm, ryyyy] = rawDs.split('/');
+      recDate = `${ryyyy}-${rmm}-${rdd}`;
     }
 
-    const inTime   = parseEtTime(rec.INTime);
-    const outTime  = parseEtTime(rec.OUTTime);
-    const status   = deriveStatus(rec.Status ?? 'A', inTime);
+    const inTime     = parseEtTime(rec.INTime);
+    const outTime    = parseEtTime(rec.OUTTime);
+    const status     = deriveStatus(rec.Status ?? 'A', inTime);
     const totalHours = rec.WorkTime ? parseEtWorkTime(rec.WorkTime) : (inTime && outTime ? (() => {
       const [ih, im] = inTime.split(':').map(Number);
       const [oh, om] = outTime.split(':').map(Number);
       return Math.round(((oh * 60 + om) - (ih * 60 + im)) / 6) / 10;
     })() : 0);
 
-    // Skip weekends with no clock-in (don't pollute existing weekend records)
-    if (status === 'weekend' && !inTime) continue;
+    // Skip weekends/holidays with no clock-in
+    if ((status === 'weekend' || status === 'holiday') && !inTime) continue;
 
     // Snapshot pre-sync state for rollback
     const existing = await sql`
-      SELECT * FROM attendance_records WHERE employee_id = ${internalId} AND date = ${date}
+      SELECT * FROM attendance_records WHERE employee_id = ${internalId} AND date = ${recDate}
     ` as any[];
     const hadRecord = existing.length > 0;
     const old = existing[0] ?? {};
@@ -165,15 +169,14 @@ export async function runBiometricSync(
     await sql`
       INSERT INTO attendance_sync_snapshot
         (sync_id, employee_id, date, had_record, status_before, check_in_before, check_out_before, total_hours_before)
-      VALUES (${syncId}, ${internalId}, ${date}, ${hadRecord},
+      VALUES (${syncId}, ${internalId}, ${recDate}, ${hadRecord},
               ${old.status ?? null}, ${old.check_in ?? null}, ${old.check_out ?? null}, ${old.total_hours ?? null})
     `;
 
-    // Upsert attendance record
     const result = await sql`
       INSERT INTO attendance_records
         (employee_id, date, check_in, check_out, status, total_hours, source, biometric_sync_id)
-      VALUES (${internalId}, ${date}, ${inTime}, ${outTime}, ${status}, ${totalHours}, 'biometric', ${syncId})
+      VALUES (${internalId}, ${recDate}, ${inTime}, ${outTime}, ${status}, ${totalHours}, 'biometric', ${syncId})
       ON CONFLICT (employee_id, date) DO UPDATE SET
         check_in          = EXCLUDED.check_in,
         check_out         = EXCLUDED.check_out,
@@ -188,15 +191,14 @@ export async function runBiometricSync(
     else recordsUpdated++;
   }
 
-  // Write sync log
   await sql`
     INSERT INTO attendance_sync_log
       (sync_id, triggered, triggered_by, date_range, records_updated, records_created, status)
-    VALUES (${syncId}, ${trigger}, ${triggeredBy ?? null}, ${date}, ${recordsUpdated}, ${recordsCreated}, 'success')
+    VALUES (${syncId}, ${trigger}, ${triggeredBy ?? null}, ${dateRangeLabel}, ${recordsUpdated}, ${recordsCreated}, 'success')
   `;
 
   console.log(`[biometric] Sync ${syncId} done — updated: ${recordsUpdated}, created: ${recordsCreated}`);
-  return { sync_id: syncId, records_updated: recordsUpdated, records_created: recordsCreated, synced_at: new Date().toISOString(), date_range: date };
+  return { sync_id: syncId, records_updated: recordsUpdated, records_created: recordsCreated, synced_at: new Date().toISOString(), date_range: dateRangeLabel };
 }
 
 // ── Existing routes ──────────────────────────────────────────────────────────
@@ -302,8 +304,8 @@ router.get('/biometric-sync/history', async (_req, res) => {
 
 router.post('/biometric-sync', async (req, res) => {
   try {
-    const { triggered_by, date } = req.body;
-    const result = await runBiometricSync('manual', triggered_by, date);
+    const { triggered_by, from_date, to_date } = req.body;
+    const result = await runBiometricSync('manual', triggered_by, from_date, to_date);
     res.json(result);
   } catch (err: any) {
     console.error('[biometric sync]', err);
@@ -311,7 +313,7 @@ router.post('/biometric-sync', async (req, res) => {
       await sql`
         INSERT INTO attendance_sync_log (sync_id, triggered, triggered_by, date_range, status, error_msg)
         VALUES (${randomUUID()}, 'manual', ${req.body.triggered_by ?? null},
-                ${req.body.date ?? new Date().toISOString().split('T')[0]}, 'failed', ${err.message})
+                ${req.body.from_date ?? new Date().toISOString().split('T')[0]}, 'failed', ${err.message})
       `;
     } catch {}
     res.status(500).json({ error: err.message ?? 'Biometric sync failed' });

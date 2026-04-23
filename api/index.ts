@@ -269,16 +269,18 @@ function parseEtWorkTimeV(wt: string|null): number {
   return Math.round((h+(m||0)/60)*10)/10;
 }
 
-async function runBiometricSyncV(trigger: string, triggeredBy?: string, targetDate?: string) {
+async function runBiometricSyncV(trigger: string, triggeredBy?: string, fromDate?: string, toDate?: string) {
   const apiUrl = process.env.BIOMETRIC_API_URL;
   const apiKey = process.env.BIOMETRIC_API_KEY;
   if (!apiUrl) throw new Error('BIOMETRIC_API_URL is not configured');
-  const date = targetDate ?? new Date().toISOString().split('T')[0];
-  const [yyyy,mm,dd] = date.split('-');
-  const etDate = `${dd}/${mm}/${yyyy}`; // eTimeOffice uses DD/MM/YYYY
+  const today = new Date().toISOString().split('T')[0];
+  const from  = fromDate ?? today;
+  const to    = toDate   ?? from;
+  const label = from === to ? from : `${from} to ${to}`;
+  const toEt  = (d: string) => { const [y,m,dy]=d.split('-'); return `${dy}/${m}/${y}`; };
 
   const fetchRes = await fetch(
-    `${apiUrl}?Empcode=ALL&FromDate=${etDate}&ToDate=${etDate}`,
+    `${apiUrl}?Empcode=ALL&FromDate=${toEt(from)}&ToDate=${toEt(to)}`,
     { headers: { 'Authorization': `Basic ${apiKey}`, 'Content-Type': 'application/json' } }
   );
   if (!fetchRes.ok) throw new Error(`eTimeOffice API ${fetchRes.status}`);
@@ -292,7 +294,7 @@ async function runBiometricSyncV(trigger: string, triggeredBy?: string, targetDa
     if (e.biometric_id) empMap.set(String(e.biometric_id).trim(), e.id);
     else empMap.set(String(e.employee_id).trim(), e.id);
   }
-  const syncId  = crypto.randomUUID();
+  const syncId = crypto.randomUUID();
   let updated = 0, created = 0;
 
   for (const rec of records) {
@@ -300,28 +302,32 @@ async function runBiometricSyncV(trigger: string, triggeredBy?: string, targetDa
     if (!empCode) continue;
     const iid = empMap.get(empCode);
     if (!iid) continue;
+    // Parse DateString DD/MM/YYYY → YYYY-MM-DD
+    const rawDs = String(rec.DateString ?? '').trim();
+    let recDate = today;
+    if (rawDs.includes('/')) { const [rdd,rmm,ry]=rawDs.split('/'); recDate=`${ry}-${rmm}-${rdd}`; }
     const inTime  = parseEtTimeV(rec.INTime);
     const outTime = parseEtTimeV(rec.OUTTime);
     const status  = inTime
       ? (parseInt(inTime.split(':')[0],10) >= 10 ? 'late' : 'present')
       : (ET_STATUS_MAP[(rec.Status??'A').toUpperCase()] ?? 'absent');
-    if (status === 'weekend' && !inTime) continue;
+    if ((status === 'weekend' || status === 'holiday') && !inTime) continue;
     const hours = parseEtWorkTimeV(rec.WorkTime);
-    const ex  = await sql`SELECT * FROM attendance_records WHERE employee_id=${iid} AND date=${date}` as any[];
+    const ex  = await sql`SELECT * FROM attendance_records WHERE employee_id=${iid} AND date=${recDate}` as any[];
     const had = ex.length > 0; const old = ex[0] ?? {};
     await sql`INSERT INTO attendance_sync_snapshot (sync_id,employee_id,date,had_record,status_before,check_in_before,check_out_before,total_hours_before)
-      VALUES(${syncId},${iid},${date},${had},${old.status??null},${old.check_in??null},${old.check_out??null},${old.total_hours??null})`;
+      VALUES(${syncId},${iid},${recDate},${had},${old.status??null},${old.check_in??null},${old.check_out??null},${old.total_hours??null})`;
     const r = await sql`
       INSERT INTO attendance_records (employee_id,date,check_in,check_out,status,total_hours,source,biometric_sync_id)
-      VALUES(${iid},${date},${inTime},${outTime},${status},${hours},'biometric',${syncId})
+      VALUES(${iid},${recDate},${inTime},${outTime},${status},${hours},'biometric',${syncId})
       ON CONFLICT(employee_id,date) DO UPDATE SET check_in=EXCLUDED.check_in,check_out=EXCLUDED.check_out,
         status=EXCLUDED.status,total_hours=EXCLUDED.total_hours,source='biometric',biometric_sync_id=${syncId}
       RETURNING (xmax=0) AS was_inserted` as any[];
     if (r[0]?.was_inserted) created++; else updated++;
   }
   await sql`INSERT INTO attendance_sync_log (sync_id,triggered,triggered_by,date_range,records_updated,records_created,status)
-    VALUES(${syncId},${trigger},${triggeredBy??null},${date},${updated},${created},'success')`;
-  return { sync_id: syncId, records_updated: updated, records_created: created, synced_at: new Date().toISOString(), date_range: date };
+    VALUES(${syncId},${trigger},${triggeredBy??null},${label},${updated},${created},'success')`;
+  return { sync_id: syncId, records_updated: updated, records_created: created, synced_at: new Date().toISOString(), date_range: label };
 }
 
 app.get('/api/attendance/biometric-sync/history', async (_req, res) => {
@@ -333,10 +339,11 @@ app.get('/api/attendance/biometric-sync/history', async (_req, res) => {
 
 app.post('/api/attendance/biometric-sync', async (req, res) => {
   try {
-    const result = await runBiometricSyncV('manual', req.body.triggered_by, req.body.date);
+    const result = await runBiometricSyncV('manual', req.body.triggered_by, req.body.from_date, req.body.to_date);
     res.json(result);
   } catch (err: any) {
-    try { await sql`INSERT INTO attendance_sync_log (sync_id,triggered,triggered_by,date_range,status,error_msg) VALUES(${crypto.randomUUID()},'manual',${req.body.triggered_by??null},${req.body.date??new Date().toISOString().split('T')[0]},'failed',${err.message})`; } catch {}
+    const today = new Date().toISOString().split('T')[0];
+    try { await sql`INSERT INTO attendance_sync_log (sync_id,triggered,triggered_by,date_range,status,error_msg) VALUES(${crypto.randomUUID()},'manual',${req.body.triggered_by??null},${req.body.from_date??today},'failed',${err.message})`; } catch {}
     res.status(500).json({ error: err.message ?? 'Sync failed' });
   }
 });

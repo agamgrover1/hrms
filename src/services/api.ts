@@ -36,8 +36,8 @@ export const api = {
   clockOut: (employee_id: string) => request<any>('/attendance/clock-out', { method: 'POST', body: JSON.stringify({ employee_id }) }),
   markAttendance: (data: { employee_id: string; date: string; status: string; check_in?: string; check_out?: string }) =>
     request<any>('/attendance/mark', { method: 'POST', body: JSON.stringify(data) }),
-  syncBiometric: (triggeredBy: string, date?: string) =>
-    request<any>('/attendance/biometric-sync', { method: 'POST', body: JSON.stringify({ triggered_by: triggeredBy, date }) }),
+  syncBiometric: (triggeredBy: string, fromDate?: string, toDate?: string) =>
+    request<any>('/attendance/biometric-sync', { method: 'POST', body: JSON.stringify({ triggered_by: triggeredBy, from_date: fromDate, to_date: toDate }) }),
   rollbackLastSync: () =>
     request<any>('/attendance/biometric-sync/rollback', { method: 'POST' }),
   getBiometricSyncHistory: () =>

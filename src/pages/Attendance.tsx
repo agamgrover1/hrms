@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
 import { Clock, CheckCircle, XCircle, AlertCircle, ChevronLeft, ChevronRight, CalendarDays, X,
-  Fingerprint, RefreshCw, RotateCcw, ChevronDown, ChevronUp, Activity } from 'lucide-react';
+  Fingerprint, RefreshCw, RotateCcw, ChevronDown, ChevronUp, Activity, Calendar } from 'lucide-react';
 import { api } from '../services/api';
 import { useAuth } from '../context/AuthContext';
 
@@ -237,13 +237,18 @@ export default function Attendance() {
   useEffect(() => { fetchRecords(); }, [fetchRecords]);
   useEffect(() => { if (isHROrAdmin) fetchSyncHistory(); }, [fetchSyncHistory, isHROrAdmin]);
 
-  const handleSyncNow = async () => {
+  const handleSyncNow = async (fullMonth = false) => {
     setSyncing(true);
     setSyncError('');
     setSyncSuccess('');
     try {
-      const result = await api.syncBiometric(user?.name ?? 'HR');
-      setSyncSuccess(`Sync complete — ${result.records_updated} updated, ${result.records_created} created`);
+      const today = new Date().toISOString().split('T')[0];
+      const fromDate = fullMonth
+        ? `${today.slice(0, 7)}-01`   // first day of current month
+        : today;
+      const result = await api.syncBiometric(user?.name ?? 'HR', fromDate, today);
+      const label = fullMonth ? 'Month sync complete' : 'Sync complete';
+      setSyncSuccess(`${label} — ${result.records_updated} updated, ${result.records_created} created`);
       fetchSyncHistory();
       fetchRecords();
     } catch (err: any) {
@@ -384,15 +389,25 @@ export default function Attendance() {
                     {rollingBack ? 'Rolling back…' : 'Rollback Last Sync'}
                   </button>
                 )}
-                {/* Sync Now button */}
+                {/* Sync This Month button */}
                 <button
-                  onClick={handleSyncNow}
+                  onClick={() => handleSyncNow(true)}
+                  disabled={syncing}
+                  className="flex items-center gap-1.5 px-3 py-2 text-xs font-semibold rounded-xl border transition-all disabled:opacity-50"
+                  style={{ color: '#192250', borderColor: '#e2e4ed', background: '#fff' }}
+                >
+                  <Calendar size={13} />
+                  {syncing ? '…' : 'Sync This Month'}
+                </button>
+                {/* Sync Now (today) button */}
+                <button
+                  onClick={() => handleSyncNow(false)}
                   disabled={syncing}
                   className="flex items-center gap-1.5 px-4 py-2 text-xs font-semibold text-white rounded-xl transition-all disabled:opacity-60 shadow-sm"
                   style={{ background: 'linear-gradient(135deg, #192250 0%, #141c43 100%)' }}
                 >
                   <RefreshCw size={13} className={syncing ? 'animate-spin' : ''} />
-                  {syncing ? 'Syncing…' : 'Sync Now'}
+                  {syncing ? 'Syncing…' : 'Sync Today'}
                 </button>
                 {/* Toggle history */}
                 <button
