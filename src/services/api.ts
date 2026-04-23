@@ -46,9 +46,9 @@ export const api = {
     return request<any[]>(`/leave/requests?${qs}`);
   },
   applyLeave: (data: any) => request<any>('/leave/requests', { method: 'POST', body: JSON.stringify(data) }),
-  updateLeaveStatus: (id: string, status: string) =>
-    request<any>(`/leave/requests/${id}`, { method: 'PATCH', body: JSON.stringify({ status }) }),
-  managerApproveLeave: (id: string, data: { status: 'approved' | 'rejected'; manager_id: string }) =>
+  updateLeaveStatus: (id: string, status: string, opts?: { actioner_name?: string; rejection_reason?: string }) =>
+    request<any>(`/leave/requests/${id}`, { method: 'PATCH', body: JSON.stringify({ status, ...opts }) }),
+  managerApproveLeave: (id: string, data: { status: 'approved' | 'rejected'; manager_id: string; manager_name?: string; rejection_reason?: string }) =>
     request<any>(`/leave/requests/${id}/manager-approve`, { method: 'PATCH', body: JSON.stringify(data) }),
   getLeaveBalance: (employee_id: string) => request<any>(`/leave/balances/${employee_id}`),
   adjustLeaveBalance: (employee_id: string, data: { full_day: number; short_leave: number }) =>

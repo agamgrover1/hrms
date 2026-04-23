@@ -1,5 +1,6 @@
 import express from 'express';
 import cors from 'cors';
+import { sql } from './db';
 import authRoutes from './routes/auth';
 import employeeRoutes from './routes/employees';
 import attendanceRoutes from './routes/attendance';
@@ -8,6 +9,17 @@ import payrollRoutes from './routes/payroll';
 import performanceRoutes from './routes/performance';
 import userRoutes from './routes/users';
 import notificationRoutes from './routes/notifications';
+
+// Add audit columns to leave_requests if they don't exist yet
+(async () => {
+  try {
+    await sql`ALTER TABLE leave_requests ADD COLUMN IF NOT EXISTS manager_name VARCHAR(200)`;
+    await sql`ALTER TABLE leave_requests ADD COLUMN IF NOT EXISTS manager_rejection_reason TEXT`;
+    await sql`ALTER TABLE leave_requests ADD COLUMN IF NOT EXISTS hr_actioner_name VARCHAR(200)`;
+    await sql`ALTER TABLE leave_requests ADD COLUMN IF NOT EXISTS hr_actioned_at TIMESTAMPTZ`;
+    await sql`ALTER TABLE leave_requests ADD COLUMN IF NOT EXISTS rejection_reason TEXT`;
+  } catch { /* columns already exist */ }
+})();
 
 const app = express();
 

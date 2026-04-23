@@ -152,6 +152,7 @@ export default function MyPortal() {
   const [teamPendingLeaves, setTeamPendingLeaves] = useState<any[]>([]);
   const [teamPerf, setTeamPerf] = useState<Record<string, any[]>>({});
   const [approvingLeave, setApprovingLeave] = useState<Record<string, boolean>>({});
+  const [rejectLeaveTarget, setRejectLeaveTarget] = useState<string | null>(null);
   const [showTeamReview, setShowTeamReview] = useState<any | null>(null); // employee record
   const [teamReviewScores, setTeamReviewScores] = useState<Record<string, number>>({
     productivity: 75, quality: 75, teamwork: 75, attendance_score: 75, initiative: 75, client_satisfaction: 75,
@@ -387,10 +388,10 @@ export default function MyPortal() {
     ...(teamMembers.length > 0 ? [{ key: 'myteam', label: 'My Team', icon: Users }] : []),
   ];
 
-  const handleManagerApproveLeave = async (leaveId: string, status: 'approved' | 'rejected') => {
+  const handleManagerApproveLeave = async (leaveId: string, status: 'approved' | 'rejected', rejection_reason?: string) => {
     setApprovingLeave(prev => ({ ...prev, [leaveId]: true }));
     try {
-      await api.managerApproveLeave(leaveId, { status, manager_id: empDbId });
+      await api.managerApproveLeave(leaveId, { status, manager_id: empDbId, manager_name: user?.name, rejection_reason });
       setTeamPendingLeaves(prev => prev.filter(l => l.id !== leaveId));
     } catch { /* ignore */ } finally {
       setApprovingLeave(prev => ({ ...prev, [leaveId]: false }));
@@ -594,34 +595,77 @@ export default function MyPortal() {
             {leaves.length === 0 ? (
               <p className="text-center text-gray-400 text-sm py-16">No leave requests found.</p>
             ) : (
-              <table className="w-full">
-                <thead>
-                  <tr className="bg-gray-50 border-b border-gray-100">
-                    {['Type', 'From', 'To', 'Days', 'Reason', 'Status'].map(h => (
-                      <th key={h} className="text-left text-xs font-semibold text-gray-500 px-4 py-3 uppercase tracking-wide">{h}</th>
-                    ))}
-                  </tr>
-                </thead>
-                <tbody>
-                  {leaves.map(l => {
-                    const cfg = leaveStatusConfig[l.status as keyof typeof leaveStatusConfig];
-                    return (
-                      <tr key={l.id} className="border-b border-gray-50">
-                        <td className="px-4 py-3 text-sm font-medium text-gray-800 capitalize">{l.type}</td>
-                        <td className="px-4 py-3 text-sm text-gray-600">{new Date(l.from_date).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' })}</td>
-                        <td className="px-4 py-3 text-sm text-gray-600">{new Date(l.to_date).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' })}</td>
-                        <td className="px-4 py-3 text-sm font-medium text-gray-700">{l.days}d</td>
-                        <td className="px-4 py-3 text-sm text-gray-500">{l.reason}</td>
-                        <td className="px-4 py-3">
-                          <span className={`inline-flex items-center gap-1 text-xs px-2.5 py-1 rounded-full border font-medium ${cfg?.color}`}>
-                            <cfg.icon size={11} /> {l.status.charAt(0).toUpperCase() + l.status.slice(1)}
-                          </span>
-                        </td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
+              <div className="overflow-x-auto">
+                <table className="w-full">
+                  <thead>
+                    <tr className="bg-gray-50 border-b border-gray-100">
+                      {['Type', 'Duration', 'Days', 'Reason', 'Applied On', 'Status', 'Action Trail'].map(h => (
+                        <th key={h} className="text-left text-xs font-semibold text-gray-500 px-4 py-3 uppercase tracking-wide whitespace-nowrap">{h}</th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {leaves.map(l => {
+                      const cfg = leaveStatusConfig[l.status as keyof typeof leaveStatusConfig];
+                      const appliedAt = l.created_at ? new Date(l.created_at) : null;
+                      const appliedStr = appliedAt
+                        ? appliedAt.toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' })
+                          + ', ' + appliedAt.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', hour12: true })
+                        : '—';
+                      return (
+                        <tr key={l.id} className="border-b border-gray-50">
+                          <td className="px-4 py-3 text-sm font-medium text-gray-800 capitalize">{l.type.replace('_', ' ')}</td>
+                          <td className="px-4 py-3 text-sm text-gray-600 whitespace-nowrap">
+                            {new Date(l.from_date).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' })}
+                            {l.from_date !== l.to_date && ` – ${new Date(l.to_date).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' })}`}
+                          </td>
+                          <td className="px-4 py-3 text-sm font-medium text-gray-700">{l.days}d</td>
+                          <td className="px-4 py-3 text-sm text-gray-500 max-w-[140px] truncate">{l.reason}</td>
+                          <td className="px-4 py-3 text-xs text-gray-500 whitespace-nowrap">{appliedStr}</td>
+                          <td className="px-4 py-3">
+                            <span className={`inline-flex items-center gap-1 text-xs px-2.5 py-1 rounded-full border font-medium ${cfg?.color}`}>
+                              <cfg.icon size={11} /> {l.status.charAt(0).toUpperCase() + l.status.slice(1)}
+                            </span>
+                          </td>
+                          <td className="px-4 py-3 min-w-[180px]">
+                            <div className="space-y-1">
+                              {(l.manager_status === 'approved' || l.manager_status === 'rejected') && (
+                                <div className="text-xs leading-tight">
+                                  <span className={`font-semibold ${l.manager_status === 'approved' ? 'text-green-600' : 'text-red-500'}`}>
+                                    {l.manager_status === 'approved' ? 'Mgr Approved' : 'Mgr Rejected'}
+                                  </span>
+                                  {l.manager_name && <span className="text-gray-500"> · {l.manager_name}</span>}
+                                  {l.manager_approved_at && (
+                                    <span className="text-gray-400 block">
+                                      {new Date(l.manager_approved_at).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' })}
+                                      {', '}{new Date(l.manager_approved_at).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', hour12: true })}
+                                    </span>
+                                  )}
+                                  {l.manager_rejection_reason && <span className="text-red-400 italic block">"{l.manager_rejection_reason}"</span>}
+                                </div>
+                              )}
+                              {l.hr_actioned_at && (
+                                <div className="text-xs leading-tight">
+                                  <span className={`font-semibold ${l.status === 'approved' ? 'text-green-600' : 'text-red-500'}`}>
+                                    {l.status === 'approved' ? 'HR Approved' : 'HR Rejected'}
+                                  </span>
+                                  {l.hr_actioner_name && <span className="text-gray-500"> · {l.hr_actioner_name}</span>}
+                                  <span className="text-gray-400 block">
+                                    {new Date(l.hr_actioned_at).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' })}
+                                    {', '}{new Date(l.hr_actioned_at).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', hour12: true })}
+                                  </span>
+                                  {l.rejection_reason && <span className="text-red-400 italic block">"{l.rejection_reason}"</span>}
+                                </div>
+                              )}
+                              {!l.manager_approved_at && !l.hr_actioned_at && <span className="text-xs text-gray-400">Pending</span>}
+                            </div>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
             )}
           </div>
           {applyLeave && <ApplyLeaveModal onClose={() => setApplyLeave(false)} onSubmit={handleApplyLeave} balance={balance} />}
@@ -937,11 +981,17 @@ export default function MyPortal() {
                       <div>
                         <p className="text-sm font-semibold text-gray-800">{l.employee_name}</p>
                         <p className="text-xs text-gray-400 mt-0.5 capitalize">
-                          {l.type} leave · {l.days}d ·{' '}
+                          {l.type.replace('_', ' ')} leave · {l.days}d ·{' '}
                           {new Date(l.from_date).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' })}
                           {l.from_date !== l.to_date && ` – ${new Date(l.to_date).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' })}`}
                         </p>
                         {l.reason && <p className="text-xs text-gray-400 mt-0.5 italic">"{l.reason}"</p>}
+                        {l.created_at && (
+                          <p className="text-xs text-gray-400 mt-0.5">
+                            Applied: {new Date(l.created_at).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' })}
+                            {', '}{new Date(l.created_at).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', hour12: true })}
+                          </p>
+                        )}
                       </div>
                     </div>
                     <div className="flex gap-2">
@@ -953,11 +1003,11 @@ export default function MyPortal() {
                         {approvingLeave[l.id] ? '…' : 'Approve'}
                       </button>
                       <button
-                        onClick={() => handleManagerApproveLeave(l.id, 'rejected')}
+                        onClick={() => setRejectLeaveTarget(l.id)}
                         disabled={approvingLeave[l.id]}
                         className="px-3 py-1.5 text-xs font-semibold rounded-lg disabled:opacity-50 transition-colors"
                         style={{ background: '#fee2e2', color: '#dc2626' }}>
-                        {approvingLeave[l.id] ? '…' : 'Reject'}
+                        Reject
                       </button>
                     </div>
                   </div>
@@ -1081,6 +1131,49 @@ export default function MyPortal() {
           </div>
         </div>
       )}
+
+      {rejectLeaveTarget && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 backdrop-blur-sm p-4">
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-sm p-6">
+            <div className="flex items-center justify-between mb-4">
+              <h3 className="text-base font-semibold text-gray-900">Reason for Rejection</h3>
+              <button onClick={() => setRejectLeaveTarget(null)}><X size={16} className="text-gray-400" /></button>
+            </div>
+            <RejectReasonInput
+              onClose={() => setRejectLeaveTarget(null)}
+              onConfirm={reason => {
+                handleManagerApproveLeave(rejectLeaveTarget, 'rejected', reason);
+                setRejectLeaveTarget(null);
+              }}
+            />
+          </div>
+        </div>
+      )}
     </div>
+  );
+}
+
+function RejectReasonInput({ onClose, onConfirm }: { onClose: () => void; onConfirm: (reason: string) => void }) {
+  const [reason, setReason] = useState('');
+  return (
+    <>
+      <textarea
+        value={reason}
+        onChange={e => setReason(e.target.value)}
+        rows={3}
+        placeholder="Enter reason (required)..."
+        className="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-red-200 resize-none mb-4"
+        autoFocus
+      />
+      <div className="flex gap-3">
+        <button onClick={onClose} className="flex-1 py-2.5 border border-gray-200 text-gray-600 rounded-lg text-sm font-medium hover:bg-gray-50">Cancel</button>
+        <button
+          onClick={() => { if (reason.trim()) onConfirm(reason.trim()); }}
+          disabled={!reason.trim()}
+          className="flex-1 py-2.5 bg-red-500 hover:bg-red-600 disabled:opacity-40 text-white rounded-lg text-sm font-medium">
+          Confirm Reject
+        </button>
+      </div>
+    </>
   );
 }

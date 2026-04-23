@@ -57,6 +57,11 @@ async function runStartupMigrations() {
     await sql`ALTER TABLE leave_balances ADD COLUMN IF NOT EXISTS last_credited_month INTEGER`;
     await sql`ALTER TABLE leave_balances ADD COLUMN IF NOT EXISTS last_credited_year INTEGER`;
     await sql`ALTER TABLE leave_balances ADD COLUMN IF NOT EXISTS probation_short_used INTEGER NOT NULL DEFAULT 0`;
+    await sql`ALTER TABLE leave_requests ADD COLUMN IF NOT EXISTS manager_name VARCHAR(200)`;
+    await sql`ALTER TABLE leave_requests ADD COLUMN IF NOT EXISTS manager_rejection_reason TEXT`;
+    await sql`ALTER TABLE leave_requests ADD COLUMN IF NOT EXISTS hr_actioner_name VARCHAR(200)`;
+    await sql`ALTER TABLE leave_requests ADD COLUMN IF NOT EXISTS hr_actioned_at TIMESTAMPTZ`;
+    await sql`ALTER TABLE leave_requests ADD COLUMN IF NOT EXISTS rejection_reason TEXT`;
   } catch { /* non-fatal — columns may already exist */ }
 }
 
@@ -388,9 +393,15 @@ app.post('/api/leave/requests', async (req, res) => {
 // Manager first-level approval
 app.patch('/api/leave/requests/:id/manager-approve', async (req, res) => {
   try {
-    const { status, manager_id } = req.body;
+    const { status, manager_id, manager_name, rejection_reason } = req.body;
     if (status === 'rejected') {
-      const rows = await sql`UPDATE leave_requests SET manager_status='rejected', manager_id=${manager_id ?? null}, manager_approved_at=NOW(), status='rejected' WHERE id=${req.params.id} RETURNING *`;
+      const rows = await sql`
+        UPDATE leave_requests
+        SET manager_status='rejected', manager_id=${manager_id ?? null},
+            manager_name=${manager_name ?? null},
+            manager_rejection_reason=${rejection_reason ?? null},
+            manager_approved_at=NOW(), status='rejected'
+        WHERE id=${req.params.id} RETURNING *`;
       if (!rows.length) return res.status(404).json({ error: 'Not found' });
       const leave = rows[0] as any;
       const empRows = await sql`SELECT join_date FROM employees WHERE id=${leave.employee_id}`.catch(() => []);
@@ -404,7 +415,12 @@ app.patch('/api/leave/requests/:id/manager-approve', async (req, res) => {
         `Your ${leave.type.replace('_',' ')} leave (${from} – ${to}) was rejected by your manager.`);
       return res.json(leave);
     }
-    const rows = await sql`UPDATE leave_requests SET manager_status='approved', manager_id=${manager_id ?? null}, manager_approved_at=NOW() WHERE id=${req.params.id} RETURNING *`;
+    const rows = await sql`
+      UPDATE leave_requests
+      SET manager_status='approved', manager_id=${manager_id ?? null},
+          manager_name=${manager_name ?? null},
+          manager_approved_at=NOW()
+      WHERE id=${req.params.id} RETURNING *`;
     if (!rows.length) return res.status(404).json({ error: 'Not found' });
     const leave = rows[0] as any;
     const from = new Date(leave.from_date).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' });
@@ -418,8 +434,14 @@ app.patch('/api/leave/requests/:id/manager-approve', async (req, res) => {
 // HR final approval
 app.patch('/api/leave/requests/:id', async (req, res) => {
   try {
-    const { status } = req.body;
-    const rows = await sql`UPDATE leave_requests SET status=${status} WHERE id=${req.params.id} RETURNING *`;
+    const { status, actioner_name, rejection_reason } = req.body;
+    const rows = await sql`
+      UPDATE leave_requests
+      SET status=${status},
+          hr_actioner_name=${actioner_name ?? null},
+          hr_actioned_at=NOW(),
+          rejection_reason=${status === 'rejected' ? (rejection_reason ?? null) : null}
+      WHERE id=${req.params.id} RETURNING *`;
     if (!rows.length) return res.status(404).json({ error: 'Not found' });
     const leave = rows[0] as any;
     if (status === 'approved') {

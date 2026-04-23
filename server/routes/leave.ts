@@ -207,11 +207,14 @@ router.post('/requests', async (req, res) => {
 // Manager first-level approval
 router.patch('/requests/:id/manager-approve', async (req, res) => {
   try {
-    const { status, manager_id } = req.body;
+    const { status, manager_id, manager_name, rejection_reason } = req.body;
     if (status === 'rejected') {
       const rows = await sql`
         UPDATE leave_requests
-        SET manager_status='rejected', manager_id=${manager_id ?? null}, manager_approved_at=NOW(), status='rejected'
+        SET manager_status='rejected', manager_id=${manager_id ?? null},
+            manager_name=${manager_name ?? null},
+            manager_rejection_reason=${rejection_reason ?? null},
+            manager_approved_at=NOW(), status='rejected'
         WHERE id=${req.params.id} RETURNING *
       `;
       if (!rows.length) return res.status(404).json({ error: 'Not found' });
@@ -230,7 +233,9 @@ router.patch('/requests/:id/manager-approve', async (req, res) => {
     }
     const rows = await sql`
       UPDATE leave_requests
-      SET manager_status='approved', manager_id=${manager_id ?? null}, manager_approved_at=NOW()
+      SET manager_status='approved', manager_id=${manager_id ?? null},
+          manager_name=${manager_name ?? null},
+          manager_approved_at=NOW()
       WHERE id=${req.params.id} RETURNING *
     `;
     if (!rows.length) return res.status(404).json({ error: 'Not found' });
@@ -248,8 +253,15 @@ router.patch('/requests/:id/manager-approve', async (req, res) => {
 // HR final approval — deducts balance here and marks attendance
 router.patch('/requests/:id', async (req, res) => {
   try {
-    const { status } = req.body;
-    const rows = await sql`UPDATE leave_requests SET status=${status} WHERE id=${req.params.id} RETURNING *`;
+    const { status, actioner_name, rejection_reason } = req.body;
+    const rows = await sql`
+      UPDATE leave_requests
+      SET status=${status},
+          hr_actioner_name=${actioner_name ?? null},
+          hr_actioned_at=NOW(),
+          rejection_reason=${status === 'rejected' ? (rejection_reason ?? null) : null}
+      WHERE id=${req.params.id} RETURNING *
+    `;
     if (!rows.length) return res.status(404).json({ error: 'Not found' });
     const leave = rows[0] as any;
     if (status === 'approved') {
