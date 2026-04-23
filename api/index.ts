@@ -781,6 +781,15 @@ app.patch('/api/notifications/:id/read', async (req, res) => {
   } catch (err) { res.status(500).json({ error: 'Server error' }); }
 });
 
+app.delete('/api/notifications/clear-all', async (req, res) => {
+  try {
+    const { user_id } = req.query;
+    if (!user_id) return res.status(400).json({ error: 'user_id required' });
+    await sql`DELETE FROM notifications WHERE user_id=${user_id}`;
+    res.json({ success: true });
+  } catch (err) { res.status(500).json({ error: 'Server error' }); }
+});
+
 app.delete('/api/notifications/:id', async (req, res) => {
   try {
     await sql`DELETE FROM notifications WHERE id=${req.params.id}`;

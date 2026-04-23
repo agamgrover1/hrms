@@ -1,4 +1,4 @@
-import { Bell, ChevronDown, LogOut, CheckCircle, Calendar, TrendingUp, FileText, Target, XCircle, Award, Check } from 'lucide-react';
+import { Bell, ChevronDown, LogOut, CheckCircle, Calendar, TrendingUp, FileText, Target, XCircle, Award, Check, Trash2 } from 'lucide-react';
 import { useState, useEffect, useRef } from 'react';
 import { useAuth } from '../../context/AuthContext';
 import { api } from '../../services/api';
@@ -79,6 +79,12 @@ export default function TopBar({ title }: Props) {
     await api.deleteNotification(id).catch(() => {});
   };
 
+  const handleClearAll = async () => {
+    if (!user?.id) return;
+    setNotifications([]);
+    await api.clearAllNotifications(user.id).catch(() => {});
+  };
+
   const handleBellClick = () => {
     setShowNotifs(v => !v);
     setShowMenu(false);
@@ -118,12 +124,21 @@ export default function TopBar({ title }: Props) {
                     </span>
                   )}
                 </div>
-                {unread > 0 && (
-                  <button onClick={handleMarkAll}
-                    className="flex items-center gap-1 text-xs font-semibold hover:opacity-70 transition-opacity"
-                    style={{ color: '#192250' }}>
-                    <Check size={11} /> Mark all read
-                  </button>
+                {notifications.length > 0 && (
+                  <div className="flex items-center gap-2">
+                    {unread > 0 && (
+                      <button onClick={handleMarkAll}
+                        className="flex items-center gap-1 text-xs font-semibold hover:opacity-70 transition-opacity"
+                        style={{ color: '#192250' }}>
+                        <Check size={11} /> Mark all read
+                      </button>
+                    )}
+                    <button onClick={handleClearAll}
+                      className="flex items-center gap-1 text-xs font-semibold hover:opacity-70 transition-opacity"
+                      style={{ color: '#dc2626' }}>
+                      <Trash2 size={11} /> Clear all
+                    </button>
+                  </div>
                 )}
               </div>
 

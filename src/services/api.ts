@@ -119,6 +119,7 @@ export const api = {
   markNotificationRead: (id: number) => request<any>(`/notifications/${id}/read`, { method: 'PATCH' }),
   markAllNotificationsRead: (userId: string) => request<any>(`/notifications/read-all?user_id=${userId}`, { method: 'PATCH' }),
   deleteNotification: (id: number) => request<any>(`/notifications/${id}`, { method: 'DELETE' }),
+  clearAllNotifications: (userId: string) => request<any>(`/notifications/clear-all?user_id=${userId}`, { method: 'DELETE' }),
 
   // Users
   getUsers: () => request<any[]>('/users'),
