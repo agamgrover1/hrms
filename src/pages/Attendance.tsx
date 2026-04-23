@@ -13,6 +13,13 @@ function fmtHours(h: number | string | null | undefined): string {
   return `${hrs}h ${mins}m`;
 }
 
+// Parse a YYYY-MM-DD date string as LOCAL midnight (avoids UTC-midnight timezone shift)
+function parseLocalDate(dateStr: string): Date {
+  const s = (dateStr ?? '').slice(0, 10);
+  const [y, m, d] = s.split('-').map(Number);
+  return new Date(y, m - 1, d);
+}
+
 const statusConfig = {
   present:      { label: 'Present',      color: 'bg-green-50 text-green-600',   dot: 'bg-green-500' },
   absent:       { label: 'Absent',       color: 'bg-red-50 text-red-500',       dot: 'bg-red-500' },
@@ -290,7 +297,7 @@ export default function Attendance() {
     // which shifts the date backwards by the local UTC offset)
     return records.find(r => {
       if (!r.date) return false;
-      const localDate = new Date(r.date).toLocaleDateString('en-CA'); // 'en-CA' → YYYY-MM-DD in local tz
+      const localDate = parseLocalDate(r.date).toLocaleDateString('en-CA');
       return localDate === dateStr;
     });
   };
@@ -612,7 +619,7 @@ export default function Attendance() {
                     <div className="flex items-center gap-3">
                       <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${cfg?.color}`}>{cfg?.label}</span>
                       <span className="text-sm text-gray-700">
-                        {new Date(r.date).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' })}
+                        {parseLocalDate(r.date).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' })}
                       </span>
                     </div>
                     <div className="text-xs text-gray-400">

@@ -406,13 +406,19 @@ async function restoreOneDayBalance(employeeId: string, oldAttStatus: string) {
   }
 }
 
+function nextDayV(d: string): string {
+  const dt = new Date(d.slice(0, 10) + 'T12:00:00Z');
+  dt.setUTCDate(dt.getUTCDate() + 1);
+  return dt.toISOString().slice(0, 10);
+}
+
 async function markLeaveAttendance(employeeId: string, fromDate: string, toDate: string, type: string) {
   const attStatus = LEAVE_TYPE_ATT_STATUS[type] ?? 'on_leave';
   const leaveStatuses = new Set(['on_leave', 'short_leave', 'half-day', 'unpaid_leave']);
-  const start = new Date(fromDate);
-  const end = new Date(toDate);
-  for (let d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) {
-    const dateStr = d.toISOString().split('T')[0];
+  let current = fromDate.slice(0, 10);
+  const end    = toDate.slice(0, 10);
+  while (current <= end) {
+    const dateStr = current;
     const existing = await sql`SELECT status FROM attendance_records WHERE employee_id=${employeeId} AND date::date=${dateStr}::date`.catch(() => []);
     const oldStatus = (existing[0] as any)?.status;
     if (oldStatus && leaveStatuses.has(oldStatus) && oldStatus !== attStatus) {
@@ -423,6 +429,7 @@ async function markLeaveAttendance(employeeId: string, fromDate: string, toDate:
       VALUES (${employeeId}, ${dateStr}, ${attStatus}, 0)
       ON CONFLICT (employee_id, date) DO UPDATE SET status = ${attStatus}
     `.catch(() => {});
+    current = nextDayV(current);
   }
 }
 
@@ -479,15 +486,15 @@ async function restoreLeaveBalance(employeeId: string, type: string, days: numbe
 
 async function clearLeaveAttendance(employeeId: string, fromDate: string, toDate: string) {
   const leaveStatuses = ['on_leave', 'half-day', 'short_leave', 'unpaid_leave'];
-  const start = new Date(fromDate);
-  const end = new Date(toDate);
-  for (let d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) {
-    const dateStr = d.toISOString().split('T')[0];
+  let current = fromDate.slice(0, 10);
+  const end    = toDate.slice(0, 10);
+  while (current <= end) {
     await sql`
       DELETE FROM attendance_records
-      WHERE employee_id=${employeeId} AND date::date=${dateStr}::date
+      WHERE employee_id=${employeeId} AND date::date=${current}::date
         AND status = ANY(${leaveStatuses})
     `.catch(() => {});
+    current = nextDayV(current);
   }
 }
 

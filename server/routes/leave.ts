@@ -83,18 +83,25 @@ async function restoreBalance(employeeId: string, type: string, days: number) {
   // 'unpaid' — no balance to restore
 }
 
+// Timezone-safe: advance a YYYY-MM-DD string by N days using UTC noon (avoids DST/midnight issues)
+function nextDay(dateStr: string): string {
+  const d = new Date(dateStr.slice(0, 10) + 'T12:00:00Z');
+  d.setUTCDate(d.getUTCDate() + 1);
+  return d.toISOString().slice(0, 10);
+}
+
 // Clear leave attendance records when a leave is cancelled
 async function clearLeaveAttendance(employeeId: string, fromDate: string, toDate: string) {
   const leaveStatuses = ['on_leave', 'half-day', 'short_leave', 'unpaid_leave'];
-  const start = new Date(fromDate);
-  const end = new Date(toDate);
-  for (let d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) {
-    const dateStr = d.toISOString().split('T')[0];
+  let current = fromDate.slice(0, 10);
+  const end    = toDate.slice(0, 10);
+  while (current <= end) {
     await sql`
       DELETE FROM attendance_records
-      WHERE employee_id=${employeeId} AND date::date=${dateStr}::date
+      WHERE employee_id=${employeeId} AND date::date=${current}::date
         AND status = ANY(${leaveStatuses})
     `.catch(() => {});
+    current = nextDay(current);
   }
 }
 
@@ -126,10 +133,10 @@ async function restoreOneDayBalance(employeeId: string, oldAttStatus: string) {
 async function markLeaveAttendance(employeeId: string, fromDate: string, toDate: string, type: string) {
   const attStatus = LEAVE_TYPE_ATT_STATUS[type] ?? 'on_leave';
   const leaveStatuses = new Set(['on_leave', 'short_leave', 'half-day', 'unpaid_leave']);
-  const start = new Date(fromDate);
-  const end = new Date(toDate);
-  for (let d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) {
-    const dateStr = d.toISOString().split('T')[0];
+  let current = fromDate.slice(0, 10);
+  const end    = toDate.slice(0, 10);
+  while (current <= end) {
+    const dateStr = current;
     // Check for an existing leave attendance on this date
     const existing = await sql`
       SELECT status FROM attendance_records
@@ -144,6 +151,7 @@ async function markLeaveAttendance(employeeId: string, fromDate: string, toDate:
       VALUES (${employeeId}, ${dateStr}, ${attStatus}, 0)
       ON CONFLICT (employee_id, date) DO UPDATE SET status = ${attStatus}
     `.catch(() => {});
+    current = nextDay(current);
   }
 }
 

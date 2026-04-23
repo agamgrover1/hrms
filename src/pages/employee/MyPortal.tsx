@@ -3,6 +3,17 @@ import { Clock, Calendar, DollarSign, User, CheckCircle, XCircle, AlertCircle, P
 import { useAuth } from '../../context/AuthContext';
 import { api } from '../../services/api';
 
+function parseLocalDate(dateStr: string): Date {
+  const s = (dateStr ?? '').slice(0, 10);
+  const [y, m, d] = s.split('-').map(Number);
+  return new Date(y, m - 1, d);
+}
+
+function todayLocal(): string {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+
 function fmtHours(h: number | string | null | undefined): string {
   const total = Number(h) || 0;
   const hrs = Math.floor(total);
@@ -593,7 +604,7 @@ export default function MyPortal() {
                   <div className="flex items-center gap-3">
                     <span className={`w-2 h-2 rounded-full ${cfg?.dot}`} />
                     <span className="text-sm text-gray-700">
-                      {new Date(r.date).toLocaleDateString('en-IN', { weekday: 'short', day: 'numeric', month: 'short' })}
+                      {parseLocalDate(r.date).toLocaleDateString('en-IN', { weekday: 'short', day: 'numeric', month: 'short' })}
                     </span>
                     <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${cfg?.color}`}>{cfg?.label}</span>
                   </div>
@@ -682,8 +693,8 @@ export default function MyPortal() {
                         <tr key={l.id} className="border-b border-gray-50">
                           <td className="px-4 py-3 text-sm font-medium text-gray-800 capitalize">{(l.type ?? '').replace('_', ' ')}</td>
                           <td className="px-4 py-3 text-sm text-gray-600 whitespace-nowrap">
-                            {new Date(l.from_date).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' })}
-                            {l.from_date !== l.to_date && ` – ${new Date(l.to_date).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' })}`}
+                            {parseLocalDate(l.from_date).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' })}
+                            {l.from_date !== l.to_date && ` – ${parseLocalDate(l.to_date).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' })}`}
                           </td>
                           <td className="px-4 py-3 text-sm font-medium text-gray-700">{l.days}d</td>
                           <td className="px-4 py-3 text-sm text-gray-500 max-w-[140px] truncate">{l.reason}</td>
@@ -1049,8 +1060,8 @@ export default function MyPortal() {
                         <p className="text-sm font-semibold text-gray-800">{l.employee_name}</p>
                         <p className="text-xs text-gray-400 mt-0.5 capitalize">
                           {l.type.replace('_', ' ')} leave · {l.days}d ·{' '}
-                          {new Date(l.from_date).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' })}
-                          {l.from_date !== l.to_date && ` – ${new Date(l.to_date).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' })}`}
+                          {parseLocalDate(l.from_date).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' })}
+                          {l.from_date !== l.to_date && ` – ${parseLocalDate(l.to_date).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' })}`}
                         </p>
                         {l.reason && <p className="text-xs text-gray-400 mt-0.5 italic">"{l.reason}"</p>}
                         {l.created_at && (
@@ -1205,8 +1216,8 @@ export default function MyPortal() {
                                         <tr key={l.id} className="border-b border-gray-50 last:border-0">
                                           <td className="px-3 py-2.5 capitalize text-gray-700 font-medium">{l.type.replace('_', ' ')}</td>
                                           <td className="px-3 py-2.5 text-gray-600 whitespace-nowrap">
-                                            {new Date(l.from_date).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' })}
-                                            {l.from_date !== l.to_date && ` – ${new Date(l.to_date).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' })}`}
+                                            {parseLocalDate(l.from_date).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' })}
+                                            {l.from_date !== l.to_date && ` – ${parseLocalDate(l.to_date).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' })}`}
                                           </td>
                                           <td className="px-3 py-2.5 text-gray-700 font-medium">{l.days}d</td>
                                           <td className="px-3 py-2.5 text-gray-500 max-w-[140px] truncate">{l.reason}</td>

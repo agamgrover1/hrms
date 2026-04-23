@@ -3,6 +3,12 @@ import { Plus, Check, X, Clock, Calendar, User, ChevronDown } from 'lucide-react
 import { api } from '../services/api';
 import { useAuth } from '../context/AuthContext';
 
+function parseLocalDate(dateStr: string): Date {
+  const s = (dateStr ?? '').slice(0, 10);
+  const [y, m, d] = s.split('-').map(Number);
+  return new Date(y, m - 1, d);
+}
+
 const leaveTypes = [
   { key: 'full_day',    label: 'Full Day',    color: 'bg-blue-100 text-blue-700' },
   { key: 'half_day',   label: 'Half Day',    color: 'bg-purple-100 text-purple-600' },
@@ -471,8 +477,8 @@ export default function Leave() {
                       <td className="px-4 py-3 text-sm text-gray-600 whitespace-nowrap">
                         <div className="flex items-center gap-1">
                           <Calendar size={12} className="text-gray-400" />
-                          {new Date(req.from_date).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' })}
-                          {req.from_date !== req.to_date && ` – ${new Date(req.to_date).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' })}`}
+                          {parseLocalDate(req.from_date).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' })}
+                          {req.from_date !== req.to_date && ` – ${parseLocalDate(req.to_date).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' })}`}
                         </div>
                       </td>
                       <td className="px-4 py-3 text-sm font-medium text-gray-700">{req.days}d</td>
