@@ -4,11 +4,13 @@ import { api } from '../services/api';
 import { useAuth } from '../context/AuthContext';
 
 const leaveTypes = [
-  { key: 'casual', label: 'Casual Leave', color: 'bg-blue-100 text-blue-700' },
-  { key: 'sick', label: 'Sick Leave', color: 'bg-red-100 text-red-600' },
-  { key: 'earned', label: 'Earned Leave', color: 'bg-green-100 text-green-700' },
-  { key: 'maternity', label: 'Maternity', color: 'bg-pink-100 text-pink-600' },
-  { key: 'paternity', label: 'Paternity', color: 'bg-purple-100 text-purple-600' },
+  { key: 'full_day',    label: 'Full Day',    color: 'bg-blue-100 text-blue-700' },
+  { key: 'half_day',   label: 'Half Day',    color: 'bg-purple-100 text-purple-600' },
+  { key: 'short_leave',label: 'Short Leave', color: 'bg-amber-100 text-amber-700' },
+  // legacy types kept for display of old records
+  { key: 'casual',     label: 'Casual',      color: 'bg-blue-100 text-blue-700' },
+  { key: 'sick',       label: 'Sick',        color: 'bg-red-100 text-red-600' },
+  { key: 'earned',     label: 'Earned',      color: 'bg-green-100 text-green-700' },
 ];
 
 
@@ -44,13 +46,16 @@ function LeaveStatusBadge({ req }: { req: any }) {
 }
 
 function ApplyModal({ onClose, onSubmit }: { onClose: () => void; onSubmit: (data: any) => void }) {
-  const [form, setForm] = useState({ type: 'casual', from: '', to: '', reason: '' });
+  const [form, setForm] = useState({ type: 'full_day', from: '', to: '', reason: '' });
   const handleSubmit = () => {
     if (!form.from || !form.to || !form.reason) return;
-    const days = Math.max(1, Math.ceil((new Date(form.to).getTime() - new Date(form.from).getTime()) / 86400000) + 1);
+    const isSingleDay = form.type === 'half_day' || form.type === 'short_leave';
+    const days = isSingleDay ? 1 : Math.max(1, Math.ceil((new Date(form.to).getTime() - new Date(form.from).getTime()) / 86400000) + 1);
     onSubmit({ ...form, days, from_date: form.from, to_date: form.to });
     onClose();
   };
+  const newTypes = leaveTypes.filter(t => !['casual','sick','earned'].includes(t.key));
+  const isSingleDay = form.type === 'half_day' || form.type === 'short_leave';
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 backdrop-blur-sm p-4">
       <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md p-6">
@@ -63,20 +68,25 @@ function ApplyModal({ onClose, onSubmit }: { onClose: () => void; onSubmit: (dat
             <label className="text-xs font-medium text-gray-500 mb-1.5 block">Leave Type</label>
             <select value={form.type} onChange={e => setForm(f => ({ ...f, type: e.target.value }))}
               className="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-primary-200 bg-white">
-              {leaveTypes.map(t => <option key={t.key} value={t.key}>{t.label}</option>)}
+              {newTypes.map(t => <option key={t.key} value={t.key}>{t.label}</option>)}
             </select>
+            {form.type === 'half_day' && <p className="text-xs text-purple-600 mt-1">Uses 1 half day (= 2 short leave credits)</p>}
+            {form.type === 'short_leave' && <p className="text-xs text-amber-600 mt-1">Uses 1 short leave credit (2 allowed per month)</p>}
+            {form.type === 'full_day' && <p className="text-xs text-blue-600 mt-1">Uses 1 full day credit — carries forward if unused</p>}
           </div>
-          <div className="grid grid-cols-2 gap-3">
+          <div className={isSingleDay ? '' : 'grid grid-cols-2 gap-3'}>
             <div>
-              <label className="text-xs font-medium text-gray-500 mb-1.5 block">From</label>
-              <input type="date" value={form.from} onChange={e => setForm(f => ({ ...f, from: e.target.value }))}
+              <label className="text-xs font-medium text-gray-500 mb-1.5 block">{isSingleDay ? 'Date' : 'From'}</label>
+              <input type="date" value={form.from} onChange={e => setForm(f => ({ ...f, from: e.target.value, to: isSingleDay ? e.target.value : f.to }))}
                 className="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-primary-200" />
             </div>
-            <div>
-              <label className="text-xs font-medium text-gray-500 mb-1.5 block">To</label>
-              <input type="date" value={form.to} onChange={e => setForm(f => ({ ...f, to: e.target.value }))}
-                className="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-primary-200" />
-            </div>
+            {!isSingleDay && (
+              <div>
+                <label className="text-xs font-medium text-gray-500 mb-1.5 block">To</label>
+                <input type="date" value={form.to} onChange={e => setForm(f => ({ ...f, to: e.target.value }))}
+                  className="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-primary-200" />
+              </div>
+            )}
           </div>
           <div>
             <label className="text-xs font-medium text-gray-500 mb-1.5 block">Reason</label>
@@ -132,17 +142,30 @@ export default function Leave() {
     <div className="space-y-5">
       {/* Leave Balance */}
       <div className="grid grid-cols-3 gap-4">
-        {[
-          { key: 'casual', label: 'Casual Leave', color: 'from-blue-500 to-blue-400' },
-          { key: 'sick', label: 'Sick Leave', color: 'from-red-500 to-red-400' },
-          { key: 'earned', label: 'Earned Leave', color: 'from-green-500 to-green-400' },
-        ].map(({ key, label, color }) => (
-          <div key={key} className={`bg-gradient-to-br ${color} rounded-xl p-5 text-white`}>
-            <p className="text-white/70 text-sm font-medium">{label}</p>
-            <p className="text-4xl font-bold mt-2">{balance[key] ?? 0}</p>
-            <p className="text-white/60 text-xs mt-1">days remaining</p>
-          </div>
-        ))}
+        <div className="bg-gradient-to-br from-blue-500 to-blue-400 rounded-xl p-5 text-white">
+          <p className="text-white/70 text-sm font-medium">Full Day Leave</p>
+          <p className="text-4xl font-bold mt-2">{balance.full_day ?? 0}</p>
+          <p className="text-white/60 text-xs mt-1">days (carry forward)</p>
+        </div>
+        <div className="bg-gradient-to-br from-purple-500 to-purple-400 rounded-xl p-5 text-white">
+          <p className="text-white/70 text-sm font-medium">Short Leave / Half Day</p>
+          <p className="text-4xl font-bold mt-2">{balance.short_leave ?? 0}</p>
+          <p className="text-white/60 text-xs mt-1">credits this month</p>
+        </div>
+        <div className={`rounded-xl p-5 text-white ${balance.on_probation ? 'bg-gradient-to-br from-amber-500 to-amber-400' : 'bg-gradient-to-br from-green-500 to-green-400'}`}>
+          <p className="text-white/70 text-sm font-medium">{balance.on_probation ? 'Probation Status' : 'Probation'}</p>
+          {balance.on_probation ? (
+            <>
+              <p className="text-4xl font-bold mt-2">{balance.probation_short_remaining ?? 0}</p>
+              <p className="text-white/60 text-xs mt-1">short leave credits left</p>
+            </>
+          ) : (
+            <>
+              <p className="text-2xl font-bold mt-2">Confirmed</p>
+              <p className="text-white/60 text-xs mt-1">past 3-month probation</p>
+            </>
+          )}
+        </div>
       </div>
 
       {/* Toolbar */}

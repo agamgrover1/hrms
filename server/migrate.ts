@@ -96,6 +96,38 @@ await sql`CREATE INDEX IF NOT EXISTS notifications_user_id_idx ON notifications(
 await sql`CREATE INDEX IF NOT EXISTS notifications_user_unread_idx ON notifications(user_id, is_read)`;
 console.log('✓ notifications table ready');
 
+// New leave policy columns on leave_balances
+await sql`ALTER TABLE leave_balances ADD COLUMN IF NOT EXISTS full_day INTEGER NOT NULL DEFAULT 0`;
+await sql`ALTER TABLE leave_balances ADD COLUMN IF NOT EXISTS short_leave INTEGER NOT NULL DEFAULT 0`;
+await sql`ALTER TABLE leave_balances ADD COLUMN IF NOT EXISTS last_credited_month INTEGER`;
+await sql`ALTER TABLE leave_balances ADD COLUMN IF NOT EXISTS last_credited_year INTEGER`;
+await sql`ALTER TABLE leave_balances ADD COLUMN IF NOT EXISTS probation_short_used INTEGER NOT NULL DEFAULT 0`;
+
+// Seed initial credit for existing non-probation employees (give this month's allocation)
+const now = new Date();
+const cm = now.getMonth() + 1;
+const cy = now.getFullYear();
+await sql`
+  UPDATE leave_balances lb
+  SET full_day = 1, short_leave = 2,
+      last_credited_month = ${cm}, last_credited_year = ${cy}
+  FROM employees e
+  WHERE lb.employee_id = e.id
+    AND (lb.last_credited_month IS NULL)
+    AND (e.join_date IS NULL OR e.join_date < NOW() - INTERVAL '3 months')
+`;
+// Seed probation employees — no full day, 2 short leave allowance for whole probation
+await sql`
+  UPDATE leave_balances lb
+  SET full_day = 0, short_leave = 2,
+      last_credited_month = ${cm}, last_credited_year = ${cy}
+  FROM employees e
+  WHERE lb.employee_id = e.id
+    AND (lb.last_credited_month IS NULL)
+    AND e.join_date >= NOW() - INTERVAL '3 months'
+`;
+console.log('✓ leave_balances: new policy columns ready');
+
 console.log('✓ monthly_performance table ready');
 console.log('✓ performance_notes table ready');
 console.log('✓ appraisal_goals table ready (month column + new unique key)');

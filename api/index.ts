@@ -189,6 +189,48 @@ app.post('/api/attendance/clock-out', async (req, res) => {
   } catch (err) { res.status(500).json({ error: 'Server error' }); }
 });
 
+// ── Leave helpers ─────────────────────────────────────────────────────────
+function isOnProbation(joinDate: string | null): boolean {
+  if (!joinDate) return false;
+  const end = new Date(joinDate);
+  end.setMonth(end.getMonth() + 3);
+  return new Date() < end;
+}
+
+async function creditMonthlyLeave(employeeId: string, joinDate: string | null) {
+  const now = new Date();
+  const cm = now.getMonth() + 1;
+  const cy = now.getFullYear();
+  const balRows = await sql`SELECT * FROM leave_balances WHERE employee_id=${employeeId}`;
+  if (!balRows.length) return;
+  const bal = balRows[0] as any;
+  if (bal.last_credited_month === cm && bal.last_credited_year === cy) return;
+  if (isOnProbation(joinDate)) {
+    await sql`UPDATE leave_balances SET last_credited_month=${cm}, last_credited_year=${cy} WHERE employee_id=${employeeId}`;
+    return;
+  }
+  const lastM = bal.last_credited_month ?? cm;
+  const lastY = bal.last_credited_year ?? cy;
+  const months = Math.max(1, (cy - lastY) * 12 + (cm - lastM));
+  await sql`UPDATE leave_balances SET full_day=COALESCE(full_day,0)+${months}, short_leave=2, last_credited_month=${cm}, last_credited_year=${cy} WHERE employee_id=${employeeId}`;
+}
+
+async function deductLeaveBalance(employeeId: string, type: string, days: number) {
+  if (type === 'full_day') {
+    await sql`UPDATE leave_balances SET full_day=GREATEST(0,full_day-${days}) WHERE employee_id=${employeeId}`.catch(() => {});
+  } else if (type === 'half_day') {
+    await sql`UPDATE leave_balances SET short_leave=GREATEST(0,short_leave-2) WHERE employee_id=${employeeId}`.catch(() => {});
+  } else if (type === 'short_leave') {
+    await sql`UPDATE leave_balances SET short_leave=GREATEST(0,short_leave-1) WHERE employee_id=${employeeId}`.catch(() => {});
+  } else if (type === 'casual') {
+    await sql`UPDATE leave_balances SET casual=GREATEST(0,casual-${days}) WHERE employee_id=${employeeId}`.catch(() => {});
+  } else if (type === 'sick') {
+    await sql`UPDATE leave_balances SET sick=GREATEST(0,sick-${days}) WHERE employee_id=${employeeId}`.catch(() => {});
+  } else if (type === 'earned') {
+    await sql`UPDATE leave_balances SET earned=GREATEST(0,earned-${days}) WHERE employee_id=${employeeId}`.catch(() => {});
+  }
+}
+
 // ── Leave ─────────────────────────────────────────────────────────────────
 app.get('/api/leave/requests', async (req, res) => {
   try {
@@ -215,6 +257,26 @@ app.get('/api/leave/requests', async (req, res) => {
 app.post('/api/leave/requests', async (req, res) => {
   try {
     const { employee_id, employee_name, type, from_date, to_date, days, reason } = req.body;
+    const empRows = await sql`SELECT join_date, reporting_manager_id FROM employees WHERE id=${employee_id}`.catch(() => []);
+    const emp = (empRows as any[])[0] ?? {};
+    const onProbation = isOnProbation(emp.join_date ?? null);
+
+    if (onProbation) {
+      if (type === 'full_day') return res.status(400).json({ error: 'Full day leaves are not allowed during the 3-month probation period.' });
+      const balRows = await sql`SELECT probation_short_used FROM leave_balances WHERE employee_id=${employee_id}`;
+      const used = (balRows[0] as any)?.probation_short_used ?? 0;
+      const cost = type === 'half_day' ? 2 : 1;
+      if (used + cost > 2) return res.status(400).json({ error: 'Probation leave limit exceeded. You may only take 2 short leaves or 1 half day during probation.' });
+      await sql`UPDATE leave_balances SET probation_short_used=${used + cost} WHERE employee_id=${employee_id}`;
+    } else {
+      await creditMonthlyLeave(employee_id, emp.join_date ?? null).catch(() => {});
+      const balRows = await sql`SELECT full_day, short_leave FROM leave_balances WHERE employee_id=${employee_id}`;
+      const bal = (balRows[0] as any) ?? {};
+      if (type === 'full_day' && (bal.full_day ?? 0) < 1) return res.status(400).json({ error: 'No full day leave balance available.' });
+      if (type === 'half_day' && (bal.short_leave ?? 0) < 2) return res.status(400).json({ error: 'No half day leave balance available.' });
+      if (type === 'short_leave' && (bal.short_leave ?? 0) < 1) return res.status(400).json({ error: 'No short leave balance available.' });
+    }
+
     const id = `l_${Date.now()}`;
     const rows = await sql`
       INSERT INTO leave_requests (id, employee_id, employee_name, type, from_date, to_date, days, reason, status, manager_status)
@@ -222,13 +284,10 @@ app.post('/api/leave/requests', async (req, res) => {
       RETURNING *`;
     const from = new Date(from_date).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' });
     const to   = new Date(to_date).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' });
-    // Notify reporting manager; fallback to HR/admin
-    const empRows = await sql`SELECT reporting_manager_id FROM employees WHERE id=${employee_id}`.catch(() => []);
-    const mgr = (empRows as any[])[0]?.reporting_manager_id;
-    if (mgr) {
-      notifyEmployeeUser(mgr, 'leave_applied', 'New Leave Request', `${employee_name} applied for ${days}-day ${type} leave (${from} – ${to})`);
+    if (emp.reporting_manager_id) {
+      notifyEmployeeUser(emp.reporting_manager_id, 'leave_applied', 'New Leave Request', `${employee_name} applied for ${type.replace('_',' ')} leave (${from} – ${to})`);
     } else {
-      notifyAdminsAndHR('leave_applied', 'New Leave Request', `${employee_name} applied for ${days}-day ${type} leave (${from} – ${to})`);
+      notifyAdminsAndHR('leave_applied', 'New Leave Request', `${employee_name} applied for ${type.replace('_',' ')} leave (${from} – ${to})`);
     }
     res.status(201).json(rows[0]);
   } catch (err) { res.status(500).json({ error: 'Server error' }); }
@@ -242,10 +301,15 @@ app.patch('/api/leave/requests/:id/manager-approve', async (req, res) => {
       const rows = await sql`UPDATE leave_requests SET manager_status='rejected', manager_id=${manager_id ?? null}, manager_approved_at=NOW(), status='rejected' WHERE id=${req.params.id} RETURNING *`;
       if (!rows.length) return res.status(404).json({ error: 'Not found' });
       const leave = rows[0] as any;
+      const empRows = await sql`SELECT join_date FROM employees WHERE id=${leave.employee_id}`.catch(() => []);
+      if (isOnProbation((empRows[0] as any)?.join_date ?? null)) {
+        const cost = leave.type === 'half_day' ? 2 : 1;
+        await sql`UPDATE leave_balances SET probation_short_used=GREATEST(0,probation_short_used-${cost}) WHERE employee_id=${leave.employee_id}`.catch(() => {});
+      }
       const from = new Date(leave.from_date).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' });
       const to   = new Date(leave.to_date).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' });
       notifyEmployeeUser(leave.employee_id, 'leave_rejected', 'Leave Rejected by Manager',
-        `Your ${leave.type} leave (${from} – ${to}, ${leave.days} day${leave.days > 1 ? 's' : ''}) was rejected by your manager.`);
+        `Your ${leave.type.replace('_',' ')} leave (${from} – ${to}) was rejected by your manager.`);
       return res.json(leave);
     }
     const rows = await sql`UPDATE leave_requests SET manager_status='approved', manager_id=${manager_id ?? null}, manager_approved_at=NOW() WHERE id=${req.params.id} RETURNING *`;
@@ -254,7 +318,7 @@ app.patch('/api/leave/requests/:id/manager-approve', async (req, res) => {
     const from = new Date(leave.from_date).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' });
     const to   = new Date(leave.to_date).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' });
     notifyAdminsAndHR('leave_applied', 'Leave Needs HR Approval',
-      `${leave.employee_name}'s ${leave.type} leave (${from} – ${to}) approved by manager — awaiting your final approval.`);
+      `${leave.employee_name}'s ${leave.type.replace('_',' ')} leave (${from} – ${to}) approved by manager — awaiting your final approval.`);
     res.json(leave);
   } catch (err) { res.status(500).json({ error: 'Server error' }); }
 });
@@ -266,21 +330,20 @@ app.patch('/api/leave/requests/:id', async (req, res) => {
     const rows = await sql`UPDATE leave_requests SET status=${status} WHERE id=${req.params.id} RETURNING *`;
     if (!rows.length) return res.status(404).json({ error: 'Not found' });
     const leave = rows[0] as any;
-    // Decrement leave balance when approved
     if (status === 'approved') {
-      if (leave.type === 'casual') {
-        await sql`UPDATE leave_balances SET casual = GREATEST(0, casual - ${leave.days}) WHERE employee_id = ${leave.employee_id}`.catch(() => {});
-      } else if (leave.type === 'sick') {
-        await sql`UPDATE leave_balances SET sick = GREATEST(0, sick - ${leave.days}) WHERE employee_id = ${leave.employee_id}`.catch(() => {});
-      } else if (leave.type === 'earned') {
-        await sql`UPDATE leave_balances SET earned = GREATEST(0, earned - ${leave.days}) WHERE employee_id = ${leave.employee_id}`.catch(() => {});
+      await deductLeaveBalance(leave.employee_id, leave.type, leave.days);
+    } else {
+      const empRows = await sql`SELECT join_date FROM employees WHERE id=${leave.employee_id}`.catch(() => []);
+      if (isOnProbation((empRows[0] as any)?.join_date ?? null)) {
+        const cost = leave.type === 'half_day' ? 2 : 1;
+        await sql`UPDATE leave_balances SET probation_short_used=GREATEST(0,probation_short_used-${cost}) WHERE employee_id=${leave.employee_id}`.catch(() => {});
       }
     }
     const from = new Date(leave.from_date).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' });
     const to   = new Date(leave.to_date).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' });
     notifyEmployeeUser(leave.employee_id, status === 'approved' ? 'leave_approved' : 'leave_rejected',
       status === 'approved' ? 'Leave Approved' : 'Leave Rejected',
-      `Your ${leave.type} leave (${from} – ${to}, ${leave.days} day${leave.days > 1 ? 's' : ''}) has been ${status}.`);
+      `Your ${leave.type.replace('_',' ')} leave (${from} – ${to}) has been ${status}.`);
     res.json(leave);
   } catch (err) { res.status(500).json({ error: 'Server error' }); }
 });
@@ -294,9 +357,15 @@ app.delete('/api/leave/requests/:id', async (req, res) => {
 
 app.get('/api/leave/balances/:employee_id', async (req, res) => {
   try {
+    const empRows = await sql`SELECT join_date FROM employees WHERE id=${req.params.employee_id}`.catch(() => []);
+    const joinDate = (empRows[0] as any)?.join_date ?? null;
+    await creditMonthlyLeave(req.params.employee_id, joinDate).catch(() => {});
     const rows = await sql`SELECT * FROM leave_balances WHERE employee_id=${req.params.employee_id}`;
     if (!rows.length) return res.status(404).json({ error: 'Not found' });
-    res.json(rows[0]);
+    const bal = rows[0] as any;
+    bal.on_probation = isOnProbation(joinDate);
+    bal.probation_short_remaining = Math.max(0, 2 - (bal.probation_short_used ?? 0));
+    res.json(bal);
   } catch (err) { res.status(500).json({ error: 'Server error' }); }
 });
 

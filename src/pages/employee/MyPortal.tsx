@@ -49,14 +49,22 @@ const leaveStatusConfig = {
   rejected: { color: 'bg-red-50 text-red-500 border-red-200',        icon: XCircle },
 };
 
-function ApplyLeaveModal({ onClose, onSubmit }: { onClose: () => void; onSubmit: (d: any) => void }) {
-  const [form, setForm] = useState({ type: 'casual', from: '', to: '', reason: '' });
+function ApplyLeaveModal({ onClose, onSubmit, balance }: { onClose: () => void; onSubmit: (d: any) => void; balance: any }) {
+  const onProbation = balance?.on_probation ?? false;
+  const availableTypes = onProbation
+    ? [{ key: 'half_day', label: 'Half Day' }, { key: 'short_leave', label: 'Short Leave' }]
+    : [{ key: 'full_day', label: 'Full Day' }, { key: 'half_day', label: 'Half Day' }, { key: 'short_leave', label: 'Short Leave' }];
+
+  const [form, setForm] = useState({ type: availableTypes[0].key, from: '', to: '', reason: '' });
+  const isSingleDay = form.type === 'half_day' || form.type === 'short_leave';
+
   const handleSubmit = () => {
-    if (!form.from || !form.to || !form.reason) return;
-    const days = Math.max(1, Math.ceil((new Date(form.to).getTime() - new Date(form.from).getTime()) / 86400000) + 1);
-    onSubmit({ ...form, days, from_date: form.from, to_date: form.to });
+    if (!form.from || !form.reason) return;
+    const days = isSingleDay ? 1 : Math.max(1, Math.ceil((new Date(form.to).getTime() - new Date(form.from).getTime()) / 86400000) + 1);
+    onSubmit({ ...form, days, from_date: form.from, to_date: isSingleDay ? form.from : form.to });
     onClose();
   };
+
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 backdrop-blur-sm p-4">
       <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md p-6">
@@ -64,25 +72,37 @@ function ApplyLeaveModal({ onClose, onSubmit }: { onClose: () => void; onSubmit:
           <h3 className="text-lg font-semibold text-gray-900">Apply for Leave</h3>
           <button onClick={onClose}><X size={18} className="text-gray-400" /></button>
         </div>
+        {onProbation && (
+          <div className="mb-4 px-3 py-2.5 rounded-xl text-xs font-medium" style={{ background: '#fef3c7', color: '#92400e' }}>
+            You are on probation — only Short Leave (×2) or Half Day allowed during this period.
+            Remaining: {balance?.probation_short_remaining ?? 0} short leave credit(s).
+          </div>
+        )}
         <div className="space-y-3">
           <div>
             <label className="text-xs font-medium text-gray-500 mb-1.5 block">Leave Type</label>
             <select value={form.type} onChange={e => setForm(f => ({ ...f, type: e.target.value }))}
               className="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm focus:outline-none bg-white">
-              {['casual', 'sick', 'earned'].map(t => <option key={t} value={t}>{t.charAt(0).toUpperCase() + t.slice(1)} Leave</option>)}
+              {availableTypes.map(t => <option key={t.key} value={t.key}>{t.label}</option>)}
             </select>
+            {form.type === 'full_day' && <p className="text-xs text-blue-600 mt-1">Balance: {balance?.full_day ?? 0} day(s) — carries forward</p>}
+            {form.type === 'half_day' && <p className="text-xs text-purple-600 mt-1">Costs 2 short leave credits — this month: {balance?.short_leave ?? 0} remaining</p>}
+            {form.type === 'short_leave' && <p className="text-xs text-amber-600 mt-1">Costs 1 short leave credit — this month: {balance?.short_leave ?? 0} remaining</p>}
           </div>
-          <div className="grid grid-cols-2 gap-3">
+          <div className={isSingleDay ? '' : 'grid grid-cols-2 gap-3'}>
             <div>
-              <label className="text-xs font-medium text-gray-500 mb-1.5 block">From</label>
-              <input type="date" value={form.from} onChange={e => setForm(f => ({ ...f, from: e.target.value }))}
+              <label className="text-xs font-medium text-gray-500 mb-1.5 block">{isSingleDay ? 'Date' : 'From'}</label>
+              <input type="date" value={form.from}
+                onChange={e => setForm(f => ({ ...f, from: e.target.value, to: isSingleDay ? e.target.value : f.to }))}
                 className="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm focus:outline-none" />
             </div>
-            <div>
-              <label className="text-xs font-medium text-gray-500 mb-1.5 block">To</label>
-              <input type="date" value={form.to} onChange={e => setForm(f => ({ ...f, to: e.target.value }))}
-                className="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm focus:outline-none" />
-            </div>
+            {!isSingleDay && (
+              <div>
+                <label className="text-xs font-medium text-gray-500 mb-1.5 block">To</label>
+                <input type="date" value={form.to} onChange={e => setForm(f => ({ ...f, to: e.target.value }))}
+                  className="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm focus:outline-none" />
+              </div>
+            )}
           </div>
           <div>
             <label className="text-xs font-medium text-gray-500 mb-1.5 block">Reason</label>
@@ -461,12 +481,29 @@ export default function MyPortal() {
               </div>
             </div>
             <div className="bg-white rounded-xl p-5 border border-gray-100 shadow-sm">
-              <p className="text-xs font-semibold text-gray-400 uppercase tracking-wide mb-3">Leave Balance</p>
-              <div className="grid grid-cols-3 gap-3">
-                <div className="text-center"><p className="text-2xl font-bold text-blue-600">{balance.casual}</p><p className="text-xs text-gray-400">Casual</p></div>
-                <div className="text-center"><p className="text-2xl font-bold text-red-500">{balance.sick}</p><p className="text-xs text-gray-400">Sick</p></div>
-                <div className="text-center"><p className="text-2xl font-bold text-green-600">{balance.earned}</p><p className="text-xs text-gray-400">Earned</p></div>
+              <div className="flex items-center justify-between mb-3">
+                <p className="text-xs font-semibold text-gray-400 uppercase tracking-wide">Leave Balance</p>
+                {balance.on_probation && (
+                  <span className="text-xs font-semibold px-2 py-0.5 rounded-full" style={{ background: '#fef3c7', color: '#92400e' }}>Probation</span>
+                )}
               </div>
+              {balance.on_probation ? (
+                <div className="grid grid-cols-2 gap-3">
+                  <div className="text-center">
+                    <p className="text-2xl font-bold text-amber-500">{balance.probation_short_remaining ?? 0}</p>
+                    <p className="text-xs text-gray-400">Short Leave Left</p>
+                  </div>
+                  <div className="text-center">
+                    <p className="text-2xl font-bold text-gray-300">0</p>
+                    <p className="text-xs text-gray-400">Full Day (locked)</p>
+                  </div>
+                </div>
+              ) : (
+                <div className="grid grid-cols-2 gap-3">
+                  <div className="text-center"><p className="text-2xl font-bold text-blue-600">{balance.full_day ?? 0}</p><p className="text-xs text-gray-400">Full Day</p></div>
+                  <div className="text-center"><p className="text-2xl font-bold text-purple-600">{balance.short_leave ?? 0}</p><p className="text-xs text-gray-400">Short / Half Day</p></div>
+                </div>
+              )}
             </div>
           </div>
         </div>
@@ -547,7 +584,7 @@ export default function MyPortal() {
               </table>
             )}
           </div>
-          {applyLeave && <ApplyLeaveModal onClose={() => setApplyLeave(false)} onSubmit={handleApplyLeave} />}
+          {applyLeave && <ApplyLeaveModal onClose={() => setApplyLeave(false)} onSubmit={handleApplyLeave} balance={balance} />}
         </div>
       )}
 
