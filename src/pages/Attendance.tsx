@@ -4,6 +4,15 @@ import { Clock, CheckCircle, XCircle, AlertCircle, ChevronLeft, ChevronRight, Ca
 import { api } from '../services/api';
 import { useAuth } from '../context/AuthContext';
 
+function fmtHours(h: number | string | null | undefined): string {
+  const total = Number(h) || 0;
+  const hrs = Math.floor(total);
+  const mins = Math.round((total - hrs) * 60);
+  if (hrs === 0) return `${mins}m`;
+  if (mins === 0) return `${hrs}h`;
+  return `${hrs}h ${mins}m`;
+}
+
 const statusConfig = {
   present:      { label: 'Present',      color: 'bg-green-50 text-green-600',   dot: 'bg-green-500' },
   absent:       { label: 'Absent',       color: 'bg-red-50 text-red-500',       dot: 'bg-red-500' },
@@ -514,7 +523,7 @@ export default function Attendance() {
           { label: 'Present', value: presentCount, icon: CheckCircle, color: 'text-green-500' },
           { label: 'Absent', value: absentCount, icon: XCircle, color: 'text-red-500' },
           { label: 'Late', value: lateCount, icon: AlertCircle, color: 'text-amber-500' },
-          { label: 'Avg Hours/Day', value: `${(totalHours / Math.max(presentCount + lateCount, 1)).toFixed(1)}h`, icon: Clock, color: 'text-primary-500' },
+          { label: 'Avg Hours/Day', value: fmtHours(totalHours / Math.max(presentCount + lateCount, 1)), icon: Clock, color: 'text-primary-500' },
         ].map(({ label, value, icon: Icon, color }) => (
           <div key={label} className="bg-white rounded-xl p-4 border border-gray-100 shadow-sm">
             <Icon size={18} className={color} />
@@ -594,7 +603,7 @@ export default function Attendance() {
                       </span>
                     </div>
                     <div className="text-xs text-gray-400">
-                      {r.check_in ? <span>{r.check_in} – {r.check_out ?? '—'} <span className="text-gray-500 font-medium">{r.total_hours}h</span></span> : '—'}
+                      {r.check_in ? <span>{r.check_in} – {r.check_out ?? '—'} <span className="text-gray-500 font-medium">{fmtHours(r.total_hours)}</span></span> : '—'}
                     </div>
                   </div>
                 );

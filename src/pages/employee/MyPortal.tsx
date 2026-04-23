@@ -2,6 +2,15 @@ import { useState, useEffect, Component, type ReactNode } from 'react';
 import { Clock, Calendar, DollarSign, User, CheckCircle, XCircle, AlertCircle, Plus, X, Target, FileText, Lock, Trash2, Save, Users } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
 import { api } from '../../services/api';
+
+function fmtHours(h: number | string | null | undefined): string {
+  const total = Number(h) || 0;
+  const hrs = Math.floor(total);
+  const mins = Math.round((total - hrs) * 60);
+  if (hrs === 0) return `${mins}m`;
+  if (mins === 0) return `${hrs}h`;
+  return `${hrs}h ${mins}m`;
+}
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Cell } from 'recharts';
 import { GoalCard, GOAL_STATUSES, GOAL_STATUS_CONFIG } from '../Performance';
 import type { GoalStatus } from '../Performance';
@@ -589,7 +598,7 @@ export default function MyPortal() {
                     <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${cfg?.color}`}>{cfg?.label}</span>
                   </div>
                   <span className="text-sm text-gray-400">
-                    {r.check_in ? `${r.check_in} – ${r.check_out ?? '—'} (${r.total_hours}h)` : '—'}
+                    {r.check_in ? `${r.check_in} – ${r.check_out ?? '—'} (${fmtHours(r.total_hours)})` : '—'}
                   </span>
                 </div>
               );
