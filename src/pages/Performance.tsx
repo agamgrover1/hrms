@@ -5,7 +5,7 @@ import {
 import {
   Target, TrendingUp, Award, Calendar, Plus, X, Trash2,
   ChevronDown, MessageSquare, Edit3, CheckCircle, AlertCircle, Info,
-  Lock, FileText, ChevronRight, Save
+  Lock, FileText, ChevronRight, Save, Circle, RefreshCw, Minus, Check
 } from 'lucide-react';
 import { api } from '../services/api';
 import { useAuth } from '../context/AuthContext';
@@ -23,6 +23,51 @@ const CATEGORIES = [
 
 type CategoryKey = typeof CATEGORIES[number]['key'];
 type Scores = Record<CategoryKey, number>;
+
+// ─── Goal status config (shared across admin + employee views) ───────────────
+export const GOAL_STATUSES = ['not_started', 'touched', 'in_progress', 'completed'] as const;
+export type GoalStatus = typeof GOAL_STATUSES[number];
+
+export const GOAL_STATUS_CONFIG: Record<GoalStatus, { label: string; color: string; bg: string; border: string; icon: any }> = {
+  not_started: { label: 'Not Started', color: '#6b7280', bg: '#f3f4f6', border: '#e5e7eb', icon: Circle },
+  touched:     { label: 'Touched',     color: '#d97706', bg: '#fffbeb', border: '#fde68a', icon: Minus },
+  in_progress: { label: 'In Progress', color: '#2563eb', bg: '#eff6ff', border: '#bfdbfe', icon: RefreshCw },
+  completed:   { label: 'Completed',   color: '#16a34a', bg: '#f0fdf4', border: '#bbf7d0', icon: Check },
+};
+
+// ─── Read-only goal card (used on both admin view + employee MyPortal) ───────
+export function GoalCard({ goal, index }: { goal: any; index: number }) {
+  const status: GoalStatus = goal.status ?? 'not_started';
+  const cfg = GOAL_STATUS_CONFIG[status];
+  const Icon = cfg.icon;
+  return (
+    <div className="flex gap-3 p-4 rounded-xl border" style={{ borderColor: '#e2e4ed', background: '#fafbff' }}>
+      <div className="w-6 h-6 rounded-full flex items-center justify-center text-xs font-bold flex-shrink-0 mt-0.5"
+        style={{ background: 'rgba(238,39,112,0.12)', color: '#EE2770' }}>
+        {index + 1}
+      </div>
+      <div className="flex-1 min-w-0">
+        <div className="flex items-start justify-between gap-3 flex-wrap">
+          <p className="font-semibold text-sm" style={{ color: '#192250' }}>{goal.title}</p>
+          <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-xs font-semibold flex-shrink-0"
+            style={{ background: cfg.bg, color: cfg.color, border: `1px solid ${cfg.border}` }}>
+            <Icon size={11} /> {cfg.label}
+          </span>
+        </div>
+        {goal.description && <p className="text-xs text-gray-500 mt-1">{goal.description}</p>}
+        {goal.success_criteria && (
+          <p className="text-xs text-gray-400 mt-1 italic">Target: {goal.success_criteria}</p>
+        )}
+        {goal.reviewer_comment && (
+          <div className="mt-2 px-3 py-2 rounded-lg text-xs" style={{ background: 'rgba(25,34,80,0.05)', color: '#374151' }}>
+            <span className="font-semibold" style={{ color: '#192250' }}>Reviewer: </span>
+            {goal.reviewer_comment}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
 
 function scoreColor(score: number) {
   if (score >= 85) return '#16a34a';
@@ -316,58 +361,98 @@ function AdminGoalsModal({ record, onSave, onClose }: {
       <div className="bg-white rounded-2xl shadow-2xl w-full max-w-2xl max-h-[90vh] overflow-y-auto">
         <div className="flex items-center justify-between p-5 border-b border-gray-100">
           <div>
-            <h3 className="font-bold text-base" style={{ color: '#192250' }}>Edit Appraisal Goals</h3>
-            <p className="text-xs text-gray-400 mt-0.5">{record.employee_name} · {record.year} · Admin override</p>
+            <h3 className="font-bold text-base" style={{ color: '#192250' }}>Review Appraisal Goals</h3>
+            <p className="text-xs text-gray-400 mt-0.5">
+              {record.employee_name} · {MONTHS[record.month - 1]} {record.year} · Update status and add comments
+            </p>
           </div>
           <button onClick={onClose} className="p-1.5 hover:bg-gray-100 rounded-lg"><X size={16} className="text-gray-400" /></button>
         </div>
-        <div className="p-5 space-y-4">
+        <div className="p-5 space-y-5">
           {goals.map((g, i) => (
-            <div key={i} className="border rounded-xl p-4 space-y-3" style={{ borderColor: '#e2e4ed' }}>
-              <div className="flex items-center justify-between">
-                <span className="text-xs font-bold uppercase tracking-wide" style={{ color: '#EE2770' }}>Goal {i + 1}</span>
-                <button onClick={() => setGoals(g => g.filter((_, j) => j !== i))} className="p-1 hover:bg-red-50 rounded">
-                  <Trash2 size={13} className="text-red-400" />
+            <div key={i} className="border rounded-xl overflow-hidden" style={{ borderColor: '#e2e4ed' }}>
+              {/* Goal header */}
+              <div className="flex items-start justify-between gap-3 px-4 pt-4 pb-3">
+                <div className="flex items-start gap-2.5 flex-1">
+                  <div className="w-6 h-6 rounded-full flex items-center justify-center text-xs font-bold flex-shrink-0 mt-0.5"
+                    style={{ background: 'rgba(238,39,112,0.12)', color: '#EE2770' }}>{i + 1}</div>
+                  <div className="flex-1">
+                    <input
+                      value={g.title ?? ''}
+                      onChange={e => update(i, 'title', e.target.value)}
+                      placeholder="Goal title"
+                      className="w-full font-semibold text-sm bg-transparent border-b focus:outline-none pb-1"
+                      style={{ color: '#192250', borderColor: '#e2e4ed' }}
+                    />
+                    <input
+                      value={g.description ?? ''}
+                      onChange={e => update(i, 'description', e.target.value)}
+                      placeholder="Description"
+                      className="w-full text-xs text-gray-500 bg-transparent border-b focus:outline-none pb-1 mt-1"
+                      style={{ borderColor: '#f3f4f6' }}
+                    />
+                    {g.success_criteria && (
+                      <p className="text-xs text-gray-400 mt-1 italic">Target: {g.success_criteria}</p>
+                    )}
+                  </div>
+                </div>
+                <button onClick={() => setGoals(g => g.filter((_, j) => j !== i))} className="p-1 hover:bg-red-50 rounded flex-shrink-0">
+                  <Trash2 size={13} className="text-red-300" />
                 </button>
               </div>
-              <input
-                value={g.title ?? ''}
-                onChange={e => update(i, 'title', e.target.value)}
-                placeholder="Goal title"
-                className="w-full border rounded-lg px-3 py-2 text-sm focus:outline-none"
-                style={{ borderColor: '#e2e4ed' }}
-              />
-              <textarea
-                value={g.description ?? ''}
-                onChange={e => update(i, 'description', e.target.value)}
-                rows={2}
-                placeholder="Description"
-                className="w-full border rounded-lg px-3 py-2 text-sm resize-none focus:outline-none"
-                style={{ borderColor: '#e2e4ed' }}
-              />
-              <input
-                value={g.success_criteria ?? ''}
-                onChange={e => update(i, 'success_criteria', e.target.value)}
-                placeholder="Success criteria / measurable outcome"
-                className="w-full border rounded-lg px-3 py-2 text-sm focus:outline-none"
-                style={{ borderColor: '#e2e4ed' }}
-              />
+
+              {/* Status selector */}
+              <div className="px-4 pb-3">
+                <p className="text-xs font-semibold uppercase tracking-wide mb-2" style={{ color: '#6b7280' }}>Goal Status</p>
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                  {GOAL_STATUSES.map(s => {
+                    const cfg = GOAL_STATUS_CONFIG[s];
+                    const Icon = cfg.icon;
+                    const active = (g.status ?? 'not_started') === s;
+                    return (
+                      <button
+                        key={s}
+                        onClick={() => update(i, 'status', s)}
+                        className="flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs font-semibold border transition-all"
+                        style={active
+                          ? { background: cfg.bg, color: cfg.color, borderColor: cfg.border }
+                          : { background: '#f9fafb', color: '#9ca3af', borderColor: '#e5e7eb' }}
+                      >
+                        <Icon size={11} /> {cfg.label}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+
+              {/* Reviewer comment */}
+              <div className="px-4 pb-4">
+                <textarea
+                  value={g.reviewer_comment ?? ''}
+                  onChange={e => update(i, 'reviewer_comment', e.target.value)}
+                  rows={2}
+                  placeholder="Reviewer comment (visible to employee)…"
+                  className="w-full border rounded-lg px-3 py-2 text-xs resize-none focus:outline-none"
+                  style={{ borderColor: '#e2e4ed', color: '#374151' }}
+                  onFocus={e => { e.target.style.borderColor = '#192250'; }}
+                  onBlur={e => { e.target.style.borderColor = '#e2e4ed'; }}
+                />
+              </div>
             </div>
           ))}
+
           {goals.length < 6 && (
             <button
-              onClick={() => setGoals(g => [...g, { title: '', description: '', success_criteria: '' }])}
+              onClick={() => setGoals(g => [...g, { title: '', description: '', success_criteria: '', status: 'not_started' }])}
               className="w-full py-2.5 border-2 border-dashed rounded-xl text-sm font-semibold text-gray-400 hover:border-pink-300 hover:text-pink-400 transition-colors"
               style={{ borderColor: '#e2e4ed' }}
-            >
-              + Add Goal
-            </button>
+            >+ Add Goal</button>
           )}
         </div>
         <div className="flex gap-3 p-5 border-t border-gray-100">
           <button onClick={onClose} className="flex-1 py-2.5 border rounded-xl text-sm font-semibold text-gray-600 hover:bg-gray-50" style={{ borderColor: '#e2e4ed' }}>Cancel</button>
           <button onClick={handleSave} disabled={saving} className="flex-1 py-2.5 text-white rounded-xl text-sm font-semibold disabled:opacity-60" style={{ background: 'linear-gradient(135deg, #EE2770 0%, #d11f62 100%)' }}>
-            {saving ? 'Saving…' : 'Save Changes'}
+            {saving ? 'Saving…' : 'Save Review'}
           </button>
         </div>
       </div>
@@ -824,7 +909,7 @@ export default function Performance() {
                               className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs font-semibold border hover:bg-gray-50 transition-colors"
                               style={{ color: '#EE2770', borderColor: '#ffd6e8' }}
                             >
-                              <Edit3 size={11} /> Edit
+                              <Edit3 size={11} /> Review
                             </button>
                           )}
                           <ChevronRight size={16} className={`text-gray-300 transition-transform ${isExpanded ? 'rotate-90' : ''}`} />
@@ -836,21 +921,9 @@ export default function Performance() {
                           {!record.goals?.length ? (
                             <p className="text-sm text-gray-400">No goals entered.</p>
                           ) : (
-                            <div className="space-y-4">
+                            <div className="space-y-3">
                               {record.goals.map((g: any, i: number) => (
-                                <div key={i} className="flex gap-3">
-                                  <div className="w-6 h-6 rounded-full flex items-center justify-center text-xs font-bold flex-shrink-0 mt-0.5"
-                                    style={{ background: 'rgba(238,39,112,0.12)', color: '#EE2770' }}>
-                                    {i + 1}
-                                  </div>
-                                  <div className="flex-1">
-                                    <p className="font-semibold text-sm" style={{ color: '#192250' }}>{g.title}</p>
-                                    {g.description && <p className="text-xs text-gray-500 mt-0.5">{g.description}</p>}
-                                    {g.success_criteria && (
-                                      <p className="text-xs text-gray-400 mt-1 italic">Success criteria: {g.success_criteria}</p>
-                                    )}
-                                  </div>
-                                </div>
+                                <GoalCard key={i} goal={g} index={i} />
                               ))}
                             </div>
                           )}

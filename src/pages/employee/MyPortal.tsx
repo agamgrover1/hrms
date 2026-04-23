@@ -3,6 +3,7 @@ import { Clock, Calendar, DollarSign, User, CheckCircle, XCircle, AlertCircle, P
 import { useAuth } from '../../context/AuthContext';
 import { api } from '../../services/api';
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Cell } from 'recharts';
+import { GoalCard } from '../Performance';
 
 const tabs = [
   { key: 'overview',     label: 'Overview',     icon: User },
@@ -524,15 +525,7 @@ export default function MyPortal() {
                       <span>Submitted on {new Date(currentAppraisal.submitted_at).toLocaleDateString('en-IN', { day: 'numeric', month: 'long', year: 'numeric' })}. Only admin can make changes.</span>
                     </div>
                     {(currentAppraisal.goals ?? []).map((g: any, i: number) => (
-                      <div key={i} className="flex gap-3 p-4 rounded-xl border" style={{ borderColor: '#e2e4ed', background: '#fafbff' }}>
-                        <div className="w-6 h-6 rounded-full flex items-center justify-center text-xs font-bold flex-shrink-0"
-                          style={{ background: 'rgba(238,39,112,0.12)', color: '#EE2770' }}>{i + 1}</div>
-                        <div>
-                          <p className="font-semibold text-sm" style={{ color: '#192250' }}>{g.title}</p>
-                          {g.description && <p className="text-xs text-gray-500 mt-0.5">{g.description}</p>}
-                          {g.success_criteria && <p className="text-xs text-gray-400 mt-1 italic">✓ {g.success_criteria}</p>}
-                        </div>
-                      </div>
+                      <GoalCard key={i} goal={g} index={i} />
                     ))}
                   </div>
                 ) : (
@@ -630,15 +623,7 @@ export default function MyPortal() {
                     </summary>
                     <div className="px-5 pb-4 pt-2 space-y-3">
                       {(appraisal.goals ?? []).map((g: any, i: number) => (
-                        <div key={i} className="flex gap-3 p-3 rounded-xl border" style={{ borderColor: '#e2e4ed', background: '#fafbff' }}>
-                          <div className="w-5 h-5 rounded-full flex items-center justify-center text-xs font-bold flex-shrink-0"
-                            style={{ background: 'rgba(238,39,112,0.12)', color: '#EE2770' }}>{i + 1}</div>
-                          <div>
-                            <p className="font-semibold text-sm" style={{ color: '#192250' }}>{g.title}</p>
-                            {g.description && <p className="text-xs text-gray-500 mt-0.5">{g.description}</p>}
-                            {g.success_criteria && <p className="text-xs text-gray-400 mt-1 italic">✓ {g.success_criteria}</p>}
-                          </div>
-                        </div>
+                        <GoalCard key={i} goal={g} index={i} />
                       ))}
                     </div>
                   </details>
