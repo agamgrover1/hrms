@@ -217,12 +217,38 @@ function isOnProbation(joinDate: string | null, probationEndDate?: string | null
   return new Date() < end;
 }
 
+const LEAVE_TYPE_ATT_STATUS: Record<string, string> = {
+  full_day:    'on_leave',
+  half_day:    'half-day',
+  short_leave: 'short_leave',
+  unpaid:      'unpaid_leave',
+  casual:      'on_leave',
+  sick:        'on_leave',
+  earned:      'on_leave',
+};
+
+async function restoreOneDayBalance(employeeId: string, oldAttStatus: string) {
+  if (oldAttStatus === 'on_leave') {
+    await sql`UPDATE leave_balances SET full_day = full_day + 1 WHERE employee_id=${employeeId}`.catch(() => {});
+  } else if (oldAttStatus === 'half-day') {
+    await sql`UPDATE leave_balances SET short_leave = short_leave + 2 WHERE employee_id=${employeeId}`.catch(() => {});
+  } else if (oldAttStatus === 'short_leave') {
+    await sql`UPDATE leave_balances SET short_leave = short_leave + 1 WHERE employee_id=${employeeId}`.catch(() => {});
+  }
+}
+
 async function markLeaveAttendance(employeeId: string, fromDate: string, toDate: string, type: string) {
-  const attStatus = type === 'unpaid' ? 'unpaid_leave' : 'on_leave';
+  const attStatus = LEAVE_TYPE_ATT_STATUS[type] ?? 'on_leave';
+  const leaveStatuses = new Set(['on_leave', 'short_leave', 'half-day', 'unpaid_leave']);
   const start = new Date(fromDate);
   const end = new Date(toDate);
   for (let d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) {
     const dateStr = d.toISOString().split('T')[0];
+    const existing = await sql`SELECT status FROM attendance_records WHERE employee_id=${employeeId} AND date::date=${dateStr}::date`.catch(() => []);
+    const oldStatus = (existing[0] as any)?.status;
+    if (oldStatus && leaveStatuses.has(oldStatus) && oldStatus !== attStatus) {
+      await restoreOneDayBalance(employeeId, oldStatus);
+    }
     await sql`
       INSERT INTO attendance_records (employee_id, date, status, total_hours)
       VALUES (${employeeId}, ${dateStr}, ${attStatus}, 0)
@@ -388,6 +414,17 @@ app.delete('/api/leave/requests/:id', async (req, res) => {
   try {
     await sql`DELETE FROM leave_requests WHERE id=${req.params.id}`;
     res.json({ success: true });
+  } catch (err) { res.status(500).json({ error: 'Server error' }); }
+});
+
+app.patch('/api/leave/balances/:employee_id', async (req, res) => {
+  try {
+    const { full_day, short_leave } = req.body;
+    const rows = await sql`
+      UPDATE leave_balances SET full_day=${Number(full_day)}, short_leave=${Number(short_leave)}
+      WHERE employee_id=${req.params.employee_id} RETURNING *`;
+    if (!rows.length) return res.status(404).json({ error: 'Not found' });
+    res.json(rows[0]);
   } catch (err) { res.status(500).json({ error: 'Server error' }); }
 });
 

@@ -61,6 +61,18 @@ function EmployeeDetail({ emp, onClose, onEdit, onDelete }: { emp: any; onClose:
   const [savingProbation, setSavingProbation] = useState(false);
   const [probationSaved, setProbationSaved] = useState(false);
 
+  const [balAdj, setBalAdj] = useState({ full_day: 0, short_leave: 0 });
+  const [balLoaded, setBalLoaded] = useState(false);
+  const [savingBal, setSavingBal] = useState(false);
+  const [balSaved, setBalSaved] = useState(false);
+
+  useEffect(() => {
+    api.getLeaveBalance(emp.id).then(bal => {
+      setBalAdj({ full_day: bal.full_day ?? 0, short_leave: bal.short_leave ?? 0 });
+      setBalLoaded(true);
+    }).catch(() => setBalLoaded(true));
+  }, [emp.id]);
+
   const effectiveEnd = probationEnd || defaultProbationEnd;
   const onProbation = effectiveEnd ? new Date() < new Date(effectiveEnd) : false;
 
@@ -73,6 +85,18 @@ function EmployeeDetail({ emp, onClose, onEdit, onDelete }: { emp: any; onClose:
       setTimeout(() => setProbationSaved(false), 2500);
     } catch { /* ignore */ } finally {
       setSavingProbation(false);
+    }
+  };
+
+  const handleSaveBalance = async () => {
+    setSavingBal(true);
+    setBalSaved(false);
+    try {
+      await api.adjustLeaveBalance(emp.id, balAdj);
+      setBalSaved(true);
+      setTimeout(() => setBalSaved(false), 2500);
+    } catch { /* ignore */ } finally {
+      setSavingBal(false);
     }
   };
 
@@ -156,6 +180,43 @@ function EmployeeDetail({ emp, onClose, onEdit, onDelete }: { emp: any; onClose:
               </button>
             </div>
             <p className="text-xs text-gray-400 mt-1.5">Default: join date + 3 months. Override to end probation early or extend it.</p>
+          </div>
+
+          <div className="mt-4 p-4 border border-gray-100 rounded-xl">
+            <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-3">Leave Balance</p>
+            {!balLoaded ? (
+              <p className="text-xs text-gray-400">Loading…</p>
+            ) : (
+              <div className="space-y-3">
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <label className="block text-xs text-gray-500 mb-1">Full Day (carries forward)</label>
+                    <input
+                      type="number" min="0" max="365"
+                      value={balAdj.full_day}
+                      onChange={e => setBalAdj(b => ({ ...b, full_day: Number(e.target.value) }))}
+                      className="w-full text-sm border border-gray-200 rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-primary-200"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs text-gray-500 mb-1">Short Leave / Half Day credits</label>
+                    <input
+                      type="number" min="0" max="30"
+                      value={balAdj.short_leave}
+                      onChange={e => setBalAdj(b => ({ ...b, short_leave: Number(e.target.value) }))}
+                      className="w-full text-sm border border-gray-200 rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-primary-200"
+                    />
+                  </div>
+                </div>
+                <button
+                  onClick={handleSaveBalance}
+                  disabled={savingBal}
+                  className="w-full py-2 text-xs font-semibold text-white bg-primary-500 hover:bg-primary-600 rounded-lg disabled:opacity-60"
+                >
+                  {savingBal ? 'Saving…' : balSaved ? '✓ Balance Updated' : 'Save Balance'}
+                </button>
+              </div>
+            )}
           </div>
         </div>
       </div>
