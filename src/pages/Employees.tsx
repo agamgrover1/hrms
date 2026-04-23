@@ -533,8 +533,9 @@ export default function Employees() {
       await api.deleteEmployee(emp.id);
       setEmployees(prev => prev.filter(e => e.id !== emp.id));
       setConfirmDelete(null);
-      setSelected(null);
-    } catch { /* ignore */ } finally {
+    } catch (err: any) {
+      alert(err.message || 'Failed to delete employee. Please try again.');
+    } finally {
       setDeleting(false);
     }
   };

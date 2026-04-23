@@ -62,4 +62,14 @@ router.put('/:id', async (req, res) => {
   }
 });
 
+router.delete('/:id', async (req, res) => {
+  try {
+    await sql`DELETE FROM employees WHERE id = ${req.params.id}`;
+    res.json({ success: true });
+  } catch (err) {
+    console.error('[DELETE employee]', err);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
 export default router;
