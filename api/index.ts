@@ -150,7 +150,7 @@ app.patch('/api/employees/:id/probation', async (req, res) => {
     if (!empRows.length) return res.status(404).json({ error: 'Not found' });
     const emp = empRows[0] as any;
     const defaultEnd = emp.join_date
-      ? (() => { const d = new Date(emp.join_date); d.setMonth(d.getMonth() + 3); return d; })()
+      ? (() => { const d = new Date(emp.join_date); d.setDate(d.getDate() + 90); return d; })()
       : null;
     const effectiveEnd = emp.probation_end_date ? new Date(emp.probation_end_date) : defaultEnd;
     const isConfirmed = effectiveEnd ? new Date() >= effectiveEnd : false;
@@ -244,7 +244,7 @@ function isOnProbation(joinDate: string | null, probationEndDate?: string | null
   if (!joinDate) return false;
   const end = probationEndDate
     ? new Date(probationEndDate)
-    : (() => { const d = new Date(joinDate); d.setMonth(d.getMonth() + 3); return d; })();
+    : (() => { const d = new Date(joinDate); d.setDate(d.getDate() + 90); return d; })();
   return new Date() < end;
 }
 
@@ -354,7 +354,7 @@ app.post('/api/leave/requests', async (req, res) => {
     const isUnpaid = type === 'unpaid';
 
     if (!isUnpaid && onProbation) {
-      if (type === 'full_day') return res.status(400).json({ error: 'Full day leaves are not allowed during the 3-month probation period.' });
+      if (type === 'full_day') return res.status(400).json({ error: 'Full day leaves are not allowed during the 90-day probation period.' });
       const balRows = await sql`SELECT probation_short_used FROM leave_balances WHERE employee_id=${employee_id}`;
       const used = (balRows[0] as any)?.probation_short_used ?? 0;
       const cost = type === 'half_day' ? 2 : 1;

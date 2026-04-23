@@ -10,7 +10,7 @@ function isOnProbation(joinDate: string | null, probationEndDate?: string | null
   if (!joinDate) return false;
   const end = probationEndDate
     ? new Date(probationEndDate)
-    : (() => { const d = new Date(joinDate); d.setMonth(d.getMonth() + 3); return d; })();
+    : (() => { const d = new Date(joinDate); d.setDate(d.getDate() + 90); return d; })();
   return new Date() < end;
 }
 
@@ -158,7 +158,7 @@ router.post('/requests', async (req, res) => {
     // Validate leave type and balance
     if (!isUnpaid && onProbation) {
       if (type === 'full_day') {
-        return res.status(400).json({ error: 'Full day leaves are not allowed during the 3-month probation period.' });
+        return res.status(400).json({ error: 'Full day leaves are not allowed during the 90-day probation period.' });
       }
       const balRows = await sql`SELECT probation_short_used FROM leave_balances WHERE employee_id=${employee_id}`;
       const used = (balRows[0] as any)?.probation_short_used ?? 0;

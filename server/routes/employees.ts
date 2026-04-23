@@ -83,7 +83,7 @@ router.patch('/:id/probation', async (req, res) => {
     if (!empRows.length) return res.status(404).json({ error: 'Not found' });
     const emp = empRows[0] as any;
     const defaultEnd = emp.join_date
-      ? (() => { const d = new Date(emp.join_date); d.setMonth(d.getMonth() + 3); return d; })()
+      ? (() => { const d = new Date(emp.join_date); d.setDate(d.getDate() + 90); return d; })()
       : null;
     const effectiveEnd = emp.probation_end_date ? new Date(emp.probation_end_date) : defaultEnd;
     const isConfirmed = effectiveEnd ? new Date() >= effectiveEnd : false;

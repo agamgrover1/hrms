@@ -164,7 +164,7 @@ export default function Leave() {
           ) : (
             <>
               <p className="text-2xl font-bold mt-2">Confirmed</p>
-              <p className="text-white/60 text-xs mt-1">past 3-month probation</p>
+              <p className="text-white/60 text-xs mt-1">past 90-day probation</p>
             </>
           )}
         </div>

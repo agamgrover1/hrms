@@ -55,7 +55,7 @@ function EmployeeCard({ emp, index, onClick }: { emp: any; index: number; onClic
 
 function EmployeeDetail({ emp, onClose, onEdit, onDelete }: { emp: any; onClose: () => void; onEdit: () => void; onDelete: () => void }) {
   const defaultProbationEnd = emp.join_date
-    ? (() => { const d = new Date(emp.join_date); d.setMonth(d.getMonth() + 3); return d.toISOString().split('T')[0]; })()
+    ? (() => { const d = new Date(emp.join_date); d.setDate(d.getDate() + 90); return d.toISOString().split('T')[0]; })()
     : '';
   const [probationEnd, setProbationEnd] = useState<string>(emp.probation_end_date?.split('T')[0] ?? defaultProbationEnd);
   const [savingProbation, setSavingProbation] = useState(false);
@@ -189,7 +189,7 @@ function EmployeeDetail({ emp, onClose, onEdit, onDelete }: { emp: any; onClose:
                     {savingProbation ? '…' : probationSaved ? '✓ Saved' : 'Save'}
                   </button>
                 </div>
-                <p className="text-xs text-gray-400 mt-1.5">Set an earlier date to confirm the employee before 3 months.</p>
+                <p className="text-xs text-gray-400 mt-1.5">Set an earlier date to confirm the employee before 90 days.</p>
                 {probationError && <p className="text-xs text-red-500 mt-1.5">{probationError}</p>}
               </>
             ) : (

@@ -75,7 +75,7 @@ await sql`ALTER TABLE employees ADD COLUMN IF NOT EXISTS next_appraisal_year INT
 // Reporting manager (FK to employees.id — can be any employee)
 await sql`ALTER TABLE employees ADD COLUMN IF NOT EXISTS reporting_manager_id VARCHAR(50)`;
 
-// Custom probation end date (overrides join_date + 3 months default when set)
+// Custom probation end date (overrides join_date + 90 days default when set)
 await sql`ALTER TABLE employees ADD COLUMN IF NOT EXISTS probation_end_date DATE`;
 
 // 2-step leave approval: manager approval fields
@@ -117,7 +117,7 @@ await sql`
   FROM employees e
   WHERE lb.employee_id = e.id
     AND (lb.last_credited_month IS NULL)
-    AND (e.join_date IS NULL OR e.join_date < NOW() - INTERVAL '3 months')
+    AND (e.join_date IS NULL OR e.join_date < NOW() - INTERVAL '90 days')
 `;
 // Seed probation employees — no full day, 2 short leave allowance for whole probation
 await sql`
@@ -127,7 +127,7 @@ await sql`
   FROM employees e
   WHERE lb.employee_id = e.id
     AND (lb.last_credited_month IS NULL)
-    AND e.join_date >= NOW() - INTERVAL '3 months'
+    AND e.join_date >= NOW() - INTERVAL '90 days'
 `;
 console.log('✓ leave_balances: new policy columns ready');
 
