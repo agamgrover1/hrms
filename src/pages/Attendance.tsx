@@ -515,6 +515,19 @@ export default function Attendance() {
           {employees.map(e => <option key={e.id} value={e.id}>{e.name}</option>)}
         </select>
         <span className="text-sm text-gray-400">{monthName} {viewYear}</span>
+        {(() => {
+          const emp = employees.find(e => e.id === selectedEmpId);
+          if (!emp) return null;
+          const isNight = emp.shift === 'night';
+          return (
+            <span className="inline-flex items-center gap-1.5 text-xs font-semibold px-3 py-1.5 rounded-full"
+              style={isNight
+                ? { background: '#1e1b4b', color: '#a5b4fc' }
+                : { background: '#fef3c7', color: '#92400e' }}>
+              {isNight ? '🌙' : '☀️'} {isNight ? 'Night Shift · 6:30 PM – 3:30 AM' : 'Day Shift · 9:00 AM – 6:00 PM'}
+            </span>
+          );
+        })()}
       </div>
 
       {/* Summary Cards */}

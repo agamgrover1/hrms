@@ -143,6 +143,7 @@ function EmployeeDetail({ emp, onClose, onEdit, onDelete }: { emp: any; onClose:
               { label: 'Reporting Manager', value: emp.manager || '—' },
               { label: 'Join Date', value: emp.join_date ? new Date(emp.join_date).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' }) : '—' },
               { label: 'Status', value: emp.status?.charAt(0).toUpperCase() + emp.status?.slice(1) },
+              { label: 'Shift', value: emp.shift === 'night' ? '🌙 Night Shift (6:30 PM – 3:30 AM)' : '☀️ Day Shift (9:00 AM – 6:00 PM)' },
             ].map(({ label, value }) => (
               <div key={label}>
                 <p className="text-xs text-gray-400 font-medium">{label}</p>
@@ -240,8 +241,14 @@ function EmployeeDetail({ emp, onClose, onEdit, onDelete }: { emp: any; onClose:
   );
 }
 
+const SHIFT_OPTIONS = [
+  { value: 'day',   label: 'Day Shift',   time: '9:00 AM – 6:00 PM' },
+  { value: 'night', label: 'Night Shift', time: '6:30 PM – 3:30 AM' },
+];
+
 const emptyForm = {
   employee_id: '',
+  shift: 'day',
   name: '',
   email: '',
   phone: '',
@@ -300,6 +307,7 @@ function AddEmployeeModal({ onClose, onSaved, existingEmployees }: {
         id: `e_${Date.now()}`,
         ...form,
         employee_id: form.employee_id.trim().toUpperCase(),
+        shift: form.shift || 'day',
         avatar: initials,
         salary: Number(form.salary) || 0,
         ctc: Number(form.ctc) || 0,
@@ -402,12 +410,22 @@ function AddEmployeeModal({ onClose, onSaved, existingEmployees }: {
             </div>
           </div>
 
-          <div>
-            <label className={labelCls}>Status</label>
-            <select value={form.status} onChange={e => set('status', e.target.value)} className={inputCls}>
-              <option value="active">Active</option>
-              <option value="inactive">Inactive</option>
-            </select>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <div>
+              <label className={labelCls}>Status</label>
+              <select value={form.status} onChange={e => set('status', e.target.value)} className={inputCls}>
+                <option value="active">Active</option>
+                <option value="inactive">Inactive</option>
+              </select>
+            </div>
+            <div>
+              <label className={labelCls}>Shift</label>
+              <select value={form.shift} onChange={e => set('shift', e.target.value)} className={inputCls}>
+                {SHIFT_OPTIONS.map(s => (
+                  <option key={s.value} value={s.value}>{s.label} ({s.time})</option>
+                ))}
+              </select>
+            </div>
           </div>
 
           <div>
@@ -495,6 +513,7 @@ function EditEmployeeModal({ emp, onClose, onSaved, allEmployees }: {
     manager: emp.manager || '',
     reporting_manager_id: emp.reporting_manager_id || '',
     status: emp.status || 'active',
+    shift: emp.shift || 'day',
     salary: String(emp.salary || ''),
     ctc: String(emp.ctc || ''),
     next_appraisal_month: String(emp.next_appraisal_month || ''),
@@ -607,12 +626,22 @@ function EditEmployeeModal({ emp, onClose, onSaved, allEmployees }: {
             </div>
           </div>
 
-          <div>
-            <label className={labelCls}>Status</label>
-            <select value={form.status} onChange={e => set('status', e.target.value)} className={inputCls}>
-              <option value="active">Active</option>
-              <option value="inactive">Inactive</option>
-            </select>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <div>
+              <label className={labelCls}>Status</label>
+              <select value={form.status} onChange={e => set('status', e.target.value)} className={inputCls}>
+                <option value="active">Active</option>
+                <option value="inactive">Inactive</option>
+              </select>
+            </div>
+            <div>
+              <label className={labelCls}>Shift</label>
+              <select value={form.shift} onChange={e => set('shift', e.target.value)} className={inputCls}>
+                {SHIFT_OPTIONS.map(s => (
+                  <option key={s.value} value={s.value}>{s.label} ({s.time})</option>
+                ))}
+              </select>
+            </div>
           </div>
 
           <div>

@@ -30,10 +30,11 @@ router.get('/:id', async (req, res) => {
 router.post('/', async (req, res) => {
   try {
     await sql`ALTER TABLE employees ADD COLUMN IF NOT EXISTS biometric_id TEXT`.catch(() => {});
-    const { id, name, email, phone, department, designation, employee_id, join_date, location, manager, reporting_manager_id, status, avatar, salary, ctc, password, role, biometric_id } = req.body;
+    await sql`ALTER TABLE employees ADD COLUMN IF NOT EXISTS shift TEXT DEFAULT 'day'`.catch(() => {});
+    const { id, name, email, phone, department, designation, employee_id, join_date, location, manager, reporting_manager_id, status, avatar, salary, ctc, password, role, biometric_id, shift } = req.body;
     const rows = await sql`
-      INSERT INTO employees (id, name, email, phone, department, designation, employee_id, join_date, location, manager, reporting_manager_id, status, avatar, salary, ctc, biometric_id)
-      VALUES (${id}, ${name}, ${email}, ${phone}, ${department}, ${designation}, ${employee_id}, ${join_date}, ${location}, ${manager ?? null}, ${reporting_manager_id ?? null}, ${status ?? 'active'}, ${avatar}, ${salary}, ${ctc}, ${biometric_id ?? null})
+      INSERT INTO employees (id, name, email, phone, department, designation, employee_id, join_date, location, manager, reporting_manager_id, status, avatar, salary, ctc, biometric_id, shift)
+      VALUES (${id}, ${name}, ${email}, ${phone}, ${department}, ${designation}, ${employee_id}, ${join_date}, ${location}, ${manager ?? null}, ${reporting_manager_id ?? null}, ${status ?? 'active'}, ${avatar}, ${salary}, ${ctc}, ${biometric_id ?? null}, ${shift ?? 'day'})
       RETURNING *
     `;
     const emp = rows[0];
@@ -58,7 +59,8 @@ router.post('/', async (req, res) => {
 router.put('/:id', async (req, res) => {
   try {
     await sql`ALTER TABLE employees ADD COLUMN IF NOT EXISTS biometric_id TEXT`.catch(() => {});
-    const { name, email, phone, department, designation, location, manager, reporting_manager_id, status, salary, ctc, biometric_id, next_appraisal_month, next_appraisal_year } = req.body;
+    await sql`ALTER TABLE employees ADD COLUMN IF NOT EXISTS shift TEXT DEFAULT 'day'`.catch(() => {});
+    const { name, email, phone, department, designation, location, manager, reporting_manager_id, status, salary, ctc, biometric_id, shift, next_appraisal_month, next_appraisal_year } = req.body;
     const rows = await sql`
       UPDATE employees SET
         name = ${name}, email = ${email}, phone = ${phone}, department = ${department},
@@ -66,6 +68,7 @@ router.put('/:id', async (req, res) => {
         reporting_manager_id = ${reporting_manager_id ?? null},
         status = ${status}, salary = ${salary}, ctc = ${ctc},
         biometric_id = ${biometric_id ?? null},
+        shift = ${shift ?? 'day'},
         next_appraisal_month = ${next_appraisal_month ?? null},
         next_appraisal_year  = ${next_appraisal_year  ?? null}
       WHERE id = ${req.params.id} RETURNING *

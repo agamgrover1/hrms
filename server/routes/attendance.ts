@@ -8,6 +8,7 @@ const router = Router();
 ;(async () => {
   try {
     await sql`ALTER TABLE employees ADD COLUMN IF NOT EXISTS biometric_id TEXT`;
+    await sql`ALTER TABLE employees ADD COLUMN IF NOT EXISTS shift TEXT DEFAULT 'day'`;
     await sql`ALTER TABLE attendance_records ADD COLUMN IF NOT EXISTS source TEXT DEFAULT 'manual'`;
     await sql`ALTER TABLE attendance_records ADD COLUMN IF NOT EXISTS biometric_sync_id TEXT`;
     await sql`
@@ -75,12 +76,21 @@ function parseEtWorkTime(wt: string | undefined | null): number {
   return Math.round((h + (m || 0) / 60) * 10) / 10;
 }
 
-function deriveStatus(etStatus: string, inTime: string | null): string {
-  // If employee actually clocked in, infer from punch time
-  if (inTime) {
-    const hour = parseInt(inTime.split(':')[0], 10);
-    return hour >= 10 ? 'late' : 'present';
-  }
+// Shift definitions — lateAfter = grace cutoff in HH:MM
+const SHIFT_CONFIG: Record<string, { start: string; end: string; lateAfter: string }> = {
+  day:   { start: '09:00', end: '18:00', lateAfter: '09:30' },
+  night: { start: '18:30', end: '03:30', lateAfter: '18:45' },
+};
+
+function isLateForShift(inTime: string, shift: string): boolean {
+  const cfg = SHIFT_CONFIG[shift] ?? SHIFT_CONFIG.day;
+  const [lh, lm] = cfg.lateAfter.split(':').map(Number);
+  const [ch, cm] = inTime.split(':').map(Number);
+  return ch > lh || (ch === lh && cm > lm);
+}
+
+function deriveStatus(etStatus: string, inTime: string | null, shift = 'day'): string {
+  if (inTime) return isLateForShift(inTime, shift) ? 'late' : 'present';
   return ETIMEOFFICE_STATUS_MAP[etStatus?.toUpperCase()] ?? 'absent';
 }
 
@@ -120,12 +130,14 @@ export async function runBiometricSync(
   const records: any[] = body.InOutPunchData ?? [];
   console.log(`[biometric] Got ${records.length} records for ${dateRangeLabel}`);
 
-  // Match on biometric_id if set, otherwise fall back to employee_id
-  const empRows = await sql`SELECT id, employee_id, biometric_id FROM employees` as any[];
-  const empMap = new Map<string, string>();
+  // Match on biometric_id if set, otherwise fall back to employee_id; also load shift
+  const empRows = await sql`SELECT id, employee_id, biometric_id, shift FROM employees` as any[];
+  const empMap   = new Map<string, string>();   // bioKey → internal id
+  const shiftMap = new Map<string, string>();   // internal id → shift
   for (const e of empRows) {
-    if (e.biometric_id) empMap.set(String(e.biometric_id).trim(), e.id);
-    else empMap.set(String(e.employee_id).trim(), e.id);
+    const key = e.biometric_id ? String(e.biometric_id).trim() : String(e.employee_id).trim();
+    empMap.set(key, e.id);
+    shiftMap.set(e.id, e.shift ?? 'day');
   }
 
   const syncId = randomUUID();
@@ -149,7 +161,8 @@ export async function runBiometricSync(
 
     const inTime     = parseEtTime(rec.INTime);
     const outTime    = parseEtTime(rec.OUTTime);
-    const status     = deriveStatus(rec.Status ?? 'A', inTime);
+    const empShift   = shiftMap.get(internalId) ?? 'day';
+    const status     = deriveStatus(rec.Status ?? 'A', inTime, empShift);
     const totalHours = rec.WorkTime ? parseEtWorkTime(rec.WorkTime) : (inTime && outTime ? (() => {
       const [ih, im] = inTime.split(':').map(Number);
       const [oh, om] = outTime.split(':').map(Number);
@@ -232,9 +245,10 @@ router.post('/clock-in', async (req, res) => {
     const { employee_id } = req.body;
     const now = new Date();
     const today = now.toISOString().split('T')[0];
-    const time = now.toTimeString().slice(0, 5);
-    const hour = now.getHours();
-    const status = hour >= 10 ? 'late' : 'present';
+    const time = now.toTimeString().slice(0, 5); // HH:MM
+    const empRow = await sql`SELECT shift FROM employees WHERE id = ${employee_id}` as any[];
+    const shift = empRow[0]?.shift ?? 'day';
+    const status = isLateForShift(time, shift) ? 'late' : 'present';
     const rows = await sql`
       INSERT INTO attendance_records (employee_id, date, check_in, status, total_hours, source)
       VALUES (${employee_id}, ${today}, ${time}, ${status}, 0, 'clock_in')

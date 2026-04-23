@@ -116,10 +116,10 @@ app.get('/api/employees/:id', async (req, res) => {
 
 app.post('/api/employees', async (req, res) => {
   try {
-    const { id, name, email, phone, department, designation, employee_id, join_date, location, manager, reporting_manager_id, status, avatar, salary, ctc, password, role, biometric_id } = req.body;
+    const { id, name, email, phone, department, designation, employee_id, join_date, location, manager, reporting_manager_id, status, avatar, salary, ctc, password, role, biometric_id, shift } = req.body;
     const rows = await sql`
-      INSERT INTO employees (id, name, email, phone, department, designation, employee_id, join_date, location, manager, reporting_manager_id, status, avatar, salary, ctc, biometric_id)
-      VALUES (${id}, ${name}, ${email}, ${phone}, ${department}, ${designation}, ${employee_id}, ${join_date}, ${location}, ${manager ?? null}, ${reporting_manager_id ?? null}, ${status ?? 'active'}, ${avatar}, ${salary}, ${ctc}, ${biometric_id ?? null})
+      INSERT INTO employees (id, name, email, phone, department, designation, employee_id, join_date, location, manager, reporting_manager_id, status, avatar, salary, ctc, biometric_id, shift)
+      VALUES (${id}, ${name}, ${email}, ${phone}, ${department}, ${designation}, ${employee_id}, ${join_date}, ${location}, ${manager ?? null}, ${reporting_manager_id ?? null}, ${status ?? 'active'}, ${avatar}, ${salary}, ${ctc}, ${biometric_id ?? null}, ${shift ?? 'day'})
       RETURNING *`;
     const emp = rows[0];
     if (password) {
@@ -140,13 +140,13 @@ app.post('/api/employees', async (req, res) => {
 
 app.put('/api/employees/:id', async (req, res) => {
   try {
-    const { name, email, phone, department, designation, location, manager, reporting_manager_id, status, salary, ctc, biometric_id, next_appraisal_month, next_appraisal_year } = req.body;
+    const { name, email, phone, department, designation, location, manager, reporting_manager_id, status, salary, ctc, biometric_id, shift, next_appraisal_month, next_appraisal_year } = req.body;
     const rows = await sql`
       UPDATE employees SET name=${name}, email=${email}, phone=${phone}, department=${department},
         designation=${designation}, location=${location}, manager=${manager ?? null},
         reporting_manager_id=${reporting_manager_id ?? null},
         status=${status}, salary=${salary}, ctc=${ctc},
-        biometric_id=${biometric_id ?? null},
+        biometric_id=${biometric_id ?? null}, shift=${shift ?? 'day'},
         next_appraisal_month=${next_appraisal_month ?? null}, next_appraisal_year=${next_appraisal_year ?? null}
       WHERE id=${req.params.id} RETURNING *`;
     res.json(rows[0]);
@@ -204,7 +204,9 @@ app.post('/api/attendance/clock-in', async (req, res) => {
     const now = new Date();
     const today = now.toISOString().split('T')[0];
     const time = now.toTimeString().slice(0, 5);
-    const status = now.getHours() >= 10 ? 'late' : 'present';
+    const empRow = await sql`SELECT shift FROM employees WHERE id=${employee_id}` as any[];
+    const empShift = empRow[0]?.shift ?? 'day';
+    const status = isLateV(time, empShift) ? 'late' : 'present';
     const rows = await sql`
       INSERT INTO attendance_records (employee_id, date, check_in, status, total_hours)
       VALUES (${employee_id}, ${today}, ${time}, ${status}, 0)
@@ -259,6 +261,15 @@ const ET_STATUS_MAP: Record<string, string> = {
   'EL':'on_leave','ML':'on_leave','OD':'present','WFH':'present','CO':'present',
 };
 
+const SHIFT_CFG: Record<string, { lateAfter: string }> = {
+  day:   { lateAfter: '09:30' },
+  night: { lateAfter: '18:45' },
+};
+function isLateV(inTime: string, shift: string): boolean {
+  const [lh,lm] = (SHIFT_CFG[shift] ?? SHIFT_CFG.day).lateAfter.split(':').map(Number);
+  const [ch,cm] = inTime.split(':').map(Number);
+  return ch > lh || (ch === lh && cm > lm);
+}
 function parseEtTimeV(t: string|null): string|null {
   if (!t || t.trim()==='--:--' || t.trim()==='00:00') return null;
   return t.trim().slice(0,5);
@@ -288,11 +299,13 @@ async function runBiometricSyncV(trigger: string, triggeredBy?: string, fromDate
   if (body.Error === true) throw new Error(`eTimeOffice: ${body.Msg ?? 'Unknown'}`);
   const records: any[] = body.InOutPunchData ?? [];
 
-  const empRows = await sql`SELECT id, employee_id, biometric_id FROM employees` as any[];
-  const empMap  = new Map<string, string>();
+  const empRows = await sql`SELECT id, employee_id, biometric_id, shift FROM employees` as any[];
+  const empMap   = new Map<string, string>();
+  const shiftMap = new Map<string, string>();
   for (const e of empRows) {
-    if (e.biometric_id) empMap.set(String(e.biometric_id).trim(), e.id);
-    else empMap.set(String(e.employee_id).trim(), e.id);
+    const key = e.biometric_id ? String(e.biometric_id).trim() : String(e.employee_id).trim();
+    empMap.set(key, e.id);
+    shiftMap.set(e.id, e.shift ?? 'day');
   }
   const syncId = crypto.randomUUID();
   let updated = 0, created = 0;
@@ -308,8 +321,9 @@ async function runBiometricSyncV(trigger: string, triggeredBy?: string, fromDate
     if (rawDs.includes('/')) { const [rdd,rmm,ry]=rawDs.split('/'); recDate=`${ry}-${rmm}-${rdd}`; }
     const inTime  = parseEtTimeV(rec.INTime);
     const outTime = parseEtTimeV(rec.OUTTime);
+    const empShift = shiftMap.get(iid) ?? 'day';
     const status  = inTime
-      ? (parseInt(inTime.split(':')[0],10) >= 10 ? 'late' : 'present')
+      ? (isLateV(inTime, empShift) ? 'late' : 'present')
       : (ET_STATUS_MAP[(rec.Status??'A').toUpperCase()] ?? 'absent');
     if ((status === 'weekend' || status === 'holiday') && !inTime) continue;
     const hours = parseEtWorkTimeV(rec.WorkTime);
