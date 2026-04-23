@@ -65,6 +65,8 @@ function EmployeeDetail({ emp, onClose, onEdit, onDelete }: { emp: any; onClose:
   const [balLoaded, setBalLoaded] = useState(false);
   const [savingBal, setSavingBal] = useState(false);
   const [balSaved, setBalSaved] = useState(false);
+  const [probationError, setProbationError] = useState('');
+  const [balError, setBalError] = useState('');
 
   useEffect(() => {
     api.getLeaveBalance(emp.id).then(bal => {
@@ -79,11 +81,14 @@ function EmployeeDetail({ emp, onClose, onEdit, onDelete }: { emp: any; onClose:
   const handleSaveProbation = async () => {
     setSavingProbation(true);
     setProbationSaved(false);
+    setProbationError('');
     try {
       await api.updateEmployeeProbation(emp.id, probationEnd || null);
       setProbationSaved(true);
       setTimeout(() => setProbationSaved(false), 2500);
-    } catch { /* ignore */ } finally {
+    } catch (err: any) {
+      setProbationError(err.message || 'Failed to save probation date');
+    } finally {
       setSavingProbation(false);
     }
   };
@@ -91,11 +96,14 @@ function EmployeeDetail({ emp, onClose, onEdit, onDelete }: { emp: any; onClose:
   const handleSaveBalance = async () => {
     setSavingBal(true);
     setBalSaved(false);
+    setBalError('');
     try {
       await api.adjustLeaveBalance(emp.id, balAdj);
       setBalSaved(true);
       setTimeout(() => setBalSaved(false), 2500);
-    } catch { /* ignore */ } finally {
+    } catch (err: any) {
+      setBalError(err.message || 'Failed to save balance');
+    } finally {
       setSavingBal(false);
     }
   };
@@ -180,6 +188,7 @@ function EmployeeDetail({ emp, onClose, onEdit, onDelete }: { emp: any; onClose:
               </button>
             </div>
             <p className="text-xs text-gray-400 mt-1.5">Default: join date + 3 months. Override to end probation early or extend it.</p>
+            {probationError && <p className="text-xs text-red-500 mt-1.5">{probationError}</p>}
           </div>
 
           <div className="mt-4 p-4 border border-gray-100 rounded-xl">
@@ -215,6 +224,7 @@ function EmployeeDetail({ emp, onClose, onEdit, onDelete }: { emp: any; onClose:
                 >
                   {savingBal ? 'Saving…' : balSaved ? '✓ Balance Updated' : 'Save Balance'}
                 </button>
+                {balError && <p className="text-xs text-red-500">{balError}</p>}
               </div>
             )}
           </div>

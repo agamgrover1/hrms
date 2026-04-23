@@ -45,8 +45,26 @@ async function notifyEmployeeUser(employeeDbId: string, type: string, title: str
   } catch { /* non-fatal */ }
 }
 
+// ── Startup migrations (idempotent — safe to run on every cold start) ────
+let _migrated = false;
+async function runStartupMigrations() {
+  if (_migrated) return;
+  _migrated = true;
+  try {
+    await sql`ALTER TABLE employees ADD COLUMN IF NOT EXISTS probation_end_date DATE`;
+    await sql`ALTER TABLE leave_balances ADD COLUMN IF NOT EXISTS full_day INTEGER NOT NULL DEFAULT 0`;
+    await sql`ALTER TABLE leave_balances ADD COLUMN IF NOT EXISTS short_leave INTEGER NOT NULL DEFAULT 0`;
+    await sql`ALTER TABLE leave_balances ADD COLUMN IF NOT EXISTS last_credited_month INTEGER`;
+    await sql`ALTER TABLE leave_balances ADD COLUMN IF NOT EXISTS last_credited_year INTEGER`;
+    await sql`ALTER TABLE leave_balances ADD COLUMN IF NOT EXISTS probation_short_used INTEGER NOT NULL DEFAULT 0`;
+  } catch { /* non-fatal — columns may already exist */ }
+}
+
 // ── Health ────────────────────────────────────────────────────────────────
-app.get('/api/health', (_, res) => res.json({ status: 'ok' }));
+app.get('/api/health', async (_, res) => {
+  await runStartupMigrations();
+  res.json({ status: 'ok' });
+});
 
 // ── Auth ──────────────────────────────────────────────────────────────────
 app.post('/api/auth/login', async (req, res) => {
@@ -125,11 +143,12 @@ app.put('/api/employees/:id', async (req, res) => {
 
 app.patch('/api/employees/:id/probation', async (req, res) => {
   try {
+    await runStartupMigrations();
     const { probation_end_date } = req.body;
     const rows = await sql`UPDATE employees SET probation_end_date=${probation_end_date ?? null} WHERE id=${req.params.id} RETURNING *`;
     if (!rows.length) return res.status(404).json({ error: 'Not found' });
     res.json(rows[0]);
-  } catch (err) { res.status(500).json({ error: 'Server error' }); }
+  } catch (err: any) { res.status(500).json({ error: err.message || 'Server error' }); }
 });
 
 app.delete('/api/employees/:id', async (req, res) => {
@@ -421,11 +440,13 @@ app.patch('/api/leave/balances/:employee_id', async (req, res) => {
   try {
     const { full_day, short_leave } = req.body;
     const rows = await sql`
-      UPDATE leave_balances SET full_day=${Number(full_day)}, short_leave=${Number(short_leave)}
-      WHERE employee_id=${req.params.employee_id} RETURNING *`;
-    if (!rows.length) return res.status(404).json({ error: 'Not found' });
+      INSERT INTO leave_balances (employee_id, full_day, short_leave)
+      VALUES (${req.params.employee_id}, ${Number(full_day)}, ${Number(short_leave)})
+      ON CONFLICT (employee_id) DO UPDATE
+        SET full_day = ${Number(full_day)}, short_leave = ${Number(short_leave)}
+      RETURNING *`;
     res.json(rows[0]);
-  } catch (err) { res.status(500).json({ error: 'Server error' }); }
+  } catch (err: any) { res.status(500).json({ error: err.message || 'Server error' }); }
 });
 
 app.get('/api/leave/balances/:employee_id', async (req, res) => {

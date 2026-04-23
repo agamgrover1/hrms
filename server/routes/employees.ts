@@ -75,6 +75,8 @@ router.put('/:id', async (req, res) => {
 
 router.patch('/:id/probation', async (req, res) => {
   try {
+    // Ensure column exists (idempotent — runs once then is a no-op)
+    await sql`ALTER TABLE employees ADD COLUMN IF NOT EXISTS probation_end_date DATE`.catch(() => {});
     const { probation_end_date } = req.body;
     const rows = await sql`
       UPDATE employees SET probation_end_date = ${probation_end_date ?? null}
@@ -82,9 +84,9 @@ router.patch('/:id/probation', async (req, res) => {
     `;
     if (!rows.length) return res.status(404).json({ error: 'Not found' });
     res.json(rows[0]);
-  } catch (err) {
+  } catch (err: any) {
     console.error('[PATCH probation]', err);
-    res.status(500).json({ error: 'Server error' });
+    res.status(500).json({ error: err.message || 'Server error' });
   }
 });
 

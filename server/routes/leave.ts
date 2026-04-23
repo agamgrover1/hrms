@@ -289,16 +289,16 @@ router.patch('/balances/:employee_id', async (req, res) => {
   try {
     const { full_day, short_leave } = req.body;
     const rows = await sql`
-      UPDATE leave_balances
-      SET full_day = ${Number(full_day)}, short_leave = ${Number(short_leave)}
-      WHERE employee_id = ${req.params.employee_id}
+      INSERT INTO leave_balances (employee_id, full_day, short_leave)
+      VALUES (${req.params.employee_id}, ${Number(full_day)}, ${Number(short_leave)})
+      ON CONFLICT (employee_id) DO UPDATE
+        SET full_day = ${Number(full_day)}, short_leave = ${Number(short_leave)}
       RETURNING *
     `;
-    if (!rows.length) return res.status(404).json({ error: 'Not found' });
     res.json(rows[0]);
-  } catch (err) {
+  } catch (err: any) {
     console.error('[PATCH leave balance]', err);
-    res.status(500).json({ error: 'Server error' });
+    res.status(500).json({ error: err.message || 'Server error' });
   }
 });
 
