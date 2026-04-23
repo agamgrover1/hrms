@@ -101,14 +101,17 @@ export default function MyPortal() {
   const [empDbId, setEmpDbId] = useState('');
 
   // Appraisal goals state
-  const [appraisalRecord, setAppraisalRecord] = useState<any | null>(null);
-  const [goalsDraft, setGoalsDraft] = useState<any[]>([]);
+  const [allAppraisals, setAllAppraisals] = useState<any[]>([]);
+  const [goalsDraft, setGoalsDraft] = useState<any[]>([{ title: '', description: '', success_criteria: '' }]);
   const [savingGoals, setSavingGoals] = useState(false);
   const [submittingGoals, setSubmittingGoals] = useState(false);
   const [goalsError, setGoalsError] = useState('');
+  const [empRecord, setEmpRecord] = useState<any | null>(null);
 
   const empRef = user?.employee_id_ref;
-  const currentYear = new Date().getFullYear();
+  const now = new Date();
+  const currentYear = now.getFullYear();
+  const currentMonth = now.getMonth() + 1;
 
   useEffect(() => {
     if (!empRef) return;
@@ -116,27 +119,46 @@ export default function MyPortal() {
       const emp = emps.find(e => e.employee_id === empRef);
       if (!emp) return;
       setEmpDbId(emp.id);
-      const now = new Date();
+      setEmpRecord(emp);
       Promise.all([
-        api.getAttendance({ employee_id: emp.id, month: now.getMonth() + 1, year: now.getFullYear() }),
+        api.getAttendance({ employee_id: emp.id, month: currentMonth, year: currentYear }),
         api.getLeaveRequests({ employee_id: emp.id }),
         api.getEmployeePayroll(emp.id),
         api.getLeaveBalance(emp.id).catch(() => ({ casual: 10, sick: 7, earned: 15 })),
         api.getMonthlyPerformance(emp.id, currentYear),
-        api.getAppraisalGoals({ employee_id: emp.id, year: currentYear }),
-      ]).then(([att, lv, pay, bal, perf, appraisal]) => {
+        api.getAppraisalGoals({ employee_id: emp.id }),
+      ]).then(([att, lv, pay, bal, perf, appraisals]) => {
         setAttendance(att);
         setLeaves(lv);
         setPayroll(Array.isArray(pay) ? pay[0] : pay);
         setBalance(bal);
         setMonthlyPerf(perf);
-        setAppraisalRecord(appraisal);
-        setGoalsDraft(appraisal?.goals ?? [{ title: '', description: '', success_criteria: '' }]);
+        const list = Array.isArray(appraisals) ? appraisals : [];
+        setAllAppraisals(list);
+        // Pre-load draft for the current appraisal window if any exists
+        const currAppraisal = list.find(
+          a => a.month === currentMonth && a.year === currentYear
+        );
+        setGoalsDraft(currAppraisal?.goals?.length ? currAppraisal.goals : [{ title: '', description: '', success_criteria: '' }]);
       });
     });
-  }, [empRef, currentYear]);
+  }, [empRef, currentYear, currentMonth]);
 
-  const isSubmitted = appraisalRecord?.submitted === true;
+  // Is there an appraisal window open for this employee right now?
+  const appraisalWindowOpen =
+    empRecord?.next_appraisal_month === currentMonth &&
+    empRecord?.next_appraisal_year === currentYear;
+
+  // Existing record for the current window (if any)
+  const currentAppraisal = allAppraisals.find(
+    a => a.month === currentMonth && a.year === currentYear
+  );
+  const isSubmitted = currentAppraisal?.submitted === true;
+
+  // Past appraisals = everything that is NOT the current open window
+  const pastAppraisals = allAppraisals.filter(
+    a => !(a.month === currentMonth && a.year === currentYear)
+  );
 
   const presentDays = attendance.filter(r => r.status === 'present').length;
   const lateDays    = attendance.filter(r => r.status === 'late').length;
@@ -159,14 +181,17 @@ export default function MyPortal() {
     setSavingGoals(true);
     setGoalsError('');
     try {
-      const result = await api.saveAppraisalGoals({ employee_id: empDbId, year: currentYear, goals: goalsDraft });
-      setAppraisalRecord(result);
+      const result = await api.saveAppraisalGoals({ employee_id: empDbId, year: currentYear, month: currentMonth, goals: goalsDraft });
+      setAllAppraisals(prev => {
+        const without = prev.filter(a => !(a.month === currentMonth && a.year === currentYear));
+        return [result, ...without];
+      });
     } catch (e: any) {
       setGoalsError(e.message ?? 'Save failed');
     } finally { setSavingGoals(false); }
   };
 
-  const handleSubmit = async () => {
+  const handleSubmitGoals = async () => {
     if (!empDbId || isSubmitted) return;
     const filledGoals = goalsDraft.filter(g => g.title?.trim());
     if (!filledGoals.length) { setGoalsError('Add at least one goal before submitting.'); return; }
@@ -174,8 +199,11 @@ export default function MyPortal() {
     setSubmittingGoals(true);
     setGoalsError('');
     try {
-      const result = await api.submitAppraisalGoals({ employee_id: empDbId, year: currentYear, goals: filledGoals });
-      setAppraisalRecord(result);
+      const result = await api.submitAppraisalGoals({ employee_id: empDbId, year: currentYear, month: currentMonth, goals: filledGoals });
+      setAllAppraisals(prev => {
+        const without = prev.filter(a => !(a.month === currentMonth && a.year === currentYear));
+        return [result, ...without];
+      });
       setGoalsDraft(result.goals ?? []);
     } catch (e: any) {
       setGoalsError(e.message ?? 'Submit failed');
@@ -465,131 +493,168 @@ export default function MyPortal() {
           </div>
 
           {/* ─── Appraisal Goals ─── */}
-          <div className="bg-white rounded-2xl border border-gray-100 shadow-sm overflow-hidden">
-            <div className="flex items-center justify-between px-5 py-4 border-b border-gray-100">
-              <div>
-                <h3 className="font-bold text-sm flex items-center gap-2" style={{ color: '#192250' }}>
-                  <FileText size={15} /> Appraisal Goals — {currentYear}
-                </h3>
-                <p className="text-xs text-gray-400 mt-0.5">Set your goals for the year-end appraisal</p>
+
+          {/* Current appraisal window — only shown when admin has opened it */}
+          {appraisalWindowOpen && (
+            <div className="bg-white rounded-2xl border shadow-sm overflow-hidden" style={{ borderColor: '#ffd6e8' }}>
+              <div className="flex items-center justify-between px-5 py-4 border-b" style={{ borderColor: '#ffd6e8', background: 'rgba(238,39,112,0.04)' }}>
+                <div>
+                  <h3 className="font-bold text-sm flex items-center gap-2" style={{ color: '#192250' }}>
+                    <FileText size={15} style={{ color: '#EE2770' }} />
+                    Appraisal Goals — {MONTHS_SHORT[currentMonth - 1]} {currentYear}
+                  </h3>
+                  <p className="text-xs text-gray-400 mt-0.5">Your appraisal window is open. Fill and submit your goals.</p>
+                </div>
+                {isSubmitted ? (
+                  <span className="flex items-center gap-1.5 text-xs font-semibold px-3 py-1.5 rounded-full" style={{ background: '#dcfce7', color: '#15803d' }}>
+                    <Lock size={11} /> Submitted
+                  </span>
+                ) : (
+                  <span className="flex items-center gap-1.5 text-xs font-semibold px-3 py-1.5 rounded-full" style={{ background: '#fef3c7', color: '#92400e' }}>
+                    Draft
+                  </span>
+                )}
               </div>
-              {isSubmitted && (
-                <span className="flex items-center gap-1.5 text-xs font-semibold px-3 py-1.5 rounded-full" style={{ background: '#dcfce7', color: '#15803d' }}>
-                  <Lock size={11} /> Submitted
-                </span>
-              )}
-            </div>
 
-            <div className="p-5">
-              {isSubmitted ? (
-                /* Read-only view after submission */
-                <div className="space-y-4">
-                  <div className="flex items-center gap-2 p-3 rounded-xl text-sm" style={{ background: '#f0fdf4', color: '#15803d', border: '1px solid #bbf7d0' }}>
-                    <CheckCircle size={15} />
-                    <span>Submitted on {new Date(appraisalRecord.submitted_at).toLocaleDateString('en-IN', { day: 'numeric', month: 'long', year: 'numeric' })}. Only admin can edit.</span>
-                  </div>
-                  {(appraisalRecord.goals ?? []).map((g: any, i: number) => (
-                    <div key={i} className="flex gap-3 p-4 rounded-xl border" style={{ borderColor: '#e2e4ed', background: '#fafbff' }}>
-                      <div className="w-6 h-6 rounded-full flex items-center justify-center text-xs font-bold flex-shrink-0"
-                        style={{ background: 'rgba(238,39,112,0.12)', color: '#EE2770' }}>
-                        {i + 1}
-                      </div>
-                      <div>
-                        <p className="font-semibold text-sm" style={{ color: '#192250' }}>{g.title}</p>
-                        {g.description && <p className="text-xs text-gray-500 mt-0.5">{g.description}</p>}
-                        {g.success_criteria && <p className="text-xs text-gray-400 mt-1 italic">✓ {g.success_criteria}</p>}
-                      </div>
+              <div className="p-5">
+                {isSubmitted ? (
+                  <div className="space-y-3">
+                    <div className="flex items-center gap-2 p-3 rounded-xl text-sm" style={{ background: '#f0fdf4', color: '#15803d', border: '1px solid #bbf7d0' }}>
+                      <CheckCircle size={15} />
+                      <span>Submitted on {new Date(currentAppraisal.submitted_at).toLocaleDateString('en-IN', { day: 'numeric', month: 'long', year: 'numeric' })}. Only admin can make changes.</span>
                     </div>
-                  ))}
-                </div>
-              ) : (
-                /* Editable form */
-                <div className="space-y-4">
-                  <p className="text-xs text-gray-400">
-                    Add up to 6 goals. Save as draft anytime. Once you submit, it will be locked for review.
-                  </p>
-
-                  {goalsDraft.map((g, i) => (
-                    <div key={i} className="border rounded-xl p-4 space-y-3" style={{ borderColor: '#e2e4ed' }}>
-                      <div className="flex items-center justify-between">
-                        <span className="text-xs font-bold uppercase tracking-wide" style={{ color: '#EE2770' }}>Goal {i + 1}</span>
-                        {goalsDraft.length > 1 && (
-                          <button onClick={() => setGoalsDraft(g => g.filter((_, j) => j !== i))} className="p-1 hover:bg-red-50 rounded">
-                            <Trash2 size={13} className="text-red-400" />
-                          </button>
-                        )}
+                    {(currentAppraisal.goals ?? []).map((g: any, i: number) => (
+                      <div key={i} className="flex gap-3 p-4 rounded-xl border" style={{ borderColor: '#e2e4ed', background: '#fafbff' }}>
+                        <div className="w-6 h-6 rounded-full flex items-center justify-center text-xs font-bold flex-shrink-0"
+                          style={{ background: 'rgba(238,39,112,0.12)', color: '#EE2770' }}>{i + 1}</div>
+                        <div>
+                          <p className="font-semibold text-sm" style={{ color: '#192250' }}>{g.title}</p>
+                          {g.description && <p className="text-xs text-gray-500 mt-0.5">{g.description}</p>}
+                          {g.success_criteria && <p className="text-xs text-gray-400 mt-1 italic">✓ {g.success_criteria}</p>}
+                        </div>
                       </div>
-                      <input
-                        value={g.title ?? ''}
-                        onChange={e => updateGoal(i, 'title', e.target.value)}
-                        placeholder="Goal title *"
-                        className="w-full border rounded-lg px-3 py-2 text-sm focus:outline-none"
-                        style={{ borderColor: '#e2e4ed' }}
-                        onFocus={e => { e.target.style.borderColor = '#192250'; }}
-                        onBlur={e => { e.target.style.borderColor = '#e2e4ed'; }}
-                      />
-                      <textarea
-                        value={g.description ?? ''}
-                        onChange={e => updateGoal(i, 'description', e.target.value)}
-                        rows={2}
-                        placeholder="Description (optional)"
-                        className="w-full border rounded-lg px-3 py-2 text-sm resize-none focus:outline-none"
-                        style={{ borderColor: '#e2e4ed' }}
-                        onFocus={e => { e.target.style.borderColor = '#192250'; }}
-                        onBlur={e => { e.target.style.borderColor = '#e2e4ed'; }}
-                      />
-                      <input
-                        value={g.success_criteria ?? ''}
-                        onChange={e => updateGoal(i, 'success_criteria', e.target.value)}
-                        placeholder="Success criteria / measurable outcome"
-                        className="w-full border rounded-lg px-3 py-2 text-sm focus:outline-none"
-                        style={{ borderColor: '#e2e4ed' }}
-                        onFocus={e => { e.target.style.borderColor = '#192250'; }}
-                        onBlur={e => { e.target.style.borderColor = '#e2e4ed'; }}
-                      />
-                    </div>
-                  ))}
-
-                  {goalsDraft.length < 6 && (
-                    <button
-                      onClick={() => setGoalsDraft(g => [...g, { title: '', description: '', success_criteria: '' }])}
-                      className="w-full py-2.5 border-2 border-dashed rounded-xl text-sm font-semibold text-gray-400 hover:text-pink-400 transition-colors"
-                      style={{ borderColor: '#e2e4ed' }}
-                      onMouseEnter={e => { (e.currentTarget as HTMLElement).style.borderColor = '#EE2770'; }}
-                      onMouseLeave={e => { (e.currentTarget as HTMLElement).style.borderColor = '#e2e4ed'; }}
-                    >
-                      + Add Another Goal
-                    </button>
-                  )}
-
-                  {goalsError && (
-                    <p className="text-xs text-red-500 flex items-center gap-1.5">
-                      <AlertCircle size={13} /> {goalsError}
-                    </p>
-                  )}
-
-                  <div className="flex gap-3 pt-2">
-                    <button
-                      onClick={handleSaveDraft}
-                      disabled={savingGoals}
-                      className="flex items-center gap-2 px-4 py-2.5 border rounded-xl text-sm font-semibold transition-all hover:bg-gray-50 disabled:opacity-60"
-                      style={{ color: '#192250', borderColor: '#e2e4ed' }}
-                    >
-                      <Save size={14} /> {savingGoals ? 'Saving…' : 'Save Draft'}
-                    </button>
-                    <button
-                      onClick={handleSubmit}
-                      disabled={submittingGoals}
-                      className="flex items-center gap-2 px-5 py-2.5 text-white rounded-xl text-sm font-semibold disabled:opacity-60"
-                      style={{ background: 'linear-gradient(135deg, #EE2770 0%, #d11f62 100%)' }}
-                    >
-                      <CheckCircle size={14} /> {submittingGoals ? 'Submitting…' : 'Submit for Appraisal'}
-                    </button>
+                    ))}
                   </div>
-                </div>
-              )}
+                ) : (
+                  <div className="space-y-4">
+                    <p className="text-xs text-gray-400">Add up to 6 goals. Save draft to continue later. Submit to lock for review.</p>
+                    {goalsDraft.map((g, i) => (
+                      <div key={i} className="border rounded-xl p-4 space-y-3" style={{ borderColor: '#e2e4ed' }}>
+                        <div className="flex items-center justify-between">
+                          <span className="text-xs font-bold uppercase tracking-wide" style={{ color: '#EE2770' }}>Goal {i + 1}</span>
+                          {goalsDraft.length > 1 && (
+                            <button onClick={() => setGoalsDraft(g => g.filter((_, j) => j !== i))} className="p-1 hover:bg-red-50 rounded">
+                              <Trash2 size={13} className="text-red-400" />
+                            </button>
+                          )}
+                        </div>
+                        <input value={g.title ?? ''} onChange={e => updateGoal(i, 'title', e.target.value)}
+                          placeholder="Goal title *"
+                          className="w-full border rounded-lg px-3 py-2 text-sm focus:outline-none"
+                          style={{ borderColor: '#e2e4ed' }}
+                          onFocus={e => { e.target.style.borderColor = '#192250'; }}
+                          onBlur={e => { e.target.style.borderColor = '#e2e4ed'; }} />
+                        <textarea value={g.description ?? ''} onChange={e => updateGoal(i, 'description', e.target.value)}
+                          rows={2} placeholder="Description (optional)"
+                          className="w-full border rounded-lg px-3 py-2 text-sm resize-none focus:outline-none"
+                          style={{ borderColor: '#e2e4ed' }}
+                          onFocus={e => { e.target.style.borderColor = '#192250'; }}
+                          onBlur={e => { e.target.style.borderColor = '#e2e4ed'; }} />
+                        <input value={g.success_criteria ?? ''} onChange={e => updateGoal(i, 'success_criteria', e.target.value)}
+                          placeholder="Success criteria / measurable outcome"
+                          className="w-full border rounded-lg px-3 py-2 text-sm focus:outline-none"
+                          style={{ borderColor: '#e2e4ed' }}
+                          onFocus={e => { e.target.style.borderColor = '#192250'; }}
+                          onBlur={e => { e.target.style.borderColor = '#e2e4ed'; }} />
+                      </div>
+                    ))}
+                    {goalsDraft.length < 6 && (
+                      <button
+                        onClick={() => setGoalsDraft(g => [...g, { title: '', description: '', success_criteria: '' }])}
+                        className="w-full py-2.5 border-2 border-dashed rounded-xl text-sm font-semibold text-gray-400 transition-colors"
+                        style={{ borderColor: '#e2e4ed' }}
+                        onMouseEnter={e => { (e.currentTarget as HTMLElement).style.borderColor = '#EE2770'; (e.currentTarget as HTMLElement).style.color = '#EE2770'; }}
+                        onMouseLeave={e => { (e.currentTarget as HTMLElement).style.borderColor = '#e2e4ed'; (e.currentTarget as HTMLElement).style.color = '#9ca3af'; }}
+                      >+ Add Another Goal</button>
+                    )}
+                    {goalsError && (
+                      <p className="text-xs text-red-500 flex items-center gap-1.5"><AlertCircle size={13} /> {goalsError}</p>
+                    )}
+                    <div className="flex gap-3 pt-2">
+                      <button onClick={handleSaveDraft} disabled={savingGoals}
+                        className="flex items-center gap-2 px-4 py-2.5 border rounded-xl text-sm font-semibold hover:bg-gray-50 disabled:opacity-60"
+                        style={{ color: '#192250', borderColor: '#e2e4ed' }}>
+                        <Save size={14} /> {savingGoals ? 'Saving…' : 'Save Draft'}
+                      </button>
+                      <button onClick={handleSubmitGoals} disabled={submittingGoals}
+                        className="flex items-center gap-2 px-5 py-2.5 text-white rounded-xl text-sm font-semibold disabled:opacity-60"
+                        style={{ background: 'linear-gradient(135deg, #EE2770 0%, #d11f62 100%)' }}>
+                        <CheckCircle size={14} /> {submittingGoals ? 'Submitting…' : 'Submit for Appraisal'}
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </div>
             </div>
-          </div>
+          )}
+
+          {/* Past Appraisal Submissions */}
+          {(pastAppraisals.length > 0 || (!appraisalWindowOpen && allAppraisals.length > 0)) && (
+            <div className="bg-white rounded-2xl border border-gray-100 shadow-sm overflow-hidden">
+              <div className="px-5 py-4 border-b border-gray-100">
+                <h3 className="font-bold text-sm flex items-center gap-2" style={{ color: '#192250' }}>
+                  <FileText size={15} /> Past Appraisal Submissions
+                </h3>
+              </div>
+              <div className="divide-y divide-gray-50">
+                {(appraisalWindowOpen ? pastAppraisals : allAppraisals).map((appraisal: any) => (
+                  <details key={`${appraisal.year}-${appraisal.month}`} className="group">
+                    <summary className="flex items-center gap-3 px-5 py-3.5 cursor-pointer hover:bg-gray-50/50 list-none">
+                      <div className="flex-1 flex items-center gap-3">
+                        <span className="font-semibold text-sm" style={{ color: '#192250' }}>
+                          {MONTHS_SHORT[appraisal.month - 1]} {appraisal.year}
+                        </span>
+                        <span className="text-xs font-semibold px-2.5 py-0.5 rounded-full"
+                          style={appraisal.submitted
+                            ? { background: '#dcfce7', color: '#15803d' }
+                            : { background: '#fef3c7', color: '#92400e' }}>
+                          {appraisal.submitted ? '✓ Submitted' : 'Draft'}
+                        </span>
+                        <span className="text-xs text-gray-400">{appraisal.goals?.length ?? 0} goals</span>
+                      </div>
+                      {appraisal.submitted_at && (
+                        <span className="text-xs text-gray-400">
+                          {new Date(appraisal.submitted_at).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' })}
+                        </span>
+                      )}
+                    </summary>
+                    <div className="px-5 pb-4 pt-2 space-y-3">
+                      {(appraisal.goals ?? []).map((g: any, i: number) => (
+                        <div key={i} className="flex gap-3 p-3 rounded-xl border" style={{ borderColor: '#e2e4ed', background: '#fafbff' }}>
+                          <div className="w-5 h-5 rounded-full flex items-center justify-center text-xs font-bold flex-shrink-0"
+                            style={{ background: 'rgba(238,39,112,0.12)', color: '#EE2770' }}>{i + 1}</div>
+                          <div>
+                            <p className="font-semibold text-sm" style={{ color: '#192250' }}>{g.title}</p>
+                            {g.description && <p className="text-xs text-gray-500 mt-0.5">{g.description}</p>}
+                            {g.success_criteria && <p className="text-xs text-gray-400 mt-1 italic">✓ {g.success_criteria}</p>}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </details>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* No appraisal window open and no past records */}
+          {!appraisalWindowOpen && allAppraisals.length === 0 && (
+            <div className="bg-white rounded-2xl border border-gray-100 shadow-sm p-8 text-center">
+              <FileText size={28} className="mx-auto text-gray-200 mb-3" />
+              <p className="font-medium text-gray-400 text-sm">No appraisal scheduled</p>
+              <p className="text-xs text-gray-300 mt-1">Your manager will open the appraisal window when it's time</p>
+            </div>
+          )}
         </div>
       )}
     </div>

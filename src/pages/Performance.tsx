@@ -305,7 +305,7 @@ function AdminGoalsModal({ record, onSave, onClose }: {
   const handleSave = async () => {
     setSaving(true);
     try {
-      await api.adminSaveAppraisalGoals({ employee_id: record.employee_id, year: record.year, goals });
+      await api.adminSaveAppraisalGoals({ employee_id: record.employee_id, year: record.year, month: record.month, goals });
       onSave();
       onClose();
     } catch { /* ignore */ } finally { setSaving(false); }

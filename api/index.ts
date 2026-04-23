@@ -75,10 +75,11 @@ app.post('/api/employees', async (req, res) => {
 
 app.put('/api/employees/:id', async (req, res) => {
   try {
-    const { name, email, phone, department, designation, location, manager, status, salary, ctc } = req.body;
+    const { name, email, phone, department, designation, location, manager, status, salary, ctc, next_appraisal_month, next_appraisal_year } = req.body;
     const rows = await sql`
       UPDATE employees SET name=${name}, email=${email}, phone=${phone}, department=${department},
-        designation=${designation}, location=${location}, manager=${manager}, status=${status}, salary=${salary}, ctc=${ctc}
+        designation=${designation}, location=${location}, manager=${manager}, status=${status}, salary=${salary}, ctc=${ctc},
+        next_appraisal_month=${next_appraisal_month ?? null}, next_appraisal_year=${next_appraisal_year ?? null}
       WHERE id=${req.params.id} RETURNING *`;
     res.json(rows[0]);
   } catch (err) { res.status(500).json({ error: 'Server error' }); }
@@ -309,25 +310,25 @@ app.delete('/api/performance/notes/:id', async (req, res) => {
 app.get('/api/performance/appraisal-goals', async (req, res) => {
   try {
     const { employee_id, year } = req.query as any;
-    if (employee_id && year) {
-      const rows = await sql`SELECT * FROM appraisal_goals WHERE employee_id=${employee_id} AND year=${Number(year)}`;
-      res.json(rows[0] ?? null);
+    if (employee_id) {
+      const rows = await sql`SELECT * FROM appraisal_goals WHERE employee_id=${employee_id} ORDER BY year DESC, month DESC`;
+      res.json(rows);
     } else if (year) {
-      const rows = await sql`SELECT ag.*, e.name as employee_name, e.designation, e.department FROM appraisal_goals ag JOIN employees e ON ag.employee_id = e.id WHERE ag.year=${Number(year)} ORDER BY e.name`;
+      const rows = await sql`SELECT ag.*, e.name as employee_name, e.designation, e.department FROM appraisal_goals ag JOIN employees e ON ag.employee_id = e.id WHERE ag.year=${Number(year)} ORDER BY e.name, ag.month DESC`;
       res.json(rows);
     } else {
-      res.status(400).json({ error: 'year is required' });
+      res.status(400).json({ error: 'employee_id or year is required' });
     }
   } catch (err) { res.status(500).json({ error: 'Server error' }); }
 });
 
 app.post('/api/performance/appraisal-goals', async (req, res) => {
   try {
-    const { employee_id, year, goals } = req.body;
+    const { employee_id, year, month, goals } = req.body;
     const rows = await sql`
-      INSERT INTO appraisal_goals (employee_id, year, goals, updated_at)
-      VALUES (${employee_id}, ${year}, ${JSON.stringify(goals)}, NOW())
-      ON CONFLICT (employee_id, year) DO UPDATE SET goals=EXCLUDED.goals, updated_at=NOW()
+      INSERT INTO appraisal_goals (employee_id, year, month, goals, updated_at)
+      VALUES (${employee_id}, ${year}, ${month}, ${JSON.stringify(goals)}, NOW())
+      ON CONFLICT (employee_id, month, year) DO UPDATE SET goals=EXCLUDED.goals, updated_at=NOW()
       WHERE appraisal_goals.submitted = FALSE
       RETURNING *`;
     if (!rows.length) return res.status(403).json({ error: 'Goals already submitted and locked.' });
@@ -337,11 +338,11 @@ app.post('/api/performance/appraisal-goals', async (req, res) => {
 
 app.post('/api/performance/appraisal-goals/submit', async (req, res) => {
   try {
-    const { employee_id, year, goals } = req.body;
+    const { employee_id, year, month, goals } = req.body;
     const rows = await sql`
-      INSERT INTO appraisal_goals (employee_id, year, goals, submitted, submitted_at, updated_at)
-      VALUES (${employee_id}, ${year}, ${JSON.stringify(goals)}, TRUE, NOW(), NOW())
-      ON CONFLICT (employee_id, year) DO UPDATE SET
+      INSERT INTO appraisal_goals (employee_id, year, month, goals, submitted, submitted_at, updated_at)
+      VALUES (${employee_id}, ${year}, ${month}, ${JSON.stringify(goals)}, TRUE, NOW(), NOW())
+      ON CONFLICT (employee_id, month, year) DO UPDATE SET
         goals=EXCLUDED.goals, submitted=TRUE, submitted_at=NOW(), updated_at=NOW()
       WHERE appraisal_goals.submitted = FALSE
       RETURNING *`;
@@ -352,11 +353,11 @@ app.post('/api/performance/appraisal-goals/submit', async (req, res) => {
 
 app.put('/api/performance/appraisal-goals/admin', async (req, res) => {
   try {
-    const { employee_id, year, goals } = req.body;
+    const { employee_id, year, month, goals } = req.body;
     const rows = await sql`
-      INSERT INTO appraisal_goals (employee_id, year, goals, updated_at)
-      VALUES (${employee_id}, ${year}, ${JSON.stringify(goals)}, NOW())
-      ON CONFLICT (employee_id, year) DO UPDATE SET goals=EXCLUDED.goals, updated_at=NOW()
+      INSERT INTO appraisal_goals (employee_id, year, month, goals, updated_at)
+      VALUES (${employee_id}, ${year}, ${month}, ${JSON.stringify(goals)}, NOW())
+      ON CONFLICT (employee_id, month, year) DO UPDATE SET goals=EXCLUDED.goals, updated_at=NOW()
       RETURNING *`;
     res.json(rows[0]);
   } catch (err) { res.status(500).json({ error: 'Server error' }); }

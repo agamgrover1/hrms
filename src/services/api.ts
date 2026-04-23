@@ -88,16 +88,17 @@ export const api = {
     request<any>(`/performance/notes/${id}`, { method: 'DELETE' }),
 
   // Appraisal goals
-  getAppraisalGoals: (params: { employee_id?: string; year: number }) => {
-    const qs = new URLSearchParams({ year: String(params.year) });
+  getAppraisalGoals: (params: { employee_id?: string; year?: number }) => {
+    const qs = new URLSearchParams();
     if (params.employee_id) qs.set('employee_id', params.employee_id);
-    return request<any>(`/performance/appraisal-goals?${qs}`);
+    if (params.year) qs.set('year', String(params.year));
+    return request<any[]>(`/performance/appraisal-goals?${qs}`);
   },
-  saveAppraisalGoals: (data: { employee_id: string; year: number; goals: any[] }) =>
+  saveAppraisalGoals: (data: { employee_id: string; year: number; month: number; goals: any[] }) =>
     request<any>('/performance/appraisal-goals', { method: 'POST', body: JSON.stringify(data) }),
-  submitAppraisalGoals: (data: { employee_id: string; year: number; goals: any[] }) =>
+  submitAppraisalGoals: (data: { employee_id: string; year: number; month: number; goals: any[] }) =>
     request<any>('/performance/appraisal-goals/submit', { method: 'POST', body: JSON.stringify(data) }),
-  adminSaveAppraisalGoals: (data: { employee_id: string; year: number; goals: any[] }) =>
+  adminSaveAppraisalGoals: (data: { employee_id: string; year: number; month: number; goals: any[] }) =>
     request<any>('/performance/appraisal-goals/admin', { method: 'PUT', body: JSON.stringify(data) }),
 
   // Users

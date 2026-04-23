@@ -309,6 +309,8 @@ function EditEmployeeModal({ emp, onClose, onSaved }: {
     status: emp.status || 'active',
     salary: String(emp.salary || ''),
     ctc: String(emp.ctc || ''),
+    next_appraisal_month: String(emp.next_appraisal_month || ''),
+    next_appraisal_year: String(emp.next_appraisal_year || ''),
   });
   const [error, setError] = useState('');
   const [saving, setSaving] = useState(false);
@@ -330,6 +332,8 @@ function EditEmployeeModal({ emp, onClose, onSaved }: {
         ...form,
         salary: Number(form.salary) || 0,
         ctc: Number(form.ctc) || 0,
+        next_appraisal_month: form.next_appraisal_month ? Number(form.next_appraisal_month) : null,
+        next_appraisal_year:  form.next_appraisal_year  ? Number(form.next_appraisal_year)  : null,
       });
       onSaved(updated);
     } catch (err: any) {
@@ -423,6 +427,38 @@ function EditEmployeeModal({ emp, onClose, onSaved }: {
             </div>
           </div>
 
+          <div>
+            <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-3">Next Appraisal Schedule</p>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <div>
+                <label className={labelCls}>Appraisal Month</label>
+                <select value={form.next_appraisal_month} onChange={e => set('next_appraisal_month', e.target.value)} className={inputCls}>
+                  <option value="">— Not scheduled —</option>
+                  {['January','February','March','April','May','June','July','August','September','October','November','December'].map((m, i) => (
+                    <option key={i + 1} value={String(i + 1)}>{m}</option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <label className={labelCls}>Appraisal Year</label>
+                <select value={form.next_appraisal_year} onChange={e => set('next_appraisal_year', e.target.value)} className={inputCls}>
+                  <option value="">— Not scheduled —</option>
+                  {[0, 1, 2].map(offset => {
+                    const y = new Date().getFullYear() + offset;
+                    return <option key={y} value={String(y)}>{y}</option>;
+                  })}
+                </select>
+              </div>
+            </div>
+            {form.next_appraisal_month && form.next_appraisal_year && (
+              <p className="text-xs mt-2 font-medium" style={{ color: '#EE2770' }}>
+                Appraisal form will open for this employee in{' '}
+                {['January','February','March','April','May','June','July','August','September','October','November','December'][Number(form.next_appraisal_month) - 1]}{' '}
+                {form.next_appraisal_year}
+              </p>
+            )}
+          </div>
+
           {error && (
             <p className="text-sm text-red-600 bg-red-50 border border-red-100 rounded-lg px-4 py-2.5">{error}</p>
           )}
@@ -433,7 +469,8 @@ function EditEmployeeModal({ emp, onClose, onSaved }: {
               Cancel
             </button>
             <button type="submit" disabled={saving}
-              className="flex-1 px-4 py-2.5 text-sm font-medium text-white bg-primary-500 hover:bg-primary-600 rounded-lg transition-colors disabled:opacity-60 disabled:cursor-not-allowed">
+              className="flex-1 px-4 py-2.5 text-sm font-medium text-white rounded-lg transition-colors disabled:opacity-60 disabled:cursor-not-allowed"
+              style={{ background: 'linear-gradient(135deg, #EE2770 0%, #d11f62 100%)' }}>
               {saving ? 'Saving…' : 'Save Changes'}
             </button>
           </div>

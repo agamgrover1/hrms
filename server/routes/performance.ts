@@ -121,14 +121,23 @@ router.delete('/notes/:id', async (req, res) => {
 router.get('/appraisal-goals', async (req, res) => {
   try {
     const { employee_id, year } = req.query;
-    if (employee_id && year) {
-      const rows = await sql`SELECT * FROM appraisal_goals WHERE employee_id = ${employee_id as string} AND year = ${Number(year)}`;
-      res.json(rows[0] ?? null);
+    if (employee_id) {
+      // Return all submissions for this employee, newest first
+      const rows = await sql`
+        SELECT * FROM appraisal_goals WHERE employee_id = ${employee_id as string}
+        ORDER BY year DESC, month DESC
+      `;
+      res.json(rows);
     } else if (year) {
-      const rows = await sql`SELECT ag.*, e.name as employee_name, e.designation, e.department FROM appraisal_goals ag JOIN employees e ON ag.employee_id = e.id WHERE ag.year = ${Number(year)} ORDER BY e.name`;
+      // Admin view: all employees for a given year
+      const rows = await sql`
+        SELECT ag.*, e.name as employee_name, e.designation, e.department
+        FROM appraisal_goals ag JOIN employees e ON ag.employee_id = e.id
+        WHERE ag.year = ${Number(year)} ORDER BY e.name, ag.month DESC
+      `;
       res.json(rows);
     } else {
-      res.status(400).json({ error: 'year is required' });
+      res.status(400).json({ error: 'employee_id or year is required' });
     }
   } catch (err) {
     res.status(500).json({ error: 'Server error' });
@@ -137,11 +146,11 @@ router.get('/appraisal-goals', async (req, res) => {
 
 router.post('/appraisal-goals', async (req, res) => {
   try {
-    const { employee_id, year, goals } = req.body;
+    const { employee_id, year, month, goals } = req.body;
     const rows = await sql`
-      INSERT INTO appraisal_goals (employee_id, year, goals, updated_at)
-      VALUES (${employee_id}, ${year}, ${JSON.stringify(goals)}, NOW())
-      ON CONFLICT (employee_id, year) DO UPDATE SET
+      INSERT INTO appraisal_goals (employee_id, year, month, goals, updated_at)
+      VALUES (${employee_id}, ${year}, ${month}, ${JSON.stringify(goals)}, NOW())
+      ON CONFLICT (employee_id, month, year) DO UPDATE SET
         goals = EXCLUDED.goals,
         updated_at = NOW()
       WHERE appraisal_goals.submitted = FALSE
@@ -156,11 +165,11 @@ router.post('/appraisal-goals', async (req, res) => {
 
 router.post('/appraisal-goals/submit', async (req, res) => {
   try {
-    const { employee_id, year, goals } = req.body;
+    const { employee_id, year, month, goals } = req.body;
     const rows = await sql`
-      INSERT INTO appraisal_goals (employee_id, year, goals, submitted, submitted_at, updated_at)
-      VALUES (${employee_id}, ${year}, ${JSON.stringify(goals)}, TRUE, NOW(), NOW())
-      ON CONFLICT (employee_id, year) DO UPDATE SET
+      INSERT INTO appraisal_goals (employee_id, year, month, goals, submitted, submitted_at, updated_at)
+      VALUES (${employee_id}, ${year}, ${month}, ${JSON.stringify(goals)}, TRUE, NOW(), NOW())
+      ON CONFLICT (employee_id, month, year) DO UPDATE SET
         goals = EXCLUDED.goals,
         submitted = TRUE,
         submitted_at = NOW(),
@@ -178,11 +187,11 @@ router.post('/appraisal-goals/submit', async (req, res) => {
 // Admin-only: force edit even after submission
 router.put('/appraisal-goals/admin', async (req, res) => {
   try {
-    const { employee_id, year, goals } = req.body;
+    const { employee_id, year, month, goals } = req.body;
     const rows = await sql`
-      INSERT INTO appraisal_goals (employee_id, year, goals, updated_at)
-      VALUES (${employee_id}, ${year}, ${JSON.stringify(goals)}, NOW())
-      ON CONFLICT (employee_id, year) DO UPDATE SET
+      INSERT INTO appraisal_goals (employee_id, year, month, goals, updated_at)
+      VALUES (${employee_id}, ${year}, ${month}, ${JSON.stringify(goals)}, NOW())
+      ON CONFLICT (employee_id, month, year) DO UPDATE SET
         goals = EXCLUDED.goals,
         updated_at = NOW()
       RETURNING *

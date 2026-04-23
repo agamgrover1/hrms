@@ -41,12 +41,14 @@ router.post('/', async (req, res) => {
 
 router.put('/:id', async (req, res) => {
   try {
-    const { name, email, phone, department, designation, location, manager, status, salary, ctc } = req.body;
+    const { name, email, phone, department, designation, location, manager, status, salary, ctc, next_appraisal_month, next_appraisal_year } = req.body;
     const rows = await sql`
       UPDATE employees SET
         name = ${name}, email = ${email}, phone = ${phone}, department = ${department},
         designation = ${designation}, location = ${location}, manager = ${manager},
-        status = ${status}, salary = ${salary}, ctc = ${ctc}
+        status = ${status}, salary = ${salary}, ctc = ${ctc},
+        next_appraisal_month = ${next_appraisal_month ?? null},
+        next_appraisal_year  = ${next_appraisal_year  ?? null}
       WHERE id = ${req.params.id} RETURNING *
     `;
     res.json(rows[0]);
