@@ -247,10 +247,22 @@ app.post('/api/attendance/clock-out', async (req, res) => {
   } catch (err) { res.status(500).json({ error: 'Server error' }); }
 });
 
-// ── Biometric sync (Vercel mirror) ────────────────────────────────────────
+// ── Biometric sync — eTimeOffice (Vercel mirror) ──────────────────────────
 
-function calcHoursV(ci: string, co: string) {
-  return Math.round(((new Date(`1970-01-01T${co}`) as any) - (new Date(`1970-01-01T${ci}`) as any)) / 360000) / 10;
+const ET_STATUS_MAP: Record<string, string> = {
+  'P':'present','A':'absent','WO':'weekend','H':'holiday','LA':'late','PL':'late',
+  'HD':'half-day','L':'on_leave','LV':'on_leave','CL':'on_leave','SL':'on_leave',
+  'EL':'on_leave','ML':'on_leave','OD':'present','WFH':'present','CO':'present',
+};
+
+function parseEtTimeV(t: string|null): string|null {
+  if (!t || t.trim()==='--:--' || t.trim()==='00:00') return null;
+  return t.trim().slice(0,5);
+}
+function parseEtWorkTimeV(wt: string|null): number {
+  if (!wt || wt==='00:00' || wt==='--:--') return 0;
+  const [h,m] = wt.split(':').map(Number);
+  return Math.round((h+(m||0)/60)*10)/10;
 }
 
 async function runBiometricSyncV(trigger: string, triggeredBy?: string, targetDate?: string) {
@@ -258,51 +270,42 @@ async function runBiometricSyncV(trigger: string, triggeredBy?: string, targetDa
   const apiKey = process.env.BIOMETRIC_API_KEY;
   if (!apiUrl) throw new Error('BIOMETRIC_API_URL is not configured');
   const date = targetDate ?? new Date().toISOString().split('T')[0];
-  const empIdField = process.env.BIOMETRIC_EMP_ID_FIELD ?? 'emp_id';
-  const timeField  = process.env.BIOMETRIC_TIME_FIELD   ?? 'punch_time';
-  const typeField  = process.env.BIOMETRIC_TYPE_FIELD   ?? 'punch_type';
-  const inVal  = (process.env.BIOMETRIC_TYPE_IN_VALUE  ?? 'IN').toUpperCase();
-  const outVal = (process.env.BIOMETRIC_TYPE_OUT_VALUE ?? 'OUT').toUpperCase();
-  const dataField = process.env.BIOMETRIC_DATA_FIELD ?? 'data';
+  const [yyyy,mm,dd] = date.split('-');
+  const etDate = `${dd}/${mm}/${yyyy}`; // eTimeOffice uses DD/MM/YYYY
 
-  const fetchRes = await fetch(`${apiUrl}?date=${date}`, { headers: { 'Authorization': `Bearer ${apiKey}` } });
-  if (!fetchRes.ok) throw new Error(`Biometric API ${fetchRes.status}`);
+  const fetchRes = await fetch(
+    `${apiUrl}?Empcode=ALL&FromDate=${etDate}&ToDate=${etDate}`,
+    { headers: { 'Authorization': `Basic ${apiKey}`, 'Content-Type': 'application/json' } }
+  );
+  if (!fetchRes.ok) throw new Error(`eTimeOffice API ${fetchRes.status}`);
   const body = await fetchRes.json() as any;
-  const punches: any[] = Array.isArray(body) ? body : (body[dataField] ?? []);
-
-  const byEmp: Map<string, { ins: string[]; outs: string[] }> = new Map();
-  for (const p of punches) {
-    const empId = String(p[empIdField] ?? '').trim();
-    const rawT  = String(p[timeField]  ?? '').trim();
-    const ptype = String(p[typeField]  ?? '').trim().toUpperCase();
-    if (!empId || !rawT) continue;
-    const dt = new Date(rawT);
-    const t = isNaN(dt.getTime()) ? rawT.slice(11, 16) : dt.toTimeString().slice(0, 5);
-    if (!byEmp.has(empId)) byEmp.set(empId, { ins: [], outs: [] });
-    const b = byEmp.get(empId)!;
-    if (ptype === inVal)  b.ins.push(t);
-    if (ptype === outVal) b.outs.push(t);
-  }
+  if (body.Error === true) throw new Error(`eTimeOffice: ${body.Msg ?? 'Unknown'}`);
+  const records: any[] = body.InOutPunchData ?? [];
 
   const empRows = await sql`SELECT id, employee_id FROM employees` as any[];
   const empMap  = new Map(empRows.map((e: any) => [e.employee_id, e.id]));
   const syncId  = crypto.randomUUID();
   let updated = 0, created = 0;
 
-  for (const [bioId, { ins, outs }] of byEmp) {
-    const iid = empMap.get(bioId);
+  for (const rec of records) {
+    const empCode = String(rec.Empcode ?? '').trim();
+    if (!empCode) continue;
+    const iid = empMap.get(empCode);
     if (!iid) continue;
-    const ci = ins.length  ? ins.sort()[0]              : null;
-    const co = outs.length ? outs.sort().reverse()[0]   : null;
-    const status = ci ? (parseInt(ci.split(':')[0], 10) >= 10 ? 'late' : 'present') : 'absent';
-    const hours  = ci && co ? calcHoursV(ci, co) : 0;
-    const ex = await sql`SELECT * FROM attendance_records WHERE employee_id=${iid} AND date=${date}` as any[];
+    const inTime  = parseEtTimeV(rec.INTime);
+    const outTime = parseEtTimeV(rec.OUTTime);
+    const status  = inTime
+      ? (parseInt(inTime.split(':')[0],10) >= 10 ? 'late' : 'present')
+      : (ET_STATUS_MAP[(rec.Status??'A').toUpperCase()] ?? 'absent');
+    if (status === 'weekend' && !inTime) continue;
+    const hours = parseEtWorkTimeV(rec.WorkTime);
+    const ex  = await sql`SELECT * FROM attendance_records WHERE employee_id=${iid} AND date=${date}` as any[];
     const had = ex.length > 0; const old = ex[0] ?? {};
     await sql`INSERT INTO attendance_sync_snapshot (sync_id,employee_id,date,had_record,status_before,check_in_before,check_out_before,total_hours_before)
       VALUES(${syncId},${iid},${date},${had},${old.status??null},${old.check_in??null},${old.check_out??null},${old.total_hours??null})`;
     const r = await sql`
       INSERT INTO attendance_records (employee_id,date,check_in,check_out,status,total_hours,source,biometric_sync_id)
-      VALUES(${iid},${date},${ci},${co},${status},${hours},'biometric',${syncId})
+      VALUES(${iid},${date},${inTime},${outTime},${status},${hours},'biometric',${syncId})
       ON CONFLICT(employee_id,date) DO UPDATE SET check_in=EXCLUDED.check_in,check_out=EXCLUDED.check_out,
         status=EXCLUDED.status,total_hours=EXCLUDED.total_hours,source='biometric',biometric_sync_id=${syncId}
       RETURNING (xmax=0) AS was_inserted` as any[];
