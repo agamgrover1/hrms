@@ -1,5 +1,6 @@
-import { useState, useEffect } from 'react';
-import { Clock, CheckCircle, XCircle, AlertCircle, ChevronLeft, ChevronRight, CalendarDays, X } from 'lucide-react';
+import { useState, useEffect, useCallback } from 'react';
+import { Clock, CheckCircle, XCircle, AlertCircle, ChevronLeft, ChevronRight, CalendarDays, X,
+  Fingerprint, RefreshCw, RotateCcw, ChevronDown, ChevronUp, Activity } from 'lucide-react';
 import { api } from '../services/api';
 import { useAuth } from '../context/AuthContext';
 
@@ -191,6 +192,15 @@ export default function Attendance() {
   const [loading, setLoading] = useState(false);
   const [showMark, setShowMark] = useState(false);
 
+  // Biometric sync state
+  const [syncHistory, setSyncHistory] = useState<any[]>([]);
+  const [syncing, setSyncing] = useState(false);
+  const [rollingBack, setRollingBack] = useState(false);
+  const [syncError, setSyncError] = useState('');
+  const [syncSuccess, setSyncSuccess] = useState('');
+  const [showRollbackConfirm, setShowRollbackConfirm] = useState(false);
+  const [showSyncHistory, setShowSyncHistory] = useState(false);
+
   const calendarDays = generateCalendarDays(viewYear, viewMonth);
   const monthName = new Date(viewYear, viewMonth, 1).toLocaleString('default', { month: 'long' });
 
@@ -212,17 +222,53 @@ export default function Attendance() {
     });
   }, []);
 
-  const fetchRecords = () => {
+  const fetchRecords = useCallback(() => {
     if (!selectedEmpId) return;
     setLoading(true);
     api.getAttendance({ employee_id: selectedEmpId, month: viewMonth + 1, year: viewYear })
       .then(setRecords)
       .finally(() => setLoading(false));
+  }, [selectedEmpId, viewMonth, viewYear]);
+
+  const fetchSyncHistory = useCallback(() => {
+    api.getBiometricSyncHistory().then(setSyncHistory).catch(() => {});
+  }, []);
+
+  useEffect(() => { fetchRecords(); }, [fetchRecords]);
+  useEffect(() => { if (isHROrAdmin) fetchSyncHistory(); }, [fetchSyncHistory, isHROrAdmin]);
+
+  const handleSyncNow = async () => {
+    setSyncing(true);
+    setSyncError('');
+    setSyncSuccess('');
+    try {
+      const result = await api.syncBiometric(user?.name ?? 'HR');
+      setSyncSuccess(`Sync complete — ${result.records_updated} updated, ${result.records_created} created`);
+      fetchSyncHistory();
+      fetchRecords();
+    } catch (err: any) {
+      setSyncError(err.message ?? 'Sync failed');
+    } finally {
+      setSyncing(false);
+    }
   };
 
-  useEffect(() => {
-    fetchRecords();
-  }, [selectedEmpId, viewMonth, viewYear]);
+  const handleRollback = async () => {
+    setShowRollbackConfirm(false);
+    setRollingBack(true);
+    setSyncError('');
+    setSyncSuccess('');
+    try {
+      const result = await api.rollbackLastSync();
+      setSyncSuccess(`Rollback complete — ${result.records_restored} records restored`);
+      fetchSyncHistory();
+      fetchRecords();
+    } catch (err: any) {
+      setSyncError(err.message ?? 'Rollback failed');
+    } finally {
+      setRollingBack(false);
+    }
+  };
 
   const getDayRecord = (day: number) => {
     const dateStr = `${viewYear}-${String(viewMonth + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
@@ -279,6 +325,165 @@ export default function Attendance() {
           </button>
         </div>
       </div>
+
+      {/* ── Biometric Sync Panel (HR/Admin only) ─────────────────────────── */}
+      {isHROrAdmin && (() => {
+        const lastSync = syncHistory.find(s => s.status !== 'failed');
+        const lastSuccess = syncHistory.find(s => s.status === 'success');
+        const canRollback = !!lastSuccess;
+
+        function fmtAgo(iso: string) {
+          const diff = Date.now() - new Date(iso).getTime();
+          const m = Math.floor(diff / 60000);
+          if (m < 1) return 'just now';
+          if (m < 60) return `${m}m ago`;
+          const h = Math.floor(m / 60);
+          if (h < 24) return `${h}h ago`;
+          return `${Math.floor(h / 24)}d ago`;
+        }
+
+        return (
+          <div className="bg-white rounded-2xl border border-gray-100 shadow-sm overflow-hidden">
+            {/* Header row */}
+            <div className="flex flex-wrap items-center gap-3 px-5 py-4">
+              <div className="flex items-center gap-2.5 flex-1 min-w-0">
+                <div className="w-9 h-9 rounded-xl flex items-center justify-center flex-shrink-0"
+                  style={{ background: 'rgba(25,34,80,0.07)' }}>
+                  <Fingerprint size={18} style={{ color: '#192250' }} />
+                </div>
+                <div className="min-w-0">
+                  <p className="font-bold text-sm" style={{ color: '#192250' }}>Biometric Sync</p>
+                  <div className="flex items-center gap-2 mt-0.5 flex-wrap">
+                    <span className="flex items-center gap-1 text-xs text-gray-400">
+                      <Activity size={10} className="text-green-500" />
+                      Auto-sync every 5 min
+                    </span>
+                    {lastSync && (
+                      <span className="text-xs text-gray-400">
+                        · Last: {fmtAgo(lastSync.synced_at)}
+                        {lastSync.records_updated + lastSync.records_created > 0
+                          ? ` (${lastSync.records_updated + lastSync.records_created} records)`
+                          : ' (no changes)'}
+                      </span>
+                    )}
+                    {!lastSync && <span className="text-xs text-gray-400">· No syncs yet</span>}
+                  </div>
+                </div>
+              </div>
+
+              <div className="flex items-center gap-2 flex-shrink-0">
+                {/* Rollback button */}
+                {canRollback && (
+                  <button
+                    onClick={() => setShowRollbackConfirm(true)}
+                    disabled={rollingBack}
+                    className="flex items-center gap-1.5 px-3 py-2 text-xs font-semibold rounded-xl border transition-all disabled:opacity-50"
+                    style={{ color: '#d97706', borderColor: '#fde68a', background: '#fffbeb' }}
+                  >
+                    <RotateCcw size={13} className={rollingBack ? 'animate-spin' : ''} />
+                    {rollingBack ? 'Rolling back…' : 'Rollback Last Sync'}
+                  </button>
+                )}
+                {/* Sync Now button */}
+                <button
+                  onClick={handleSyncNow}
+                  disabled={syncing}
+                  className="flex items-center gap-1.5 px-4 py-2 text-xs font-semibold text-white rounded-xl transition-all disabled:opacity-60 shadow-sm"
+                  style={{ background: 'linear-gradient(135deg, #192250 0%, #141c43 100%)' }}
+                >
+                  <RefreshCw size={13} className={syncing ? 'animate-spin' : ''} />
+                  {syncing ? 'Syncing…' : 'Sync Now'}
+                </button>
+                {/* Toggle history */}
+                <button
+                  onClick={() => setShowSyncHistory(v => !v)}
+                  className="p-2 rounded-xl hover:bg-gray-50 transition-colors"
+                  title="Toggle sync history"
+                >
+                  {showSyncHistory ? <ChevronUp size={16} className="text-gray-400" /> : <ChevronDown size={16} className="text-gray-400" />}
+                </button>
+              </div>
+            </div>
+
+            {/* Feedback messages */}
+            {(syncError || syncSuccess) && (
+              <div className={`mx-5 mb-4 px-4 py-2.5 rounded-xl text-xs font-semibold ${syncError ? 'bg-red-50 text-red-600 border border-red-100' : 'bg-green-50 text-green-700 border border-green-100'}`}>
+                {syncError || syncSuccess}
+              </div>
+            )}
+
+            {/* Rollback confirmation */}
+            {showRollbackConfirm && (
+              <div className="mx-5 mb-4 p-4 rounded-xl border border-amber-200 bg-amber-50">
+                <p className="text-sm font-semibold text-amber-800 mb-1">Confirm Rollback</p>
+                <p className="text-xs text-amber-700 mb-3">
+                  This will revert all attendance records changed by the last sync back to their previous values. This cannot be undone.
+                </p>
+                <div className="flex gap-2">
+                  <button onClick={() => setShowRollbackConfirm(false)}
+                    className="flex-1 py-1.5 text-xs font-semibold border border-gray-200 rounded-lg hover:bg-white">
+                    Cancel
+                  </button>
+                  <button onClick={handleRollback}
+                    className="flex-1 py-1.5 text-xs font-semibold text-white rounded-lg"
+                    style={{ background: '#d97706' }}>
+                    Yes, Rollback
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {/* Sync history table */}
+            {showSyncHistory && (
+              <div className="border-t border-gray-100 overflow-x-auto">
+                {syncHistory.length === 0 ? (
+                  <p className="text-sm text-gray-400 text-center py-6">No sync history yet</p>
+                ) : (
+                  <table className="w-full text-sm">
+                    <thead>
+                      <tr style={{ background: '#f8f9fc' }}>
+                        {['Synced At', 'Trigger', 'Date', 'Updated', 'Created', 'Status'].map(h => (
+                          <th key={h} className="text-left px-4 py-2.5 text-xs font-semibold text-gray-400 uppercase tracking-wide whitespace-nowrap">{h}</th>
+                        ))}
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {syncHistory.map(s => {
+                        const isRolledBack = s.is_rolled_back || s.status === 'rolled_back';
+                        const isFailed = s.status === 'failed';
+                        return (
+                          <tr key={s.id} className="border-t border-gray-50 hover:bg-gray-50/50">
+                            <td className="px-4 py-3 text-xs text-gray-500 whitespace-nowrap">
+                              {new Date(s.synced_at).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' })}
+                              {', '}{new Date(s.synced_at).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', hour12: true })}
+                            </td>
+                            <td className="px-4 py-3 text-xs text-gray-600 capitalize whitespace-nowrap">
+                              {s.triggered === 'manual' ? `Manual${s.triggered_by ? ` — ${s.triggered_by}` : ''}` : 'Auto'}
+                            </td>
+                            <td className="px-4 py-3 text-xs text-gray-500">{s.date_range ?? '—'}</td>
+                            <td className="px-4 py-3 text-xs font-semibold text-center" style={{ color: '#192250' }}>{s.records_updated ?? 0}</td>
+                            <td className="px-4 py-3 text-xs font-semibold text-center" style={{ color: '#192250' }}>{s.records_created ?? 0}</td>
+                            <td className="px-4 py-3">
+                              <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-semibold ${
+                                isRolledBack ? 'bg-gray-100 text-gray-500' :
+                                isFailed ? 'bg-red-50 text-red-600' :
+                                'bg-green-50 text-green-700'
+                              }`}>
+                                {isRolledBack ? 'Rolled Back' : isFailed ? '✕ Failed' : '✓ Success'}
+                              </span>
+                              {s.error_msg && <p className="text-xs text-red-400 mt-0.5 truncate max-w-[150px]">{s.error_msg}</p>}
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                )}
+              </div>
+            )}
+          </div>
+        );
+      })()}
 
       <div className="flex flex-wrap items-center gap-3">
         <select value={selectedEmpId} onChange={e => setSelectedEmpId(e.target.value)}

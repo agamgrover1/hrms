@@ -247,6 +247,104 @@ app.post('/api/attendance/clock-out', async (req, res) => {
   } catch (err) { res.status(500).json({ error: 'Server error' }); }
 });
 
+// ── Biometric sync (Vercel mirror) ────────────────────────────────────────
+
+function calcHoursV(ci: string, co: string) {
+  return Math.round(((new Date(`1970-01-01T${co}`) as any) - (new Date(`1970-01-01T${ci}`) as any)) / 360000) / 10;
+}
+
+async function runBiometricSyncV(trigger: string, triggeredBy?: string, targetDate?: string) {
+  const apiUrl = process.env.BIOMETRIC_API_URL;
+  const apiKey = process.env.BIOMETRIC_API_KEY;
+  if (!apiUrl) throw new Error('BIOMETRIC_API_URL is not configured');
+  const date = targetDate ?? new Date().toISOString().split('T')[0];
+  const empIdField = process.env.BIOMETRIC_EMP_ID_FIELD ?? 'emp_id';
+  const timeField  = process.env.BIOMETRIC_TIME_FIELD   ?? 'punch_time';
+  const typeField  = process.env.BIOMETRIC_TYPE_FIELD   ?? 'punch_type';
+  const inVal  = (process.env.BIOMETRIC_TYPE_IN_VALUE  ?? 'IN').toUpperCase();
+  const outVal = (process.env.BIOMETRIC_TYPE_OUT_VALUE ?? 'OUT').toUpperCase();
+  const dataField = process.env.BIOMETRIC_DATA_FIELD ?? 'data';
+
+  const fetchRes = await fetch(`${apiUrl}?date=${date}`, { headers: { 'Authorization': `Bearer ${apiKey}` } });
+  if (!fetchRes.ok) throw new Error(`Biometric API ${fetchRes.status}`);
+  const body = await fetchRes.json() as any;
+  const punches: any[] = Array.isArray(body) ? body : (body[dataField] ?? []);
+
+  const byEmp: Map<string, { ins: string[]; outs: string[] }> = new Map();
+  for (const p of punches) {
+    const empId = String(p[empIdField] ?? '').trim();
+    const rawT  = String(p[timeField]  ?? '').trim();
+    const ptype = String(p[typeField]  ?? '').trim().toUpperCase();
+    if (!empId || !rawT) continue;
+    const dt = new Date(rawT);
+    const t = isNaN(dt.getTime()) ? rawT.slice(11, 16) : dt.toTimeString().slice(0, 5);
+    if (!byEmp.has(empId)) byEmp.set(empId, { ins: [], outs: [] });
+    const b = byEmp.get(empId)!;
+    if (ptype === inVal)  b.ins.push(t);
+    if (ptype === outVal) b.outs.push(t);
+  }
+
+  const empRows = await sql`SELECT id, employee_id FROM employees` as any[];
+  const empMap  = new Map(empRows.map((e: any) => [e.employee_id, e.id]));
+  const syncId  = crypto.randomUUID();
+  let updated = 0, created = 0;
+
+  for (const [bioId, { ins, outs }] of byEmp) {
+    const iid = empMap.get(bioId);
+    if (!iid) continue;
+    const ci = ins.length  ? ins.sort()[0]              : null;
+    const co = outs.length ? outs.sort().reverse()[0]   : null;
+    const status = ci ? (parseInt(ci.split(':')[0], 10) >= 10 ? 'late' : 'present') : 'absent';
+    const hours  = ci && co ? calcHoursV(ci, co) : 0;
+    const ex = await sql`SELECT * FROM attendance_records WHERE employee_id=${iid} AND date=${date}` as any[];
+    const had = ex.length > 0; const old = ex[0] ?? {};
+    await sql`INSERT INTO attendance_sync_snapshot (sync_id,employee_id,date,had_record,status_before,check_in_before,check_out_before,total_hours_before)
+      VALUES(${syncId},${iid},${date},${had},${old.status??null},${old.check_in??null},${old.check_out??null},${old.total_hours??null})`;
+    const r = await sql`
+      INSERT INTO attendance_records (employee_id,date,check_in,check_out,status,total_hours,source,biometric_sync_id)
+      VALUES(${iid},${date},${ci},${co},${status},${hours},'biometric',${syncId})
+      ON CONFLICT(employee_id,date) DO UPDATE SET check_in=EXCLUDED.check_in,check_out=EXCLUDED.check_out,
+        status=EXCLUDED.status,total_hours=EXCLUDED.total_hours,source='biometric',biometric_sync_id=${syncId}
+      RETURNING (xmax=0) AS was_inserted` as any[];
+    if (r[0]?.was_inserted) created++; else updated++;
+  }
+  await sql`INSERT INTO attendance_sync_log (sync_id,triggered,triggered_by,date_range,records_updated,records_created,status)
+    VALUES(${syncId},${trigger},${triggeredBy??null},${date},${updated},${created},'success')`;
+  return { sync_id: syncId, records_updated: updated, records_created: created, synced_at: new Date().toISOString(), date_range: date };
+}
+
+app.get('/api/attendance/biometric-sync/history', async (_req, res) => {
+  try {
+    const rows = await sql`SELECT * FROM attendance_sync_log ORDER BY synced_at DESC LIMIT 20`;
+    res.json(rows);
+  } catch (err) { res.status(500).json({ error: 'Server error' }); }
+});
+
+app.post('/api/attendance/biometric-sync', async (req, res) => {
+  try {
+    const result = await runBiometricSyncV('manual', req.body.triggered_by, req.body.date);
+    res.json(result);
+  } catch (err: any) {
+    try { await sql`INSERT INTO attendance_sync_log (sync_id,triggered,triggered_by,date_range,status,error_msg) VALUES(${crypto.randomUUID()},'manual',${req.body.triggered_by??null},${req.body.date??new Date().toISOString().split('T')[0]},'failed',${err.message})`; } catch {}
+    res.status(500).json({ error: err.message ?? 'Sync failed' });
+  }
+});
+
+app.post('/api/attendance/biometric-sync/rollback', async (_req, res) => {
+  try {
+    const logs = await sql`SELECT * FROM attendance_sync_log WHERE is_rolled_back=FALSE AND status='success' ORDER BY synced_at DESC LIMIT 1` as any[];
+    if (!logs.length) return res.status(404).json({ error: 'No sync to rollback' });
+    const { sync_id } = logs[0];
+    const snaps = await sql`SELECT * FROM attendance_sync_snapshot WHERE sync_id=${sync_id}` as any[];
+    for (const s of snaps) {
+      if (!s.had_record) { await sql`DELETE FROM attendance_records WHERE employee_id=${s.employee_id} AND date=${s.date} AND biometric_sync_id=${sync_id}`; }
+      else { await sql`UPDATE attendance_records SET check_in=${s.check_in_before??null},check_out=${s.check_out_before??null},status=${s.status_before},total_hours=${s.total_hours_before??0},source='manual',biometric_sync_id=NULL WHERE employee_id=${s.employee_id} AND date=${s.date}`; }
+    }
+    await sql`UPDATE attendance_sync_log SET is_rolled_back=TRUE,rolled_back_at=NOW(),status='rolled_back' WHERE sync_id=${sync_id}`;
+    res.json({ success: true, sync_id, records_restored: snaps.length });
+  } catch (err: any) { res.status(500).json({ error: err.message ?? 'Rollback failed' }); }
+});
+
 // ── Leave helpers ─────────────────────────────────────────────────────────
 function isOnProbation(joinDate: string | null, probationEndDate?: string | null): boolean {
   if (!joinDate) return false;
