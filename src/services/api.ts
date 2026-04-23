@@ -75,7 +75,7 @@ export const api = {
   saveMonthlyPerformance: (data: {
     employee_id: string; reviewer_id?: string; reviewer_name?: string;
     month: number; year: number;
-    productivity: number; quality: number; teamwork: number; attendance_score: number; initiative: number;
+    productivity: number; quality: number; teamwork: number; attendance_score: number; initiative: number; client_satisfaction: number;
     overall_score: number; comments?: string;
   }) => request<any>('/performance/monthly', { method: 'POST', body: JSON.stringify(data) }),
 
@@ -86,6 +86,19 @@ export const api = {
     request<any>('/performance/notes', { method: 'POST', body: JSON.stringify(data) }),
   deletePerformanceNote: (id: string) =>
     request<any>(`/performance/notes/${id}`, { method: 'DELETE' }),
+
+  // Appraisal goals
+  getAppraisalGoals: (params: { employee_id?: string; year: number }) => {
+    const qs = new URLSearchParams({ year: String(params.year) });
+    if (params.employee_id) qs.set('employee_id', params.employee_id);
+    return request<any>(`/performance/appraisal-goals?${qs}`);
+  },
+  saveAppraisalGoals: (data: { employee_id: string; year: number; goals: any[] }) =>
+    request<any>('/performance/appraisal-goals', { method: 'POST', body: JSON.stringify(data) }),
+  submitAppraisalGoals: (data: { employee_id: string; year: number; goals: any[] }) =>
+    request<any>('/performance/appraisal-goals/submit', { method: 'POST', body: JSON.stringify(data) }),
+  adminSaveAppraisalGoals: (data: { employee_id: string; year: number; goals: any[] }) =>
+    request<any>('/performance/appraisal-goals/admin', { method: 'PUT', body: JSON.stringify(data) }),
 
   // Users
   getUsers: () => request<any[]>('/users'),

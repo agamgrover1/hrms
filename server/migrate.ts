@@ -37,6 +37,24 @@ await sql`
   )
 `;
 
+// Add client_satisfaction column if it doesn't exist
+await sql`ALTER TABLE monthly_performance ADD COLUMN IF NOT EXISTS client_satisfaction INTEGER NOT NULL DEFAULT 0`;
+
+await sql`
+  CREATE TABLE IF NOT EXISTS appraisal_goals (
+    id          SERIAL PRIMARY KEY,
+    employee_id VARCHAR(50) NOT NULL,
+    year        INTEGER NOT NULL,
+    goals       JSONB NOT NULL DEFAULT '[]',
+    submitted   BOOLEAN NOT NULL DEFAULT FALSE,
+    submitted_at TIMESTAMPTZ,
+    created_at  TIMESTAMPTZ DEFAULT NOW(),
+    updated_at  TIMESTAMPTZ DEFAULT NOW(),
+    UNIQUE(employee_id, year)
+  )
+`;
+
 console.log('✓ monthly_performance table ready');
 console.log('✓ performance_notes table ready');
+console.log('✓ appraisal_goals table ready');
 console.log('Migration complete.');

@@ -1,30 +1,41 @@
-import { useState, useEffect } from 'react';
-import { Clock, Calendar, DollarSign, User, CheckCircle, XCircle, AlertCircle, Plus, X, Target } from 'lucide-react';
+import { useState, useEffect, useCallback } from 'react';
+import { Clock, Calendar, DollarSign, User, CheckCircle, XCircle, AlertCircle, Plus, X, Target, FileText, Lock, Trash2, Save } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
 import { api } from '../../services/api';
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Cell } from 'recharts';
 
 const tabs = [
-  { key: 'overview', label: 'Overview', icon: User },
-  { key: 'attendance', label: 'Attendance', icon: Clock },
-  { key: 'leave', label: 'My Leaves', icon: Calendar },
-  { key: 'payslip', label: 'Pay Slip', icon: DollarSign },
-  { key: 'performance', label: 'Performance', icon: Target },
+  { key: 'overview',     label: 'Overview',     icon: User },
+  { key: 'attendance',   label: 'Attendance',   icon: Clock },
+  { key: 'leave',        label: 'My Leaves',    icon: Calendar },
+  { key: 'payslip',      label: 'Pay Slip',     icon: DollarSign },
+  { key: 'performance',  label: 'Performance',  icon: Target },
 ];
 
+const MONTHS_SHORT = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+const PERF_COLS = ['Prod.', 'Quality', 'Teamwork', 'Attend.', 'Initiative', 'Client Sat.'];
+const PERF_KEYS = ['productivity','quality','teamwork','attendance_score','initiative','client_satisfaction'];
+
+function perfColor(s: number) {
+  if (s >= 85) return '#16a34a';
+  if (s >= 70) return '#192250';
+  if (s >= 50) return '#d97706';
+  return '#dc2626';
+}
+
 const statusConfig = {
-  present: { label: 'Present', color: 'bg-green-50 text-green-600', dot: 'bg-green-500' },
-  absent: { label: 'Absent', color: 'bg-red-50 text-red-500', dot: 'bg-red-500' },
-  late: { label: 'Late', color: 'bg-amber-50 text-amber-600', dot: 'bg-amber-500' },
+  present:  { label: 'Present',  color: 'bg-green-50 text-green-600',  dot: 'bg-green-500' },
+  absent:   { label: 'Absent',   color: 'bg-red-50 text-red-500',      dot: 'bg-red-500' },
+  late:     { label: 'Late',     color: 'bg-amber-50 text-amber-600',  dot: 'bg-amber-500' },
   'half-day': { label: 'Half Day', color: 'bg-blue-50 text-blue-600', dot: 'bg-blue-500' },
-  weekend: { label: 'Weekend', color: 'bg-gray-50 text-gray-400', dot: 'bg-gray-300' },
-  holiday: { label: 'Holiday', color: 'bg-purple-50 text-purple-500', dot: 'bg-purple-400' },
+  weekend:  { label: 'Weekend',  color: 'bg-gray-50 text-gray-400',    dot: 'bg-gray-300' },
+  holiday:  { label: 'Holiday',  color: 'bg-purple-50 text-purple-500',dot: 'bg-purple-400' },
 };
 
 const leaveStatusConfig = {
-  pending: { color: 'bg-amber-50 text-amber-600 border-amber-200', icon: AlertCircle },
-  approved: { color: 'bg-green-50 text-green-600 border-green-200', icon: CheckCircle },
-  rejected: { color: 'bg-red-50 text-red-500 border-red-200', icon: XCircle },
+  pending:  { color: 'bg-amber-50 text-amber-600 border-amber-200',  icon: AlertCircle },
+  approved: { color: 'bg-green-50 text-green-600 border-green-200',  icon: CheckCircle },
+  rejected: { color: 'bg-red-50 text-red-500 border-red-200',        icon: XCircle },
 };
 
 function ApplyLeaveModal({ onClose, onSubmit }: { onClose: () => void; onSubmit: (d: any) => void }) {
@@ -46,7 +57,7 @@ function ApplyLeaveModal({ onClose, onSubmit }: { onClose: () => void; onSubmit:
           <div>
             <label className="text-xs font-medium text-gray-500 mb-1.5 block">Leave Type</label>
             <select value={form.type} onChange={e => setForm(f => ({ ...f, type: e.target.value }))}
-              className="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-primary-200 bg-white">
+              className="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm focus:outline-none bg-white">
               {['casual', 'sick', 'earned'].map(t => <option key={t} value={t}>{t.charAt(0).toUpperCase() + t.slice(1)} Leave</option>)}
             </select>
           </div>
@@ -54,23 +65,23 @@ function ApplyLeaveModal({ onClose, onSubmit }: { onClose: () => void; onSubmit:
             <div>
               <label className="text-xs font-medium text-gray-500 mb-1.5 block">From</label>
               <input type="date" value={form.from} onChange={e => setForm(f => ({ ...f, from: e.target.value }))}
-                className="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-primary-200" />
+                className="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm focus:outline-none" />
             </div>
             <div>
               <label className="text-xs font-medium text-gray-500 mb-1.5 block">To</label>
               <input type="date" value={form.to} onChange={e => setForm(f => ({ ...f, to: e.target.value }))}
-                className="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-primary-200" />
+                className="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm focus:outline-none" />
             </div>
           </div>
           <div>
             <label className="text-xs font-medium text-gray-500 mb-1.5 block">Reason</label>
             <textarea value={form.reason} onChange={e => setForm(f => ({ ...f, reason: e.target.value }))}
               rows={3} placeholder="Briefly describe the reason..."
-              className="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-primary-200 resize-none" />
+              className="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm focus:outline-none resize-none" />
           </div>
           <div className="flex gap-3 pt-1">
             <button onClick={onClose} className="flex-1 py-2.5 border border-gray-200 rounded-lg text-sm font-medium text-gray-600 hover:bg-gray-50">Cancel</button>
-            <button onClick={handleSubmit} className="flex-1 py-2.5 bg-primary-500 hover:bg-primary-600 text-white rounded-lg text-sm font-medium">Submit</button>
+            <button onClick={handleSubmit} className="flex-1 py-2.5 text-white rounded-lg text-sm font-medium" style={{ background: '#192250' }}>Submit</button>
           </div>
         </div>
       </div>
@@ -89,7 +100,13 @@ export default function MyPortal() {
   const [monthlyPerf, setMonthlyPerf] = useState<any[]>([]);
   const [empDbId, setEmpDbId] = useState('');
 
-  // Resolve employee record id from employee_id_ref
+  // Appraisal goals state
+  const [appraisalRecord, setAppraisalRecord] = useState<any | null>(null);
+  const [goalsDraft, setGoalsDraft] = useState<any[]>([]);
+  const [savingGoals, setSavingGoals] = useState(false);
+  const [submittingGoals, setSubmittingGoals] = useState(false);
+  const [goalsError, setGoalsError] = useState('');
+
   const empRef = user?.employee_id_ref;
   const currentYear = new Date().getFullYear();
 
@@ -106,19 +123,24 @@ export default function MyPortal() {
         api.getEmployeePayroll(emp.id),
         api.getLeaveBalance(emp.id).catch(() => ({ casual: 10, sick: 7, earned: 15 })),
         api.getMonthlyPerformance(emp.id, currentYear),
-      ]).then(([att, lv, pay, bal, perf]) => {
+        api.getAppraisalGoals({ employee_id: emp.id, year: currentYear }),
+      ]).then(([att, lv, pay, bal, perf, appraisal]) => {
         setAttendance(att);
         setLeaves(lv);
         setPayroll(Array.isArray(pay) ? pay[0] : pay);
         setBalance(bal);
         setMonthlyPerf(perf);
+        setAppraisalRecord(appraisal);
+        setGoalsDraft(appraisal?.goals ?? [{ title: '', description: '', success_criteria: '' }]);
       });
     });
   }, [empRef, currentYear]);
 
+  const isSubmitted = appraisalRecord?.submitted === true;
+
   const presentDays = attendance.filter(r => r.status === 'present').length;
-  const lateDays = attendance.filter(r => r.status === 'late').length;
-  const absentDays = attendance.filter(r => r.status === 'absent').length;
+  const lateDays    = attendance.filter(r => r.status === 'late').length;
+  const absentDays  = attendance.filter(r => r.status === 'absent').length;
 
   const handleApplyLeave = async (data: any) => {
     if (!empRef) return;
@@ -129,40 +151,80 @@ export default function MyPortal() {
     api.getLeaveRequests({ employee_id: emp.id }).then(setLeaves);
   };
 
+  const updateGoal = (i: number, field: string, val: string) =>
+    setGoalsDraft(g => g.map((x, j) => j === i ? { ...x, [field]: val } : x));
+
+  const handleSaveDraft = async () => {
+    if (!empDbId || isSubmitted) return;
+    setSavingGoals(true);
+    setGoalsError('');
+    try {
+      const result = await api.saveAppraisalGoals({ employee_id: empDbId, year: currentYear, goals: goalsDraft });
+      setAppraisalRecord(result);
+    } catch (e: any) {
+      setGoalsError(e.message ?? 'Save failed');
+    } finally { setSavingGoals(false); }
+  };
+
+  const handleSubmit = async () => {
+    if (!empDbId || isSubmitted) return;
+    const filledGoals = goalsDraft.filter(g => g.title?.trim());
+    if (!filledGoals.length) { setGoalsError('Add at least one goal before submitting.'); return; }
+    if (!confirm('Once submitted, you cannot edit your goals. Are you sure?')) return;
+    setSubmittingGoals(true);
+    setGoalsError('');
+    try {
+      const result = await api.submitAppraisalGoals({ employee_id: empDbId, year: currentYear, goals: filledGoals });
+      setAppraisalRecord(result);
+      setGoalsDraft(result.goals ?? []);
+    } catch (e: any) {
+      setGoalsError(e.message ?? 'Submit failed');
+    } finally { setSubmittingGoals(false); }
+  };
+
+  const chartData = MONTHS_SHORT.map((m, idx) => {
+    const rec = monthlyPerf.find(r => r.month === idx + 1);
+    return { month: m, score: rec ? rec.overall_score : null };
+  });
+
   return (
     <div className="space-y-5">
       {/* Profile Header */}
-      <div className="bg-gradient-to-br from-primary-500 to-primary-600 rounded-2xl p-6 text-white">
+      <div className="rounded-2xl p-6 text-white" style={{ background: 'linear-gradient(135deg, #192250 0%, #141c43 100%)' }}>
         <div className="flex items-center gap-4">
-          <div className="w-16 h-16 rounded-2xl bg-white/20 flex items-center justify-center text-2xl font-bold border-2 border-white/30">
+          <div className="w-16 h-16 rounded-2xl flex items-center justify-center text-2xl font-bold border-2"
+            style={{ background: 'rgba(255,255,255,0.15)', borderColor: 'rgba(255,255,255,0.25)' }}>
             {user?.avatar}
           </div>
           <div>
             <h2 className="text-xl font-bold">{user?.name}</h2>
-            <p className="text-primary-100">{user?.designation} · {user?.department}</p>
-            <p className="text-primary-200 text-sm mt-0.5">{user?.employee_id_ref}</p>
+            <p className="text-sm mt-0.5" style={{ color: 'rgba(255,255,255,0.65)' }}>{user?.designation} · {user?.department}</p>
+            <p className="text-xs mt-1 font-semibold" style={{ color: '#EE2770' }}>{user?.employee_id_ref}</p>
           </div>
         </div>
       </div>
 
       {/* Tabs */}
-      <div className="flex gap-1 bg-white rounded-xl p-1 border border-gray-100 shadow-sm w-fit">
+      <div className="flex flex-wrap gap-1 bg-white rounded-xl p-1 border border-gray-100 shadow-sm w-fit">
         {tabs.map(({ key, label, icon: Icon }) => (
           <button key={key} onClick={() => setTab(key)}
-            className={`flex items-center gap-2 px-4 py-2 text-sm font-medium rounded-lg transition-all ${tab === key ? 'bg-primary-500 text-white shadow-sm' : 'text-gray-500 hover:text-gray-700 hover:bg-gray-50'}`}>
+            className="flex items-center gap-2 px-4 py-2 text-sm font-semibold rounded-lg transition-all"
+            style={tab === key
+              ? { background: '#192250', color: '#fff' }
+              : { color: '#6b7280' }}>
             <Icon size={14} /> {label}
           </button>
         ))}
       </div>
 
-      {/* Overview */}
+      {/* ── Overview ── */}
       {tab === 'overview' && (
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
           <div className="bg-white rounded-xl p-5 border border-gray-100 shadow-sm">
             <p className="text-xs font-semibold text-gray-400 uppercase tracking-wide mb-3">Personal Info</p>
             {[
-              { label: 'Email', value: user?.email },
-              { label: 'Department', value: user?.department },
+              { label: 'Email',       value: user?.email },
+              { label: 'Department',  value: user?.department },
               { label: 'Designation', value: user?.designation },
               { label: 'Employee ID', value: user?.employee_id_ref },
             ].map(({ label, value }) => (
@@ -193,7 +255,7 @@ export default function MyPortal() {
         </div>
       )}
 
-      {/* Attendance */}
+      {/* ── Attendance ── */}
       {tab === 'attendance' && (
         <div className="bg-white rounded-xl border border-gray-100 shadow-sm overflow-hidden">
           <div className="px-5 py-4 border-b border-gray-100">
@@ -224,11 +286,13 @@ export default function MyPortal() {
         </div>
       )}
 
-      {/* Leaves */}
+      {/* ── Leaves ── */}
       {tab === 'leave' && (
         <div className="space-y-4">
           <div className="flex justify-end">
-            <button onClick={() => setApplyLeave(true)} className="flex items-center gap-2 px-4 py-2.5 bg-primary-500 hover:bg-primary-600 text-white text-sm font-medium rounded-lg transition-colors shadow-sm">
+            <button onClick={() => setApplyLeave(true)}
+              className="flex items-center gap-2 px-4 py-2.5 text-white text-sm font-semibold rounded-xl transition-colors shadow-sm"
+              style={{ background: 'linear-gradient(135deg, #EE2770 0%, #d11f62 100%)' }}>
               <Plus size={15} /> Apply Leave
             </button>
           </div>
@@ -270,112 +334,15 @@ export default function MyPortal() {
         </div>
       )}
 
-      {/* Performance */}
-      {tab === 'performance' && (
-        <div className="space-y-4">
-          {/* Summary cards */}
-          {(() => {
-            const reviewed = monthlyPerf.length;
-            const avg = reviewed ? Math.round(monthlyPerf.reduce((a, r) => a + r.overall_score, 0) / reviewed) : 0;
-            const best = monthlyPerf.length ? monthlyPerf.reduce((a, b) => a.overall_score > b.overall_score ? a : b) : null;
-            const MONTHS_SHORT = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
-
-            function perfColor(s: number) {
-              if (s >= 85) return '#16a34a';
-              if (s >= 70) return '#192250';
-              if (s >= 50) return '#d97706';
-              return '#dc2626';
-            }
-
-            const chartData = MONTHS_SHORT.map((m, idx) => {
-              const rec = monthlyPerf.find(r => r.month === idx + 1);
-              return { month: m, score: rec ? rec.overall_score : null };
-            });
-
-            return (
-              <>
-                <div className="grid grid-cols-3 gap-3">
-                  <div className="bg-white rounded-xl p-4 border border-gray-100 shadow-sm text-center">
-                    <p className="text-2xl font-black" style={{ color: reviewed ? perfColor(avg) : '#d1d5db' }}>{reviewed ? avg : '—'}</p>
-                    <p className="text-xs text-gray-400 mt-1">Avg YTD Score</p>
-                  </div>
-                  <div className="bg-white rounded-xl p-4 border border-gray-100 shadow-sm text-center">
-                    <p className="text-2xl font-black" style={{ color: '#192250' }}>{reviewed}/12</p>
-                    <p className="text-xs text-gray-400 mt-1">Reviews Done</p>
-                  </div>
-                  <div className="bg-white rounded-xl p-4 border border-gray-100 shadow-sm text-center">
-                    <p className="text-2xl font-black" style={{ color: '#16a34a' }}>{best ? MONTHS_SHORT[best.month - 1] : '—'}</p>
-                    <p className="text-xs text-gray-400 mt-1">Best Month</p>
-                  </div>
-                </div>
-
-                <div className="bg-white rounded-xl border border-gray-100 shadow-sm p-5">
-                  <h3 className="font-bold text-sm mb-4" style={{ color: '#192250' }}>Monthly Performance — {currentYear}</h3>
-                  <ResponsiveContainer width="100%" height={180}>
-                    <BarChart data={chartData} barSize={22}>
-                      <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" vertical={false} />
-                      <XAxis dataKey="month" tick={{ fontSize: 10, fill: '#9ca3af' }} axisLine={false} tickLine={false} />
-                      <YAxis domain={[0, 100]} tick={{ fontSize: 10, fill: '#9ca3af' }} axisLine={false} tickLine={false} width={24} />
-                      <Tooltip
-                        formatter={(val: any) => [val ?? '—', 'Score']}
-                        contentStyle={{ borderRadius: 8, border: '1px solid #e5e7eb', fontSize: 12 }}
-                      />
-                      <Bar dataKey="score" radius={[4, 4, 0, 0]}>
-                        {chartData.map((entry, idx) => (
-                          <Cell key={idx} fill={entry.score != null ? perfColor(entry.score) : '#e5e7eb'} />
-                        ))}
-                      </Bar>
-                    </BarChart>
-                  </ResponsiveContainer>
-                </div>
-
-                <div className="bg-white rounded-xl border border-gray-100 shadow-sm overflow-hidden">
-                  <div className="px-5 py-3 border-b border-gray-100">
-                    <h3 className="font-bold text-sm" style={{ color: '#192250' }}>Score Breakdown</h3>
-                  </div>
-                  <table className="w-full text-sm">
-                    <thead>
-                      <tr style={{ background: '#f8f9fc' }}>
-                        {['Month', 'Prod.', 'Quality', 'Teamwork', 'Attendance', 'Initiative', 'Overall'].map(h => (
-                          <th key={h} className="text-center px-3 py-2.5 text-xs font-semibold text-gray-400 uppercase tracking-wide first:text-left">{h}</th>
-                        ))}
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {monthlyPerf.length === 0 ? (
-                        <tr><td colSpan={7} className="text-center text-gray-400 text-sm py-10">No reviews yet for {currentYear}</td></tr>
-                      ) : monthlyPerf.map(r => (
-                        <tr key={r.id} className="border-t border-gray-50 hover:bg-gray-50/50">
-                          <td className="px-3 py-3 font-semibold" style={{ color: '#192250' }}>{MONTHS_SHORT[r.month - 1]}</td>
-                          {[r.productivity, r.quality, r.teamwork, r.attendance_score, r.initiative].map((v, i) => (
-                            <td key={i} className="px-3 py-3 text-center font-bold tabular-nums" style={{ color: perfColor(v) }}>{v}</td>
-                          ))}
-                          <td className="px-3 py-3 text-center">
-                            <span className="inline-flex px-2 py-0.5 rounded-full text-xs font-bold"
-                              style={{ background: `${perfColor(r.overall_score)}18`, color: perfColor(r.overall_score) }}>
-                              {r.overall_score}
-                            </span>
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              </>
-            );
-          })()}
-        </div>
-      )}
-
-      {/* Pay Slip */}
+      {/* ── Pay Slip ── */}
       {tab === 'payslip' && (
         <div className="max-w-lg">
           {payroll ? (
             <div className="bg-white rounded-2xl border border-gray-100 shadow-sm overflow-hidden">
-              <div className="bg-primary-500 px-6 py-5 text-white">
+              <div className="px-6 py-5 text-white" style={{ background: 'linear-gradient(135deg, #192250 0%, #141c43 100%)' }}>
                 <h3 className="font-bold text-lg">Salary Slip</h3>
-                <p className="text-primary-100 text-sm">{payroll.month} {payroll.year}</p>
-                <p className="text-primary-100 text-xs mt-1">{user?.employee_id_ref} · {user?.designation}</p>
+                <p className="text-sm mt-0.5" style={{ color: 'rgba(255,255,255,0.65)' }}>{payroll.month} {payroll.year}</p>
+                <p className="text-xs mt-1" style={{ color: '#EE2770' }}>{user?.employee_id_ref} · {user?.designation}</p>
               </div>
               <div className="p-6 space-y-2.5">
                 <p className="text-xs font-semibold text-gray-400 uppercase tracking-wide mb-2">Earnings</p>
@@ -404,15 +371,225 @@ export default function MyPortal() {
                     <span className="font-medium text-red-500">−₹{Number(value).toLocaleString('en-IN')}</span>
                   </div>
                 ))}
-                <div className="mt-4 bg-primary-50 rounded-xl p-4 flex justify-between items-center">
+                <div className="mt-4 rounded-xl p-4 flex justify-between items-center" style={{ background: 'rgba(25,34,80,0.06)' }}>
                   <span className="font-bold text-gray-800">Net Pay</span>
-                  <span className="text-xl font-bold text-primary-600">₹{Number(payroll.net_pay).toLocaleString('en-IN')}</span>
+                  <span className="text-xl font-bold" style={{ color: '#192250' }}>₹{Number(payroll.net_pay).toLocaleString('en-IN')}</span>
                 </div>
               </div>
             </div>
           ) : (
             <p className="text-center text-gray-400 text-sm py-16">No payroll data available</p>
           )}
+        </div>
+      )}
+
+      {/* ── Performance ── */}
+      {tab === 'performance' && (
+        <div className="space-y-5">
+          {/* KPI summary */}
+          <div className="grid grid-cols-3 gap-3">
+            {(() => {
+              const reviewed = monthlyPerf.length;
+              const avg = reviewed ? Math.round(monthlyPerf.reduce((a, r) => a + r.overall_score, 0) / reviewed) : 0;
+              const best = monthlyPerf.length ? monthlyPerf.reduce((a, b) => a.overall_score > b.overall_score ? a : b) : null;
+              return [
+                { label: 'Avg YTD Score', value: reviewed ? avg : '—', color: reviewed ? perfColor(avg) : '#d1d5db' },
+                { label: 'Reviews Done', value: `${reviewed}/12`, color: '#192250' },
+                { label: 'Best Month', value: best ? MONTHS_SHORT[best.month - 1] : '—', color: '#16a34a' },
+              ].map(({ label, value, color }) => (
+                <div key={label} className="bg-white rounded-xl p-4 border border-gray-100 shadow-sm text-center">
+                  <p className="text-2xl font-black" style={{ color }}>{value}</p>
+                  <p className="text-xs text-gray-400 mt-1">{label}</p>
+                </div>
+              ));
+            })()}
+          </div>
+
+          {/* Bar chart */}
+          <div className="bg-white rounded-xl border border-gray-100 shadow-sm p-5">
+            <h3 className="font-bold text-sm mb-4" style={{ color: '#192250' }}>Monthly Performance — {currentYear}</h3>
+            <ResponsiveContainer width="100%" height={180}>
+              <BarChart data={chartData} barSize={22}>
+                <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" vertical={false} />
+                <XAxis dataKey="month" tick={{ fontSize: 10, fill: '#9ca3af' }} axisLine={false} tickLine={false} />
+                <YAxis domain={[0, 100]} tick={{ fontSize: 10, fill: '#9ca3af' }} axisLine={false} tickLine={false} width={24} />
+                <Tooltip
+                  formatter={(val: any) => [val ?? '—', 'Score']}
+                  contentStyle={{ borderRadius: 8, border: '1px solid #e5e7eb', fontSize: 12 }}
+                />
+                <Bar dataKey="score" radius={[4, 4, 0, 0]}>
+                  {chartData.map((entry, idx) => (
+                    <Cell key={idx} fill={entry.score != null ? perfColor(entry.score) : '#e5e7eb'} />
+                  ))}
+                </Bar>
+              </BarChart>
+            </ResponsiveContainer>
+          </div>
+
+          {/* Score breakdown table */}
+          <div className="bg-white rounded-xl border border-gray-100 shadow-sm overflow-hidden">
+            <div className="px-5 py-3 border-b border-gray-100">
+              <h3 className="font-bold text-sm" style={{ color: '#192250' }}>Score Breakdown</h3>
+            </div>
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr style={{ background: '#f8f9fc' }}>
+                    <th className="text-left px-4 py-2.5 text-xs font-semibold text-gray-400 uppercase tracking-wide">Month</th>
+                    {PERF_COLS.map(h => (
+                      <th key={h} className="text-center px-2 py-2.5 text-xs font-semibold text-gray-400 uppercase tracking-wide whitespace-nowrap">{h}</th>
+                    ))}
+                    <th className="text-center px-3 py-2.5 text-xs font-semibold text-gray-400 uppercase tracking-wide">Overall</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {monthlyPerf.length === 0 ? (
+                    <tr><td colSpan={8} className="text-center text-gray-400 text-sm py-10">No reviews yet for {currentYear}</td></tr>
+                  ) : monthlyPerf.map(r => (
+                    <tr key={r.id} className="border-t border-gray-50 hover:bg-gray-50/50">
+                      <td className="px-4 py-3 font-semibold" style={{ color: '#192250' }}>{MONTHS_SHORT[r.month - 1]}</td>
+                      {PERF_KEYS.map((k, i) => (
+                        <td key={i} className="px-2 py-3 text-center font-bold tabular-nums" style={{ color: perfColor(r[k] ?? 0) }}>{r[k] ?? 0}</td>
+                      ))}
+                      <td className="px-3 py-3 text-center">
+                        <span className="inline-flex px-2 py-0.5 rounded-full text-xs font-bold"
+                          style={{ background: `${perfColor(r.overall_score)}18`, color: perfColor(r.overall_score) }}>
+                          {r.overall_score}
+                        </span>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          {/* ─── Appraisal Goals ─── */}
+          <div className="bg-white rounded-2xl border border-gray-100 shadow-sm overflow-hidden">
+            <div className="flex items-center justify-between px-5 py-4 border-b border-gray-100">
+              <div>
+                <h3 className="font-bold text-sm flex items-center gap-2" style={{ color: '#192250' }}>
+                  <FileText size={15} /> Appraisal Goals — {currentYear}
+                </h3>
+                <p className="text-xs text-gray-400 mt-0.5">Set your goals for the year-end appraisal</p>
+              </div>
+              {isSubmitted && (
+                <span className="flex items-center gap-1.5 text-xs font-semibold px-3 py-1.5 rounded-full" style={{ background: '#dcfce7', color: '#15803d' }}>
+                  <Lock size={11} /> Submitted
+                </span>
+              )}
+            </div>
+
+            <div className="p-5">
+              {isSubmitted ? (
+                /* Read-only view after submission */
+                <div className="space-y-4">
+                  <div className="flex items-center gap-2 p-3 rounded-xl text-sm" style={{ background: '#f0fdf4', color: '#15803d', border: '1px solid #bbf7d0' }}>
+                    <CheckCircle size={15} />
+                    <span>Submitted on {new Date(appraisalRecord.submitted_at).toLocaleDateString('en-IN', { day: 'numeric', month: 'long', year: 'numeric' })}. Only admin can edit.</span>
+                  </div>
+                  {(appraisalRecord.goals ?? []).map((g: any, i: number) => (
+                    <div key={i} className="flex gap-3 p-4 rounded-xl border" style={{ borderColor: '#e2e4ed', background: '#fafbff' }}>
+                      <div className="w-6 h-6 rounded-full flex items-center justify-center text-xs font-bold flex-shrink-0"
+                        style={{ background: 'rgba(238,39,112,0.12)', color: '#EE2770' }}>
+                        {i + 1}
+                      </div>
+                      <div>
+                        <p className="font-semibold text-sm" style={{ color: '#192250' }}>{g.title}</p>
+                        {g.description && <p className="text-xs text-gray-500 mt-0.5">{g.description}</p>}
+                        {g.success_criteria && <p className="text-xs text-gray-400 mt-1 italic">✓ {g.success_criteria}</p>}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                /* Editable form */
+                <div className="space-y-4">
+                  <p className="text-xs text-gray-400">
+                    Add up to 6 goals. Save as draft anytime. Once you submit, it will be locked for review.
+                  </p>
+
+                  {goalsDraft.map((g, i) => (
+                    <div key={i} className="border rounded-xl p-4 space-y-3" style={{ borderColor: '#e2e4ed' }}>
+                      <div className="flex items-center justify-between">
+                        <span className="text-xs font-bold uppercase tracking-wide" style={{ color: '#EE2770' }}>Goal {i + 1}</span>
+                        {goalsDraft.length > 1 && (
+                          <button onClick={() => setGoalsDraft(g => g.filter((_, j) => j !== i))} className="p-1 hover:bg-red-50 rounded">
+                            <Trash2 size={13} className="text-red-400" />
+                          </button>
+                        )}
+                      </div>
+                      <input
+                        value={g.title ?? ''}
+                        onChange={e => updateGoal(i, 'title', e.target.value)}
+                        placeholder="Goal title *"
+                        className="w-full border rounded-lg px-3 py-2 text-sm focus:outline-none"
+                        style={{ borderColor: '#e2e4ed' }}
+                        onFocus={e => { e.target.style.borderColor = '#192250'; }}
+                        onBlur={e => { e.target.style.borderColor = '#e2e4ed'; }}
+                      />
+                      <textarea
+                        value={g.description ?? ''}
+                        onChange={e => updateGoal(i, 'description', e.target.value)}
+                        rows={2}
+                        placeholder="Description (optional)"
+                        className="w-full border rounded-lg px-3 py-2 text-sm resize-none focus:outline-none"
+                        style={{ borderColor: '#e2e4ed' }}
+                        onFocus={e => { e.target.style.borderColor = '#192250'; }}
+                        onBlur={e => { e.target.style.borderColor = '#e2e4ed'; }}
+                      />
+                      <input
+                        value={g.success_criteria ?? ''}
+                        onChange={e => updateGoal(i, 'success_criteria', e.target.value)}
+                        placeholder="Success criteria / measurable outcome"
+                        className="w-full border rounded-lg px-3 py-2 text-sm focus:outline-none"
+                        style={{ borderColor: '#e2e4ed' }}
+                        onFocus={e => { e.target.style.borderColor = '#192250'; }}
+                        onBlur={e => { e.target.style.borderColor = '#e2e4ed'; }}
+                      />
+                    </div>
+                  ))}
+
+                  {goalsDraft.length < 6 && (
+                    <button
+                      onClick={() => setGoalsDraft(g => [...g, { title: '', description: '', success_criteria: '' }])}
+                      className="w-full py-2.5 border-2 border-dashed rounded-xl text-sm font-semibold text-gray-400 hover:text-pink-400 transition-colors"
+                      style={{ borderColor: '#e2e4ed' }}
+                      onMouseEnter={e => { (e.currentTarget as HTMLElement).style.borderColor = '#EE2770'; }}
+                      onMouseLeave={e => { (e.currentTarget as HTMLElement).style.borderColor = '#e2e4ed'; }}
+                    >
+                      + Add Another Goal
+                    </button>
+                  )}
+
+                  {goalsError && (
+                    <p className="text-xs text-red-500 flex items-center gap-1.5">
+                      <AlertCircle size={13} /> {goalsError}
+                    </p>
+                  )}
+
+                  <div className="flex gap-3 pt-2">
+                    <button
+                      onClick={handleSaveDraft}
+                      disabled={savingGoals}
+                      className="flex items-center gap-2 px-4 py-2.5 border rounded-xl text-sm font-semibold transition-all hover:bg-gray-50 disabled:opacity-60"
+                      style={{ color: '#192250', borderColor: '#e2e4ed' }}
+                    >
+                      <Save size={14} /> {savingGoals ? 'Saving…' : 'Save Draft'}
+                    </button>
+                    <button
+                      onClick={handleSubmit}
+                      disabled={submittingGoals}
+                      className="flex items-center gap-2 px-5 py-2.5 text-white rounded-xl text-sm font-semibold disabled:opacity-60"
+                      style={{ background: 'linear-gradient(135deg, #EE2770 0%, #d11f62 100%)' }}
+                    >
+                      <CheckCircle size={14} /> {submittingGoals ? 'Submitting…' : 'Submit for Appraisal'}
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
         </div>
       )}
     </div>

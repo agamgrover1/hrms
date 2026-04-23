@@ -55,13 +55,13 @@ router.get('/monthly', async (req, res) => {
 
 router.post('/monthly', async (req, res) => {
   try {
-    const { employee_id, reviewer_id, reviewer_name, month, year, productivity, quality, teamwork, attendance_score, initiative, overall_score, comments } = req.body;
+    const { employee_id, reviewer_id, reviewer_name, month, year, productivity, quality, teamwork, attendance_score, initiative, client_satisfaction, overall_score, comments } = req.body;
     const rows = await sql`
       INSERT INTO monthly_performance
-        (employee_id, reviewer_id, reviewer_name, month, year, productivity, quality, teamwork, attendance_score, initiative, overall_score, comments, updated_at)
+        (employee_id, reviewer_id, reviewer_name, month, year, productivity, quality, teamwork, attendance_score, initiative, client_satisfaction, overall_score, comments, updated_at)
       VALUES
         (${employee_id}, ${reviewer_id ?? null}, ${reviewer_name ?? null}, ${month}, ${year},
-         ${productivity}, ${quality}, ${teamwork}, ${attendance_score}, ${initiative}, ${overall_score}, ${comments ?? null}, NOW())
+         ${productivity}, ${quality}, ${teamwork}, ${attendance_score}, ${initiative}, ${client_satisfaction ?? 0}, ${overall_score}, ${comments ?? null}, NOW())
       ON CONFLICT (employee_id, month, year) DO UPDATE SET
         reviewer_id = EXCLUDED.reviewer_id,
         reviewer_name = EXCLUDED.reviewer_name,
@@ -70,6 +70,7 @@ router.post('/monthly', async (req, res) => {
         teamwork = EXCLUDED.teamwork,
         attendance_score = EXCLUDED.attendance_score,
         initiative = EXCLUDED.initiative,
+        client_satisfaction = EXCLUDED.client_satisfaction,
         overall_score = EXCLUDED.overall_score,
         comments = EXCLUDED.comments,
         updated_at = NOW()
@@ -111,6 +112,82 @@ router.delete('/notes/:id', async (req, res) => {
   try {
     await sql`DELETE FROM performance_notes WHERE id = ${req.params.id}`;
     res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// Appraisal Goals
+router.get('/appraisal-goals', async (req, res) => {
+  try {
+    const { employee_id, year } = req.query;
+    if (employee_id && year) {
+      const rows = await sql`SELECT * FROM appraisal_goals WHERE employee_id = ${employee_id as string} AND year = ${Number(year)}`;
+      res.json(rows[0] ?? null);
+    } else if (year) {
+      const rows = await sql`SELECT ag.*, e.name as employee_name, e.designation, e.department FROM appraisal_goals ag JOIN employees e ON ag.employee_id = e.id WHERE ag.year = ${Number(year)} ORDER BY e.name`;
+      res.json(rows);
+    } else {
+      res.status(400).json({ error: 'year is required' });
+    }
+  } catch (err) {
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+router.post('/appraisal-goals', async (req, res) => {
+  try {
+    const { employee_id, year, goals } = req.body;
+    const rows = await sql`
+      INSERT INTO appraisal_goals (employee_id, year, goals, updated_at)
+      VALUES (${employee_id}, ${year}, ${JSON.stringify(goals)}, NOW())
+      ON CONFLICT (employee_id, year) DO UPDATE SET
+        goals = EXCLUDED.goals,
+        updated_at = NOW()
+      WHERE appraisal_goals.submitted = FALSE
+      RETURNING *
+    `;
+    if (!rows.length) return res.status(403).json({ error: 'Goals already submitted and locked.' });
+    res.json(rows[0]);
+  } catch (err) {
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+router.post('/appraisal-goals/submit', async (req, res) => {
+  try {
+    const { employee_id, year, goals } = req.body;
+    const rows = await sql`
+      INSERT INTO appraisal_goals (employee_id, year, goals, submitted, submitted_at, updated_at)
+      VALUES (${employee_id}, ${year}, ${JSON.stringify(goals)}, TRUE, NOW(), NOW())
+      ON CONFLICT (employee_id, year) DO UPDATE SET
+        goals = EXCLUDED.goals,
+        submitted = TRUE,
+        submitted_at = NOW(),
+        updated_at = NOW()
+      WHERE appraisal_goals.submitted = FALSE
+      RETURNING *
+    `;
+    if (!rows.length) return res.status(403).json({ error: 'Already submitted.' });
+    res.json(rows[0]);
+  } catch (err) {
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// Admin-only: force edit even after submission
+router.put('/appraisal-goals/admin', async (req, res) => {
+  try {
+    const { employee_id, year, goals } = req.body;
+    const rows = await sql`
+      INSERT INTO appraisal_goals (employee_id, year, goals, updated_at)
+      VALUES (${employee_id}, ${year}, ${JSON.stringify(goals)}, NOW())
+      ON CONFLICT (employee_id, year) DO UPDATE SET
+        goals = EXCLUDED.goals,
+        updated_at = NOW()
+      RETURNING *
+    `;
+    res.json(rows[0]);
   } catch (err) {
     res.status(500).json({ error: 'Server error' });
   }
