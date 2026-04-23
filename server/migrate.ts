@@ -75,6 +75,9 @@ await sql`ALTER TABLE employees ADD COLUMN IF NOT EXISTS next_appraisal_year INT
 // Reporting manager (FK to employees.id — can be any employee)
 await sql`ALTER TABLE employees ADD COLUMN IF NOT EXISTS reporting_manager_id VARCHAR(50)`;
 
+// Custom probation end date (overrides join_date + 3 months default when set)
+await sql`ALTER TABLE employees ADD COLUMN IF NOT EXISTS probation_end_date DATE`;
+
 // 2-step leave approval: manager approval fields
 await sql`ALTER TABLE leave_requests ADD COLUMN IF NOT EXISTS manager_status VARCHAR(20) DEFAULT 'pending'`;
 await sql`ALTER TABLE leave_requests ADD COLUMN IF NOT EXISTS manager_id VARCHAR(50)`;

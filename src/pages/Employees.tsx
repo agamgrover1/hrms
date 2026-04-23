@@ -54,6 +54,28 @@ function EmployeeCard({ emp, index, onClick }: { emp: any; index: number; onClic
 }
 
 function EmployeeDetail({ emp, onClose, onEdit, onDelete }: { emp: any; onClose: () => void; onEdit: () => void; onDelete: () => void }) {
+  const defaultProbationEnd = emp.join_date
+    ? (() => { const d = new Date(emp.join_date); d.setMonth(d.getMonth() + 3); return d.toISOString().split('T')[0]; })()
+    : '';
+  const [probationEnd, setProbationEnd] = useState<string>(emp.probation_end_date?.split('T')[0] ?? defaultProbationEnd);
+  const [savingProbation, setSavingProbation] = useState(false);
+  const [probationSaved, setProbationSaved] = useState(false);
+
+  const effectiveEnd = probationEnd || defaultProbationEnd;
+  const onProbation = effectiveEnd ? new Date() < new Date(effectiveEnd) : false;
+
+  const handleSaveProbation = async () => {
+    setSavingProbation(true);
+    setProbationSaved(false);
+    try {
+      await api.updateEmployeeProbation(emp.id, probationEnd || null);
+      setProbationSaved(true);
+      setTimeout(() => setProbationSaved(false), 2500);
+    } catch { /* ignore */ } finally {
+      setSavingProbation(false);
+    }
+  };
+
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 backdrop-blur-sm p-4">
       <div className="bg-white rounded-2xl shadow-2xl w-full max-w-lg max-h-[90vh] overflow-y-auto">
@@ -108,6 +130,32 @@ function EmployeeDetail({ emp, onClose, onEdit, onDelete }: { emp: any; onClose:
                 <p className="text-sm font-semibold text-gray-800 mt-0.5">₹{(Number(emp.ctc) / 100000).toFixed(1)}L</p>
               </div>
             </div>
+          </div>
+
+          <div className="mt-4 p-4 border border-gray-100 rounded-xl">
+            <div className="flex items-center justify-between mb-3">
+              <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide">Probation</p>
+              <span className={`text-xs font-semibold px-2.5 py-0.5 rounded-full ${onProbation ? 'bg-amber-100 text-amber-700' : 'bg-green-100 text-green-700'}`}>
+                {onProbation ? 'On Probation' : 'Confirmed'}
+              </span>
+            </div>
+            <label className="block text-xs text-gray-500 mb-1.5">Probation End Date</label>
+            <div className="flex gap-2">
+              <input
+                type="date"
+                value={probationEnd}
+                onChange={e => setProbationEnd(e.target.value)}
+                className="flex-1 text-sm border border-gray-200 rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-primary-200"
+              />
+              <button
+                onClick={handleSaveProbation}
+                disabled={savingProbation}
+                className="px-3 py-2 text-xs font-semibold text-white bg-primary-500 hover:bg-primary-600 rounded-lg disabled:opacity-60"
+              >
+                {savingProbation ? '…' : probationSaved ? '✓ Saved' : 'Save'}
+              </button>
+            </div>
+            <p className="text-xs text-gray-400 mt-1.5">Default: join date + 3 months. Override to end probation early or extend it.</p>
           </div>
         </div>
       </div>

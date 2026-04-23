@@ -6,11 +6,12 @@ const router = Router();
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
-function isOnProbation(joinDate: string | null): boolean {
+function isOnProbation(joinDate: string | null, probationEndDate?: string | null): boolean {
   if (!joinDate) return false;
-  const probationEnd = new Date(joinDate);
-  probationEnd.setMonth(probationEnd.getMonth() + 3);
-  return new Date() < probationEnd;
+  const end = probationEndDate
+    ? new Date(probationEndDate)
+    : (() => { const d = new Date(joinDate); d.setMonth(d.getMonth() + 3); return d; })();
+  return new Date() < end;
 }
 
 // Credit monthly leave if a new month has started since last credit.
@@ -46,7 +47,7 @@ async function creditMonthlyLeave(employeeId: string, joinDate: string | null) {
   `;
 }
 
-// Deduct balance at approval time
+// Deduct balance at approval time (unpaid leave has no balance to deduct)
 async function deductBalance(employeeId: string, type: string, days: number) {
   if (type === 'full_day') {
     await sql`UPDATE leave_balances SET full_day = GREATEST(0, full_day - ${days}) WHERE employee_id=${employeeId}`.catch(() => {});
@@ -60,6 +61,22 @@ async function deductBalance(employeeId: string, type: string, days: number) {
     await sql`UPDATE leave_balances SET sick = GREATEST(0, sick - ${days}) WHERE employee_id=${employeeId}`.catch(() => {});
   } else if (type === 'earned') {
     await sql`UPDATE leave_balances SET earned = GREATEST(0, earned - ${days}) WHERE employee_id=${employeeId}`.catch(() => {});
+  }
+  // 'unpaid' — no balance to deduct
+}
+
+// Mark attendance_records for each day in the approved leave range
+async function markLeaveAttendance(employeeId: string, fromDate: string, toDate: string, type: string) {
+  const attStatus = type === 'unpaid' ? 'unpaid_leave' : 'on_leave';
+  const start = new Date(fromDate);
+  const end = new Date(toDate);
+  for (let d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) {
+    const dateStr = d.toISOString().split('T')[0];
+    await sql`
+      INSERT INTO attendance_records (employee_id, date, status, total_hours)
+      VALUES (${employeeId}, ${dateStr}, ${attStatus}, 0)
+      ON CONFLICT (employee_id, date) DO UPDATE SET status = ${attStatus}
+    `.catch(() => {});
   }
 }
 
@@ -95,13 +112,17 @@ router.post('/requests', async (req, res) => {
   try {
     const { employee_id, employee_name, type, from_date, to_date, days, reason } = req.body;
 
-    // Get employee join_date for probation check
-    const empRows = await sql`SELECT join_date FROM employees WHERE id = ${employee_id}`;
+    // Get employee join_date + probation_end_date for probation check
+    const empRows = await sql`SELECT join_date, probation_end_date FROM employees WHERE id = ${employee_id}`;
     const joinDate = (empRows[0] as any)?.join_date ?? null;
-    const onProbation = isOnProbation(joinDate);
+    const probationEndDate = (empRows[0] as any)?.probation_end_date ?? null;
+    const onProbation = isOnProbation(joinDate, probationEndDate);
+
+    // Unpaid leave is always allowed (no balance required)
+    const isUnpaid = type === 'unpaid';
 
     // Validate leave type and balance
-    if (onProbation) {
+    if (!isUnpaid && onProbation) {
       if (type === 'full_day') {
         return res.status(400).json({ error: 'Full day leaves are not allowed during the 3-month probation period.' });
       }
@@ -113,7 +134,7 @@ router.post('/requests', async (req, res) => {
       }
       // Reserve probation quota immediately on application
       await sql`UPDATE leave_balances SET probation_short_used = ${used + cost} WHERE employee_id=${employee_id}`;
-    } else {
+    } else if (!isUnpaid) {
       // Auto-credit if new month
       await creditMonthlyLeave(employee_id, joinDate);
       const balRows = await sql`SELECT full_day, short_leave FROM leave_balances WHERE employee_id=${employee_id}`;
@@ -190,7 +211,7 @@ router.patch('/requests/:id/manager-approve', async (req, res) => {
   }
 });
 
-// HR final approval — deducts balance here
+// HR final approval — deducts balance here and marks attendance
 router.patch('/requests/:id', async (req, res) => {
   try {
     const { status } = req.body;
@@ -199,6 +220,7 @@ router.patch('/requests/:id', async (req, res) => {
     const leave = rows[0] as any;
     if (status === 'approved') {
       await deductBalance(leave.employee_id, leave.type, leave.days);
+      await markLeaveAttendance(leave.employee_id, leave.from_date, leave.to_date, leave.type);
     } else {
       // Rejected — restore probation quota if applicable
       const empRows = await sql`SELECT join_date FROM employees WHERE id=${leave.employee_id}`;
@@ -231,15 +253,17 @@ router.delete('/requests/:id', async (req, res) => {
 router.get('/balances/:employee_id', async (req, res) => {
   try {
     // Auto-credit monthly leave before returning balance
-    const empRows = await sql`SELECT join_date FROM employees WHERE id=${req.params.employee_id}`;
+    const empRows = await sql`SELECT join_date, probation_end_date FROM employees WHERE id=${req.params.employee_id}`;
     const joinDate = (empRows[0] as any)?.join_date ?? null;
+    const probationEndDate = (empRows[0] as any)?.probation_end_date ?? null;
     await creditMonthlyLeave(req.params.employee_id, joinDate).catch(() => {});
 
     const rows = await sql`SELECT * FROM leave_balances WHERE employee_id=${req.params.employee_id}`;
     if (!rows.length) return res.status(404).json({ error: 'Not found' });
     const bal = rows[0] as any;
     // Attach computed probation info
-    bal.on_probation = isOnProbation(joinDate);
+    bal.on_probation = isOnProbation(joinDate, probationEndDate);
+    bal.probation_end_date = probationEndDate;
     bal.probation_short_remaining = Math.max(0, 2 - (bal.probation_short_used ?? 0));
     res.json(bal);
   } catch (err) {

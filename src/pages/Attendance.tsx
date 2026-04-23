@@ -4,12 +4,15 @@ import { api } from '../services/api';
 import { useAuth } from '../context/AuthContext';
 
 const statusConfig = {
-  present: { label: 'Present', color: 'bg-green-50 text-green-600', dot: 'bg-green-500' },
-  absent: { label: 'Absent', color: 'bg-red-50 text-red-500', dot: 'bg-red-500' },
-  late: { label: 'Late', color: 'bg-amber-50 text-amber-600', dot: 'bg-amber-500' },
-  'half-day': { label: 'Half Day', color: 'bg-blue-50 text-blue-600', dot: 'bg-blue-500' },
-  weekend: { label: 'Weekend', color: 'bg-gray-50 text-gray-400', dot: 'bg-gray-300' },
-  holiday: { label: 'Holiday', color: 'bg-purple-50 text-purple-500', dot: 'bg-purple-400' },
+  present:      { label: 'Present',      color: 'bg-green-50 text-green-600',   dot: 'bg-green-500' },
+  absent:       { label: 'Absent',       color: 'bg-red-50 text-red-500',       dot: 'bg-red-500' },
+  late:         { label: 'Late',         color: 'bg-amber-50 text-amber-600',   dot: 'bg-amber-500' },
+  'half-day':   { label: 'Half Day',     color: 'bg-blue-50 text-blue-600',     dot: 'bg-blue-500' },
+  short_leave:  { label: 'Short Leave',  color: 'bg-orange-50 text-orange-600', dot: 'bg-orange-400' },
+  on_leave:     { label: 'On Leave',     color: 'bg-violet-50 text-violet-600', dot: 'bg-violet-400' },
+  unpaid_leave: { label: 'Unpaid Leave', color: 'bg-rose-50 text-rose-600',     dot: 'bg-rose-400' },
+  weekend:      { label: 'Weekend',      color: 'bg-gray-50 text-gray-400',     dot: 'bg-gray-300' },
+  holiday:      { label: 'Holiday',      color: 'bg-purple-50 text-purple-500', dot: 'bg-purple-400' },
 };
 
 function generateCalendarDays(year: number, month: number) {
@@ -42,7 +45,7 @@ function MarkAttendanceModal({ employees, onClose, onSaved }: {
   const inputCls = 'w-full text-sm border border-gray-200 rounded-lg px-3 py-2.5 focus:outline-none focus:ring-2 focus:ring-primary-200 focus:border-primary-400 bg-white';
   const labelCls = 'block text-xs font-medium text-gray-600 mb-1';
 
-  const needsTimes = form.status === 'present' || form.status === 'late' || form.status === 'half-day';
+  const needsTimes = form.status === 'present' || form.status === 'late' || form.status === 'half-day' || form.status === 'short_leave';
 
   const handleSubmit = async (e: React.SyntheticEvent<HTMLFormElement>) => {
     e.preventDefault();
@@ -116,7 +119,7 @@ function MarkAttendanceModal({ employees, onClose, onSaved }: {
           <div>
             <label className={labelCls}>Status <span className="text-red-400">*</span></label>
             <div className="grid grid-cols-2 gap-2">
-              {(['present', 'absent', 'late', 'half-day'] as const).map(s => {
+              {(['present', 'absent', 'late', 'half-day', 'short_leave'] as const).map(s => {
                 const cfg = statusConfig[s];
                 const active = form.status === s;
                 return (
@@ -339,7 +342,7 @@ export default function Attendance() {
             })}
           </div>
           <div className="mt-4 flex flex-wrap gap-3">
-            {['present', 'absent', 'late', 'half-day', 'weekend'].map(s => {
+            {['present', 'absent', 'late', 'half-day', 'short_leave', 'on_leave', 'unpaid_leave', 'weekend'].map(s => {
               const cfg = statusConfig[s as keyof typeof statusConfig];
               return (
                 <div key={s} className="flex items-center gap-1.5 text-xs text-gray-500">

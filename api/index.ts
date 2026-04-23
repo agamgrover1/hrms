@@ -123,6 +123,15 @@ app.put('/api/employees/:id', async (req, res) => {
   } catch (err) { res.status(500).json({ error: 'Server error' }); }
 });
 
+app.patch('/api/employees/:id/probation', async (req, res) => {
+  try {
+    const { probation_end_date } = req.body;
+    const rows = await sql`UPDATE employees SET probation_end_date=${probation_end_date ?? null} WHERE id=${req.params.id} RETURNING *`;
+    if (!rows.length) return res.status(404).json({ error: 'Not found' });
+    res.json(rows[0]);
+  } catch (err) { res.status(500).json({ error: 'Server error' }); }
+});
+
 app.delete('/api/employees/:id', async (req, res) => {
   try {
     await sql`DELETE FROM employees WHERE id=${req.params.id}`;
@@ -200,11 +209,26 @@ app.post('/api/attendance/clock-out', async (req, res) => {
 });
 
 // ── Leave helpers ─────────────────────────────────────────────────────────
-function isOnProbation(joinDate: string | null): boolean {
+function isOnProbation(joinDate: string | null, probationEndDate?: string | null): boolean {
   if (!joinDate) return false;
-  const end = new Date(joinDate);
-  end.setMonth(end.getMonth() + 3);
+  const end = probationEndDate
+    ? new Date(probationEndDate)
+    : (() => { const d = new Date(joinDate); d.setMonth(d.getMonth() + 3); return d; })();
   return new Date() < end;
+}
+
+async function markLeaveAttendance(employeeId: string, fromDate: string, toDate: string, type: string) {
+  const attStatus = type === 'unpaid' ? 'unpaid_leave' : 'on_leave';
+  const start = new Date(fromDate);
+  const end = new Date(toDate);
+  for (let d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) {
+    const dateStr = d.toISOString().split('T')[0];
+    await sql`
+      INSERT INTO attendance_records (employee_id, date, status, total_hours)
+      VALUES (${employeeId}, ${dateStr}, ${attStatus}, 0)
+      ON CONFLICT (employee_id, date) DO UPDATE SET status = ${attStatus}
+    `.catch(() => {});
+  }
 }
 
 async function creditMonthlyLeave(employeeId: string, joinDate: string | null) {
@@ -267,18 +291,19 @@ app.get('/api/leave/requests', async (req, res) => {
 app.post('/api/leave/requests', async (req, res) => {
   try {
     const { employee_id, employee_name, type, from_date, to_date, days, reason } = req.body;
-    const empRows = await sql`SELECT join_date, reporting_manager_id FROM employees WHERE id=${employee_id}`.catch(() => []);
+    const empRows = await sql`SELECT join_date, probation_end_date, reporting_manager_id FROM employees WHERE id=${employee_id}`.catch(() => []);
     const emp = (empRows as any[])[0] ?? {};
-    const onProbation = isOnProbation(emp.join_date ?? null);
+    const onProbation = isOnProbation(emp.join_date ?? null, emp.probation_end_date ?? null);
+    const isUnpaid = type === 'unpaid';
 
-    if (onProbation) {
+    if (!isUnpaid && onProbation) {
       if (type === 'full_day') return res.status(400).json({ error: 'Full day leaves are not allowed during the 3-month probation period.' });
       const balRows = await sql`SELECT probation_short_used FROM leave_balances WHERE employee_id=${employee_id}`;
       const used = (balRows[0] as any)?.probation_short_used ?? 0;
       const cost = type === 'half_day' ? 2 : 1;
       if (used + cost > 2) return res.status(400).json({ error: 'Probation leave limit exceeded. You may only take 2 short leaves or 1 half day during probation.' });
       await sql`UPDATE leave_balances SET probation_short_used=${used + cost} WHERE employee_id=${employee_id}`;
-    } else {
+    } else if (!isUnpaid) {
       await creditMonthlyLeave(employee_id, emp.join_date ?? null).catch(() => {});
       const balRows = await sql`SELECT full_day, short_leave FROM leave_balances WHERE employee_id=${employee_id}`;
       const bal = (balRows[0] as any) ?? {};
@@ -342,6 +367,7 @@ app.patch('/api/leave/requests/:id', async (req, res) => {
     const leave = rows[0] as any;
     if (status === 'approved') {
       await deductLeaveBalance(leave.employee_id, leave.type, leave.days);
+      await markLeaveAttendance(leave.employee_id, leave.from_date, leave.to_date, leave.type);
     } else {
       const empRows = await sql`SELECT join_date FROM employees WHERE id=${leave.employee_id}`.catch(() => []);
       if (isOnProbation((empRows[0] as any)?.join_date ?? null)) {
@@ -367,13 +393,15 @@ app.delete('/api/leave/requests/:id', async (req, res) => {
 
 app.get('/api/leave/balances/:employee_id', async (req, res) => {
   try {
-    const empRows = await sql`SELECT join_date FROM employees WHERE id=${req.params.employee_id}`.catch(() => []);
+    const empRows = await sql`SELECT join_date, probation_end_date FROM employees WHERE id=${req.params.employee_id}`.catch(() => []);
     const joinDate = (empRows[0] as any)?.join_date ?? null;
+    const probationEndDate = (empRows[0] as any)?.probation_end_date ?? null;
     await creditMonthlyLeave(req.params.employee_id, joinDate).catch(() => {});
     const rows = await sql`SELECT * FROM leave_balances WHERE employee_id=${req.params.employee_id}`;
     if (!rows.length) return res.status(404).json({ error: 'Not found' });
     const bal = rows[0] as any;
-    bal.on_probation = isOnProbation(joinDate);
+    bal.on_probation = isOnProbation(joinDate, probationEndDate);
+    bal.probation_end_date = probationEndDate;
     bal.probation_short_remaining = Math.max(0, 2 - (bal.probation_short_used ?? 0));
     res.json(bal);
   } catch (err) { res.status(500).json({ error: 'Server error' }); }

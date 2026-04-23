@@ -7,6 +7,7 @@ const leaveTypes = [
   { key: 'full_day',    label: 'Full Day',    color: 'bg-blue-100 text-blue-700' },
   { key: 'half_day',   label: 'Half Day',    color: 'bg-purple-100 text-purple-600' },
   { key: 'short_leave',label: 'Short Leave', color: 'bg-amber-100 text-amber-700' },
+  { key: 'unpaid',     label: 'Unpaid',      color: 'bg-rose-100 text-rose-600' },
   // legacy types kept for display of old records
   { key: 'casual',     label: 'Casual',      color: 'bg-blue-100 text-blue-700' },
   { key: 'sick',       label: 'Sick',        color: 'bg-red-100 text-red-600' },
@@ -54,7 +55,7 @@ function ApplyModal({ onClose, onSubmit }: { onClose: () => void; onSubmit: (dat
     onSubmit({ ...form, days, from_date: form.from, to_date: form.to });
     onClose();
   };
-  const newTypes = leaveTypes.filter(t => !['casual','sick','earned'].includes(t.key));
+  const newTypes = leaveTypes.filter(t => !['casual', 'sick', 'earned'].includes(t.key));
   const isSingleDay = form.type === 'half_day' || form.type === 'short_leave';
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 backdrop-blur-sm p-4">
@@ -73,6 +74,7 @@ function ApplyModal({ onClose, onSubmit }: { onClose: () => void; onSubmit: (dat
             {form.type === 'half_day' && <p className="text-xs text-purple-600 mt-1">Uses 1 half day (= 2 short leave credits)</p>}
             {form.type === 'short_leave' && <p className="text-xs text-amber-600 mt-1">Uses 1 short leave credit (2 allowed per month)</p>}
             {form.type === 'full_day' && <p className="text-xs text-blue-600 mt-1">Uses 1 full day credit — carries forward if unused</p>}
+            {form.type === 'unpaid' && <p className="text-xs text-rose-600 mt-1">No credits deducted — attendance marked as Unpaid Leave</p>}
           </div>
           <div className={isSingleDay ? '' : 'grid grid-cols-2 gap-3'}>
             <div>
