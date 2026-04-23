@@ -113,6 +113,13 @@ app.put('/api/employees/:id', async (req, res) => {
   } catch (err) { res.status(500).json({ error: 'Server error' }); }
 });
 
+app.delete('/api/employees/:id', async (req, res) => {
+  try {
+    await sql`DELETE FROM employees WHERE id=${req.params.id}`;
+    res.json({ success: true });
+  } catch (err) { res.status(500).json({ error: 'Server error' }); }
+});
+
 // ── Attendance ────────────────────────────────────────────────────────────
 app.get('/api/attendance', async (req, res) => {
   try {

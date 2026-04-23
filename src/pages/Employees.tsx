@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { Search, Filter, Plus, Mail, Phone, MapPin, ChevronRight, X, User, Pencil } from 'lucide-react';
+import { Search, Filter, Plus, Mail, Phone, MapPin, ChevronRight, X, User, Pencil, Trash2 } from 'lucide-react';
 import { api } from '../services/api';
 import { departments } from '../data/mockData';
 
@@ -53,7 +53,7 @@ function EmployeeCard({ emp, index, onClick }: { emp: any; index: number; onClic
   );
 }
 
-function EmployeeDetail({ emp, onClose, onEdit }: { emp: any; onClose: () => void; onEdit: () => void }) {
+function EmployeeDetail({ emp, onClose, onEdit, onDelete }: { emp: any; onClose: () => void; onEdit: () => void; onDelete: () => void }) {
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 backdrop-blur-sm p-4">
       <div className="bg-white rounded-2xl shadow-2xl w-full max-w-lg max-h-[90vh] overflow-y-auto">
@@ -62,6 +62,10 @@ function EmployeeDetail({ emp, onClose, onEdit }: { emp: any; onClose: () => voi
             <button onClick={onEdit}
               className="flex items-center gap-1.5 px-3 py-1.5 bg-white/20 hover:bg-white/30 rounded-lg transition-colors text-white text-xs font-medium">
               <Pencil size={13} /> Edit
+            </button>
+            <button onClick={onDelete}
+              className="flex items-center gap-1.5 px-3 py-1.5 bg-red-500/80 hover:bg-red-500 rounded-lg transition-colors text-white text-xs font-medium">
+              <Trash2 size={13} /> Delete
             </button>
             <button onClick={onClose} className="p-1.5 bg-white/20 hover:bg-white/30 rounded-lg transition-colors">
               <X size={16} className="text-white" />
@@ -520,6 +524,20 @@ export default function Employees() {
   const [selected, setSelected] = useState<any | null>(null);
   const [editing, setEditing] = useState<any | null>(null);
   const [showAdd, setShowAdd] = useState(false);
+  const [confirmDelete, setConfirmDelete] = useState<any | null>(null);
+  const [deleting, setDeleting] = useState(false);
+
+  const handleDelete = async (emp: any) => {
+    setDeleting(true);
+    try {
+      await api.deleteEmployee(emp.id);
+      setEmployees(prev => prev.filter(e => e.id !== emp.id));
+      setConfirmDelete(null);
+      setSelected(null);
+    } catch { /* ignore */ } finally {
+      setDeleting(false);
+    }
+  };
 
   useEffect(() => {
     api.getEmployees().then(setEmployees).finally(() => setLoading(false));
@@ -583,7 +601,30 @@ export default function Employees() {
           emp={selected}
           onClose={() => setSelected(null)}
           onEdit={() => { setEditing(selected); setSelected(null); }}
+          onDelete={() => { setConfirmDelete(selected); setSelected(null); }}
         />
+      )}
+
+      {confirmDelete && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 backdrop-blur-sm p-4">
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-sm p-6 text-center">
+            <div className="w-12 h-12 rounded-full bg-red-50 flex items-center justify-center mx-auto mb-4">
+              <Trash2 size={20} className="text-red-500" />
+            </div>
+            <h3 className="font-semibold text-gray-900 mb-1">Delete {confirmDelete.name}?</h3>
+            <p className="text-sm text-gray-500 mb-6">This will permanently remove the employee record. This action cannot be undone.</p>
+            <div className="flex gap-3">
+              <button onClick={() => setConfirmDelete(null)} disabled={deleting}
+                className="flex-1 py-2.5 border border-gray-200 rounded-lg text-sm font-medium text-gray-600 hover:bg-gray-50">
+                Cancel
+              </button>
+              <button onClick={() => handleDelete(confirmDelete)} disabled={deleting}
+                className="flex-1 py-2.5 bg-red-500 hover:bg-red-600 text-white rounded-lg text-sm font-medium transition-colors disabled:opacity-60">
+                {deleting ? 'Deleting…' : 'Delete'}
+              </button>
+            </div>
+          </div>
+        </div>
       )}
 
       {editing && (
