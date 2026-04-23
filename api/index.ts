@@ -116,10 +116,10 @@ app.get('/api/employees/:id', async (req, res) => {
 
 app.post('/api/employees', async (req, res) => {
   try {
-    const { id, name, email, phone, department, designation, employee_id, join_date, location, manager, reporting_manager_id, status, avatar, salary, ctc, password, role } = req.body;
+    const { id, name, email, phone, department, designation, employee_id, join_date, location, manager, reporting_manager_id, status, avatar, salary, ctc, password, role, biometric_id } = req.body;
     const rows = await sql`
-      INSERT INTO employees (id, name, email, phone, department, designation, employee_id, join_date, location, manager, reporting_manager_id, status, avatar, salary, ctc)
-      VALUES (${id}, ${name}, ${email}, ${phone}, ${department}, ${designation}, ${employee_id}, ${join_date}, ${location}, ${manager ?? null}, ${reporting_manager_id ?? null}, ${status ?? 'active'}, ${avatar}, ${salary}, ${ctc})
+      INSERT INTO employees (id, name, email, phone, department, designation, employee_id, join_date, location, manager, reporting_manager_id, status, avatar, salary, ctc, biometric_id)
+      VALUES (${id}, ${name}, ${email}, ${phone}, ${department}, ${designation}, ${employee_id}, ${join_date}, ${location}, ${manager ?? null}, ${reporting_manager_id ?? null}, ${status ?? 'active'}, ${avatar}, ${salary}, ${ctc}, ${biometric_id ?? null})
       RETURNING *`;
     const emp = rows[0];
     if (password) {
@@ -140,12 +140,13 @@ app.post('/api/employees', async (req, res) => {
 
 app.put('/api/employees/:id', async (req, res) => {
   try {
-    const { name, email, phone, department, designation, location, manager, reporting_manager_id, status, salary, ctc, next_appraisal_month, next_appraisal_year } = req.body;
+    const { name, email, phone, department, designation, location, manager, reporting_manager_id, status, salary, ctc, biometric_id, next_appraisal_month, next_appraisal_year } = req.body;
     const rows = await sql`
       UPDATE employees SET name=${name}, email=${email}, phone=${phone}, department=${department},
         designation=${designation}, location=${location}, manager=${manager ?? null},
         reporting_manager_id=${reporting_manager_id ?? null},
         status=${status}, salary=${salary}, ctc=${ctc},
+        biometric_id=${biometric_id ?? null},
         next_appraisal_month=${next_appraisal_month ?? null}, next_appraisal_year=${next_appraisal_year ?? null}
       WHERE id=${req.params.id} RETURNING *`;
     res.json(rows[0]);
