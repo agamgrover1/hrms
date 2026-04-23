@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import {
   AreaChart, Area, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, PieChart, Pie, Cell
 } from 'recharts';
-import { Users, Clock, Calendar, DollarSign, TrendingUp, AlertCircle, CheckCircle2, UserCheck } from 'lucide-react';
+import { Users, Calendar, DollarSign, TrendingUp, AlertCircle, CheckCircle2, UserCheck } from 'lucide-react';
 import { api } from '../services/api';
 
 const COLORS = ['#5C4BDA', '#8269ff', '#a99bff', '#38bdf8', '#34d399', '#fb923c', '#f472b6'];
