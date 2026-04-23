@@ -166,43 +166,35 @@ function EmployeeDetail({ emp, onClose, onEdit, onDelete }: { emp: any; onClose:
 
           <div className="mt-4 p-4 border border-gray-100 rounded-xl">
             <div className="flex items-center justify-between mb-3">
-              <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide">Probation</p>
+              <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide">Probation / Confirmation</p>
               <span className={`text-xs font-semibold px-2.5 py-0.5 rounded-full ${onProbation ? 'bg-amber-100 text-amber-700' : 'bg-green-100 text-green-700'}`}>
                 {onProbation ? 'On Probation' : 'Confirmed'}
               </span>
             </div>
-            {onProbation ? (
-              <>
-                <label className="block text-xs text-gray-500 mb-1.5">Probation End Date</label>
-                <div className="flex gap-2">
-                  <input
-                    type="date"
-                    value={probationEnd}
-                    onChange={e => setProbationEnd(e.target.value)}
-                    className="flex-1 text-sm border border-gray-200 rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-primary-200"
-                  />
-                  <button
-                    onClick={handleSaveProbation}
-                    disabled={savingProbation}
-                    className="px-3 py-2 text-xs font-semibold text-white bg-primary-500 hover:bg-primary-600 rounded-lg disabled:opacity-60"
-                  >
-                    {savingProbation ? '…' : probationSaved ? '✓ Saved' : 'Save'}
-                  </button>
-                </div>
-                <p className="text-xs text-gray-400 mt-1.5">Set an earlier date to confirm the employee before 90 days.</p>
-                {probationError && <p className="text-xs text-red-500 mt-1.5">{probationError}</p>}
-              </>
-            ) : (
-              <div className="flex items-center gap-2 p-3 bg-green-50 rounded-lg">
-                <span className="text-green-500 text-base">✓</span>
-                <div>
-                  <p className="text-xs font-semibold text-green-700">Probation completed</p>
-                  <p className="text-xs text-green-600 mt-0.5">
-                    Confirmed on {effectiveEnd ? new Date(effectiveEnd).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' }) : '—'}
-                  </p>
-                </div>
-              </div>
-            )}
+            <label className="block text-xs text-gray-500 mb-1.5">
+              {onProbation ? 'Probation End Date' : 'Confirmation Date'}
+            </label>
+            <div className="flex gap-2">
+              <input
+                type="date"
+                value={probationEnd}
+                onChange={e => { setProbationEnd(e.target.value); setProbationSaved(false); setProbationError(''); }}
+                className="flex-1 text-sm border border-gray-200 rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-primary-200"
+              />
+              <button
+                onClick={handleSaveProbation}
+                disabled={savingProbation}
+                className="px-3 py-2 text-xs font-semibold text-white bg-primary-500 hover:bg-primary-600 rounded-lg disabled:opacity-60 whitespace-nowrap"
+              >
+                {savingProbation ? '…' : probationSaved ? '✓ Saved' : 'Save'}
+              </button>
+            </div>
+            <p className="text-xs text-gray-400 mt-1.5">
+              {onProbation
+                ? 'Set an earlier date to confirm the employee sooner. The employee will be notified.'
+                : 'Update the confirmation date if it needs correction. The employee will be notified.'}
+            </p>
+            {probationError && <p className="text-xs text-red-500 mt-1.5">{probationError}</p>}
           </div>
 
           <div className="mt-4 p-4 border border-gray-100 rounded-xl">

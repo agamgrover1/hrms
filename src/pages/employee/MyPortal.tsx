@@ -1,10 +1,31 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, Component, type ReactNode } from 'react';
 import { Clock, Calendar, DollarSign, User, CheckCircle, XCircle, AlertCircle, Plus, X, Target, FileText, Lock, Trash2, Save, Users } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
 import { api } from '../../services/api';
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Cell } from 'recharts';
 import { GoalCard, GOAL_STATUSES, GOAL_STATUS_CONFIG } from '../Performance';
 import type { GoalStatus } from '../Performance';
+
+class TabErrorBoundary extends Component<{ children: ReactNode }, { error: string | null }> {
+  constructor(props: any) { super(props); this.state = { error: null }; }
+  static getDerivedStateFromError(err: any) { return { error: err?.message ?? 'Render error' }; }
+  componentDidCatch() { this.setState(s => s); }
+  reset() { this.setState({ error: null }); }
+  render() {
+    if (this.state.error) {
+      return (
+        <div className="bg-red-50 border border-red-100 rounded-xl p-6 text-center">
+          <p className="text-sm font-semibold text-red-600 mb-2">Something went wrong loading this tab</p>
+          <p className="text-xs text-red-400 mb-4 font-mono">{this.state.error}</p>
+          <button onClick={() => this.reset()} className="px-4 py-2 text-xs font-semibold bg-red-500 text-white rounded-lg hover:bg-red-600">
+            Retry
+          </button>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
 
 const baseTabs = [
   { key: 'overview',     label: 'Overview',     icon: User },
@@ -47,9 +68,10 @@ const statusConfig = {
 };
 
 const leaveStatusConfig = {
-  pending:  { color: 'bg-amber-50 text-amber-600 border-amber-200',  icon: AlertCircle },
-  approved: { color: 'bg-green-50 text-green-600 border-green-200',  icon: CheckCircle },
-  rejected: { color: 'bg-red-50 text-red-500 border-red-200',        icon: XCircle },
+  pending:   { color: 'bg-amber-50 text-amber-600 border-amber-200',  icon: AlertCircle },
+  approved:  { color: 'bg-green-50 text-green-600 border-green-200',  icon: CheckCircle },
+  rejected:  { color: 'bg-red-50 text-red-500 border-red-200',        icon: XCircle },
+  cancelled: { color: 'bg-gray-100 text-gray-500 border-gray-200',    icon: XCircle },
 };
 
 function ApplyLeaveModal({ onClose, onSubmit, balance }: { onClose: () => void; onSubmit: (d: any) => void; balance: any }) {
@@ -579,6 +601,7 @@ export default function MyPortal() {
 
       {/* ── Leaves ── */}
       {tab === 'leave' && (
+        <TabErrorBoundary>
         <div className="space-y-4">
           {/* Balance summary */}
           <div className="grid grid-cols-3 gap-3">
@@ -646,7 +669,7 @@ export default function MyPortal() {
                         : '—';
                       return (
                         <tr key={l.id} className="border-b border-gray-50">
-                          <td className="px-4 py-3 text-sm font-medium text-gray-800 capitalize">{l.type.replace('_', ' ')}</td>
+                          <td className="px-4 py-3 text-sm font-medium text-gray-800 capitalize">{(l.type ?? '').replace('_', ' ')}</td>
                           <td className="px-4 py-3 text-sm text-gray-600 whitespace-nowrap">
                             {new Date(l.from_date).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' })}
                             {l.from_date !== l.to_date && ` – ${new Date(l.to_date).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' })}`}
@@ -655,8 +678,8 @@ export default function MyPortal() {
                           <td className="px-4 py-3 text-sm text-gray-500 max-w-[140px] truncate">{l.reason}</td>
                           <td className="px-4 py-3 text-xs text-gray-500 whitespace-nowrap">{appliedStr}</td>
                           <td className="px-4 py-3">
-                            <span className={`inline-flex items-center gap-1 text-xs px-2.5 py-1 rounded-full border font-medium ${cfg?.color}`}>
-                              <cfg.icon size={11} /> {l.status.charAt(0).toUpperCase() + l.status.slice(1)}
+                            <span className={`inline-flex items-center gap-1 text-xs px-2.5 py-1 rounded-full border font-medium ${cfg?.color ?? 'bg-gray-100 text-gray-500 border-gray-200'}`}>
+                              {cfg && <cfg.icon size={11} />} {l.status.charAt(0).toUpperCase() + l.status.slice(1)}
                             </span>
                           </td>
                           <td className="px-4 py-3 min-w-[180px]">
@@ -702,6 +725,7 @@ export default function MyPortal() {
           </div>
           {applyLeave && <ApplyLeaveModal onClose={() => setApplyLeave(false)} onSubmit={handleApplyLeave} balance={balance} />}
         </div>
+        </TabErrorBoundary>
       )}
 
       {/* ── Pay Slip ── */}

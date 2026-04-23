@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import { sql } from '../db';
+import { notifyEmployeeUser } from '../lib/notify';
 
 const router = Router();
 
@@ -78,24 +79,27 @@ router.patch('/:id/probation', async (req, res) => {
     await sql`ALTER TABLE employees ADD COLUMN IF NOT EXISTS probation_end_date DATE`.catch(() => {});
     const { probation_end_date } = req.body;
 
-    // Guard: once confirmed, cannot be re-entered into probation
-    const empRows = await sql`SELECT join_date, probation_end_date FROM employees WHERE id = ${req.params.id}`;
+    const empRows = await sql`SELECT id, name, join_date, probation_end_date FROM employees WHERE id = ${req.params.id}`;
     if (!empRows.length) return res.status(404).json({ error: 'Not found' });
     const emp = empRows[0] as any;
-    const defaultEnd = emp.join_date
-      ? (() => { const d = new Date(emp.join_date); d.setDate(d.getDate() + 90); return d; })()
-      : null;
-    const effectiveEnd = emp.probation_end_date ? new Date(emp.probation_end_date) : defaultEnd;
-    const isConfirmed = effectiveEnd ? new Date() >= effectiveEnd : false;
-    if (isConfirmed && probation_end_date && new Date(probation_end_date) > new Date()) {
-      return res.status(400).json({ error: 'This employee has already completed probation and cannot be re-enrolled.' });
-    }
 
     const rows = await sql`
       UPDATE employees SET probation_end_date = ${probation_end_date ?? null}
       WHERE id = ${req.params.id} RETURNING *
     `;
-    res.json(rows[0]);
+    const updated = rows[0] as any;
+
+    // Notify the employee about their updated confirmation date
+    const newDate = probation_end_date ? new Date(probation_end_date) : null;
+    const isNowConfirmed = newDate ? new Date() >= newDate : false;
+    const dateLabel = newDate ? newDate.toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' }) : '—';
+    const title = isNowConfirmed ? 'You are now confirmed!' : 'Probation date updated';
+    const body = isNowConfirmed
+      ? `Your confirmation date has been set to ${dateLabel}. Your probation period is complete.`
+      : `Your probation end date has been updated to ${dateLabel}.`;
+    notifyEmployeeUser(emp.id, 'info', title, body).catch(() => {});
+
+    res.json(updated);
   } catch (err: any) {
     console.error('[PATCH probation]', err);
     res.status(500).json({ error: err.message || 'Server error' });
