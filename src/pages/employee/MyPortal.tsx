@@ -158,6 +158,7 @@ export default function MyPortal() {
   const [teamMemberLeaves, setTeamMemberLeaves] = useState<any[]>([]);
   const [teamMemberBalance, setTeamMemberBalance] = useState<any | null>(null);
   const [loadingMemberLeaves, setLoadingMemberLeaves] = useState(false);
+  const [cancelLeaveTarget, setCancelLeaveTarget] = useState<string | null>(null);
   const [showTeamReview, setShowTeamReview] = useState<any | null>(null); // employee record
   const [teamReviewScores, setTeamReviewScores] = useState<Record<string, number>>({
     productivity: 75, quality: 75, teamwork: 75, attendance_score: 75, initiative: 75, client_satisfaction: 75,
@@ -392,6 +393,16 @@ export default function MyPortal() {
     ...baseTabs,
     ...(teamMembers.length > 0 ? [{ key: 'myteam', label: 'My Team', icon: Users }] : []),
   ];
+
+  const handleCancelMemberLeave = async (leaveId: string, reason: string) => {
+    await api.cancelLeave(leaveId, user?.name ?? 'Manager', reason);
+    setTeamMemberLeaves(prev => prev.map(l => l.id === leaveId ? {
+      ...l, status: 'cancelled', cancelled_by: user?.name, cancelled_at: new Date().toISOString(), cancellation_reason: reason,
+    } : l));
+    if (viewLeavesFor) {
+      api.getLeaveBalance(viewLeavesFor.id).then(setTeamMemberBalance).catch(() => {});
+    }
+  };
 
   const handleViewMemberLeaves = async (member: any) => {
     if (viewLeavesFor?.id === member.id) { setViewLeavesFor(null); return; }
@@ -1137,7 +1148,7 @@ export default function MyPortal() {
                                 <table className="w-full text-sm">
                                   <thead>
                                     <tr className="bg-gray-50 border-b border-gray-100">
-                                      {['Type', 'Duration', 'Days', 'Reason', 'Applied On', 'Status', 'Action Trail'].map(h => (
+                                      {['Type', 'Duration', 'Days', 'Reason', 'Applied On', 'Status', 'Action Trail', ''].map(h => (
                                         <th key={h} className="text-left text-xs font-semibold text-gray-500 px-3 py-2.5 uppercase tracking-wide whitespace-nowrap">{h}</th>
                                       ))}
                                     </tr>
@@ -1148,6 +1159,7 @@ export default function MyPortal() {
                                         approved: 'bg-green-50 text-green-700 border-green-200',
                                         rejected: 'bg-red-50 text-red-600 border-red-200',
                                         pending: 'bg-amber-50 text-amber-600 border-amber-200',
+                                        cancelled: 'bg-gray-100 text-gray-500 border-gray-200',
                                       };
                                       const appliedAt = l.created_at ? new Date(l.created_at) : null;
                                       const appliedStr = appliedAt
@@ -1188,8 +1200,8 @@ export default function MyPortal() {
                                               )}
                                               {l.hr_actioned_at && (
                                                 <div className="text-xs leading-tight">
-                                                  <span className={`font-semibold ${l.status === 'approved' ? 'text-green-600' : 'text-red-500'}`}>
-                                                    {l.status === 'approved' ? 'HR Approved' : 'HR Rejected'}
+                                                  <span className={`font-semibold ${l.status === 'approved' || l.status === 'cancelled' ? 'text-green-600' : 'text-red-500'}`}>
+                                                    {l.status === 'cancelled' ? 'HR Approved' : l.status === 'approved' ? 'HR Approved' : 'HR Rejected'}
                                                   </span>
                                                   {l.hr_actioner_name && <span className="text-gray-500"> · {l.hr_actioner_name}</span>}
                                                   <span className="text-gray-400 block">
@@ -1199,10 +1211,30 @@ export default function MyPortal() {
                                                   {l.rejection_reason && <span className="text-red-400 italic block">"{l.rejection_reason}"</span>}
                                                 </div>
                                               )}
-                                              {!l.manager_approved_at && !l.hr_actioned_at && (
+                                              {l.cancelled_at && (
+                                                <div className="text-xs leading-tight">
+                                                  <span className="font-semibold text-gray-500">Cancelled</span>
+                                                  {l.cancelled_by && <span className="text-gray-500"> · {l.cancelled_by}</span>}
+                                                  <span className="text-gray-400 block">
+                                                    {new Date(l.cancelled_at).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' })}
+                                                    {', '}{new Date(l.cancelled_at).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', hour12: true })}
+                                                  </span>
+                                                  {l.cancellation_reason && <span className="text-gray-400 italic block">"{l.cancellation_reason}"</span>}
+                                                </div>
+                                              )}
+                                              {!l.manager_approved_at && !l.hr_actioned_at && !l.cancelled_at && (
                                                 <span className="text-xs text-gray-400">Pending</span>
                                               )}
                                             </div>
+                                          </td>
+                                          <td className="px-3 py-2.5">
+                                            {l.status === 'approved' && (
+                                              <button
+                                                onClick={() => setCancelLeaveTarget(l.id)}
+                                                className="px-2.5 py-1 text-xs bg-gray-100 text-gray-600 rounded-md hover:bg-gray-200 font-medium whitespace-nowrap">
+                                                Cancel Leave
+                                              </button>
+                                            )}
                                           </td>
                                         </tr>
                                       );
@@ -1301,11 +1333,42 @@ export default function MyPortal() {
           </div>
         </div>
       )}
+      {cancelLeaveTarget && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 backdrop-blur-sm p-4">
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-sm p-6">
+            <div className="flex items-center justify-between mb-4">
+              <h3 className="text-base font-semibold text-gray-900">Reason for Cancellation</h3>
+              <button onClick={() => setCancelLeaveTarget(null)}><X size={16} className="text-gray-400" /></button>
+            </div>
+            <RejectReasonInput
+              placeholder="Enter reason for cancelling this approved leave..."
+              confirmLabel="Confirm Cancel"
+              confirmClass="bg-gray-700 hover:bg-gray-800"
+              onClose={() => setCancelLeaveTarget(null)}
+              onConfirm={reason => {
+                handleCancelMemberLeave(cancelLeaveTarget, reason);
+                setCancelLeaveTarget(null);
+              }}
+            />
+          </div>
+        </div>
+      )}
     </div>
   );
 }
 
-function RejectReasonInput({ onClose, onConfirm }: { onClose: () => void; onConfirm: (reason: string) => void }) {
+function RejectReasonInput({
+  onClose, onConfirm,
+  placeholder = 'Enter reason (required)...',
+  confirmLabel = 'Confirm Reject',
+  confirmClass = 'bg-red-500 hover:bg-red-600',
+}: {
+  onClose: () => void;
+  onConfirm: (reason: string) => void;
+  placeholder?: string;
+  confirmLabel?: string;
+  confirmClass?: string;
+}) {
   const [reason, setReason] = useState('');
   return (
     <>
@@ -1313,8 +1376,8 @@ function RejectReasonInput({ onClose, onConfirm }: { onClose: () => void; onConf
         value={reason}
         onChange={e => setReason(e.target.value)}
         rows={3}
-        placeholder="Enter reason (required)..."
-        className="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-red-200 resize-none mb-4"
+        placeholder={placeholder}
+        className="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-gray-200 resize-none mb-4"
         autoFocus
       />
       <div className="flex gap-3">
@@ -1322,8 +1385,8 @@ function RejectReasonInput({ onClose, onConfirm }: { onClose: () => void; onConf
         <button
           onClick={() => { if (reason.trim()) onConfirm(reason.trim()); }}
           disabled={!reason.trim()}
-          className="flex-1 py-2.5 bg-red-500 hover:bg-red-600 disabled:opacity-40 text-white rounded-lg text-sm font-medium">
-          Confirm Reject
+          className={`flex-1 py-2.5 disabled:opacity-40 text-white rounded-lg text-sm font-medium ${confirmClass}`}>
+          {confirmLabel}
         </button>
       </div>
     </>

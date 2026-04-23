@@ -29,6 +29,13 @@ function LeaveStatusBadge({ req }: { req: any }) {
       </span>
     );
   }
+  if (req.status === 'cancelled') {
+    return (
+      <span className="inline-flex items-center gap-1 text-xs px-2.5 py-1 rounded-full border font-medium bg-gray-100 text-gray-500 border-gray-200">
+        <X size={11} /> Cancelled
+      </span>
+    );
+  }
   if (req.status === 'rejected') {
     const byMgr = req.manager_status === 'rejected';
     return (
@@ -72,6 +79,15 @@ function ActionTrail({ req }: { req: any }) {
       color: req.status === 'approved' ? 'text-green-600' : 'text-red-500',
     });
   }
+  if (req.cancelled_at) {
+    lines.push({
+      label: 'Cancelled',
+      name: req.cancelled_by ?? null,
+      at: req.cancelled_at ?? null,
+      reason: req.cancellation_reason ?? null,
+      color: 'text-gray-500',
+    });
+  }
 
   if (!lines.length) return null;
   return (
@@ -88,21 +104,34 @@ function ActionTrail({ req }: { req: any }) {
   );
 }
 
-function RejectReasonModal({ onClose, onConfirm }: { onClose: () => void; onConfirm: (reason: string) => void }) {
+function RejectReasonModal({
+  onClose, onConfirm,
+  title = 'Reason for Rejection',
+  placeholder = 'Enter reason (required)...',
+  confirmLabel = 'Confirm Reject',
+  confirmClass = 'bg-red-500 hover:bg-red-600',
+}: {
+  onClose: () => void;
+  onConfirm: (reason: string) => void;
+  title?: string;
+  placeholder?: string;
+  confirmLabel?: string;
+  confirmClass?: string;
+}) {
   const [reason, setReason] = useState('');
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 backdrop-blur-sm p-4">
       <div className="bg-white rounded-2xl shadow-2xl w-full max-w-sm p-6">
         <div className="flex items-center justify-between mb-4">
-          <h3 className="text-base font-semibold text-gray-900">Reason for Rejection</h3>
+          <h3 className="text-base font-semibold text-gray-900">{title}</h3>
           <button onClick={onClose}><X size={16} className="text-gray-400" /></button>
         </div>
         <textarea
           value={reason}
           onChange={e => setReason(e.target.value)}
           rows={3}
-          placeholder="Enter reason (required)..."
-          className="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-red-200 resize-none mb-4"
+          placeholder={placeholder}
+          className="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-gray-200 resize-none mb-4"
           autoFocus
         />
         <div className="flex gap-3">
@@ -110,8 +139,8 @@ function RejectReasonModal({ onClose, onConfirm }: { onClose: () => void; onConf
           <button
             onClick={() => { if (reason.trim()) { onConfirm(reason.trim()); onClose(); } }}
             disabled={!reason.trim()}
-            className="flex-1 py-2.5 bg-red-500 hover:bg-red-600 disabled:opacity-40 text-white rounded-lg text-sm font-medium">
-            Confirm Reject
+            className={`flex-1 py-2.5 disabled:opacity-40 text-white rounded-lg text-sm font-medium ${confirmClass}`}>
+            {confirmLabel}
           </button>
         </div>
       </div>
@@ -230,9 +259,10 @@ function EmployeeLeaveBalance({ balance }: { balance: any }) {
 
 export default function Leave() {
   const { user } = useAuth();
-  const [tab, setTab] = useState<'all' | 'pending' | 'approved' | 'rejected'>('all');
+  const [tab, setTab] = useState<'all' | 'pending' | 'approved' | 'rejected' | 'cancelled'>('all');
   const [showApply, setShowApply] = useState(false);
   const [rejectTarget, setRejectTarget] = useState<string | null>(null);
+  const [cancelTarget, setCancelTarget] = useState<string | null>(null);
   const [requests, setRequests] = useState<any[]>([]);
   const [balance, setBalance] = useState<any>(null);
   const [loading, setLoading] = useState(true);
@@ -282,6 +312,17 @@ export default function Leave() {
     setRequests(prev => prev.map(r => r.id === id ? {
       ...r, status: 'rejected', hr_actioner_name: user?.name, hr_actioned_at: new Date().toISOString(), rejection_reason
     } : r));
+  };
+
+  const handleCancel = async (id: string, cancellation_reason: string) => {
+    await api.cancelLeave(id, user?.name ?? 'Admin', cancellation_reason);
+    setRequests(prev => prev.map(r => r.id === id ? {
+      ...r, status: 'cancelled', cancelled_by: user?.name, cancelled_at: new Date().toISOString(), cancellation_reason
+    } : r));
+    // Refresh the selected employee's balance if viewing one
+    if (selectedEmpId) {
+      api.getLeaveBalance(selectedEmpId).then(setEmpBalance).catch(() => {});
+    }
   };
 
   const handleApply = async (data: any) => {
@@ -345,12 +386,17 @@ export default function Leave() {
 
         {/* Status tabs */}
         <div className="flex gap-1 bg-gray-100 p-1 rounded-lg">
-          {(['all', 'pending', 'approved', 'rejected'] as const).map(t => (
+          {(['all', 'pending', 'approved', 'rejected', 'cancelled'] as const).map(t => (
             <button key={t} onClick={() => setTab(t)}
               className={`px-3 py-1.5 text-sm font-medium rounded-md capitalize transition-all ${tab === t ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500 hover:text-gray-700'}`}>
               {t}
               {t !== 'all' && (
-                <span className={`ml-1.5 text-xs px-1.5 py-0.5 rounded-full font-semibold ${t === 'pending' ? 'bg-amber-100 text-amber-600' : t === 'approved' ? 'bg-green-100 text-green-600' : 'bg-red-100 text-red-500'}`}>
+                <span className={`ml-1.5 text-xs px-1.5 py-0.5 rounded-full font-semibold ${
+                  t === 'pending' ? 'bg-amber-100 text-amber-600' :
+                  t === 'approved' ? 'bg-green-100 text-green-600' :
+                  t === 'cancelled' ? 'bg-gray-100 text-gray-500' :
+                  'bg-red-100 text-red-500'
+                }`}>
                   {requests.filter(r => r.status === t).length}
                 </span>
               )}
@@ -445,12 +491,17 @@ export default function Leave() {
                         <ActionTrail req={req} />
                       </td>
                       <td className="px-4 py-3">
-                        {req.status === 'pending' && (
-                          <div className="flex gap-1.5">
-                            <button onClick={() => handleApprove(req.id)} className="px-2.5 py-1 text-xs bg-green-50 text-green-600 rounded-md hover:bg-green-100 font-medium">Approve</button>
-                            <button onClick={() => setRejectTarget(req.id)} className="px-2.5 py-1 text-xs bg-red-50 text-red-500 rounded-md hover:bg-red-100 font-medium">Reject</button>
-                          </div>
-                        )}
+                        <div className="flex gap-1.5 flex-wrap">
+                          {req.status === 'pending' && (
+                            <>
+                              <button onClick={() => handleApprove(req.id)} className="px-2.5 py-1 text-xs bg-green-50 text-green-600 rounded-md hover:bg-green-100 font-medium">Approve</button>
+                              <button onClick={() => setRejectTarget(req.id)} className="px-2.5 py-1 text-xs bg-red-50 text-red-500 rounded-md hover:bg-red-100 font-medium">Reject</button>
+                            </>
+                          )}
+                          {req.status === 'approved' && (
+                            <button onClick={() => setCancelTarget(req.id)} className="px-2.5 py-1 text-xs bg-gray-100 text-gray-600 rounded-md hover:bg-gray-200 font-medium">Cancel Leave</button>
+                          )}
+                        </div>
                       </td>
                     </tr>
                   );
@@ -471,6 +522,16 @@ export default function Leave() {
         <RejectReasonModal
           onClose={() => setRejectTarget(null)}
           onConfirm={reason => handleReject(rejectTarget, reason)}
+        />
+      )}
+      {cancelTarget && (
+        <RejectReasonModal
+          title="Reason for Cancellation"
+          placeholder="Enter reason for cancelling this approved leave..."
+          confirmLabel="Confirm Cancel"
+          confirmClass="bg-gray-700 hover:bg-gray-800"
+          onClose={() => setCancelTarget(null)}
+          onConfirm={reason => handleCancel(cancelTarget, reason)}
         />
       )}
     </div>

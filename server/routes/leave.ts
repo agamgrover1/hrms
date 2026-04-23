@@ -65,6 +65,39 @@ async function deductBalance(employeeId: string, type: string, days: number) {
   // 'unpaid' — no balance to deduct
 }
 
+// Restore balance when a leave is cancelled (inverse of deductBalance)
+async function restoreBalance(employeeId: string, type: string, days: number) {
+  if (type === 'full_day') {
+    await sql`UPDATE leave_balances SET full_day = full_day + ${days} WHERE employee_id=${employeeId}`.catch(() => {});
+  } else if (type === 'half_day') {
+    await sql`UPDATE leave_balances SET short_leave = short_leave + 2 WHERE employee_id=${employeeId}`.catch(() => {});
+  } else if (type === 'short_leave') {
+    await sql`UPDATE leave_balances SET short_leave = short_leave + 1 WHERE employee_id=${employeeId}`.catch(() => {});
+  } else if (type === 'casual') {
+    await sql`UPDATE leave_balances SET casual = casual + ${days} WHERE employee_id=${employeeId}`.catch(() => {});
+  } else if (type === 'sick') {
+    await sql`UPDATE leave_balances SET sick = sick + ${days} WHERE employee_id=${employeeId}`.catch(() => {});
+  } else if (type === 'earned') {
+    await sql`UPDATE leave_balances SET earned = earned + ${days} WHERE employee_id=${employeeId}`.catch(() => {});
+  }
+  // 'unpaid' — no balance to restore
+}
+
+// Clear leave attendance records when a leave is cancelled
+async function clearLeaveAttendance(employeeId: string, fromDate: string, toDate: string) {
+  const leaveStatuses = ['on_leave', 'half-day', 'short_leave', 'unpaid_leave'];
+  const start = new Date(fromDate);
+  const end = new Date(toDate);
+  for (let d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) {
+    const dateStr = d.toISOString().split('T')[0];
+    await sql`
+      DELETE FROM attendance_records
+      WHERE employee_id=${employeeId} AND date::date=${dateStr}::date
+        AND status = ANY(${leaveStatuses})
+    `.catch(() => {});
+  }
+}
+
 // Map leave type → attendance status
 const LEAVE_TYPE_ATT_STATUS: Record<string, string> = {
   full_day:    'on_leave',
@@ -283,6 +316,35 @@ router.patch('/requests/:id', async (req, res) => {
       `Your ${leave.type.replace('_',' ')} leave (${from} – ${to}) has been ${status}.`);
     res.json(leave);
   } catch (err) {
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// Cancel an approved leave — restores balance and clears attendance
+router.patch('/requests/:id/cancel', async (req, res) => {
+  try {
+    const { cancelled_by, cancellation_reason } = req.body;
+    const existing = await sql`SELECT * FROM leave_requests WHERE id=${req.params.id}`;
+    if (!existing.length) return res.status(404).json({ error: 'Not found' });
+    const leave = existing[0] as any;
+    if (leave.status !== 'approved') {
+      return res.status(400).json({ error: 'Only approved leaves can be cancelled.' });
+    }
+    const rows = await sql`
+      UPDATE leave_requests
+      SET status='cancelled', cancelled_by=${cancelled_by ?? null},
+          cancelled_at=NOW(), cancellation_reason=${cancellation_reason ?? null}
+      WHERE id=${req.params.id} RETURNING *
+    `;
+    await restoreBalance(leave.employee_id, leave.type, leave.days);
+    await clearLeaveAttendance(leave.employee_id, leave.from_date, leave.to_date);
+    const from = new Date(leave.from_date).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' });
+    const to   = new Date(leave.to_date).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' });
+    notifyEmployeeUser(leave.employee_id, 'leave_rejected', 'Leave Cancelled',
+      `Your approved ${leave.type.replace('_',' ')} leave (${from} – ${to}) was cancelled by ${cancelled_by ?? 'admin'}.${cancellation_reason ? ' Reason: ' + cancellation_reason : ''}`);
+    res.json(rows[0]);
+  } catch (err) {
+    console.error('[PATCH cancel leave]', err);
     res.status(500).json({ error: 'Server error' });
   }
 });
