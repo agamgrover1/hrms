@@ -163,7 +163,8 @@ function AddEmployeeModal({ onClose, onSaved, existingEmployees }: {
     if (!form.name.trim()) return setError('Name is required.');
     if (!form.email.trim()) return setError('Email is required.');
     if (!form.designation.trim()) return setError('Designation is required.');
-    if (form.password && form.password.length < 6) return setError('Password must be at least 6 characters.');
+    if (!form.password.trim()) return setError('Password is required to create a portal login.');
+    if (form.password.length < 6) return setError('Password must be at least 6 characters.');
     if (existingEmployees.some(e => e.employee_id === form.employee_id.trim().toUpperCase())) {
       return setError(`Employee ID ${form.employee_id.toUpperCase()} is already taken.`);
     }
@@ -301,8 +302,8 @@ function AddEmployeeModal({ onClose, onSaved, existingEmployees }: {
           {/* Login Credentials */}
           <div className="border border-primary-100 rounded-xl overflow-hidden">
             <div className="px-4 py-3 bg-primary-50 border-b border-primary-100">
-              <p className="text-xs font-semibold text-primary-700 uppercase tracking-wide">Login Credentials</p>
-              <p className="text-xs text-primary-500 mt-0.5">Set a password to create a portal login for this employee. Leave blank to skip.</p>
+              <p className="text-xs font-semibold text-primary-700 uppercase tracking-wide">Login Credentials <span className="text-red-400">*</span></p>
+              <p className="text-xs text-primary-500 mt-0.5">Required — the employee will use these to log in to the portal.</p>
             </div>
             <div className="p-4 grid grid-cols-1 sm:grid-cols-2 gap-4">
               <div>
@@ -314,7 +315,7 @@ function AddEmployeeModal({ onClose, onSaved, existingEmployees }: {
                 </select>
               </div>
               <div>
-                <label className={labelCls}>Password</label>
+                <label className={labelCls}>Password <span className="text-red-400">*</span></label>
                 <div className="relative">
                   <input
                     type={showPass ? 'text' : 'password'}
