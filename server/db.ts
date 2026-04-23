@@ -1,8 +1,9 @@
 import { neon, neonConfig } from '@neondatabase/serverless';
 import https from 'https';
+import dns from 'dns';
 
-// Neon's HTTP endpoint can be intermittently unreachable on some networks.
-// Use Node's https module (not undici/fetch) and retry up to 3 times.
+// Force IPv4 DNS resolution to avoid ENETUNREACH on IPv6 networks.
+// Then make the HTTPS request using the resolved IPv4 address.
 function httpsRequest(url: string, init: RequestInit): Promise<Response> {
   return new Promise((resolve, reject) => {
     const urlObj = new URL(url);
@@ -12,35 +13,41 @@ function httpsRequest(url: string, init: RequestInit): Promise<Response> {
     const headers: Record<string, string> = {
       ...(rawHeaders || {}),
       'Content-Length': String(bodyBuf.length),
+      'Host': urlObj.hostname,
     };
 
-    const req = https.request({
-      hostname: urlObj.hostname,
-      port: 443,
-      path: urlObj.pathname + urlObj.search,
-      method: init.method || 'POST',
-      headers,
-      timeout: 12000,
-    }, (res) => {
-      const chunks: Buffer[] = [];
-      res.on('data', (chunk: Buffer) => chunks.push(chunk));
-      res.on('end', () => {
-        const text = Buffer.concat(chunks).toString('utf-8');
-        resolve({
-          ok: (res.statusCode ?? 0) >= 200 && (res.statusCode ?? 0) < 300,
-          status: res.statusCode ?? 0,
-          statusText: res.statusMessage ?? '',
-          headers: new Headers(res.headers as Record<string, string>),
-          json: () => Promise.resolve(JSON.parse(text)),
-          text: () => Promise.resolve(text),
-        } as Response);
-      });
-    });
+    dns.lookup(urlObj.hostname, { family: 4 }, (dnsErr, address) => {
+      if (dnsErr) return reject(dnsErr);
 
-    req.on('timeout', () => { req.destroy(new Error('HTTPS request timeout')); });
-    req.on('error', reject);
-    if (bodyBuf.length) req.write(bodyBuf);
-    req.end();
+      const req = https.request({
+        hostname: address,
+        port: 443,
+        path: urlObj.pathname + urlObj.search,
+        method: init.method || 'POST',
+        headers,
+        timeout: 12000,
+        servername: urlObj.hostname,
+      }, (res) => {
+        const chunks: Buffer[] = [];
+        res.on('data', (chunk: Buffer) => chunks.push(chunk));
+        res.on('end', () => {
+          const text = Buffer.concat(chunks).toString('utf-8');
+          resolve({
+            ok: (res.statusCode ?? 0) >= 200 && (res.statusCode ?? 0) < 300,
+            status: res.statusCode ?? 0,
+            statusText: res.statusMessage ?? '',
+            headers: new Headers(res.headers as Record<string, string>),
+            json: () => Promise.resolve(JSON.parse(text)),
+            text: () => Promise.resolve(text),
+          } as Response);
+        });
+      });
+
+      req.on('timeout', () => { req.destroy(new Error('HTTPS request timeout')); });
+      req.on('error', reject);
+      if (bodyBuf.length) req.write(bodyBuf);
+      req.end();
+    });
   });
 }
 
