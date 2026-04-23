@@ -72,6 +72,22 @@ await sql`ALTER TABLE appraisal_goals ALTER COLUMN month SET DEFAULT 1`;
 await sql`ALTER TABLE employees ADD COLUMN IF NOT EXISTS next_appraisal_month INTEGER`;
 await sql`ALTER TABLE employees ADD COLUMN IF NOT EXISTS next_appraisal_year INTEGER`;
 
+// Notifications table
+await sql`
+  CREATE TABLE IF NOT EXISTS notifications (
+    id         SERIAL PRIMARY KEY,
+    user_id    VARCHAR(50) NOT NULL,
+    type       VARCHAR(50) NOT NULL,
+    title      VARCHAR(200) NOT NULL,
+    body       TEXT,
+    is_read    BOOLEAN NOT NULL DEFAULT FALSE,
+    created_at TIMESTAMPTZ DEFAULT NOW()
+  )
+`;
+await sql`CREATE INDEX IF NOT EXISTS notifications_user_id_idx ON notifications(user_id)`;
+await sql`CREATE INDEX IF NOT EXISTS notifications_user_unread_idx ON notifications(user_id, is_read)`;
+console.log('✓ notifications table ready');
+
 console.log('✓ monthly_performance table ready');
 console.log('✓ performance_notes table ready');
 console.log('✓ appraisal_goals table ready (month column + new unique key)');

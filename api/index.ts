@@ -24,6 +24,27 @@ app.use(cors({
 }));
 app.use(express.json());
 
+// ── Notification helpers ──────────────────────────────────────────────────
+async function notifyUser(userId: string, type: string, title: string, body?: string) {
+  try {
+    await sql`INSERT INTO notifications (user_id, type, title, body) VALUES (${userId}, ${type}, ${title}, ${body ?? null})`;
+  } catch { /* non-fatal */ }
+}
+
+async function notifyAdminsAndHR(type: string, title: string, body?: string) {
+  try {
+    const users = await sql`SELECT id FROM app_users WHERE role IN ('admin', 'hr_manager') AND active = TRUE`;
+    await Promise.all((users as any[]).map((u: any) => notifyUser(u.id, type, title, body)));
+  } catch { /* non-fatal */ }
+}
+
+async function notifyEmployeeUser(employeeDbId: string, type: string, title: string, body?: string) {
+  try {
+    const users = await sql`SELECT u.id FROM app_users u JOIN employees e ON e.employee_id = u.employee_id_ref WHERE e.id = ${employeeDbId}`;
+    await Promise.all((users as any[]).map((u: any) => notifyUser(u.id, type, title, body)));
+  } catch { /* non-fatal */ }
+}
+
 // ── Health ────────────────────────────────────────────────────────────────
 app.get('/api/health', (_, res) => res.json({ status: 'ok' }));
 
@@ -178,6 +199,9 @@ app.post('/api/leave/requests', async (req, res) => {
       INSERT INTO leave_requests (id, employee_id, employee_name, type, from_date, to_date, days, reason, status)
       VALUES (${id}, ${employee_id}, ${employee_name}, ${type}, ${from_date}, ${to_date}, ${days}, ${reason}, 'pending')
       RETURNING *`;
+    const from = new Date(from_date).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' });
+    const to   = new Date(to_date).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' });
+    notifyAdminsAndHR('leave_applied', 'New Leave Request', `${employee_name} applied for ${days}-day ${type} leave (${from} – ${to})`);
     res.status(201).json(rows[0]);
   } catch (err) { res.status(500).json({ error: 'Server error' }); }
 });
@@ -187,7 +211,14 @@ app.patch('/api/leave/requests/:id', async (req, res) => {
     const { status } = req.body;
     const rows = await sql`UPDATE leave_requests SET status=${status} WHERE id=${req.params.id} RETURNING *`;
     if (!rows.length) return res.status(404).json({ error: 'Not found' });
-    res.json(rows[0]);
+    const leave = rows[0] as any;
+    const from = new Date(leave.from_date).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' });
+    const to   = new Date(leave.to_date).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' });
+    notifyEmployeeUser(leave.employee_id, status === 'approved' ? 'leave_approved' : 'leave_rejected',
+      status === 'approved' ? 'Leave Approved' : 'Leave Rejected',
+      `Your ${leave.type} leave (${from} – ${to}, ${leave.days} day${leave.days > 1 ? 's' : ''}) has been ${status}.`
+    );
+    res.json(leave);
   } catch (err) { res.status(500).json({ error: 'Server error' }); }
 });
 
@@ -274,7 +305,12 @@ app.post('/api/performance/monthly', async (req, res) => {
         client_satisfaction=EXCLUDED.client_satisfaction,
         overall_score=EXCLUDED.overall_score, comments=EXCLUDED.comments, updated_at=NOW()
       RETURNING *`;
-    res.json(rows[0]);
+    const rec = rows[0] as any;
+    const MONTHS_SHORT = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+    notifyEmployeeUser(rec.employee_id, 'review_added', 'Performance Review Added',
+      `Your ${MONTHS_SHORT[rec.month - 1]} ${rec.year} performance review is in — overall score: ${rec.overall_score}/100.`
+    );
+    res.json(rec);
   } catch (err) { res.status(500).json({ error: 'Server error' }); }
 });
 
@@ -347,7 +383,14 @@ app.post('/api/performance/appraisal-goals/submit', async (req, res) => {
       WHERE appraisal_goals.submitted = FALSE
       RETURNING *`;
     if (!rows.length) return res.status(403).json({ error: 'Already submitted.' });
-    res.json(rows[0]);
+    const rec = rows[0] as any;
+    const MN = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+    const empRows = await sql`SELECT name FROM employees WHERE id = ${rec.employee_id}`.catch(() => []);
+    const empName = (empRows as any[])[0]?.name ?? 'An employee';
+    notifyAdminsAndHR('appraisal_submitted', 'Appraisal Goals Submitted',
+      `${empName} submitted ${rec.goals?.length ?? 0} appraisal goal(s) for ${MN[rec.month - 1]} ${rec.year}.`
+    );
+    res.json(rec);
   } catch (err) { res.status(500).json({ error: 'Server error' }); }
 });
 
@@ -361,6 +404,10 @@ app.patch('/api/performance/appraisal-goals/self-update', async (req, res) => {
       if (goals[index] !== undefined) goals[index] = { ...goals[index], employee_status };
     }
     const rows = await sql`UPDATE appraisal_goals SET goals=${JSON.stringify(goals)}, updated_at=NOW() WHERE employee_id=${employee_id} AND year=${year} AND month=${month} RETURNING *`;
+    const MN = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+    notifyAdminsAndHR('self_assessment_updated', 'Self-Assessment Updated',
+      `An employee updated their goal self-assessment for ${MN[(month as number) - 1]} ${year}.`
+    );
     res.json(rows[0]);
   } catch (err) { res.status(500).json({ error: 'Server error' }); }
 });
@@ -373,7 +420,45 @@ app.put('/api/performance/appraisal-goals/admin', async (req, res) => {
       VALUES (${employee_id}, ${year}, ${month}, ${JSON.stringify(goals)}, NOW())
       ON CONFLICT (employee_id, month, year) DO UPDATE SET goals=EXCLUDED.goals, updated_at=NOW()
       RETURNING *`;
-    res.json(rows[0]);
+    const rec = rows[0] as any;
+    const MN = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+    notifyEmployeeUser(employee_id, 'appraisal_reviewed', 'Appraisal Goals Reviewed',
+      `Your appraisal goals for ${MN[(month as number) - 1]} ${year} have been reviewed by your manager.`
+    );
+    res.json(rec);
+  } catch (err) { res.status(500).json({ error: 'Server error' }); }
+});
+
+// ── Notifications ─────────────────────────────────────────────────────────
+app.get('/api/notifications', async (req, res) => {
+  try {
+    const { user_id } = req.query as any;
+    if (!user_id) return res.status(400).json({ error: 'user_id required' });
+    const rows = await sql`SELECT * FROM notifications WHERE user_id=${user_id} ORDER BY created_at DESC LIMIT 50`;
+    res.json(rows);
+  } catch (err) { res.status(500).json({ error: 'Server error' }); }
+});
+
+app.patch('/api/notifications/read-all', async (req, res) => {
+  try {
+    const { user_id } = req.query as any;
+    if (!user_id) return res.status(400).json({ error: 'user_id required' });
+    await sql`UPDATE notifications SET is_read=TRUE WHERE user_id=${user_id} AND is_read=FALSE`;
+    res.json({ success: true });
+  } catch (err) { res.status(500).json({ error: 'Server error' }); }
+});
+
+app.patch('/api/notifications/:id/read', async (req, res) => {
+  try {
+    const rows = await sql`UPDATE notifications SET is_read=TRUE WHERE id=${req.params.id} RETURNING *`;
+    res.json(rows[0] ?? { success: true });
+  } catch (err) { res.status(500).json({ error: 'Server error' }); }
+});
+
+app.delete('/api/notifications/:id', async (req, res) => {
+  try {
+    await sql`DELETE FROM notifications WHERE id=${req.params.id}`;
+    res.json({ success: true });
   } catch (err) { res.status(500).json({ error: 'Server error' }); }
 });
 

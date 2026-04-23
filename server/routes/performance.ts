@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import { sql } from '../db';
+import { notifyAdminsAndHR, notifyEmployeeUser } from '../lib/notify';
 
 const router = Router();
 
@@ -76,7 +77,16 @@ router.post('/monthly', async (req, res) => {
         updated_at = NOW()
       RETURNING *
     `;
-    res.json(rows[0]);
+    // Notify the employee about their review
+    const rec = rows[0] as any;
+    const monthName = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'][rec.month - 1];
+    notifyEmployeeUser(
+      rec.employee_id,
+      'review_added',
+      'Performance Review Added',
+      `Your ${monthName} ${rec.year} performance review is in — overall score: ${rec.overall_score}/100.`
+    );
+    res.json(rec);
   } catch (err) {
     res.status(500).json({ error: 'Server error' });
   }
@@ -178,7 +188,17 @@ router.post('/appraisal-goals/submit', async (req, res) => {
       RETURNING *
     `;
     if (!rows.length) return res.status(403).json({ error: 'Already submitted.' });
-    res.json(rows[0]);
+    const rec = rows[0] as any;
+    const monthName = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'][rec.month - 1];
+    // Find employee name for the notification body
+    const empRows = await sql`SELECT name FROM employees WHERE id = ${rec.employee_id}`.catch(() => []);
+    const empName = (empRows as any[])[0]?.name ?? 'An employee';
+    notifyAdminsAndHR(
+      'appraisal_submitted',
+      'Appraisal Goals Submitted',
+      `${empName} submitted ${rec.goals?.length ?? 0} appraisal goal(s) for ${monthName} ${rec.year}.`
+    );
+    res.json(rec);
   } catch (err) {
     res.status(500).json({ error: 'Server error' });
   }
@@ -205,7 +225,14 @@ router.patch('/appraisal-goals/self-update', async (req, res) => {
       WHERE employee_id = ${employee_id} AND year = ${year} AND month = ${month}
       RETURNING *
     `;
-    res.json(rows[0]);
+    const rec = rows[0] as any;
+    const monthName = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'][(month as number) - 1];
+    notifyAdminsAndHR(
+      'self_assessment_updated',
+      'Self-Assessment Updated',
+      `An employee updated their goal self-assessment for ${monthName} ${year}.`
+    );
+    res.json(rec);
   } catch (err) {
     res.status(500).json({ error: 'Server error' });
   }
@@ -223,7 +250,15 @@ router.put('/appraisal-goals/admin', async (req, res) => {
         updated_at = NOW()
       RETURNING *
     `;
-    res.json(rows[0]);
+    const rec = rows[0] as any;
+    const monthName = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'][(month as number) - 1];
+    notifyEmployeeUser(
+      employee_id as string,
+      'appraisal_reviewed',
+      'Appraisal Goals Reviewed',
+      `Your appraisal goals for ${monthName} ${year} have been reviewed by your manager.`
+    );
+    res.json(rec);
   } catch (err) {
     res.status(500).json({ error: 'Server error' });
   }

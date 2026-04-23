@@ -7,6 +7,7 @@ import leaveRoutes from './routes/leave';
 import payrollRoutes from './routes/payroll';
 import performanceRoutes from './routes/performance';
 import userRoutes from './routes/users';
+import notificationRoutes from './routes/notifications';
 
 const app = express();
 
@@ -33,6 +34,7 @@ app.use('/api/leave', leaveRoutes);
 app.use('/api/payroll', payrollRoutes);
 app.use('/api/performance', performanceRoutes);
 app.use('/api/users', userRoutes);
+app.use('/api/notifications', notificationRoutes);
 
 app.get('/api/health', (_, res) => res.json({ status: 'ok' }));
 

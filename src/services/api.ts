@@ -103,6 +103,12 @@ export const api = {
   selfUpdateGoalStatuses: (data: { employee_id: string; year: number; month: number; employee_statuses: { index: number; employee_status: string }[] }) =>
     request<any>('/performance/appraisal-goals/self-update', { method: 'PATCH', body: JSON.stringify(data) }),
 
+  // Notifications
+  getNotifications: (userId: string) => request<any[]>(`/notifications?user_id=${userId}`),
+  markNotificationRead: (id: number) => request<any>(`/notifications/${id}/read`, { method: 'PATCH' }),
+  markAllNotificationsRead: (userId: string) => request<any>(`/notifications/read-all?user_id=${userId}`, { method: 'PATCH' }),
+  deleteNotification: (id: number) => request<any>(`/notifications/${id}`, { method: 'DELETE' }),
+
   // Users
   getUsers: () => request<any[]>('/users'),
   createUser: (data: any) => request<any>('/users', { method: 'POST', body: JSON.stringify(data) }),
