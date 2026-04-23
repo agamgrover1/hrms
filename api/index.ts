@@ -87,12 +87,22 @@ app.get('/api/employees/:id', async (req, res) => {
 
 app.post('/api/employees', async (req, res) => {
   try {
-    const { id, name, email, phone, department, designation, employee_id, join_date, location, manager, reporting_manager_id, status, avatar, salary, ctc } = req.body;
+    const { id, name, email, phone, department, designation, employee_id, join_date, location, manager, reporting_manager_id, status, avatar, salary, ctc, password, role } = req.body;
     const rows = await sql`
       INSERT INTO employees (id, name, email, phone, department, designation, employee_id, join_date, location, manager, reporting_manager_id, status, avatar, salary, ctc)
       VALUES (${id}, ${name}, ${email}, ${phone}, ${department}, ${designation}, ${employee_id}, ${join_date}, ${location}, ${manager ?? null}, ${reporting_manager_id ?? null}, ${status ?? 'active'}, ${avatar}, ${salary}, ${ctc})
       RETURNING *`;
-    res.status(201).json(rows[0]);
+    const emp = rows[0];
+    if (password) {
+      const existing = await sql`SELECT id FROM app_users WHERE LOWER(email)=LOWER(${email})`;
+      if (!existing.length) {
+        await sql`
+          INSERT INTO app_users (id, employee_id_ref, name, email, password, role, department, designation, avatar, active)
+          VALUES (${`u_${id}`}, ${employee_id}, ${name}, ${email}, ${password}, ${role ?? 'employee'}, ${department}, ${designation}, ${avatar}, true)
+        `.catch(() => {});
+      }
+    }
+    res.status(201).json(emp);
   } catch (err: any) {
     if (err.message?.includes('unique')) return res.status(409).json({ error: 'Employee ID or email already exists' });
     res.status(500).json({ error: 'Server error' });

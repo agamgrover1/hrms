@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { Search, Filter, Plus, Mail, Phone, MapPin, ChevronRight, X, User, Pencil, Trash2 } from 'lucide-react';
+import { Search, Filter, Plus, Mail, Phone, MapPin, ChevronRight, X, User, Pencil, Trash2, Eye, EyeOff } from 'lucide-react';
 import { api } from '../services/api';
 import { departments } from '../data/mockData';
 
@@ -129,6 +129,8 @@ const emptyForm = {
   status: 'active',
   salary: '',
   ctc: '',
+  password: '',
+  role: 'employee',
 };
 
 function AddEmployeeModal({ onClose, onSaved, existingEmployees }: {
@@ -147,6 +149,7 @@ function AddEmployeeModal({ onClose, onSaved, existingEmployees }: {
   const [form, setForm] = useState({ ...emptyForm, employee_id: nextCode });
   const [error, setError] = useState('');
   const [saving, setSaving] = useState(false);
+  const [showPass, setShowPass] = useState(false);
 
   const set = (k: string, v: string) => setForm(f => ({ ...f, [k]: v }));
 
@@ -159,6 +162,8 @@ function AddEmployeeModal({ onClose, onSaved, existingEmployees }: {
     if (!form.employee_id.trim()) return setError('Employee ID is required.');
     if (!form.name.trim()) return setError('Name is required.');
     if (!form.email.trim()) return setError('Email is required.');
+    if (!form.designation.trim()) return setError('Designation is required.');
+    if (form.password && form.password.length < 6) return setError('Password must be at least 6 characters.');
     if (existingEmployees.some(e => e.employee_id === form.employee_id.trim().toUpperCase())) {
       return setError(`Employee ID ${form.employee_id.toUpperCase()} is already taken.`);
     }
@@ -173,6 +178,8 @@ function AddEmployeeModal({ onClose, onSaved, existingEmployees }: {
         salary: Number(form.salary) || 0,
         ctc: Number(form.ctc) || 0,
         reporting_manager_id: form.reporting_manager_id || null,
+        password: form.password || null,
+        role: form.role || 'employee',
       };
       const created = await api.createEmployee(payload);
       onSaved(created);
@@ -287,6 +294,40 @@ function AddEmployeeModal({ onClose, onSaved, existingEmployees }: {
               <div>
                 <label className={labelCls}>Annual CTC (₹)</label>
                 <input type="number" value={form.ctc} onChange={e => set('ctc', e.target.value)} placeholder="e.g. 1200000" className={inputCls} />
+              </div>
+            </div>
+          </div>
+
+          {/* Login Credentials */}
+          <div className="border border-primary-100 rounded-xl overflow-hidden">
+            <div className="px-4 py-3 bg-primary-50 border-b border-primary-100">
+              <p className="text-xs font-semibold text-primary-700 uppercase tracking-wide">Login Credentials</p>
+              <p className="text-xs text-primary-500 mt-0.5">Set a password to create a portal login for this employee. Leave blank to skip.</p>
+            </div>
+            <div className="p-4 grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <div>
+                <label className={labelCls}>Role</label>
+                <select value={form.role} onChange={e => set('role', e.target.value)} className={inputCls}>
+                  <option value="employee">Employee</option>
+                  <option value="hr_manager">HR Manager</option>
+                  <option value="admin">Admin</option>
+                </select>
+              </div>
+              <div>
+                <label className={labelCls}>Password</label>
+                <div className="relative">
+                  <input
+                    type={showPass ? 'text' : 'password'}
+                    value={form.password}
+                    onChange={e => set('password', e.target.value)}
+                    placeholder="Min. 6 characters"
+                    className={inputCls + ' pr-10'}
+                  />
+                  <button type="button" onClick={() => setShowPass(p => !p)}
+                    className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600">
+                    {showPass ? <EyeOff size={15} /> : <Eye size={15} />}
+                  </button>
+                </div>
               </div>
             </div>
           </div>

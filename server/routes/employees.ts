@@ -28,13 +28,24 @@ router.get('/:id', async (req, res) => {
 
 router.post('/', async (req, res) => {
   try {
-    const { id, name, email, phone, department, designation, employee_id, join_date, location, manager, reporting_manager_id, status, avatar, salary, ctc } = req.body;
+    const { id, name, email, phone, department, designation, employee_id, join_date, location, manager, reporting_manager_id, status, avatar, salary, ctc, password, role } = req.body;
     const rows = await sql`
       INSERT INTO employees (id, name, email, phone, department, designation, employee_id, join_date, location, manager, reporting_manager_id, status, avatar, salary, ctc)
       VALUES (${id}, ${name}, ${email}, ${phone}, ${department}, ${designation}, ${employee_id}, ${join_date}, ${location}, ${manager ?? null}, ${reporting_manager_id ?? null}, ${status ?? 'active'}, ${avatar}, ${salary}, ${ctc})
       RETURNING *
     `;
-    res.status(201).json(rows[0]);
+    const emp = rows[0];
+    // Also create a portal login if password was provided
+    if (password) {
+      const existingUser = await sql`SELECT id FROM app_users WHERE LOWER(email)=LOWER(${email})`;
+      if (!existingUser.length) {
+        await sql`
+          INSERT INTO app_users (id, employee_id_ref, name, email, password, role, department, designation, avatar, active)
+          VALUES (${`u_${id}`}, ${employee_id}, ${name}, ${email}, ${password}, ${role ?? 'employee'}, ${department}, ${designation}, ${avatar}, true)
+        `;
+      }
+    }
+    res.status(201).json(emp);
   } catch (err: any) {
     if (err.message?.includes('unique')) return res.status(409).json({ error: 'Employee ID or email already exists' });
     console.error(err);
