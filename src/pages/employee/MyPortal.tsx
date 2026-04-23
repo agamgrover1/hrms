@@ -42,11 +42,12 @@ const SCORE_CATEGORIES = [
   { key: 'attendance_score',    label: 'Attendance' },
   { key: 'initiative',          label: 'Initiative' },
   { key: 'client_satisfaction', label: 'Client Satisfaction' },
+  { key: 'ai_usage',            label: 'AI Usage' },
 ] as const;
 
 const MONTHS_SHORT = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
-const PERF_COLS = ['Prod.', 'Quality', 'Teamwork', 'Attend.', 'Initiative', 'Client Sat.'];
-const PERF_KEYS = ['productivity','quality','teamwork','attendance_score','initiative','client_satisfaction'];
+const PERF_COLS = ['Prod.', 'Quality', 'Teamwork', 'Attend.', 'Initiative', 'Client Sat.', 'AI Usage'];
+const PERF_KEYS = ['productivity','quality','teamwork','attendance_score','initiative','client_satisfaction','ai_usage'];
 
 function perfColor(s: number) {
   if (s >= 85) return '#16a34a';
@@ -183,7 +184,7 @@ export default function MyPortal() {
   const [cancelLeaveTarget, setCancelLeaveTarget] = useState<string | null>(null);
   const [showTeamReview, setShowTeamReview] = useState<any | null>(null); // employee record
   const [teamReviewScores, setTeamReviewScores] = useState<Record<string, number>>({
-    productivity: 75, quality: 75, teamwork: 75, attendance_score: 75, initiative: 75, client_satisfaction: 75,
+    productivity: 75, quality: 75, teamwork: 75, attendance_score: 75, initiative: 75, client_satisfaction: 75, ai_usage: 75,
   });
   const [teamReviewComment, setTeamReviewComment] = useState('');
   const [savingTeamReview, setSavingTeamReview] = useState(false);
@@ -469,6 +470,7 @@ export default function MyPortal() {
         attendance_score: teamReviewScores.attendance_score,
         initiative: teamReviewScores.initiative,
         client_satisfaction: teamReviewScores.client_satisfaction,
+        ai_usage: teamReviewScores.ai_usage,
         overall_score: overall,
         comments: teamReviewComment,
       });

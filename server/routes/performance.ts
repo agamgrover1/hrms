@@ -40,6 +40,14 @@ router.get('/reviews', async (req, res) => {
   }
 });
 
+// Boot-time migration for new monthly_performance columns
+;(async () => {
+  try {
+    await sql`ALTER TABLE monthly_performance ADD COLUMN IF NOT EXISTS ai_usage INTEGER DEFAULT 75`;
+    await sql`ALTER TABLE monthly_performance ADD COLUMN IF NOT EXISTS parameter_notes JSONB DEFAULT '{}'`;
+  } catch { /* ignore */ }
+})();
+
 // Monthly performance
 router.get('/monthly', async (req, res) => {
   try {
@@ -56,13 +64,14 @@ router.get('/monthly', async (req, res) => {
 
 router.post('/monthly', async (req, res) => {
   try {
-    const { employee_id, reviewer_id, reviewer_name, month, year, productivity, quality, teamwork, attendance_score, initiative, client_satisfaction, overall_score, comments } = req.body;
+    const { employee_id, reviewer_id, reviewer_name, month, year, productivity, quality, teamwork, attendance_score, initiative, client_satisfaction, ai_usage, overall_score, comments, parameter_notes } = req.body;
+    const paramNotesJson = JSON.stringify(parameter_notes ?? {});
     const rows = await sql`
       INSERT INTO monthly_performance
-        (employee_id, reviewer_id, reviewer_name, month, year, productivity, quality, teamwork, attendance_score, initiative, client_satisfaction, overall_score, comments, updated_at)
+        (employee_id, reviewer_id, reviewer_name, month, year, productivity, quality, teamwork, attendance_score, initiative, client_satisfaction, ai_usage, overall_score, comments, parameter_notes, updated_at)
       VALUES
         (${employee_id}, ${reviewer_id ?? null}, ${reviewer_name ?? null}, ${month}, ${year},
-         ${productivity}, ${quality}, ${teamwork}, ${attendance_score}, ${initiative}, ${client_satisfaction ?? 0}, ${overall_score}, ${comments ?? null}, NOW())
+         ${productivity}, ${quality}, ${teamwork}, ${attendance_score}, ${initiative}, ${client_satisfaction ?? 0}, ${ai_usage ?? 75}, ${overall_score}, ${comments ?? null}, ${paramNotesJson}, NOW())
       ON CONFLICT (employee_id, month, year) DO UPDATE SET
         reviewer_id = EXCLUDED.reviewer_id,
         reviewer_name = EXCLUDED.reviewer_name,
@@ -72,8 +81,10 @@ router.post('/monthly', async (req, res) => {
         attendance_score = EXCLUDED.attendance_score,
         initiative = EXCLUDED.initiative,
         client_satisfaction = EXCLUDED.client_satisfaction,
+        ai_usage = EXCLUDED.ai_usage,
         overall_score = EXCLUDED.overall_score,
         comments = EXCLUDED.comments,
+        parameter_notes = EXCLUDED.parameter_notes,
         updated_at = NOW()
       RETURNING *
     `;

@@ -19,6 +19,7 @@ const CATEGORIES = [
   { key: 'attendance_score',    label: 'Attendance' },
   { key: 'initiative',          label: 'Initiative' },
   { key: 'client_satisfaction', label: 'Client Satisfaction' },
+  { key: 'ai_usage',            label: 'AI Usage' },
 ] as const;
 
 type CategoryKey = typeof CATEGORIES[number]['key'];
@@ -104,7 +105,12 @@ function scoreBadge(score: number) {
 }
 
 // ─── Slider + text input combo ───────────────────────────────────────────────
-function ScoreInput({ label, value, onChange }: { label: string; value: number; onChange: (v: number) => void }) {
+function ScoreInput({
+  label, value, onChange, note, onNoteChange,
+}: {
+  label: string; value: number; onChange: (v: number) => void;
+  note?: string; onNoteChange?: (v: string) => void;
+}) {
   const [raw, setRaw] = useState(String(value));
 
   useEffect(() => { setRaw(String(value)); }, [value]);
@@ -123,8 +129,8 @@ function ScoreInput({ label, value, onChange }: { label: string; value: number; 
   };
 
   return (
-    <div>
-      <div className="flex items-center justify-between mb-1.5 gap-3">
+    <div className="space-y-1.5">
+      <div className="flex items-center justify-between gap-3">
         <label className="text-sm font-semibold flex-1" style={{ color: '#192250' }}>{label}</label>
         <input
           type="number" min={0} max={100}
@@ -142,10 +148,18 @@ function ScoreInput({ label, value, onChange }: { label: string; value: number; 
         className="w-full h-2 rounded-full appearance-none cursor-pointer"
         style={{ accentColor: scoreColor(value) }}
       />
-      <div className="flex justify-between mt-0.5">
-        <span className="text-xs text-gray-300">0</span>
-        <span className="text-xs text-gray-300">100</span>
-      </div>
+      {onNoteChange !== undefined && (
+        <textarea
+          value={note ?? ''}
+          onChange={e => onNoteChange(e.target.value)}
+          rows={1}
+          placeholder={`Note for ${label} (optional)…`}
+          className="w-full border rounded-lg px-2.5 py-1.5 text-xs resize-none focus:outline-none leading-relaxed"
+          style={{ borderColor: '#e2e4ed', color: '#374151' }}
+          onFocus={e => { e.target.style.borderColor = '#192250'; (e.target as HTMLTextAreaElement).rows = 2; }}
+          onBlur={e => { e.target.style.borderColor = '#e2e4ed'; if (!e.target.value) (e.target as HTMLTextAreaElement).rows = 1; }}
+        />
+      )}
     </div>
   );
 }
@@ -164,7 +178,9 @@ function AddReviewModal({
     attendance_score:    existing?.attendance_score    ?? 75,
     initiative:          existing?.initiative          ?? 75,
     client_satisfaction: existing?.client_satisfaction ?? 75,
+    ai_usage:            existing?.ai_usage            ?? 75,
   });
+  const [paramNotes, setParamNotes] = useState<Record<string, string>>(existing?.parameter_notes ?? {});
   const [comments, setComments] = useState(existing?.comments ?? '');
   const [saving, setSaving] = useState(false);
 
@@ -181,6 +197,7 @@ function AddReviewModal({
         ...scores,
         overall_score: overall,
         comments,
+        parameter_notes: paramNotes,
       });
       onSave();
       onClose();
@@ -210,7 +227,7 @@ function AddReviewModal({
             <p className="text-xs font-semibold uppercase tracking-wide text-gray-400 mb-1">Overall Score</p>
             <p className="text-4xl font-bold" style={{ color: scoreColor(overall) }}>{overall}</p>
             <p className="text-xs font-semibold mt-1" style={{ color: scoreBadge(overall).text }}>{scoreBadge(overall).label}</p>
-            <p className="text-xs text-gray-400 mt-1">Average of {CATEGORIES.length} categories</p>
+            <p className="text-xs text-gray-400 mt-1">Average of {CATEGORIES.length} parameters</p>
           </div>
 
           {CATEGORIES.map(({ key, label }) => (
@@ -219,6 +236,8 @@ function AddReviewModal({
               label={label}
               value={scores[key]}
               onChange={v => setScores(s => ({ ...s, [key]: v }))}
+              note={paramNotes[key] ?? ''}
+              onNoteChange={v => setParamNotes(n => ({ ...n, [key]: v }))}
             />
           ))}
 
@@ -537,6 +556,7 @@ export default function Performance() {
   const [loadingAppraisal, setLoadingAppraisal] = useState(false);
   const [editingGoal, setEditingGoal] = useState<any | null>(null);
   const [expandedGoal, setExpandedGoal] = useState<string | null>(null);
+  const [appraisalEmpFilter, setAppraisalEmpFilter] = useState('');
 
   useEffect(() => {
     api.getEmployees().then(emps => {
@@ -883,7 +903,7 @@ export default function Performance() {
         ══════════════════════════════════════════════════════════════════ */}
         {view === 'appraisal' && isHROrAdmin && (
           <>
-            <div className="flex items-center gap-3">
+            <div className="flex flex-wrap items-center gap-3">
               <div className="relative">
                 <select
                   value={selectedYear}
@@ -895,20 +915,40 @@ export default function Performance() {
                 </select>
                 <ChevronDown size={14} className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 pointer-events-none" />
               </div>
-              <p className="text-sm text-gray-400">{appraisalRecords.length} submission{appraisalRecords.length !== 1 ? 's' : ''} for {selectedYear}</p>
+              <div className="relative">
+                <select
+                  value={appraisalEmpFilter}
+                  onChange={e => setAppraisalEmpFilter(e.target.value)}
+                  className="appearance-none bg-white border border-gray-200 rounded-xl px-4 pr-9 py-2.5 text-sm font-semibold focus:outline-none shadow-sm"
+                  style={{ color: '#192250', minWidth: 180 }}
+                >
+                  <option value="">All Employees</option>
+                  {employees.map(e => <option key={e.id} value={e.id}>{e.name}</option>)}
+                </select>
+                <ChevronDown size={14} className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 pointer-events-none" />
+              </div>
+              <p className="text-sm text-gray-400">
+                {(appraisalEmpFilter
+                  ? appraisalRecords.filter(r => r.employee_id === appraisalEmpFilter)
+                  : appraisalRecords
+                ).length} submission{appraisalRecords.length !== 1 ? 's' : ''} for {selectedYear}
+              </p>
             </div>
 
             {loadingAppraisal ? (
               <div className="bg-white rounded-2xl p-12 text-center text-gray-300 shadow-sm border border-gray-100">Loading…</div>
-            ) : appraisalRecords.length === 0 ? (
+            ) : (appraisalEmpFilter ? appraisalRecords.filter(r => r.employee_id === appraisalEmpFilter) : appraisalRecords).length === 0 ? (
               <div className="bg-white rounded-2xl p-12 text-center shadow-sm border border-gray-100">
                 <FileText size={32} className="text-gray-200 mx-auto mb-3" />
-                <p className="text-gray-400 font-medium">No appraisal goals submitted for {selectedYear}</p>
+                <p className="text-gray-400 font-medium">No appraisal goals submitted for {selectedYear}{appraisalEmpFilter ? ` for ${employees.find(e => e.id === appraisalEmpFilter)?.name}` : ''}</p>
                 <p className="text-sm text-gray-300 mt-1">Employees submit their goals from My Portal</p>
               </div>
             ) : (
               <div className="space-y-3">
-                {appraisalRecords.map(record => {
+                {(appraisalEmpFilter
+                  ? appraisalRecords.filter(r => r.employee_id === appraisalEmpFilter)
+                  : appraisalRecords
+                ).map(record => {
                   const key = `${record.employee_id}-${record.year}`;
                   const isExpanded = expandedGoal === key;
                   return (

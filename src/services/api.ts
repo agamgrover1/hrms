@@ -86,8 +86,8 @@ export const api = {
   saveMonthlyPerformance: (data: {
     employee_id: string; reviewer_id?: string; reviewer_name?: string;
     month: number; year: number;
-    productivity: number; quality: number; teamwork: number; attendance_score: number; initiative: number; client_satisfaction: number;
-    overall_score: number; comments?: string;
+    productivity: number; quality: number; teamwork: number; attendance_score: number; initiative: number; client_satisfaction: number; ai_usage: number;
+    overall_score: number; comments?: string; parameter_notes?: Record<string, string>;
   }) => request<any>('/performance/monthly', { method: 'POST', body: JSON.stringify(data) }),
 
   // Performance notes (private)
