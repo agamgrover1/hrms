@@ -109,17 +109,34 @@ function parseEtWorkTime(wt: string | undefined | null): number {
   return Math.round((h + (m || 0) / 60) * 10) / 10;
 }
 
-// Shift definitions — lateAfter = grace cutoff in HH:MM
-const SHIFT_CONFIG: Record<string, { start: string; end: string; lateAfter: string }> = {
-  day:   { start: '09:00', end: '18:00', lateAfter: '09:30' },
-  night: { start: '18:30', end: '03:30', lateAfter: '18:45' },
-};
+// Shift definitions — loaded from DB (config_shifts), cached with 60s TTL
+let _shiftCache: Record<string, { start: string; end: string; lateAfter: string }> | null = null;
+let _shiftCacheTs = 0;
+async function getShiftConfig(): Promise<Record<string, { start: string; end: string; lateAfter: string }>> {
+  if (_shiftCache && Date.now() - _shiftCacheTs < 60_000) return _shiftCache;
+  try {
+    const rows = await sql`SELECT id, start_time, end_time, late_after FROM config_shifts`;
+    const cfg: Record<string, { start: string; end: string; lateAfter: string }> = {};
+    for (const r of rows as any[]) cfg[r.id] = { start: r.start_time, end: r.end_time, lateAfter: r.late_after };
+    _shiftCache = cfg;
+    _shiftCacheTs = Date.now();
+    return cfg;
+  } catch {
+    // fallback defaults
+    return { day: { start: '09:00', end: '18:00', lateAfter: '09:30' }, night: { start: '18:30', end: '03:30', lateAfter: '18:45' } };
+  }
+}
 
-function isLateForShift(inTime: string, shift: string): boolean {
-  const cfg = SHIFT_CONFIG[shift] ?? SHIFT_CONFIG.day;
+function isLateForShiftCfg(inTime: string, cfg: { lateAfter: string }): boolean {
   const [lh, lm] = cfg.lateAfter.split(':').map(Number);
   const [ch, cm] = inTime.split(':').map(Number);
   return ch > lh || (ch === lh && cm > lm);
+}
+
+// Sync fallback (uses cached value or hardcoded default)
+function isLateForShift(inTime: string, shift: string): boolean {
+  const cfg = _shiftCache?.[shift] ?? { lateAfter: '09:30' };
+  return isLateForShiftCfg(inTime, cfg);
 }
 
 function deriveStatus(etStatus: string, inTime: string | null, shift = 'day'): string {
@@ -286,7 +303,8 @@ router.post('/clock-in', async (req, res) => {
     const time = now.toTimeString().slice(0, 5); // HH:MM
     const empRow = await sql`SELECT shift FROM employees WHERE id = ${employee_id}` as any[];
     const shift = empRow[0]?.shift ?? 'day';
-    const status = isLateForShift(time, shift) ? 'late' : 'present';
+    const shiftCfg = await getShiftConfig();
+    const status = isLateForShiftCfg(time, shiftCfg[shift] ?? { lateAfter: '09:30' }) ? 'late' : 'present';
     const rows = await sql`
       INSERT INTO attendance_records (employee_id, date, check_in, status, total_hours, source)
       VALUES (${employee_id}, ${today}, ${time}, ${status}, 0, 'clock_in')

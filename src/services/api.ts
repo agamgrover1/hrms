@@ -118,6 +118,22 @@ export const api = {
   selfUpdateGoalStatuses: (data: { employee_id: string; year: number; month: number; employee_statuses: { index: number; employee_status: string }[] }) =>
     request<any>('/performance/appraisal-goals/self-update', { method: 'PATCH', body: JSON.stringify(data) }),
 
+  // Configuration
+  getConfigDepartments: () => request<any[]>('/config/departments'),
+  addConfigDepartment: (name: string) => request<any>('/config/departments', { method: 'POST', body: JSON.stringify({ name }) }),
+  deleteConfigDepartment: (id: string) => request<any>(`/config/departments/${id}`, { method: 'DELETE' }),
+
+  getConfigDesignations: () => request<any[]>('/config/designations'),
+  addConfigDesignation: (name: string) => request<any>('/config/designations', { method: 'POST', body: JSON.stringify({ name }) }),
+  deleteConfigDesignation: (id: string) => request<any>(`/config/designations/${id}`, { method: 'DELETE' }),
+
+  getConfigShifts: () => request<any[]>('/config/shifts'),
+  addConfigShift: (data: { name: string; start_time: string; end_time: string; late_after: string }) =>
+    request<any>('/config/shifts', { method: 'POST', body: JSON.stringify(data) }),
+  updateConfigShift: (id: string, data: { name: string; start_time: string; end_time: string; late_after: string }) =>
+    request<any>(`/config/shifts/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
+  deleteConfigShift: (id: string) => request<any>(`/config/shifts/${id}`, { method: 'DELETE' }),
+
   // Notifications
   getNotifications: (userId: string) => request<any[]>(`/notifications?user_id=${userId}`),
   markNotificationRead: (id: number) => request<any>(`/notifications/${id}/read`, { method: 'PATCH' }),

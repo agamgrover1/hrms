@@ -9,6 +9,7 @@ import Leave from './pages/Leave';
 import Payroll from './pages/Payroll';
 import Performance from './pages/Performance';
 import UserManagement from './pages/UserManagement';
+import Config from './pages/Config';
 import MyPortal from './pages/employee/MyPortal';
 
 function ProtectedRoute({ children, roles }: { children: React.ReactNode; roles?: string[] }) {
@@ -34,6 +35,7 @@ function AppRoutes() {
         <Route path="payroll" element={<ProtectedRoute roles={['admin', 'hr_manager']}><Payroll /></ProtectedRoute>} />
         <Route path="performance" element={<ProtectedRoute roles={['admin', 'hr_manager']}><Performance /></ProtectedRoute>} />
         <Route path="users" element={<ProtectedRoute roles={['admin', 'hr_manager']}><UserManagement /></ProtectedRoute>} />
+        <Route path="config" element={<ProtectedRoute roles={['admin', 'hr_manager']}><Config /></ProtectedRoute>} />
 
         {/* Employee route */}
         <Route path="my" element={<ProtectedRoute roles={['employee']}><MyPortal /></ProtectedRoute>} />

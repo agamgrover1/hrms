@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import { Search, Filter, Plus, Mail, Phone, MapPin, ChevronRight, X, User, Pencil, Trash2, Eye, EyeOff } from 'lucide-react';
 import { api } from '../services/api';
-import { departments } from '../data/mockData';
+// departments now loaded from API (Config → Departments)
 
 const avatarColors = [
   'bg-primary-100 text-primary-600',
@@ -265,10 +265,12 @@ const emptyForm = {
   role: 'employee',
 };
 
-function AddEmployeeModal({ onClose, onSaved, existingEmployees }: {
+function AddEmployeeModal({ onClose, onSaved, existingEmployees, departments = [], designations = [] }: {
   onClose: () => void;
   onSaved: (emp: any) => void;
   existingEmployees: any[];
+  departments?: string[];
+  designations?: string[];
 }) {
   const nextCode = (() => {
     const nums = existingEmployees
@@ -379,7 +381,8 @@ function AddEmployeeModal({ onClose, onSaved, existingEmployees }: {
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
             <div>
               <label className={labelCls}>Designation / Job Title <span className="text-red-400">*</span></label>
-              <input type="text" value={form.designation} onChange={e => set('designation', e.target.value)} placeholder="e.g. Software Engineer" className={inputCls} />
+              <input type="text" list="desig-list" value={form.designation} onChange={e => set('designation', e.target.value)} placeholder="e.g. Software Engineer" className={inputCls} />
+              {designations.length > 0 && <datalist id="desig-list">{designations.map(d => <option key={d} value={d} />)}</datalist>}
             </div>
             <div>
               <label className={labelCls}>Reporting Manager</label>
@@ -496,11 +499,13 @@ function AddEmployeeModal({ onClose, onSaved, existingEmployees }: {
   );
 }
 
-function EditEmployeeModal({ emp, onClose, onSaved, allEmployees }: {
+function EditEmployeeModal({ emp, onClose, onSaved, allEmployees, departments = [], designations = [] }: {
   emp: any;
   onClose: () => void;
   onSaved: (updated: any) => void;
   allEmployees: any[];
+  departments?: string[];
+  designations?: string[];
 }) {
   const [form, setForm] = useState({
     name: emp.name || '',
@@ -713,6 +718,8 @@ function EditEmployeeModal({ emp, onClose, onSaved, allEmployees }: {
 
 export default function Employees() {
   const [employees, setEmployees] = useState<any[]>([]);
+  const [departments, setDepartments] = useState<string[]>([]);
+  const [designations, setDesignations] = useState<string[]>([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
   const [deptFilter, setDeptFilter] = useState('All');
@@ -738,6 +745,8 @@ export default function Employees() {
 
   useEffect(() => {
     api.getEmployees().then(setEmployees).finally(() => setLoading(false));
+    api.getConfigDepartments().then(d => setDepartments(d.map((x: any) => x.name))).catch(() => {});
+    api.getConfigDesignations().then(d => setDesignations(d.map((x: any) => x.name))).catch(() => {});
   }, []);
 
   const filtered = employees.filter(e => {
@@ -828,6 +837,8 @@ export default function Employees() {
         <EditEmployeeModal
           emp={editing}
           allEmployees={employees}
+          departments={departments}
+          designations={designations}
           onClose={() => setEditing(null)}
           onSaved={updated => {
             setEmployees(prev => prev.map(e => e.id === updated.id ? updated : e));
@@ -839,6 +850,8 @@ export default function Employees() {
       {showAdd && (
         <AddEmployeeModal
           existingEmployees={employees}
+          departments={departments}
+          designations={designations}
           onClose={() => setShowAdd(false)}
           onSaved={emp => {
             setEmployees(prev => [...prev, emp]);

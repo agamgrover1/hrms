@@ -960,6 +960,84 @@ app.delete('/api/notifications/:id', async (req, res) => {
   } catch (err) { res.status(500).json({ error: 'Server error' }); }
 });
 
+// ── Config (departments / designations / shifts) ──────────────────────────
+async function ensureConfigTables() {
+  await sql`CREATE TABLE IF NOT EXISTS config_departments (id TEXT PRIMARY KEY, name TEXT NOT NULL UNIQUE, created_at TIMESTAMPTZ DEFAULT NOW())`;
+  await sql`CREATE TABLE IF NOT EXISTS config_designations (id TEXT PRIMARY KEY, name TEXT NOT NULL UNIQUE, created_at TIMESTAMPTZ DEFAULT NOW())`;
+  await sql`CREATE TABLE IF NOT EXISTS config_shifts (id TEXT PRIMARY KEY, name TEXT NOT NULL UNIQUE, start_time TEXT NOT NULL, end_time TEXT NOT NULL, late_after TEXT NOT NULL, created_at TIMESTAMPTZ DEFAULT NOW())`;
+  const depts = ['Engineering','Product','Design','HR','Sales','Finance','Marketing','Operations','Legal','Customer Support'];
+  for (const d of depts) {
+    await sql`INSERT INTO config_departments (id,name) VALUES (${d.toLowerCase().replace(/\s+/g,'-')},${d}) ON CONFLICT (id) DO NOTHING`;
+  }
+  await sql`INSERT INTO config_shifts (id,name,start_time,end_time,late_after) VALUES ('day','Day Shift','09:00','18:00','09:30') ON CONFLICT (id) DO NOTHING`;
+  await sql`INSERT INTO config_shifts (id,name,start_time,end_time,late_after) VALUES ('night','Night Shift','18:30','03:30','18:45') ON CONFLICT (id) DO NOTHING`;
+}
+
+app.get('/api/config/departments', async (_req, res) => {
+  try { await ensureConfigTables(); res.json(await sql`SELECT * FROM config_departments ORDER BY name`); }
+  catch { res.status(500).json({ error: 'Server error' }); }
+});
+app.post('/api/config/departments', async (req, res) => {
+  try {
+    await ensureConfigTables();
+    const { name } = req.body;
+    if (!name?.trim()) return res.status(400).json({ error: 'Name required' });
+    const id = name.trim().toLowerCase().replace(/\s+/g,'-').replace(/[^a-z0-9-]/g,'');
+    const rows = await sql`INSERT INTO config_departments (id,name) VALUES (${id},${name.trim()}) ON CONFLICT (id) DO UPDATE SET name=EXCLUDED.name RETURNING *`;
+    res.json(rows[0]);
+  } catch (e: any) { res.status(e.message?.includes('unique') ? 409 : 500).json({ error: e.message }); }
+});
+app.delete('/api/config/departments/:id', async (req, res) => {
+  try { await sql`DELETE FROM config_departments WHERE id=${req.params.id}`; res.json({ success: true }); }
+  catch { res.status(500).json({ error: 'Server error' }); }
+});
+
+app.get('/api/config/designations', async (_req, res) => {
+  try { await ensureConfigTables(); res.json(await sql`SELECT * FROM config_designations ORDER BY name`); }
+  catch { res.status(500).json({ error: 'Server error' }); }
+});
+app.post('/api/config/designations', async (req, res) => {
+  try {
+    await ensureConfigTables();
+    const { name } = req.body;
+    if (!name?.trim()) return res.status(400).json({ error: 'Name required' });
+    const id = name.trim().toLowerCase().replace(/\s+/g,'-').replace(/[^a-z0-9-]/g,'') + '-' + Date.now().toString(36);
+    const rows = await sql`INSERT INTO config_designations (id,name) VALUES (${id},${name.trim()}) RETURNING *`;
+    res.json(rows[0]);
+  } catch (e: any) { res.status(500).json({ error: e.message }); }
+});
+app.delete('/api/config/designations/:id', async (req, res) => {
+  try { await sql`DELETE FROM config_designations WHERE id=${req.params.id}`; res.json({ success: true }); }
+  catch { res.status(500).json({ error: 'Server error' }); }
+});
+
+app.get('/api/config/shifts', async (_req, res) => {
+  try { await ensureConfigTables(); res.json(await sql`SELECT * FROM config_shifts ORDER BY start_time`); }
+  catch { res.status(500).json({ error: 'Server error' }); }
+});
+app.post('/api/config/shifts', async (req, res) => {
+  try {
+    await ensureConfigTables();
+    const { name, start_time, end_time, late_after } = req.body;
+    if (!name?.trim() || !start_time || !end_time || !late_after) return res.status(400).json({ error: 'All fields required' });
+    const id = name.trim().toLowerCase().replace(/\s+/g,'-').replace(/[^a-z0-9-]/g,'');
+    const rows = await sql`INSERT INTO config_shifts (id,name,start_time,end_time,late_after) VALUES (${id},${name.trim()},${start_time},${end_time},${late_after}) RETURNING *`;
+    res.json(rows[0]);
+  } catch (e: any) { res.status(500).json({ error: e.message }); }
+});
+app.put('/api/config/shifts/:id', async (req, res) => {
+  try {
+    const { name, start_time, end_time, late_after } = req.body;
+    const rows = await sql`UPDATE config_shifts SET name=${name},start_time=${start_time},end_time=${end_time},late_after=${late_after} WHERE id=${req.params.id} RETURNING *`;
+    if (!rows.length) return res.status(404).json({ error: 'Not found' });
+    res.json(rows[0]);
+  } catch { res.status(500).json({ error: 'Server error' }); }
+});
+app.delete('/api/config/shifts/:id', async (req, res) => {
+  try { await sql`DELETE FROM config_shifts WHERE id=${req.params.id}`; res.json({ success: true }); }
+  catch { res.status(500).json({ error: 'Server error' }); }
+});
+
 // ── Users ─────────────────────────────────────────────────────────────────
 app.get('/api/users', async (_req, res) => {
   try {
