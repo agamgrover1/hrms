@@ -623,7 +623,7 @@ export default function Performance() {
   const yearOptions = Array.from({ length: 4 }, (_, i) => currentYear - i);
 
   return (
-    <div className="space-y-6">
+    <><div className="space-y-6">
         {/* ── Page view tabs ── */}
         {isHROrAdmin && (
           <div className="flex gap-1 bg-white rounded-xl p-1 border border-gray-100 shadow-sm w-fit">
@@ -1036,6 +1036,6 @@ export default function Performance() {
           onClose={() => setEditingGoal(null)}
         />
       )}
-    </div>
+    </>
   );
 }
