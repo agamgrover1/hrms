@@ -43,6 +43,27 @@ const router = Router();
   } catch (e) { console.error('[attendance migration]', e); }
 })();
 
+// ── Date normalisation ───────────────────────────────────────────────────────
+// Neon returns DATE columns as UTC timestamps ("2026-04-09T18:30:00.000Z")
+// representing IST midnight. Adding +5:30 converts back to the correct IST date.
+const IST_OFFSET_MS = 5.5 * 60 * 60 * 1000;
+function neonDateToStr(d: string): string {
+  if (!d) return '';
+  if (!d.includes('T')) return d.slice(0, 10);
+  return new Date(new Date(d).getTime() + IST_OFFSET_MS).toISOString().slice(0, 10);
+}
+function normDate(row: any): any {
+  if (!row) return row;
+  const fix = (v: any) => {
+    if (!v) return v;
+    // Neon may return DATE as a Date object OR a "YYYY-MM-DDTHH:MM:SS.sssZ" string
+    const s: string = v instanceof Date ? v.toISOString() : String(v);
+    if (!s.includes('T')) return s.slice(0, 10);   // already "YYYY-MM-DD"
+    return neonDateToStr(s);                         // convert IST-offset UTC to correct date
+  };
+  return { ...row, date: fix(row.date) };
+}
+
 // ── eTimeOffice helpers ──────────────────────────────────────────────────────
 
 // eTimeOffice status codes → our attendance status
@@ -233,7 +254,7 @@ router.get('/', async (req, res) => {
     } else {
       rows = await sql`SELECT * FROM attendance_records ORDER BY date DESC, employee_id`;
     }
-    res.json(rows);
+    res.json((rows as any[]).map(normDate));
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'Server error' });

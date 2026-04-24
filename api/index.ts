@@ -182,6 +182,17 @@ app.delete('/api/employees/:id', async (req, res) => {
   } catch (err) { res.status(500).json({ error: 'Server error' }); }
 });
 
+function normDateV(row: any): any {
+  if (!row) return row;
+  const fix = (v: any) => {
+    if (!v) return v;
+    const s: string = v instanceof Date ? v.toISOString() : String(v);
+    if (!s.includes('T')) return s.slice(0, 10);
+    return neonDateToStrV(s);
+  };
+  return { ...row, date: fix(row.date), from_date: fix(row.from_date), to_date: fix(row.to_date) };
+}
+
 // ── Attendance ────────────────────────────────────────────────────────────
 app.get('/api/attendance', async (req, res) => {
   try {
@@ -194,7 +205,7 @@ app.get('/api/attendance', async (req, res) => {
     } else {
       rows = await sql`SELECT * FROM attendance_records ORDER BY date DESC, employee_id`;
     }
-    res.json(rows);
+    res.json((rows as any[]).map(normDateV));
   } catch (err) { res.status(500).json({ error: 'Server error' }); }
 });
 
@@ -523,7 +534,7 @@ app.get('/api/leave/requests', async (req, res) => {
     } else {
       rows = await sql`SELECT * FROM leave_requests ORDER BY applied_on DESC`;
     }
-    res.json(rows);
+    res.json((rows as any[]).map(normDateV));
   } catch (err) { res.status(500).json({ error: 'Server error' }); }
 });
 

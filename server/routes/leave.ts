@@ -93,6 +93,17 @@ function neonDateToStr(d: string): string {
   return new Date(new Date(d).getTime() + IST_OFFSET_MS).toISOString().slice(0, 10);
 }
 
+function normDate(row: any): any {
+  if (!row) return row;
+  const fix = (v: any) => {
+    if (!v) return v;
+    const s: string = v instanceof Date ? v.toISOString() : String(v);
+    if (!s.includes('T')) return s.slice(0, 10);
+    return neonDateToStr(s);
+  };
+  return { ...row, date: fix(row.date), from_date: fix(row.from_date), to_date: fix(row.to_date) };
+}
+
 function nextDay(dateStr: string): string {
   const d = new Date(dateStr + 'T12:00:00Z');
   d.setUTCDate(d.getUTCDate() + 1);
@@ -186,7 +197,7 @@ router.get('/requests', async (req, res) => {
     } else {
       rows = await sql`SELECT * FROM leave_requests ORDER BY applied_on DESC`;
     }
-    res.json(rows);
+    res.json((rows as any[]).map(normDate));
   } catch (err) {
     res.status(500).json({ error: 'Server error' });
   }
