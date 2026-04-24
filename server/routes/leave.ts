@@ -286,8 +286,8 @@ router.patch('/requests/:id/manager-approve', async (req, res) => {
         const cost = leave.type === 'half_day' ? 2 : 1;
         await sql`UPDATE leave_balances SET probation_short_used = GREATEST(0, probation_short_used - ${cost}) WHERE employee_id=${leave.employee_id}`.catch(() => {});
       }
-      const from = new Date(leave.from_date).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' });
-      const to   = new Date(leave.to_date).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' });
+      const from = new Date(neonDateToStr(leave.from_date) + 'T12:00:00Z').toLocaleDateString('en-IN', { day: 'numeric', month: 'short' });
+      const to   = new Date(neonDateToStr(leave.to_date)   + 'T12:00:00Z').toLocaleDateString('en-IN', { day: 'numeric', month: 'short' });
       notifyEmployeeUser(leave.employee_id, 'leave_rejected', 'Leave Rejected by Manager',
         `Your ${leave.type.replace('_',' ')} leave (${from} – ${to}) was rejected by your manager.`);
       return res.json(leave);
@@ -329,11 +329,14 @@ router.patch('/requests/:id', async (req, res) => {
       await deductBalance(leave.employee_id, leave.type, leave.days);
       await markLeaveAttendance(leave.employee_id, leave.from_date, leave.to_date, leave.type);
     } else {
-      // Rejected — restore probation quota if applicable
-      const empRows = await sql`SELECT join_date FROM employees WHERE id=${leave.employee_id}`;
-      if (isOnProbation((empRows[0] as any)?.join_date)) {
-        const cost = leave.type === 'half_day' ? 2 : 1;
-        await sql`UPDATE leave_balances SET probation_short_used = GREATEST(0, probation_short_used - ${cost}) WHERE employee_id=${leave.employee_id}`.catch(() => {});
+      // Rejected — restore probation quota only if it wasn't already restored by a manager rejection
+      // (manager rejection sets status='rejected'; HR rejecting an already-rejected leave must not double-restore)
+      if (leave.manager_status !== 'rejected') {
+        const empRows = await sql`SELECT join_date FROM employees WHERE id=${leave.employee_id}`;
+        if (isOnProbation((empRows[0] as any)?.join_date)) {
+          const cost = leave.type === 'half_day' ? 2 : 1;
+          await sql`UPDATE leave_balances SET probation_short_used = GREATEST(0, probation_short_used - ${cost}) WHERE employee_id=${leave.employee_id}`.catch(() => {});
+        }
       }
     }
     const from = new Date(leave.from_date).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' });

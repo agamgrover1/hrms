@@ -287,12 +287,14 @@ router.post('/clock-out', async (req, res) => {
     const { employee_id } = req.body;
     const today = new Date().toISOString().split('T')[0];
     const time = new Date().toTimeString().slice(0, 5);
+    // Only update if check_in exists — prevents NULL total_hours
     const rows = await sql`
       UPDATE attendance_records SET check_out = ${time},
         total_hours = ROUND(EXTRACT(EPOCH FROM (${time}::time - check_in::time)) / 3600, 1)
-      WHERE employee_id = ${employee_id} AND date = ${today}
+      WHERE employee_id = ${employee_id} AND date = ${today} AND check_in IS NOT NULL
       RETURNING *
     `;
+    if (!rows.length) return res.status(400).json({ error: 'No clock-in record found for today' });
     res.json(rows[0]);
   } catch (err) {
     res.status(500).json({ error: 'Server error' });

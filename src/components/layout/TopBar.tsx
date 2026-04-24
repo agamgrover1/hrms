@@ -15,6 +15,8 @@ const TYPE_CONFIG: Record<string, { icon: any; color: string; bg: string }> = {
   appraisal_submitted:    { icon: FileText,    color: '#7c3aed', bg: '#f5f3ff' },
   appraisal_reviewed:     { icon: Award,       color: '#EE2770', bg: '#fff0f5' },
   self_assessment_updated:{ icon: Target,      color: '#0891b2', bg: '#f0f9ff' },
+  info:                   { icon: CheckCircle, color: '#15803d', bg: '#f0fdf4' },
+  review_update:          { icon: TrendingUp,  color: '#2563eb', bg: '#eff6ff' },
 };
 
 function timeAgo(dateStr: string) {

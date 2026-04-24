@@ -109,7 +109,7 @@ function ApplyLeaveModal({ onClose, onSubmit, balance }: { onClose: () => void; 
   const isSingleDay = form.type === 'half_day' || form.type === 'short_leave';
 
   const handleSubmit = () => {
-    if (!form.from || !form.reason) return;
+    if (!form.from || !form.reason?.trim()) return;
     const days = isSingleDay ? 1 : Math.max(1, Math.ceil((new Date(form.to).getTime() - new Date(form.from).getTime()) / 86400000) + 1);
     onSubmit({ ...form, days, from_date: form.from, to_date: isSingleDay ? form.from : form.to });
     onClose();

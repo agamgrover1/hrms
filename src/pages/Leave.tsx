@@ -161,7 +161,7 @@ function RejectReasonModal({
 function ApplyModal({ onClose, onSubmit }: { onClose: () => void; onSubmit: (data: any) => void }) {
   const [form, setForm] = useState({ type: 'full_day', from: '', to: '', reason: '' });
   const handleSubmit = () => {
-    if (!form.from || !form.to || !form.reason) return;
+    if (!form.from || !form.to || !form.reason?.trim()) return;
     const isSingleDay = form.type === 'half_day' || form.type === 'short_leave';
     const days = isSingleDay ? 1 : Math.max(1, Math.ceil((new Date(form.to).getTime() - new Date(form.from).getTime()) / 86400000) + 1);
     onSubmit({ ...form, days, from_date: form.from, to_date: form.to });

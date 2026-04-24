@@ -37,7 +37,15 @@ router.post('/', async (req, res) => {
       VALUES (${id}, ${name}, ${email}, ${phone}, ${department}, ${designation}, ${employee_id}, ${join_date}, ${location}, ${manager ?? null}, ${reporting_manager_id ?? null}, ${status ?? 'active'}, ${avatar}, ${salary}, ${ctc}, ${biometric_id ?? null}, ${shift ?? 'day'})
       RETURNING *
     `;
-    const emp = rows[0];
+    const emp = rows[0] as any;
+    // Initialise leave balance row so the employee can apply leave immediately
+    await sql`
+      INSERT INTO leave_balances (employee_id, full_day, short_leave, casual, sick, earned,
+        last_credited_month, last_credited_year, probation_short_used)
+      VALUES (${emp.id}, 0, 2, 10, 7, 15,
+        ${new Date().getMonth() + 1}, ${new Date().getFullYear()}, 0)
+      ON CONFLICT (employee_id) DO NOTHING
+    `.catch(() => {});
     // Also create a portal login if password was provided
     if (password) {
       const existingUser = await sql`SELECT id FROM app_users WHERE LOWER(email)=LOWER(${email})`;
