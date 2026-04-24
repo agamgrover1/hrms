@@ -383,21 +383,6 @@ app.post('/api/attendance/biometric-sync', async (req, res) => {
   }
 });
 
-app.post('/api/attendance/biometric-sync/rollback', async (_req, res) => {
-  try {
-    const logs = await sql`SELECT * FROM attendance_sync_log WHERE is_rolled_back=FALSE AND status='success' ORDER BY synced_at DESC LIMIT 1` as any[];
-    if (!logs.length) return res.status(404).json({ error: 'No sync to rollback' });
-    const { sync_id } = logs[0];
-    const snaps = await sql`SELECT * FROM attendance_sync_snapshot WHERE sync_id=${sync_id}` as any[];
-    for (const s of snaps) {
-      if (!s.had_record) { await sql`DELETE FROM attendance_records WHERE employee_id=${s.employee_id} AND date=${s.date} AND biometric_sync_id=${sync_id}`; }
-      else { await sql`UPDATE attendance_records SET check_in=${s.check_in_before??null},check_out=${s.check_out_before??null},status=${s.status_before},total_hours=${s.total_hours_before??0},source='manual',biometric_sync_id=NULL WHERE employee_id=${s.employee_id} AND date=${s.date}`; }
-    }
-    await sql`UPDATE attendance_sync_log SET is_rolled_back=TRUE,rolled_back_at=NOW(),status='rolled_back' WHERE sync_id=${sync_id}`;
-    res.json({ success: true, sync_id, records_restored: snaps.length });
-  } catch (err: any) { res.status(500).json({ error: err.message ?? 'Rollback failed' }); }
-});
-
 // ── Leave helpers ─────────────────────────────────────────────────────────
 function isOnProbation(joinDate: string | null, probationEndDate?: string | null): boolean {
   if (!joinDate) return false;

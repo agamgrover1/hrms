@@ -366,48 +366,4 @@ router.post('/biometric-sync', async (req, res) => {
   }
 });
 
-router.post('/biometric-sync/rollback', async (_req, res) => {
-  try {
-    const logs = await sql`
-      SELECT * FROM attendance_sync_log
-      WHERE is_rolled_back = FALSE AND status = 'success'
-      ORDER BY synced_at DESC LIMIT 1
-    ` as any[];
-
-    if (!logs.length) return res.status(404).json({ error: 'No sync available to rollback' });
-    const { sync_id } = logs[0];
-
-    const snapshots = await sql`
-      SELECT * FROM attendance_sync_snapshot WHERE sync_id = ${sync_id}
-    ` as any[];
-
-    for (const snap of snapshots) {
-      if (!snap.had_record) {
-        await sql`DELETE FROM attendance_records WHERE employee_id = ${snap.employee_id} AND date = ${snap.date} AND biometric_sync_id = ${sync_id}`;
-      } else {
-        await sql`
-          UPDATE attendance_records SET
-            check_in          = ${snap.check_in_before ?? null},
-            check_out         = ${snap.check_out_before ?? null},
-            status            = ${snap.status_before},
-            total_hours       = ${snap.total_hours_before ?? 0},
-            source            = 'manual',
-            biometric_sync_id = NULL
-          WHERE employee_id = ${snap.employee_id} AND date = ${snap.date}
-        `;
-      }
-    }
-
-    await sql`
-      UPDATE attendance_sync_log SET is_rolled_back = TRUE, rolled_back_at = NOW(), status = 'rolled_back'
-      WHERE sync_id = ${sync_id}
-    `;
-
-    res.json({ success: true, sync_id, records_restored: snapshots.length });
-  } catch (err: any) {
-    console.error('[biometric rollback]', err);
-    res.status(500).json({ error: err.message ?? 'Rollback failed' });
-  }
-});
-
 export default router;

@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
 import { Clock, CheckCircle, XCircle, AlertCircle, ChevronLeft, ChevronRight, CalendarDays, X,
-  Fingerprint, RefreshCw, RotateCcw, ChevronDown, ChevronUp, Activity, Calendar } from 'lucide-react';
+  Fingerprint, RefreshCw, ChevronDown, ChevronUp, Activity, Calendar } from 'lucide-react';
 import { api } from '../services/api';
 import { useAuth } from '../context/AuthContext';
 
@@ -217,10 +217,8 @@ export default function Attendance() {
   // Biometric sync state
   const [syncHistory, setSyncHistory] = useState<any[]>([]);
   const [syncing, setSyncing] = useState(false);
-  const [rollingBack, setRollingBack] = useState(false);
   const [syncError, setSyncError] = useState('');
   const [syncSuccess, setSyncSuccess] = useState('');
-  const [showRollbackConfirm, setShowRollbackConfirm] = useState(false);
   const [showSyncHistory, setShowSyncHistory] = useState(false);
 
   const calendarDays = generateCalendarDays(viewYear, viewMonth);
@@ -287,22 +285,6 @@ export default function Attendance() {
     }
   };
 
-  const handleRollback = async () => {
-    setShowRollbackConfirm(false);
-    setRollingBack(true);
-    setSyncError('');
-    setSyncSuccess('');
-    try {
-      const result = await api.rollbackLastSync();
-      setSyncSuccess(`Rollback complete — ${result.records_restored} records restored`);
-      fetchSyncHistory();
-      fetchRecords();
-    } catch (err: any) {
-      setSyncError(err.message ?? 'Rollback failed');
-    } finally {
-      setRollingBack(false);
-    }
-  };
 
   const getDayRecord = (day: number) => {
     const dateStr = `${viewYear}-${String(viewMonth + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
@@ -378,8 +360,6 @@ export default function Attendance() {
       {/* ── Biometric Sync Panel (HR/Admin only) ─────────────────────────── */}
       {isHROrAdmin && (() => {
         const lastSync = syncHistory.find(s => s.status !== 'failed');
-        const lastSuccess = syncHistory.find(s => s.status === 'success');
-        const canRollback = !!lastSuccess;
 
         function fmtAgo(iso: string) {
           const diff = Date.now() - new Date(iso).getTime();
@@ -421,18 +401,6 @@ export default function Attendance() {
               </div>
 
               <div className="flex items-center gap-2 flex-shrink-0">
-                {/* Rollback button */}
-                {canRollback && (
-                  <button
-                    onClick={() => setShowRollbackConfirm(true)}
-                    disabled={rollingBack}
-                    className="flex items-center gap-1.5 px-3 py-2 text-xs font-semibold rounded-xl border transition-all disabled:opacity-50"
-                    style={{ color: '#d97706', borderColor: '#fde68a', background: '#fffbeb' }}
-                  >
-                    <RotateCcw size={13} className={rollingBack ? 'animate-spin' : ''} />
-                    {rollingBack ? 'Rolling back…' : 'Rollback Last Sync'}
-                  </button>
-                )}
                 {/* Sync This Month button */}
                 <button
                   onClick={() => handleSyncNow(true)}
@@ -468,27 +436,6 @@ export default function Attendance() {
             {(syncError || syncSuccess) && (
               <div className={`mx-5 mb-4 px-4 py-2.5 rounded-xl text-xs font-semibold ${syncError ? 'bg-red-50 text-red-600 border border-red-100' : 'bg-green-50 text-green-700 border border-green-100'}`}>
                 {syncError || syncSuccess}
-              </div>
-            )}
-
-            {/* Rollback confirmation */}
-            {showRollbackConfirm && (
-              <div className="mx-5 mb-4 p-4 rounded-xl border border-amber-200 bg-amber-50">
-                <p className="text-sm font-semibold text-amber-800 mb-1">Confirm Rollback</p>
-                <p className="text-xs text-amber-700 mb-3">
-                  This will revert all attendance records changed by the last sync back to their previous values. This cannot be undone.
-                </p>
-                <div className="flex gap-2">
-                  <button onClick={() => setShowRollbackConfirm(false)}
-                    className="flex-1 py-1.5 text-xs font-semibold border border-gray-200 rounded-lg hover:bg-white">
-                    Cancel
-                  </button>
-                  <button onClick={handleRollback}
-                    className="flex-1 py-1.5 text-xs font-semibold text-white rounded-lg"
-                    style={{ background: '#d97706' }}>
-                    Yes, Rollback
-                  </button>
-                </div>
               </div>
             )}
 

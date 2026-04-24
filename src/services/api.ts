@@ -38,8 +38,6 @@ export const api = {
     request<any>('/attendance/mark', { method: 'POST', body: JSON.stringify(data) }),
   syncBiometric: (triggeredBy: string, fromDate?: string, toDate?: string) =>
     request<any>('/attendance/biometric-sync', { method: 'POST', body: JSON.stringify({ triggered_by: triggeredBy, from_date: fromDate, to_date: toDate }) }),
-  rollbackLastSync: () =>
-    request<any>('/attendance/biometric-sync/rollback', { method: 'POST' }),
   getBiometricSyncHistory: () =>
     request<any[]>('/attendance/biometric-sync/history'),
 
