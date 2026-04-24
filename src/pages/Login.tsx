@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Building2, Eye, EyeOff, Lock, Mail, AlertCircle } from 'lucide-react';
+import { Eye, EyeOff, Lock, Mail, AlertCircle } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 
 const demoCredentials = [
@@ -52,13 +52,10 @@ export default function Login() {
 
         {/* Logo */}
         <div className="relative flex items-center gap-3">
-          <div className="w-11 h-11 rounded-xl flex items-center justify-center shadow-lg"
-            style={{ background: '#EE2770' }}>
-            <Building2 size={22} className="text-white" />
-          </div>
+          <img src="/favicon.svg" alt="Digital Leap" className="w-12 h-12 drop-shadow-lg" />
           <div>
             <p className="text-white font-bold text-lg leading-tight">Digital Leap</p>
-            <p className="text-xs font-semibold tracking-widest uppercase" style={{ color: '#EE2770' }}>HRMS</p>
+            <p className="text-xs font-semibold tracking-widest uppercase" style={{ color: '#EE2770' }}>Marketing Solutions · HRMS</p>
           </div>
         </div>
 
@@ -99,13 +96,10 @@ export default function Login() {
 
           {/* Mobile logo */}
           <div className="lg:hidden flex items-center gap-2.5 mb-10">
-            <div className="w-9 h-9 rounded-xl flex items-center justify-center"
-              style={{ background: '#EE2770' }}>
-              <Building2 size={18} className="text-white" />
-            </div>
+            <img src="/favicon.svg" alt="Digital Leap" className="w-9 h-9" />
             <div>
               <p className="font-bold text-sm leading-tight" style={{ color: '#192250' }}>Digital Leap</p>
-              <p className="text-xs font-semibold" style={{ color: '#EE2770' }}>HRMS</p>
+              <p className="text-xs font-semibold" style={{ color: '#EE2770' }}>Marketing Solutions</p>
             </div>
           </div>
 

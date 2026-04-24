@@ -1,7 +1,7 @@
 import { NavLink } from 'react-router-dom';
 import {
   LayoutDashboard, Users, Clock, Calendar, DollarSign, Target,
-  ChevronLeft, ChevronRight, Building2, UserCog, User, Settings
+  ChevronLeft, ChevronRight, UserCog, User, Settings
 } from 'lucide-react';
 import { useState } from 'react';
 import { useAuth } from '../../context/AuthContext';
@@ -31,16 +31,14 @@ export default function Sidebar() {
       style={{ background: 'linear-gradient(180deg, #192250 0%, #141c43 100%)' }}
     >
       {/* Logo */}
-      <div className={`flex items-center gap-3 px-4 py-5 ${collapsed ? 'justify-center' : ''}`}
+      <div className={`flex items-center gap-2 px-4 py-4 ${collapsed ? 'justify-center' : ''}`}
         style={{ borderBottom: '1px solid rgba(255,255,255,0.08)' }}>
-        <div className="w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0"
-          style={{ background: '#EE2770' }}>
-          <Building2 size={16} className="text-white" />
-        </div>
+        {/* Favicon icon always visible */}
+        <img src="/favicon.svg" alt="Digital Leap" className="w-8 h-8 flex-shrink-0" />
         {!collapsed && (
-          <div className="leading-tight">
-            <p className="font-bold text-white text-sm tracking-wide">Digital Leap</p>
-            <p className="text-xs font-semibold" style={{ color: '#EE2770' }}>HRMS</p>
+          <div className="leading-tight min-w-0">
+            <p className="font-bold text-white text-sm tracking-wide whitespace-nowrap">Digital Leap</p>
+            <p className="text-[10px] font-semibold whitespace-nowrap" style={{ color: '#EE2770' }}>Marketing Solutions</p>
           </div>
         )}
       </div>
