@@ -300,9 +300,8 @@ function parseEtWorkTimeV(wt: string|null): number {
 }
 
 async function runBiometricSyncV(trigger: string, triggeredBy?: string, fromDate?: string, toDate?: string) {
-  const apiUrl = process.env.BIOMETRIC_API_URL;
-  const apiKey = process.env.BIOMETRIC_API_KEY;
-  if (!apiUrl) throw new Error('BIOMETRIC_API_URL is not configured');
+  const apiUrl = process.env.BIOMETRIC_API_URL ?? 'https://api.etimeoffice.com/api/DownloadInOutPunchData';
+  const apiKey = process.env.BIOMETRIC_API_KEY ?? 'ZGlnaXRhbF9sZWFwOmRpZ2l0YWxsZWFwOkQhZyF0YWxAMSo6dHJ1ZQ==';
   const today = new Date().toISOString().split('T')[0];
   const from  = fromDate ?? today;
   const to    = toDate   ?? from;

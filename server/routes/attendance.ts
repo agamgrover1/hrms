@@ -122,9 +122,9 @@ export async function runBiometricSync(
   fromDate?: string,  // YYYY-MM-DD, defaults to today
   toDate?: string     // YYYY-MM-DD, defaults to fromDate (single day)
 ): Promise<{ sync_id: string; records_updated: number; records_created: number; synced_at: string; date_range: string }> {
-  const apiUrl = process.env.BIOMETRIC_API_URL;
-  const apiKey = process.env.BIOMETRIC_API_KEY;
-  if (!apiUrl) throw new Error('BIOMETRIC_API_URL is not configured in .env');
+  // eTimeOffice endpoint — hardcoded as fallback so it works even if env var missing
+  const apiUrl = process.env.BIOMETRIC_API_URL ?? 'https://api.etimeoffice.com/api/DownloadInOutPunchData';
+  const apiKey = process.env.BIOMETRIC_API_KEY ?? 'ZGlnaXRhbF9sZWFwOmRpZ2l0YWxsZWFwOkQhZyF0YWxAMSo6dHJ1ZQ==';
 
   const today = new Date().toISOString().split('T')[0];
   const from  = fromDate ?? today;
