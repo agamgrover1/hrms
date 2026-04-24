@@ -31,15 +31,12 @@ export default function Sidebar() {
       style={{ background: 'linear-gradient(180deg, #192250 0%, #141c43 100%)' }}
     >
       {/* Logo */}
-      <div className={`flex items-center gap-2 px-4 py-4 ${collapsed ? 'justify-center' : ''}`}
+      <div className={`flex items-center px-3 py-3 ${collapsed ? 'justify-center' : ''}`}
         style={{ borderBottom: '1px solid rgba(255,255,255,0.08)' }}>
-        {/* Favicon icon always visible */}
-        <img src="/favicon.svg" alt="Digital Leap" className="w-8 h-8 flex-shrink-0" />
-        {!collapsed && (
-          <div className="leading-tight min-w-0">
-            <p className="font-bold text-white text-sm tracking-wide whitespace-nowrap">Digital Leap</p>
-            <p className="text-[10px] font-semibold whitespace-nowrap" style={{ color: '#EE2770' }}>Marketing Solutions</p>
-          </div>
+        {collapsed ? (
+          <img src="/favicon.png" alt="Digital Leap" className="w-9 h-9 object-contain flex-shrink-0" />
+        ) : (
+          <img src="/logo.png" alt="Digital Leap Marketing Solutions" className="h-10 object-contain" style={{ maxWidth: '180px' }} />
         )}
       </div>
 

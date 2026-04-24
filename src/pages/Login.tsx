@@ -50,13 +50,9 @@ export default function Login() {
             style={{ border: '1px solid #fff' }} />
         </div>
 
-        {/* Logo */}
-        <div className="relative flex items-center gap-3">
-          <img src="/favicon.svg" alt="Digital Leap" className="w-12 h-12 drop-shadow-lg" />
-          <div>
-            <p className="text-white font-bold text-lg leading-tight">Digital Leap</p>
-            <p className="text-xs font-semibold tracking-widest uppercase" style={{ color: '#EE2770' }}>Marketing Solutions · HRMS</p>
-          </div>
+        {/* Logo — white pill so dark-text logo is visible on navy panel */}
+        <div className="relative inline-block px-5 py-3 rounded-2xl shadow-lg" style={{ background: 'rgba(255,255,255,0.95)' }}>
+          <img src="/logo.png" alt="Digital Leap Marketing Solutions" className="h-12 object-contain" />
         </div>
 
         {/* Headline */}
@@ -95,12 +91,8 @@ export default function Login() {
         <div className="w-full max-w-md">
 
           {/* Mobile logo */}
-          <div className="lg:hidden flex items-center gap-2.5 mb-10">
-            <img src="/favicon.svg" alt="Digital Leap" className="w-9 h-9" />
-            <div>
-              <p className="font-bold text-sm leading-tight" style={{ color: '#192250' }}>Digital Leap</p>
-              <p className="text-xs font-semibold" style={{ color: '#EE2770' }}>Marketing Solutions</p>
-            </div>
+          <div className="lg:hidden mb-10">
+            <img src="/logo.png" alt="Digital Leap Marketing Solutions" className="h-10 object-contain" />
           </div>
 
           <h2 className="text-2xl font-bold mb-1" style={{ color: '#192250' }}>Welcome back</h2>
