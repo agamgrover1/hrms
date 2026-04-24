@@ -11,6 +11,7 @@ import Performance from './pages/Performance';
 import UserManagement from './pages/UserManagement';
 import Config from './pages/Config';
 import MyPortal from './pages/employee/MyPortal';
+import MyTeam from './pages/employee/MyTeam';
 
 function ProtectedRoute({ children, roles }: { children: React.ReactNode; roles?: string[] }) {
   const { user } = useAuth();
@@ -37,8 +38,9 @@ function AppRoutes() {
         <Route path="users" element={<ProtectedRoute roles={['admin', 'hr_manager']}><UserManagement /></ProtectedRoute>} />
         <Route path="config" element={<ProtectedRoute roles={['admin', 'hr_manager']}><Config /></ProtectedRoute>} />
 
-        {/* Employee route */}
+        {/* Employee routes */}
         <Route path="my" element={<ProtectedRoute roles={['employee']}><MyPortal /></ProtectedRoute>} />
+        <Route path="my-team" element={<ProtectedRoute roles={['employee']}><MyTeam /></ProtectedRoute>} />
       </Route>
 
       {/* Catch-all */}

@@ -12,6 +12,7 @@ const pageTitles: Record<string, string> = {
   '/users': 'User Management',
   '/config': 'Configuration',
   '/my': 'My Portal',
+  '/my-team': 'My Team',
 };
 
 export default function Layout() {
