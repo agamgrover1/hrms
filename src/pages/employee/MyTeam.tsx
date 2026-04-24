@@ -5,8 +5,18 @@ import { Users, Calendar, TrendingUp, CheckCircle, XCircle, AlertCircle,
 import { useAuth } from '../../context/AuthContext';
 import { useNavigate } from 'react-router-dom';
 import { api } from '../../services/api';
-import { SCORE_CATEGORIES, GOAL_STATUSES, GOAL_STATUS_CONFIG } from '../Performance';
+import { GOAL_STATUSES, GOAL_STATUS_CONFIG } from '../Performance';
 import type { GoalStatus } from '../Performance';
+
+const SCORE_CATEGORIES = [
+  { key: 'productivity',        label: 'Productivity' },
+  { key: 'quality',             label: 'Quality of Work' },
+  { key: 'teamwork',            label: 'Teamwork' },
+  { key: 'attendance_score',    label: 'Attendance' },
+  { key: 'initiative',          label: 'Initiative' },
+  { key: 'client_satisfaction', label: 'Client Satisfaction' },
+  { key: 'ai_usage',            label: 'AI Usage' },
+] as const;
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 function parseLocalDate(dateStr: string): Date {
