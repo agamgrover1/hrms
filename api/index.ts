@@ -69,6 +69,8 @@ async function runStartupMigrations() {
     await sql`ALTER TABLE leave_requests ADD COLUMN IF NOT EXISTS cancelled_by VARCHAR(200)`;
     await sql`ALTER TABLE leave_requests ADD COLUMN IF NOT EXISTS cancelled_at TIMESTAMPTZ`;
     await sql`ALTER TABLE leave_requests ADD COLUMN IF NOT EXISTS cancellation_reason TEXT`;
+    // Remove weekend (Sat/Sun) attendance records created by old syncs/leave marking
+    await sql`DELETE FROM attendance_records WHERE EXTRACT(DOW FROM date) IN (0, 6)`;
   } catch { /* non-fatal — columns may already exist */ }
 }
 
@@ -214,7 +216,7 @@ app.get('/api/attendance', async (req, res) => {
     } else {
       rows = await sql`SELECT * FROM attendance_records ORDER BY date DESC, employee_id`;
     }
-    res.json((rows as any[]).map(normDateV));
+    res.json((rows as any[]).map(normDateV).filter((r: any) => !isWeekendV(r.date)));
   } catch (err) { res.status(500).json({ error: 'Server error' }); }
 });
 

@@ -40,6 +40,12 @@ const router = Router();
         total_hours_before NUMERIC
       )
     `;
+    // One-time cleanup: remove any attendance records that fell on Sat (DOW=6) or Sun (DOW=0)
+    // These were created by old biometric syncs / leave marking before the weekend fix.
+    await sql`
+      DELETE FROM attendance_records
+      WHERE EXTRACT(DOW FROM date) IN (0, 6)
+    `.catch(() => {});
   } catch (e) { console.error('[attendance migration]', e); }
 })();
 
@@ -262,7 +268,9 @@ router.get('/', async (req, res) => {
     } else {
       rows = await sql`SELECT * FROM attendance_records ORDER BY date DESC, employee_id`;
     }
-    res.json((rows as any[]).map(normDate));
+    // Strip any weekend records before sending to client (safety net)
+    const filtered = (rows as any[]).map(normDate).filter(r => !isWeekend(r.date));
+    res.json(filtered);
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'Server error' });
