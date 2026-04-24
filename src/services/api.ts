@@ -87,11 +87,15 @@ export const api = {
     if (year) qs.set('year', String(year));
     return request<any[]>(`/performance/monthly?${qs}`);
   },
+  lockPerformanceReview: (id: string, lock: boolean, lockedBy?: string, requesterRole?: string) =>
+    request<any>(`/performance/monthly/${id}/lock`, { method: 'PATCH', body: JSON.stringify({ lock, locked_by: lockedBy, requester_role: requesterRole }) }),
+
   saveMonthlyPerformance: (data: {
     employee_id: string; reviewer_id?: string; reviewer_name?: string;
     month: number; year: number;
     productivity: number; quality: number; teamwork: number; attendance_score: number; initiative: number; client_satisfaction: number; ai_usage: number;
     overall_score: number; comments?: string; parameter_notes?: Record<string, string>;
+    requester_role?: string;
   }) => request<any>('/performance/monthly', { method: 'POST', body: JSON.stringify(data) }),
 
   // Performance notes (private)

@@ -5,7 +5,7 @@ import {
 import {
   Target, TrendingUp, Award, Calendar, Plus, X, Trash2,
   ChevronDown, MessageSquare, Edit3, CheckCircle, AlertCircle, Info,
-  FileText, ChevronRight, Circle, RefreshCw, Minus, Check
+  FileText, ChevronRight, Circle, RefreshCw, Minus, Check, Lock, Unlock
 } from 'lucide-react';
 import { api } from '../services/api';
 import { useAuth } from '../context/AuthContext';
@@ -197,6 +197,7 @@ function AddReviewModal({
         overall_score: overall,
         comments,
         parameter_notes: paramNotes,
+        requester_role: reviewer?.role,
       });
       onSave();
       onClose();
@@ -872,14 +873,62 @@ export default function Performance() {
                           <td className="px-3 py-3.5 text-xs text-gray-400">{record?.reviewer_name ?? '—'}</td>
                           {isHROrAdmin && (
                             <td className="px-5 py-3.5 text-right">
-                              {!isFuture && (
+                              {!isFuture && record && (
+                                <div className="flex items-center justify-end gap-1.5">
+                                  {/* Lock / unlock (HR & admin see lock; only admin sees unlock) */}
+                                  {!record.is_locked ? (
+                                    <button
+                                      onClick={async () => {
+                                        await api.lockPerformanceReview(record.id, true, user?.name, user?.role);
+                                        loadPerformance();
+                                      }}
+                                      className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs font-semibold border hover:bg-amber-50 transition-colors"
+                                      style={{ color: '#d97706', borderColor: '#fde68a' }}
+                                      title="Lock this review — prevents manager/employee edits"
+                                    >
+                                      <Lock size={11} /> Lock
+                                    </button>
+                                  ) : (
+                                    isAdmin && (
+                                      <button
+                                        onClick={async () => {
+                                          await api.lockPerformanceReview(record.id, false, undefined, user?.role);
+                                          loadPerformance();
+                                        }}
+                                        className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs font-semibold border hover:bg-green-50 transition-colors"
+                                        style={{ color: '#15803d', borderColor: '#bbf7d0' }}
+                                        title="Unlock this review (admin only)"
+                                      >
+                                        <Unlock size={11} /> Unlock
+                                      </button>
+                                    )
+                                  )}
+                                  {/* Edit — disabled when locked (unless admin) */}
+                                  {(!record.is_locked || isAdmin) && (
+                                    <button
+                                      onClick={() => setShowAddReview({ month: monthNum, existing: record })}
+                                      className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-semibold border hover:bg-gray-50 transition-colors"
+                                      style={{ color: '#192250', borderColor: '#e2e4ed' }}
+                                    >
+                                      <Edit3 size={11} /> Edit
+                                    </button>
+                                  )}
+                                  {/* Locked indicator */}
+                                  {record.is_locked && (
+                                    <span className="inline-flex items-center gap-1 text-xs font-semibold px-2 py-1 rounded-lg"
+                                      style={{ background: '#fef3c7', color: '#92400e' }}>
+                                      <Lock size={10} /> Locked
+                                    </span>
+                                  )}
+                                </div>
+                              )}
+                              {!isFuture && !record && (
                                 <button
                                   onClick={() => setShowAddReview({ month: monthNum, existing: record })}
                                   className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold border hover:bg-gray-50 transition-colors"
                                   style={{ color: '#192250', borderColor: '#e2e4ed' }}
                                 >
-                                  <Edit3 size={11} />
-                                  {record ? 'Edit' : 'Add'}
+                                  <Edit3 size={11} /> Add
                                 </button>
                               )}
                             </td>
@@ -1016,7 +1065,7 @@ export default function Performance() {
           month={showAddReview.month}
           year={selectedYear}
           existing={showAddReview.existing}
-          reviewer={{ id: user?.id, name: user?.name }}
+          reviewer={{ id: user?.id, name: user?.name, role: user?.role }}
           onSave={loadPerformance}
           onClose={() => setShowAddReview(null)}
         />
@@ -1024,7 +1073,7 @@ export default function Performance() {
       {showAddNote && selectedEmp && (
         <AddNoteModal
           employee={selectedEmp}
-          reviewer={{ id: user?.id, name: user?.name }}
+          reviewer={{ id: user?.id, name: user?.name, role: user?.role }}
           onSave={note => setNotes(n => [note, ...n])}
           onClose={() => setShowAddNote(false)}
         />

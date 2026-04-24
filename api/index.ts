@@ -773,13 +773,38 @@ app.get('/api/performance/monthly', async (req, res) => {
   } catch (err) { res.status(500).json({ error: 'Server error' }); }
 });
 
+// Lock / unlock a review (HR locks, only admin unlocks)
+app.patch('/api/performance/monthly/:id/lock', async (req, res) => {
+  try {
+    await sql`ALTER TABLE monthly_performance ADD COLUMN IF NOT EXISTS is_locked BOOLEAN DEFAULT FALSE`.catch(() => {});
+    await sql`ALTER TABLE monthly_performance ADD COLUMN IF NOT EXISTS locked_by TEXT`.catch(() => {});
+    await sql`ALTER TABLE monthly_performance ADD COLUMN IF NOT EXISTS locked_at TIMESTAMPTZ`.catch(() => {});
+    const { lock, locked_by, requester_role } = req.body;
+    if (!lock && requester_role !== 'admin') return res.status(403).json({ error: 'Only admins can unlock a review' });
+    const rows = await sql`
+      UPDATE monthly_performance SET
+        is_locked = ${lock ?? true},
+        locked_by = ${lock ? (locked_by ?? null) : null},
+        locked_at = ${lock ? new Date().toISOString() : null}
+      WHERE id = ${req.params.id} RETURNING *`;
+    if (!rows.length) return res.status(404).json({ error: 'Not found' });
+    res.json(rows[0]);
+  } catch (err) { res.status(500).json({ error: 'Server error' }); }
+});
+
 app.post('/api/performance/monthly', async (req, res) => {
   try {
-    const { employee_id, reviewer_id, reviewer_name, month, year, productivity, quality, teamwork, attendance_score, initiative, client_satisfaction, ai_usage, overall_score, comments, parameter_notes } = req.body;
+    const { employee_id, reviewer_id, reviewer_name, month, year, productivity, quality, teamwork, attendance_score, initiative, client_satisfaction, ai_usage, overall_score, comments, parameter_notes, requester_role } = req.body;
     const paramNotesJson = JSON.stringify(parameter_notes ?? {});
-    // Ensure ai_usage and parameter_notes columns exist (idempotent)
+    // Ensure columns exist (idempotent)
     await sql`ALTER TABLE monthly_performance ADD COLUMN IF NOT EXISTS ai_usage INTEGER DEFAULT 75`.catch(() => {});
     await sql`ALTER TABLE monthly_performance ADD COLUMN IF NOT EXISTS parameter_notes JSONB DEFAULT '{}'`.catch(() => {});
+    await sql`ALTER TABLE monthly_performance ADD COLUMN IF NOT EXISTS is_locked BOOLEAN DEFAULT FALSE`.catch(() => {});
+    // Block edits on locked reviews for non-admins
+    const existing = await sql`SELECT is_locked FROM monthly_performance WHERE employee_id=${employee_id} AND month=${month} AND year=${year}`;
+    if ((existing[0] as any)?.is_locked && requester_role !== 'admin') {
+      return res.status(403).json({ error: 'This review has been locked by HR and cannot be modified' });
+    };
     const rows = await sql`
       INSERT INTO monthly_performance
         (employee_id, reviewer_id, reviewer_name, month, year, productivity, quality, teamwork, attendance_score, initiative, client_satisfaction, ai_usage, overall_score, comments, parameter_notes, updated_at)

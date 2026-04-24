@@ -117,6 +117,7 @@ export default function MyTeam() {
     Object.fromEntries(SCORE_CATEGORIES.map(c => [c.key, 75]))
   );
   const [reviewComment, setReviewComment] = useState('');
+  const [paramNotes, setParamNotes] = useState<Record<string, string>>({});
   const [savingReview, setSavingReview] = useState(false);
   const [appraisals, setAppraisals] = useState<Record<string, any[]>>({});
 
@@ -182,6 +183,7 @@ export default function MyTeam() {
     setShowReview(member);
     setScores(Object.fromEntries(SCORE_CATEGORIES.map(c => [c.key, 75])));
     setReviewComment('');
+    setParamNotes({});
   };
 
   const handleSaveReview = async () => {
@@ -194,6 +196,8 @@ export default function MyTeam() {
         month: currentMonth, year: currentYear,
         ...Object.fromEntries(SCORE_CATEGORIES.map(c => [c.key, scores[c.key]])) as any,
         overall_score: overall, comments: reviewComment,
+        parameter_notes: paramNotes,
+        requester_role: user?.role,
       });
       api.getMonthlyPerformance(showReview.id, currentYear)
         .then(perf => setTeamPerf(prev => ({ ...prev, [showReview.id]: perf })));
@@ -537,8 +541,20 @@ export default function MyTeam() {
                 })()}
               </div>
               {SCORE_CATEGORIES.map(({ key, label }) => (
-                <ScoreSlider key={key} label={label} value={scores[key] ?? 75}
-                  onChange={v => setScores(p => ({ ...p, [key]: v }))} />
+                <div key={key} className="space-y-1.5">
+                  <ScoreSlider label={label} value={scores[key] ?? 75}
+                    onChange={v => setScores(p => ({ ...p, [key]: v }))} />
+                  <textarea
+                    value={paramNotes[key] ?? ''}
+                    onChange={e => setParamNotes(p => ({ ...p, [key]: e.target.value }))}
+                    rows={1}
+                    placeholder={`Note for ${label} (optional)…`}
+                    className="w-full border border-gray-200 rounded-lg px-2.5 py-1.5 text-xs resize-none focus:outline-none leading-relaxed"
+                    style={{ color: '#374151', borderColor: '#e2e4ed' }}
+                    onFocus={e => { e.target.style.borderColor = '#192250'; (e.target as HTMLTextAreaElement).rows = 2; }}
+                    onBlur={e => { e.target.style.borderColor = '#e2e4ed'; if (!e.target.value) (e.target as HTMLTextAreaElement).rows = 1; }}
+                  />
+                </div>
               ))}
               <div>
                 <label className="text-xs font-semibold text-gray-600 block mb-1.5">Comments (optional)</label>
