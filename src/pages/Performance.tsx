@@ -9,7 +9,6 @@ import {
 } from 'lucide-react';
 import { api } from '../services/api';
 import { useAuth } from '../context/AuthContext';
-import TopBar from '../components/layout/TopBar';
 
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 const CATEGORIES = [
@@ -624,10 +623,7 @@ export default function Performance() {
   const yearOptions = Array.from({ length: 4 }, (_, i) => currentYear - i);
 
   return (
-    <div className="flex-1 flex flex-col min-h-0 overflow-auto bg-gray-50">
-      <TopBar title="Performance Management" />
-
-      <div className="p-6 space-y-6">
+    <div className="p-6 space-y-6">
         {/* ── Page view tabs ── */}
         {isHROrAdmin && (
           <div className="flex gap-1 bg-white rounded-xl p-1 border border-gray-100 shadow-sm w-fit">

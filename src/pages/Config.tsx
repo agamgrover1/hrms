@@ -1,7 +1,6 @@
 import { useState, useEffect } from 'react';
 import { Settings, Plus, Trash2, Edit3, Check, X, Clock, Briefcase, Building2 } from 'lucide-react';
 import { api } from '../services/api';
-import TopBar from '../components/layout/TopBar';
 
 type Tab = 'departments' | 'designations' | 'shifts';
 
@@ -118,9 +117,7 @@ export default function Config() {
   ];
 
   return (
-    <div className="flex-1 flex flex-col min-h-0 overflow-auto bg-gray-50">
-      <TopBar title="Configuration" />
-      <div className="p-6 space-y-6">
+    <div className="space-y-6 p-6">
 
         {/* Tabs */}
         <div className="flex gap-1 bg-white rounded-xl p-1 border border-gray-100 shadow-sm w-fit">
@@ -331,7 +328,6 @@ export default function Config() {
             )}
           </div>
         )}
-      </div>
     </div>
   );
 }
