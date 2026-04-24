@@ -117,7 +117,7 @@ export default function Config() {
   ];
 
   return (
-    <div className="space-y-6 p-6">
+    <div className="space-y-6">
 
         {/* Tabs */}
         <div className="flex gap-1 bg-white rounded-xl p-1 border border-gray-100 shadow-sm w-fit">
