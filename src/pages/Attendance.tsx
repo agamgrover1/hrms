@@ -208,6 +208,7 @@ export default function Attendance() {
   const [employees, setEmployees] = useState<any[]>([]);
   const [selectedEmpId, setSelectedEmpId] = useState('');
   const [records, setRecords] = useState<any[]>([]);
+  const [leaves, setLeaves] = useState<any[]>([]);
   const [clocked, setClocked] = useState(false);
   const [clockTime, setClockTime] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
@@ -251,11 +252,17 @@ export default function Attendance() {
       .finally(() => setLoading(false));
   }, [selectedEmpId, viewMonth, viewYear]);
 
+  const fetchLeaves = useCallback(() => {
+    if (!selectedEmpId) return;
+    api.getLeaveRequests({ employee_id: selectedEmpId }).then(setLeaves).catch(() => {});
+  }, [selectedEmpId]);
+
   const fetchSyncHistory = useCallback(() => {
     api.getBiometricSyncHistory().then(setSyncHistory).catch(() => {});
   }, []);
 
   useEffect(() => { fetchRecords(); }, [fetchRecords]);
+  useEffect(() => { fetchLeaves(); }, [fetchLeaves]);
   useEffect(() => { if (isHROrAdmin) fetchSyncHistory(); }, [fetchSyncHistory, isHROrAdmin]);
 
   const handleSyncNow = async (fullMonth = false) => {
@@ -272,6 +279,7 @@ export default function Attendance() {
       setSyncSuccess(`${label} — ${result.records_updated} updated, ${result.records_created} created`);
       fetchSyncHistory();
       fetchRecords();
+      fetchLeaves();
     } catch (err: any) {
       setSyncError(err.message ?? 'Sync failed');
     } finally {
@@ -298,13 +306,28 @@ export default function Attendance() {
 
   const getDayRecord = (day: number) => {
     const dateStr = `${viewYear}-${String(viewMonth + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
-    // Use local timezone when parsing the date from DB (Neon returns UTC ISO strings,
-    // which shifts the date backwards by the local UTC offset)
     return records.find(r => {
       if (!r.date) return false;
       const localDate = parseLocalDate(r.date).toLocaleDateString('en-CA');
       return localDate === dateStr;
     });
+  };
+
+  // Returns the first active (non-rejected, non-cancelled) leave that covers a given YYYY-MM-DD date
+  const getLeaveForDay = (dateStr: string) =>
+    leaves.find(l =>
+      l.status !== 'rejected' && l.status !== 'cancelled' &&
+      dateStr >= l.from_date && dateStr <= l.to_date
+    ) ?? null;
+
+  const LEAVE_TAG: Record<string, { label: string; bg: string; color: string }> = {
+    full_day:    { label: 'Full Day',    bg: '#eff6ff', color: '#2563eb' },
+    half_day:    { label: 'Half Day',    bg: '#f5f3ff', color: '#7c3aed' },
+    short_leave: { label: 'Short Leave', bg: '#fff7ed', color: '#c2410c' },
+    unpaid:      { label: 'Unpaid',      bg: '#fff1f2', color: '#be123c' },
+    casual:      { label: 'Casual',      bg: '#f0fdf4', color: '#15803d' },
+    sick:        { label: 'Sick',        bg: '#fef9c3', color: '#a16207' },
+    earned:      { label: 'Earned',      bg: '#e0f2fe', color: '#0369a1' },
   };
 
   const presentCount = records.filter(r => r.status === 'present').length;
@@ -581,15 +604,24 @@ export default function Attendance() {
             {calendarDays.map((day, i) => {
               if (!day) return <div key={i} />;
               const record = getDayRecord(day);
+              const dateStr = `${viewYear}-${String(viewMonth + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+              const leave = getLeaveForDay(dateStr);
+              const leaveTag = leave ? LEAVE_TAG[leave.type] : null;
               const isToday = day === now.getDate() && viewMonth === now.getMonth() && viewYear === now.getFullYear();
               const dotColor = record ? statusConfig[record.status as keyof typeof statusConfig]?.dot : '';
               return (
-                <div key={i} className={`relative flex flex-col items-center py-1.5 rounded-lg text-sm transition-colors
+                <div key={i} className={`relative flex flex-col items-center py-1 rounded-lg text-sm transition-colors
                   ${isToday ? 'bg-primary-500 text-white font-semibold' : 'hover:bg-gray-50 text-gray-700'}
                   ${record?.status === 'absent' && !isToday ? 'text-red-400' : ''}`}>
                   {day}
                   {record && record.status !== 'weekend' && (
                     <span className={`w-1.5 h-1.5 rounded-full mt-0.5 ${isToday ? 'bg-white/70' : dotColor}`} />
+                  )}
+                  {leaveTag && (
+                    <span className="text-[8px] font-bold px-1 rounded mt-0.5 leading-tight"
+                      style={{ background: isToday ? 'rgba(255,255,255,0.25)' : leaveTag.bg, color: isToday ? '#fff' : leaveTag.color }}>
+                      {leaveTag.label.split(' ')[0]}
+                    </span>
                   )}
                 </div>
               );
@@ -619,10 +651,19 @@ export default function Attendance() {
             <div className="space-y-2 max-h-96 overflow-y-auto">
               {records.filter(r => r.status !== 'weekend').map(r => {
                 const cfg = statusConfig[r.status as keyof typeof statusConfig];
+                const leave = getLeaveForDay(r.date);
+                const leaveTag = leave ? LEAVE_TAG[leave.type] : null;
                 return (
                   <div key={r.date} className="flex items-center justify-between py-2 border-b border-gray-50 last:border-0">
-                    <div className="flex items-center gap-3">
+                    <div className="flex items-center gap-2 flex-wrap">
                       <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${cfg?.color}`}>{cfg?.label}</span>
+                      {leaveTag && (
+                        <span className="text-xs px-2 py-0.5 rounded-full font-semibold border"
+                          style={{ background: leaveTag.bg, color: leaveTag.color, borderColor: leaveTag.color + '40' }}>
+                          {leaveTag.label}
+                          {leave.status === 'pending' && <span className="ml-1 opacity-60">(pending)</span>}
+                        </span>
+                      )}
                       <span className="text-sm text-gray-700">
                         {parseLocalDate(r.date).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' })}
                       </span>
