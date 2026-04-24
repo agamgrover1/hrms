@@ -420,9 +420,9 @@ router.get('/balances/:employee_id', async (req, res) => {
     const bal = rows[0] as any;
     // Attach computed probation info
     bal.on_probation = isOnProbation(joinDate, probationEndDate);
-    bal.probation_end_date = probationEndDate;
+    bal.probation_end_date = probationEndDate ? neonDateToStr(probationEndDate instanceof Date ? probationEndDate.toISOString() : String(probationEndDate)) : null;
     bal.probation_short_remaining = Math.max(0, 2 - (bal.probation_short_used ?? 0));
-    res.json(bal);
+    res.json(normDate(bal));
   } catch (err) {
     res.status(500).json({ error: 'Server error' });
   }

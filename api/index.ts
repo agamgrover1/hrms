@@ -712,9 +712,9 @@ app.get('/api/leave/balances/:employee_id', async (req, res) => {
     if (!rows.length) return res.status(404).json({ error: 'Not found' });
     const bal = rows[0] as any;
     bal.on_probation = isOnProbation(joinDate, probationEndDate);
-    bal.probation_end_date = probationEndDate;
+    bal.probation_end_date = probationEndDate ? neonDateToStrV(probationEndDate instanceof Date ? probationEndDate.toISOString() : String(probationEndDate)) : null;
     bal.probation_short_remaining = Math.max(0, 2 - (bal.probation_short_used ?? 0));
-    res.json(bal);
+    res.json(normDateV(bal));
   } catch (err) { res.status(500).json({ error: 'Server error' }); }
 });
 
@@ -779,19 +779,24 @@ app.get('/api/performance/monthly', async (req, res) => {
 
 app.post('/api/performance/monthly', async (req, res) => {
   try {
-    const { employee_id, reviewer_id, reviewer_name, month, year, productivity, quality, teamwork, attendance_score, initiative, client_satisfaction, overall_score, comments } = req.body;
+    const { employee_id, reviewer_id, reviewer_name, month, year, productivity, quality, teamwork, attendance_score, initiative, client_satisfaction, ai_usage, overall_score, comments, parameter_notes } = req.body;
+    const paramNotesJson = JSON.stringify(parameter_notes ?? {});
+    // Ensure ai_usage and parameter_notes columns exist (idempotent)
+    await sql`ALTER TABLE monthly_performance ADD COLUMN IF NOT EXISTS ai_usage INTEGER DEFAULT 75`.catch(() => {});
+    await sql`ALTER TABLE monthly_performance ADD COLUMN IF NOT EXISTS parameter_notes JSONB DEFAULT '{}'`.catch(() => {});
     const rows = await sql`
       INSERT INTO monthly_performance
-        (employee_id, reviewer_id, reviewer_name, month, year, productivity, quality, teamwork, attendance_score, initiative, client_satisfaction, overall_score, comments, updated_at)
+        (employee_id, reviewer_id, reviewer_name, month, year, productivity, quality, teamwork, attendance_score, initiative, client_satisfaction, ai_usage, overall_score, comments, parameter_notes, updated_at)
       VALUES
         (${employee_id}, ${reviewer_id ?? null}, ${reviewer_name ?? null}, ${month}, ${year},
-         ${productivity}, ${quality}, ${teamwork}, ${attendance_score}, ${initiative}, ${client_satisfaction ?? 0}, ${overall_score}, ${comments ?? null}, NOW())
+         ${productivity}, ${quality}, ${teamwork}, ${attendance_score}, ${initiative}, ${client_satisfaction ?? 0}, ${ai_usage ?? 75}, ${overall_score}, ${comments ?? null}, ${paramNotesJson}, NOW())
       ON CONFLICT (employee_id, month, year) DO UPDATE SET
         reviewer_id=EXCLUDED.reviewer_id, reviewer_name=EXCLUDED.reviewer_name,
         productivity=EXCLUDED.productivity, quality=EXCLUDED.quality, teamwork=EXCLUDED.teamwork,
         attendance_score=EXCLUDED.attendance_score, initiative=EXCLUDED.initiative,
-        client_satisfaction=EXCLUDED.client_satisfaction,
-        overall_score=EXCLUDED.overall_score, comments=EXCLUDED.comments, updated_at=NOW()
+        client_satisfaction=EXCLUDED.client_satisfaction, ai_usage=EXCLUDED.ai_usage,
+        overall_score=EXCLUDED.overall_score, comments=EXCLUDED.comments,
+        parameter_notes=EXCLUDED.parameter_notes, updated_at=NOW()
       RETURNING *`;
     const rec = rows[0] as any;
     const MONTHS_SHORT = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
