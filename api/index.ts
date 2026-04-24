@@ -406,8 +406,14 @@ async function restoreOneDayBalance(employeeId: string, oldAttStatus: string) {
   }
 }
 
+const IST_MS = 5.5 * 60 * 60 * 1000;
+function neonDateToStrV(d: string): string {
+  if (!d) return '';
+  if (!d.includes('T')) return d.slice(0, 10);
+  return new Date(new Date(d).getTime() + IST_MS).toISOString().slice(0, 10);
+}
 function nextDayV(d: string): string {
-  const dt = new Date(d.slice(0, 10) + 'T12:00:00Z');
+  const dt = new Date(d + 'T12:00:00Z');
   dt.setUTCDate(dt.getUTCDate() + 1);
   return dt.toISOString().slice(0, 10);
 }
@@ -415,8 +421,8 @@ function nextDayV(d: string): string {
 async function markLeaveAttendance(employeeId: string, fromDate: string, toDate: string, type: string) {
   const attStatus = LEAVE_TYPE_ATT_STATUS[type] ?? 'on_leave';
   const leaveStatuses = new Set(['on_leave', 'short_leave', 'half-day', 'unpaid_leave']);
-  let current = fromDate.slice(0, 10);
-  const end    = toDate.slice(0, 10);
+  let current = neonDateToStrV(fromDate);
+  const end    = neonDateToStrV(toDate);
   while (current <= end) {
     const dateStr = current;
     const existing = await sql`SELECT status FROM attendance_records WHERE employee_id=${employeeId} AND date::date=${dateStr}::date`.catch(() => []);
@@ -486,8 +492,8 @@ async function restoreLeaveBalance(employeeId: string, type: string, days: numbe
 
 async function clearLeaveAttendance(employeeId: string, fromDate: string, toDate: string) {
   const leaveStatuses = ['on_leave', 'half-day', 'short_leave', 'unpaid_leave'];
-  let current = fromDate.slice(0, 10);
-  const end    = toDate.slice(0, 10);
+  let current = neonDateToStrV(fromDate);
+  const end    = neonDateToStrV(toDate);
   while (current <= end) {
     await sql`
       DELETE FROM attendance_records

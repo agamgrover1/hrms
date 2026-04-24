@@ -13,10 +13,15 @@ function fmtHours(h: number | string | null | undefined): string {
   return `${hrs}h ${mins}m`;
 }
 
-// Parse a YYYY-MM-DD date string as LOCAL midnight (avoids UTC-midnight timezone shift)
+// Neon returns DATE columns as "YYYY-MM-DDT18:30:00.000Z" (IST midnight as UTC offset).
+// Use local Date methods so browser IST timezone resolves the correct calendar date.
 function parseLocalDate(dateStr: string): Date {
-  const s = (dateStr ?? '').slice(0, 10);
-  const [y, m, d] = s.split('-').map(Number);
+  if (!dateStr) return new Date(NaN);
+  if (dateStr.includes('T')) {
+    const d = new Date(dateStr);
+    return new Date(d.getFullYear(), d.getMonth(), d.getDate()); // local midnight ✓
+  }
+  const [y, m, d] = (dateStr).split('-').map(Number);
   return new Date(y, m - 1, d);
 }
 

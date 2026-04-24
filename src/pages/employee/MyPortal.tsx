@@ -4,8 +4,12 @@ import { useAuth } from '../../context/AuthContext';
 import { api } from '../../services/api';
 
 function parseLocalDate(dateStr: string): Date {
-  const s = (dateStr ?? '').slice(0, 10);
-  const [y, m, d] = s.split('-').map(Number);
+  if (!dateStr) return new Date(NaN);
+  if (dateStr.includes('T')) {
+    const d = new Date(dateStr);
+    return new Date(d.getFullYear(), d.getMonth(), d.getDate());
+  }
+  const [y, m, d] = dateStr.split('-').map(Number);
   return new Date(y, m - 1, d);
 }
 

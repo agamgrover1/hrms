@@ -83,9 +83,18 @@ async function restoreBalance(employeeId: string, type: string, days: number) {
   // 'unpaid' — no balance to restore
 }
 
-// Timezone-safe: advance a YYYY-MM-DD string by N days using UTC noon (avoids DST/midnight issues)
+// Neon returns DATE columns as "YYYY-MM-DDT18:30:00.000Z" (IST midnight stored as UTC).
+// Adding +5:30 (IST offset) converts the UTC timestamp back to the correct IST date string.
+const IST_OFFSET_MS = 5.5 * 60 * 60 * 1000; // +05:30
+
+function neonDateToStr(d: string): string {
+  if (!d) return '';
+  if (!d.includes('T')) return d.slice(0, 10); // already "YYYY-MM-DD"
+  return new Date(new Date(d).getTime() + IST_OFFSET_MS).toISOString().slice(0, 10);
+}
+
 function nextDay(dateStr: string): string {
-  const d = new Date(dateStr.slice(0, 10) + 'T12:00:00Z');
+  const d = new Date(dateStr + 'T12:00:00Z');
   d.setUTCDate(d.getUTCDate() + 1);
   return d.toISOString().slice(0, 10);
 }
@@ -93,8 +102,8 @@ function nextDay(dateStr: string): string {
 // Clear leave attendance records when a leave is cancelled
 async function clearLeaveAttendance(employeeId: string, fromDate: string, toDate: string) {
   const leaveStatuses = ['on_leave', 'half-day', 'short_leave', 'unpaid_leave'];
-  let current = fromDate.slice(0, 10);
-  const end    = toDate.slice(0, 10);
+  let current = neonDateToStr(fromDate);
+  const end    = neonDateToStr(toDate);
   while (current <= end) {
     await sql`
       DELETE FROM attendance_records
@@ -133,8 +142,8 @@ async function restoreOneDayBalance(employeeId: string, oldAttStatus: string) {
 async function markLeaveAttendance(employeeId: string, fromDate: string, toDate: string, type: string) {
   const attStatus = LEAVE_TYPE_ATT_STATUS[type] ?? 'on_leave';
   const leaveStatuses = new Set(['on_leave', 'short_leave', 'half-day', 'unpaid_leave']);
-  let current = fromDate.slice(0, 10);
-  const end    = toDate.slice(0, 10);
+  let current = neonDateToStr(fromDate);
+  const end    = neonDateToStr(toDate);
   while (current <= end) {
     const dateStr = current;
     // Check for an existing leave attendance on this date
