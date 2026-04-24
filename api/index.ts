@@ -222,6 +222,7 @@ app.post('/api/attendance/clock-in', async (req, res) => {
     const { employee_id } = req.body;
     const now = new Date();
     const today = now.toISOString().split('T')[0];
+    if (isWeekendV(today)) return res.status(400).json({ error: 'Weekends are non-working days' });
     const time = now.toTimeString().slice(0, 5);
     const empRow = await sql`SELECT shift FROM employees WHERE id=${employee_id}` as any[];
     const empShift = empRow[0]?.shift ?? 'day';
@@ -343,7 +344,8 @@ async function runBiometricSyncV(trigger: string, triggeredBy?: string, fromDate
     const status  = inTime
       ? (isLateV(inTime, empShift) ? 'late' : 'present')
       : (ET_STATUS_MAP[(rec.Status??'A').toUpperCase()] ?? 'absent');
-    if ((status === 'weekend' || status === 'holiday') && !inTime) continue;
+    if (isWeekendV(recDate)) continue; // Sat/Sun are non-working days
+    if (status === 'holiday' && !inTime) continue;
     const hours = parseEtWorkTimeV(rec.WorkTime);
     const ex  = await sql`SELECT * FROM attendance_records WHERE employee_id=${iid} AND date=${recDate}` as any[];
     const had = ex.length > 0; const old = ex[0] ?? {};
@@ -425,6 +427,10 @@ async function restoreOneDayBalance(employeeId: string, oldAttStatus: string) {
 }
 
 const IST_MS = 5.5 * 60 * 60 * 1000;
+function isWeekendV(dateStr: string): boolean {
+  const dow = new Date(dateStr + 'T12:00:00Z').getUTCDay();
+  return dow === 0 || dow === 6;
+}
 function neonDateToStrV(d: string): string {
   if (!d) return '';
   if (!d.includes('T')) return d.slice(0, 10);
@@ -442,6 +448,7 @@ async function markLeaveAttendance(employeeId: string, fromDate: string, toDate:
   let current = neonDateToStrV(fromDate);
   const end    = neonDateToStrV(toDate);
   while (current <= end) {
+    if (isWeekendV(current)) { current = nextDayV(current); continue; } // skip Sat/Sun
     const dateStr = current;
     const existing = await sql`SELECT status FROM attendance_records WHERE employee_id=${employeeId} AND date::date=${dateStr}::date`.catch(() => []);
     const oldStatus = (existing[0] as any)?.status;
@@ -513,11 +520,13 @@ async function clearLeaveAttendance(employeeId: string, fromDate: string, toDate
   let current = neonDateToStrV(fromDate);
   const end    = neonDateToStrV(toDate);
   while (current <= end) {
-    await sql`
-      DELETE FROM attendance_records
-      WHERE employee_id=${employeeId} AND date::date=${current}::date
-        AND status = ANY(${leaveStatuses})
-    `.catch(() => {});
+    if (!isWeekendV(current)) {
+      await sql`
+        DELETE FROM attendance_records
+        WHERE employee_id=${employeeId} AND date::date=${current}::date
+          AND status = ANY(${leaveStatuses})
+      `.catch(() => {});
+    }
     current = nextDayV(current);
   }
 }

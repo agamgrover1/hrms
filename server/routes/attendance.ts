@@ -43,6 +43,12 @@ const router = Router();
   } catch (e) { console.error('[attendance migration]', e); }
 })();
 
+// Returns true if a "YYYY-MM-DD" date falls on Saturday (6) or Sunday (0)
+function isWeekend(dateStr: string): boolean {
+  const dow = new Date(dateStr + 'T12:00:00Z').getUTCDay();
+  return dow === 0 || dow === 6;
+}
+
 // ── Date normalisation ───────────────────────────────────────────────────────
 // Neon returns DATE columns as UTC timestamps ("2026-04-09T18:30:00.000Z")
 // representing IST midnight. Adding +5:30 converts back to the correct IST date.
@@ -190,8 +196,10 @@ export async function runBiometricSync(
       return Math.round(((oh * 60 + om) - (ih * 60 + im)) / 6) / 10;
     })() : 0);
 
-    // Skip weekends/holidays with no clock-in
-    if ((status === 'weekend' || status === 'holiday') && !inTime) continue;
+    // Saturdays and Sundays are never working days — skip entirely
+    if (isWeekend(recDate)) continue;
+    // Skip holidays with no clock-in
+    if (status === 'holiday' && !inTime) continue;
 
     // Snapshot pre-sync state for rollback
     const existing = await sql`
@@ -266,6 +274,7 @@ router.post('/clock-in', async (req, res) => {
     const { employee_id } = req.body;
     const now = new Date();
     const today = now.toISOString().split('T')[0];
+    if (isWeekend(today)) return res.status(400).json({ error: 'Weekends are non-working days' });
     const time = now.toTimeString().slice(0, 5); // HH:MM
     const empRow = await sql`SELECT shift FROM employees WHERE id = ${employee_id}` as any[];
     const shift = empRow[0]?.shift ?? 'day';

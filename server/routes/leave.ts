@@ -86,6 +86,10 @@ async function restoreBalance(employeeId: string, type: string, days: number) {
 // Neon returns DATE columns as "YYYY-MM-DDT18:30:00.000Z" (IST midnight stored as UTC).
 // Adding +5:30 (IST offset) converts the UTC timestamp back to the correct IST date string.
 const IST_OFFSET_MS = 5.5 * 60 * 60 * 1000; // +05:30
+function isWeekend(dateStr: string): boolean {
+  const dow = new Date(dateStr + 'T12:00:00Z').getUTCDay();
+  return dow === 0 || dow === 6; // 0=Sunday, 6=Saturday
+}
 
 function neonDateToStr(d: string): string {
   if (!d) return '';
@@ -116,11 +120,13 @@ async function clearLeaveAttendance(employeeId: string, fromDate: string, toDate
   let current = neonDateToStr(fromDate);
   const end    = neonDateToStr(toDate);
   while (current <= end) {
-    await sql`
-      DELETE FROM attendance_records
-      WHERE employee_id=${employeeId} AND date::date=${current}::date
-        AND status = ANY(${leaveStatuses})
-    `.catch(() => {});
+    if (!isWeekend(current)) {
+      await sql`
+        DELETE FROM attendance_records
+        WHERE employee_id=${employeeId} AND date::date=${current}::date
+          AND status = ANY(${leaveStatuses})
+      `.catch(() => {});
+    }
     current = nextDay(current);
   }
 }
@@ -156,6 +162,7 @@ async function markLeaveAttendance(employeeId: string, fromDate: string, toDate:
   let current = neonDateToStr(fromDate);
   const end    = neonDateToStr(toDate);
   while (current <= end) {
+    if (isWeekend(current)) { current = nextDay(current); continue; } // skip Sat/Sun
     const dateStr = current;
     // Check for an existing leave attendance on this date
     const existing = await sql`

@@ -163,7 +163,17 @@ function ApplyModal({ onClose, onSubmit }: { onClose: () => void; onSubmit: (dat
   const handleSubmit = () => {
     if (!form.from || !form.to || !form.reason?.trim()) return;
     const isSingleDay = form.type === 'half_day' || form.type === 'short_leave';
-    const days = isSingleDay ? 1 : Math.max(1, Math.ceil((new Date(form.to).getTime() - new Date(form.from).getTime()) / 86400000) + 1);
+    const countWorkingDays = (from: string, to: string) => {
+      let count = 0, cur = from;
+      while (cur <= to) {
+        const dow = new Date(cur + 'T12:00:00Z').getUTCDay();
+        if (dow !== 0 && dow !== 6) count++;
+        const d = new Date(cur + 'T12:00:00Z'); d.setUTCDate(d.getUTCDate() + 1);
+        cur = d.toISOString().slice(0, 10);
+      }
+      return Math.max(1, count);
+    };
+    const days = isSingleDay ? 1 : countWorkingDays(form.from, form.to);
     onSubmit({ ...form, days, from_date: form.from, to_date: form.to });
     onClose();
   };
