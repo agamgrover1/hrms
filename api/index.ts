@@ -2,7 +2,7 @@ import express from 'express';
 import cors from 'cors';
 import { neon } from '@neondatabase/serverless';
 
-// Lazy Neon client — initialised on first query so env vars are ready
+// Lazy Neon client — always typed as Promise<any[]> to satisfy TypeScript 6 strict mode
 let _sql: ReturnType<typeof neon> | null = null;
 function getSql() {
   if (_sql) return _sql;
@@ -10,7 +10,8 @@ function getSql() {
   if (!url) throw new Error('DATABASE_URL is not set');
   return (_sql = neon(url.replace(/[?&]channel_binding=[^&]*/g, '').replace(/[?&]$/, '')));
 }
-const sql = ((...a: any[]) => (getSql() as any)(...a)) as ReturnType<typeof neon>;
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const sql = ((...a: any[]) => (getSql() as any)(...a)) as (...args: any[]) => Promise<any[]>;
 
 const app = express();
 app.use(cors({
