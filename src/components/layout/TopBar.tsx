@@ -1,7 +1,42 @@
 import { Bell, ChevronDown, LogOut, CheckCircle, Calendar, TrendingUp, FileText, Target, XCircle, Award, Check, Trash2 } from 'lucide-react';
 import { useState, useEffect, useRef } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../../context/AuthContext';
 import { api } from '../../services/api';
+
+// Map notification type + user role → destination route
+function getNotifRoute(type: string, role: string): string {
+  const isHR = role === 'admin' || role === 'hr_manager';
+  switch (type) {
+    // Leave events
+    case 'leave_applied':
+      return isHR ? '/leave' : '/my-team?tab=leaves';   // HR sees leave mgmt, manager sees My Team
+    case 'leave_approved':
+    case 'leave_rejected':
+      return isHR ? '/leave' : '/my?tab=leave';
+    // WFH events
+    case 'wfh_applied':
+      return isHR ? '/leave' : '/my-team?tab=leaves';
+    case 'wfh_approved':
+    case 'wfh_rejected':
+      return isHR ? '/leave' : '/my?tab=wfh';
+    // Performance events
+    case 'review_added':
+    case 'review_update':
+      return isHR ? '/performance' : '/my?tab=performance';
+    case 'appraisal_submitted':
+      return isHR ? '/performance' : '/my?tab=performance';
+    case 'appraisal_reviewed':
+      return '/my?tab=performance';
+    case 'self_assessment_updated':
+      return isHR ? '/performance' : '/my-team?tab=performance';
+    // General info (probation, confirmation, etc.)
+    case 'info':
+      return isHR ? '/' : '/my';
+    default:
+      return isHR ? '/' : '/my';
+  }
+}
 
 interface Props {
   title: string;
@@ -31,6 +66,7 @@ function timeAgo(dateStr: string) {
 
 export default function TopBar({ title }: Props) {
   const { user, logout } = useAuth();
+  const navigate = useNavigate();
   const [showMenu, setShowMenu] = useState(false);
   const [showNotifs, setShowNotifs] = useState(false);
   const [notifications, setNotifications] = useState<any[]>([]);
@@ -158,7 +194,12 @@ export default function TopBar({ title }: Props) {
                     return (
                       <div
                         key={n.id}
-                        onClick={() => !n.is_read && handleMarkRead(n.id)}
+                        onClick={() => {
+                          if (!n.is_read) handleMarkRead(n.id);
+                          const route = getNotifRoute(n.type, user?.role ?? '');
+                          setShowNotifs(false);
+                          navigate(route);
+                        }}
                         className="flex items-start gap-3 px-4 py-3 border-b border-gray-50 cursor-pointer hover:bg-gray-50/70 transition-colors group"
                         style={!n.is_read ? { background: 'rgba(238,39,112,0.03)' } : {}}
                       >
@@ -174,12 +215,13 @@ export default function TopBar({ title }: Props) {
                               style={{ color: n.is_read ? '#6b7280' : '#192250' }}>
                               {n.title}
                             </p>
-                            <button
-                              onClick={e => handleDelete(e, n.id)}
-                              className="opacity-0 group-hover:opacity-100 text-gray-300 hover:text-red-400 transition-all flex-shrink-0 mt-0.5"
-                            >
-                              <XCircle size={13} />
-                            </button>
+                            <div className="flex items-center gap-1 flex-shrink-0 mt-0.5">
+                              <ChevronDown size={11} className="text-gray-300 -rotate-90 group-hover:text-gray-500 transition-colors" />
+                              <button onClick={e => handleDelete(e, n.id)}
+                                className="opacity-0 group-hover:opacity-100 text-gray-300 hover:text-red-400 transition-all">
+                                <XCircle size={13} />
+                              </button>
+                            </div>
                           </div>
                           {n.body && (
                             <p className="text-xs text-gray-500 mt-0.5 leading-relaxed line-clamp-2">{n.body}</p>
