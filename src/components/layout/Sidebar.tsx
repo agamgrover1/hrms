@@ -142,12 +142,16 @@ export default function Sidebar() {
               {!collapsed && teamOpen && (
                 <div className="mt-0.5 ml-3 pl-5 space-y-0.5"
                   style={{ borderLeft: '1px solid rgba(255,255,255,0.1)' }}>
+                  <NavLink to="/my-team"
+                    className={`flex items-center gap-2.5 px-3 py-2 rounded-lg text-xs font-semibold transition-all
+                      ${isOnTeam && !location.search ? 'text-white' : 'text-white/45 hover:text-white/75'}`}
+                    style={isOnTeam && !location.search ? { background: 'rgba(238,39,112,0.15)', color: '#ff75b0' } : {}}>
+                    <Users size={13} /> Overview
+                  </NavLink>
                   <NavLink to="/my-team?tab=leaves"
                     className={`flex items-center gap-2.5 px-3 py-2 rounded-lg text-xs font-semibold transition-all
-                      ${location.search === '?tab=leaves' || (!location.search && isOnTeam)
-                        ? 'text-white' : 'text-white/45 hover:text-white/75'}`}
-                    style={location.search === '?tab=leaves' || (!location.search && isOnTeam)
-                      ? { background: 'rgba(238,39,112,0.15)', color: '#ff75b0' } : {}}>
+                      ${location.search === '?tab=leaves' ? 'text-white' : 'text-white/45 hover:text-white/75'}`}
+                    style={location.search === '?tab=leaves' ? { background: 'rgba(238,39,112,0.15)', color: '#ff75b0' } : {}}>
                     <Calendar size={13} /> Leaves
                   </NavLink>
                   <NavLink to="/my-team?tab=performance"

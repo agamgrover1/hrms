@@ -1,12 +1,15 @@
 import { useState, useEffect, useMemo } from 'react';
-import { useSearchParams } from 'react-router-dom';
+import { useSearchParams, useNavigate } from 'react-router-dom';
 import { Users, Calendar, TrendingUp, CheckCircle, XCircle, AlertCircle,
-  X, Save, RefreshCw } from 'lucide-react';
+  X, Save, RefreshCw, Clock, UserCheck } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
-import { useNavigate } from 'react-router-dom';
 import { api } from '../../services/api';
 import { GOAL_STATUSES, GOAL_STATUS_CONFIG } from '../Performance';
 import type { GoalStatus } from '../Performance';
+import {
+  BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
+  PieChart, Pie, Cell, Legend, LineChart, Line,
+} from 'recharts';
 
 const SCORE_CATEGORIES = [
   { key: 'productivity',        label: 'Productivity' },
@@ -80,7 +83,7 @@ function ScoreSlider({ label, value, onChange }: { label: string; value: number;
 }
 
 // ── Main component ────────────────────────────────────────────────────────────
-type SubTab = 'leaves' | 'performance';
+type SubTab = 'overview' | 'leaves' | 'performance';
 
 export default function MyTeam() {
   const { user } = useAuth();
@@ -88,7 +91,9 @@ export default function MyTeam() {
   const [searchParams] = useSearchParams();
   const subTab = useMemo<SubTab>(() => {
     const t = searchParams.get('tab');
-    return t === 'performance' ? 'performance' : 'leaves';
+    if (t === 'performance') return 'performance';
+    if (t === 'leaves') return 'leaves';
+    return 'overview';
   }, [searchParams]);
 
   // Resolved DB id of the logged-in employee (manager)
@@ -99,6 +104,10 @@ export default function MyTeam() {
   const now = new Date();
   const currentYear = now.getFullYear();
   const currentMonth = now.getMonth() + 1;
+
+  // ── Overview / dashboard state ──────────────────────────────────────────────
+  const [teamAttendance, setTeamAttendance] = useState<Record<string, any[]>>({});
+  const [teamAllLeaves, setTeamAllLeaves] = useState<any[]>([]);
 
   // ── Leaves state ────────────────────────────────────────────────────────────
   const [pendingLeaves, setPendingLeaves] = useState<any[]>([]);
@@ -142,6 +151,10 @@ export default function MyTeam() {
             .then(perf => setTeamPerf(prev => ({ ...prev, [m.id]: perf })));
           api.getAppraisalGoals({ employee_id: m.id })
             .then(ap => setAppraisals(prev => ({ ...prev, [m.id]: Array.isArray(ap) ? ap : [] })));
+          api.getAttendance({ employee_id: m.id, month: now.getMonth() + 1, year: now.getFullYear() })
+            .then(att => setTeamAttendance(prev => ({ ...prev, [m.id]: att })));
+          api.getLeaveRequests({ employee_id: m.id })
+            .then(lv => setTeamAllLeaves(prev => [...prev, ...lv]));
         });
       });
     });
@@ -219,6 +232,56 @@ export default function MyTeam() {
     )}));
   };
 
+  // ── Dashboard computed data ──────────────────────────────────────────────────
+  const todayStr = new Date().toISOString().split('T')[0];
+  const leaveStatuses = new Set(['on_leave','half-day','short_leave','unpaid_leave']);
+
+  const presentToday  = teamMembers.filter(m => ['present','late'].includes(teamAttendance[m.id]?.find((r: any) => r.date === todayStr)?.status ?? '')).length;
+  const lateToday     = teamMembers.filter(m => teamAttendance[m.id]?.find((r: any) => r.date === todayStr)?.status === 'late').length;
+  const onLeaveToday  = teamMembers.filter(m => leaveStatuses.has(teamAttendance[m.id]?.find((r: any) => r.date === todayStr)?.status ?? '')).length;
+
+  // Attendance per member (stacked bar)
+  const attBarData = teamMembers.map(m => {
+    const att = teamAttendance[m.id] ?? [];
+    return {
+      name: m.name.split(' ')[0],
+      Present: att.filter((r: any) => r.status === 'present').length,
+      Late: att.filter((r: any) => r.status === 'late').length,
+      Absent: att.filter((r: any) => r.status === 'absent').length,
+      Leave: att.filter((r: any) => leaveStatuses.has(r.status)).length,
+    };
+  });
+
+  // Leave distribution this month (donut)
+  const leaveTypeLabels: Record<string,string> = { full_day:'Full Day', half_day:'Half Day', short_leave:'Short Leave', unpaid:'Unpaid' };
+  const leaveCountMap: Record<string,number> = {};
+  teamAllLeaves.forEach((l: any) => {
+    if (l.status === 'cancelled' || l.status === 'rejected') return;
+    const d = new Date(l.from_date);
+    if (d.getMonth() + 1 !== now.getMonth() + 1 || d.getFullYear() !== now.getFullYear()) return;
+    const label = leaveTypeLabels[l.type] ?? l.type.replace('_',' ');
+    leaveCountMap[label] = (leaveCountMap[label] ?? 0) + 1;
+  });
+  const leaveDonutData = Object.entries(leaveCountMap).map(([name, value]) => ({ name, value }));
+
+  // Performance trend – last 6 months
+  const last6: { month: number; year: number; label: string }[] = [];
+  for (let i = 5; i >= 0; i--) {
+    const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
+    last6.push({ month: d.getMonth() + 1, year: d.getFullYear(), label: MONTHS_SHORT[d.getMonth()] });
+  }
+  const perfTrendData = last6.map(({ month, year, label }) => {
+    const point: any = { label };
+    teamMembers.forEach(m => {
+      const rec = (teamPerf[m.id] ?? []).find((r: any) => r.month === month && r.year === year);
+      if (rec) point[m.name.split(' ')[0]] = rec.overall_score;
+    });
+    return point;
+  });
+
+  const BRAND_COLORS = ['#EE2770','#192250','#f59e0b','#10b981','#6366f1','#ef4444'];
+  const memberColors = teamMembers.map((_, i) => BRAND_COLORS[i % BRAND_COLORS.length]);
+
   // ── Render ──────────────────────────────────────────────────────────────────
   if (loading) return (
     <div className="flex items-center justify-center h-64">
@@ -239,6 +302,7 @@ export default function MyTeam() {
       {/* Sub-tab switcher */}
       <div className="flex gap-1 bg-white rounded-xl p-1 border border-gray-100 shadow-sm w-fit">
         {([
+          { key: 'overview',    label: 'Overview',    icon: Users      },
           { key: 'leaves',      label: 'Leaves',      icon: Calendar   },
           { key: 'performance', label: 'Performance', icon: TrendingUp },
         ] as { key: SubTab; label: string; icon: any }[]).map(({ key, label, icon: Icon }) => (
@@ -249,6 +313,154 @@ export default function MyTeam() {
           </button>
         ))}
       </div>
+
+      {/* ── OVERVIEW / DASHBOARD TAB ─────────────────────────────────────── */}
+      {subTab === 'overview' && (
+        <div className="space-y-5">
+
+          {/* KPI cards */}
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
+            {[
+              { label: 'Team Size',     value: teamMembers.length, icon: Users,      color: '#192250', bg: 'rgba(25,34,80,0.07)'   },
+              { label: 'Present Today', value: presentToday,       icon: UserCheck,  color: '#16a34a', bg: 'rgba(22,163,74,0.08)'  },
+              { label: 'Late Today',    value: lateToday,          icon: Clock,      color: '#d97706', bg: 'rgba(217,119,6,0.08)'  },
+              { label: 'On Leave',      value: onLeaveToday,       icon: Calendar,   color: '#EE2770', bg: 'rgba(238,39,112,0.08)' },
+            ].map(({ label, value, icon: Icon, color, bg }) => (
+              <div key={label} className="bg-white rounded-2xl p-5 border border-gray-100 shadow-sm">
+                <div className="w-10 h-10 rounded-xl flex items-center justify-center mb-3" style={{ background: bg }}>
+                  <Icon size={18} style={{ color }} />
+                </div>
+                <p className="text-2xl font-black" style={{ color }}>{value}</p>
+                <p className="text-xs text-gray-400 mt-1 font-medium">{label}</p>
+              </div>
+            ))}
+          </div>
+
+          {/* Attendance per person + Leave distribution */}
+          <div className="grid grid-cols-1 lg:grid-cols-3 gap-5">
+
+            {/* Stacked bar — attendance per person this month */}
+            <div className="lg:col-span-2 bg-white rounded-2xl border border-gray-100 shadow-sm p-5">
+              <p className="font-bold text-sm mb-1" style={{ color: '#192250' }}>Attendance This Month</p>
+              <p className="text-xs text-gray-400 mb-4">Working days breakdown per team member</p>
+              {attBarData.length === 0 || Object.keys(teamAttendance).length === 0 ? (
+                <div className="flex items-center justify-center h-40 text-gray-300 text-sm">Loading attendance data…</div>
+              ) : (
+                <ResponsiveContainer width="100%" height={220}>
+                  <BarChart data={attBarData} barSize={18} layout="vertical"
+                    margin={{ left: 8, right: 16, top: 4, bottom: 4 }}>
+                    <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" horizontal={false} />
+                    <XAxis type="number" tick={{ fontSize: 10, fill: '#9ca3af' }} axisLine={false} tickLine={false} />
+                    <YAxis type="category" dataKey="name" tick={{ fontSize: 12, fill: '#374151', fontWeight: 600 }}
+                      axisLine={false} tickLine={false} width={64} />
+                    <Tooltip contentStyle={{ borderRadius: 10, border: '1px solid #e5e7eb', fontSize: 12 }} />
+                    <Legend iconSize={10} wrapperStyle={{ fontSize: 11 }} />
+                    <Bar dataKey="Present" stackId="a" fill="#16a34a" radius={[0,0,0,0]} />
+                    <Bar dataKey="Late"    stackId="a" fill="#d97706" />
+                    <Bar dataKey="Leave"   stackId="a" fill="#6366f1" />
+                    <Bar dataKey="Absent"  stackId="a" fill="#ef4444" radius={[0,4,4,0]} />
+                  </BarChart>
+                </ResponsiveContainer>
+              )}
+            </div>
+
+            {/* Donut — leave type distribution */}
+            <div className="bg-white rounded-2xl border border-gray-100 shadow-sm p-5">
+              <p className="font-bold text-sm mb-1" style={{ color: '#192250' }}>Leave Distribution</p>
+              <p className="text-xs text-gray-400 mb-4">By type this month</p>
+              {leaveDonutData.length === 0 ? (
+                <div className="flex flex-col items-center justify-center h-40 gap-2">
+                  <Calendar size={28} className="text-gray-200" />
+                  <p className="text-xs text-gray-300">No leaves this month</p>
+                </div>
+              ) : (
+                <ResponsiveContainer width="100%" height={200}>
+                  <PieChart>
+                    <Pie data={leaveDonutData} cx="50%" cy="50%" innerRadius={52} outerRadius={78}
+                      paddingAngle={3} dataKey="value" label={({ name, percent }) => `${name} ${(percent*100).toFixed(0)}%`}
+                      labelLine={false} fontSize={10}>
+                      {leaveDonutData.map((_, i) => (
+                        <Cell key={i} fill={BRAND_COLORS[i % BRAND_COLORS.length]} />
+                      ))}
+                    </Pie>
+                    <Tooltip contentStyle={{ borderRadius: 10, border: '1px solid #e5e7eb', fontSize: 12 }} />
+                  </PieChart>
+                </ResponsiveContainer>
+              )}
+            </div>
+          </div>
+
+          {/* Performance trend line chart */}
+          <div className="bg-white rounded-2xl border border-gray-100 shadow-sm p-5">
+            <p className="font-bold text-sm mb-1" style={{ color: '#192250' }}>Performance Score Trend</p>
+            <p className="text-xs text-gray-400 mb-4">Overall monthly scores — last 6 months</p>
+            {teamMembers.every(m => !(teamPerf[m.id] ?? []).length) ? (
+              <div className="flex items-center justify-center h-40 text-gray-300 text-sm">No performance reviews yet</div>
+            ) : (
+              <ResponsiveContainer width="100%" height={220}>
+                <LineChart data={perfTrendData} margin={{ left: 0, right: 16, top: 4, bottom: 4 }}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" vertical={false} />
+                  <XAxis dataKey="label" tick={{ fontSize: 11, fill: '#9ca3af' }} axisLine={false} tickLine={false} />
+                  <YAxis domain={[0, 100]} tick={{ fontSize: 11, fill: '#9ca3af' }} axisLine={false} tickLine={false} width={28} />
+                  <Tooltip contentStyle={{ borderRadius: 10, border: '1px solid #e5e7eb', fontSize: 12 }}
+                    formatter={(val: any) => [`${val}/100`, '']} />
+                  <Legend iconSize={10} wrapperStyle={{ fontSize: 11 }} />
+                  {teamMembers.map((m, i) => (
+                    <Line key={m.id} type="monotone" dataKey={m.name.split(' ')[0]}
+                      stroke={memberColors[i]} strokeWidth={2.5} dot={{ r: 4, fill: memberColors[i] }}
+                      activeDot={{ r: 6 }} connectNulls={false} />
+                  ))}
+                </LineChart>
+              </ResponsiveContainer>
+            )}
+          </div>
+
+          {/* Per-member score summary cards */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+            {teamMembers.map((m, i) => {
+              const perf = teamPerf[m.id] ?? [];
+              const latest = perf.length ? perf.reduce((a: any, b: any) => a.month > b.month ? a : b) : null;
+              const prev = perf.find((r: any) => r.month === (latest?.month === 1 ? 12 : (latest?.month ?? 0) - 1));
+              const trend = latest && prev ? latest.overall_score - prev.overall_score : 0;
+              const att = teamAttendance[m.id] ?? [];
+              const attRate = att.length ? Math.round(att.filter((r: any) => ['present','late'].includes(r.status)).length / Math.max(att.filter((r: any) => r.status !== 'weekend').length, 1) * 100) : null;
+              return (
+                <div key={m.id} className="bg-white rounded-2xl border border-gray-100 shadow-sm p-4">
+                  <div className="flex items-center gap-3 mb-3">
+                    <div className="w-9 h-9 rounded-xl flex items-center justify-center text-xs font-bold text-white flex-shrink-0"
+                      style={{ background: memberColors[i] }}>
+                      {m.name?.split(' ').map((n: string) => n[0]).join('').slice(0, 2)}
+                    </div>
+                    <div className="min-w-0">
+                      <p className="font-semibold text-sm text-gray-800 truncate">{m.name}</p>
+                      <p className="text-xs text-gray-400 truncate">{m.designation}</p>
+                    </div>
+                  </div>
+                  <div className="grid grid-cols-2 gap-2">
+                    <div className="rounded-xl p-2.5 text-center" style={{ background: 'rgba(25,34,80,0.04)' }}>
+                      <p className="text-lg font-black" style={{ color: latest ? (latest.overall_score >= 85 ? '#16a34a' : latest.overall_score >= 70 ? '#192250' : latest.overall_score >= 50 ? '#d97706' : '#dc2626') : '#d1d5db' }}>
+                        {latest ? latest.overall_score : '—'}
+                      </p>
+                      <p className="text-[10px] text-gray-400">Perf score</p>
+                    </div>
+                    <div className="rounded-xl p-2.5 text-center" style={{ background: 'rgba(25,34,80,0.04)' }}>
+                      <p className="text-lg font-black" style={{ color: attRate !== null ? (attRate >= 90 ? '#16a34a' : attRate >= 75 ? '#d97706' : '#dc2626') : '#d1d5db' }}>
+                        {attRate !== null ? `${attRate}%` : '—'}
+                      </p>
+                      <p className="text-[10px] text-gray-400">Attendance</p>
+                    </div>
+                  </div>
+                  {trend !== 0 && (
+                    <p className={`text-xs font-semibold mt-2 ${trend > 0 ? 'text-green-600' : 'text-red-500'}`}>
+                      {trend > 0 ? '▲' : '▼'} {Math.abs(trend)} pts vs last month
+                    </p>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
 
       {/* ── LEAVES TAB ────────────────────────────────────────────────────── */}
       {subTab === 'leaves' && (
