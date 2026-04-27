@@ -36,19 +36,27 @@ const router = Router();
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 const WFH_ATT_STATUS: Record<string, string> = { full_day: 'wfh', half_day: 'wfh_half' };
+const IST_MS = 5.5 * 60 * 60 * 1000;
 
-async function markWfhAttendance(employeeId: string, date: string, type: string) {
-  const status = WFH_ATT_STATUS[type] ?? 'wfh';
-  const dateStr = date.includes('T') ? new Date(new Date(date).getTime() + 5.5*60*60*1000).toISOString().slice(0,10) : date.slice(0,10);
-  await sql`
-    INSERT INTO attendance_records (employee_id, date, status, total_hours, source)
-    VALUES (${employeeId}, ${dateStr}, ${status}, 0, 'wfh')
-    ON CONFLICT (employee_id, date) DO UPDATE SET status = ${status}, source = 'wfh'
-  `.catch(() => {});
+function toDateStr(d: any): string {
+  // Handles Neon returning DATE as Date object, ISO string "T18:30:00Z", or plain "YYYY-MM-DD"
+  const s = d instanceof Date ? d.toISOString() : String(d);
+  if (!s.includes('T')) return s.slice(0, 10);
+  return new Date(new Date(s).getTime() + IST_MS).toISOString().slice(0, 10);
 }
 
-async function clearWfhAttendance(employeeId: string, date: string) {
-  const dateStr = date.includes('T') ? new Date(new Date(date).getTime() + 5.5*60*60*1000).toISOString().slice(0,10) : date.slice(0,10);
+async function markWfhAttendance(employeeId: string, date: any, type: string) {
+  const attStatus = WFH_ATT_STATUS[type] ?? 'wfh';
+  const dateStr = toDateStr(date);
+  await sql`
+    INSERT INTO attendance_records (employee_id, date, status, total_hours, source)
+    VALUES (${employeeId}, ${dateStr}, ${attStatus}, 0, 'wfh')
+    ON CONFLICT (employee_id, date) DO UPDATE SET status = ${attStatus}, source = 'wfh'
+  `;
+}
+
+async function clearWfhAttendance(employeeId: string, date: any) {
+  const dateStr = toDateStr(date);
   await sql`
     DELETE FROM attendance_records
     WHERE employee_id = ${employeeId} AND date::date = ${dateStr}::date AND source = 'wfh'
@@ -152,7 +160,7 @@ router.patch('/requests/:id', async (req, res) => {
         `Your Work From Home request was rejected.`).catch(() => {});
     }
     res.json(w);
-  } catch { res.status(500).json({ error: 'Server error' }); }
+  } catch (err: any) { console.error('[WFH HR patch]', err?.message ?? err); res.status(500).json({ error: err?.message ?? 'Server error' }); }
 });
 
 // PATCH /wfh/requests/:id/cancel

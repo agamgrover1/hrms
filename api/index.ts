@@ -1132,7 +1132,8 @@ app.patch('/api/wfh/requests/:id', async (req, res) => {
     const rows = await sql`UPDATE wfh_requests SET status=${status},hr_actioner_name=${actioner_name??null},hr_actioned_at=NOW(),rejection_reason=${status==='rejected'?(rejection_reason??null):null} WHERE id=${req.params.id} RETURNING *`;
     if (!rows.length) return res.status(404).json({ error: 'Not found' });
     const w = rows[0] as any;
-    const dateStr = w.date.includes('T') ? new Date(new Date(w.date).getTime()+5.5*60*60*1000).toISOString().slice(0,10) : w.date.slice(0,10);
+    const _wd = w.date instanceof Date ? w.date.toISOString() : String(w.date);
+    const dateStr = _wd.includes('T') ? new Date(new Date(_wd).getTime()+IST_MS).toISOString().slice(0,10) : _wd.slice(0,10);
     const wfhStatus = w.type === 'half_day' ? 'wfh_half' : 'wfh';
     if (status === 'approved') {
       await sql`INSERT INTO attendance_records (employee_id,date,status,total_hours,source) VALUES (${w.employee_id},${dateStr},${wfhStatus},0,'wfh') ON CONFLICT (employee_id,date) DO UPDATE SET status=${wfhStatus},source='wfh'`.catch(()=>{});
@@ -1148,7 +1149,8 @@ app.patch('/api/wfh/requests/:id/cancel', async (req, res) => {
     const rows = await sql`UPDATE wfh_requests SET status='cancelled',cancelled_by=${cancelled_by??null},cancelled_at=NOW(),cancellation_reason=${cancellation_reason??null} WHERE id=${req.params.id} AND status IN ('pending','approved') RETURNING *`;
     if (!rows.length) return res.status(404).json({ error: 'Not found or not cancellable' });
     const w = rows[0] as any;
-    const dateStr = w.date.includes('T') ? new Date(new Date(w.date).getTime()+5.5*60*60*1000).toISOString().slice(0,10) : w.date.slice(0,10);
+    const _wd = w.date instanceof Date ? w.date.toISOString() : String(w.date);
+    const dateStr = _wd.includes('T') ? new Date(new Date(_wd).getTime()+IST_MS).toISOString().slice(0,10) : _wd.slice(0,10);
     await sql`DELETE FROM attendance_records WHERE employee_id=${w.employee_id} AND date::date=${dateStr}::date AND source='wfh'`.catch(()=>{});
     res.json(w);
   } catch { res.status(500).json({ error: 'Server error' }); }
