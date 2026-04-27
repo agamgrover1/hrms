@@ -27,7 +27,7 @@ export default function Config() {
   // ── Shifts ───────────────────────────────────────────────────────────────────
   const [shifts, setShifts] = useState<any[]>([]);
   const [editingShift, setEditingShift] = useState<any | null>(null);
-  const [newShift, setNewShift] = useState({ name: '', start_time: '09:00', end_time: '18:00', late_after: '09:00' });
+  const [newShift, setNewShift] = useState({ name: '', start_time: '09:00', end_time: '18:00', late_after: '10:00' });
   const [showAddShift, setShowAddShift] = useState(false);
   const [savingShift, setSavingShift] = useState(false);
 
@@ -82,7 +82,7 @@ export default function Config() {
     try {
       const s = await api.addConfigShift(newShift);
       setShifts(prev => [...prev, s]);
-      setNewShift({ name: '', start_time: '09:00', end_time: '18:00', late_after: '09:00' });
+      setNewShift({ name: '', start_time: '09:00', end_time: '18:00', late_after: '10:00' });
       setShowAddShift(false);
     } catch (e: any) { setError(e.message ?? 'Failed'); }
     finally { setSavingShift(false); }

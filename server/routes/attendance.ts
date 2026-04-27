@@ -122,8 +122,8 @@ async function getShiftConfig(): Promise<Record<string, { start: string; end: st
     _shiftCacheTs = Date.now();
     return cfg;
   } catch {
-    // fallback: any punch after shift start = Late (no grace period)
-    return { day: { start: '09:00', end: '18:00', lateAfter: '09:00' }, night: { start: '18:30', end: '03:30', lateAfter: '18:30' } };
+    // fallback: Late if punch-in > 1 hour after shift start
+    return { day: { start: '09:00', end: '18:00', lateAfter: '10:00' }, night: { start: '18:30', end: '03:30', lateAfter: '19:30' } };
   }
 }
 
@@ -135,7 +135,7 @@ function isLateForShiftCfg(inTime: string, cfg: { lateAfter: string }): boolean 
 
 // Sync fallback (uses cached value or hardcoded default)
 function isLateForShift(inTime: string, shift: string): boolean {
-  const cfg = _shiftCache?.[shift] ?? { lateAfter: '09:00' };
+  const cfg = _shiftCache?.[shift] ?? { lateAfter: '10:00' };
   return isLateForShiftCfg(inTime, cfg);
 }
 
