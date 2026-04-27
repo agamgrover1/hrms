@@ -35,12 +35,9 @@ const router = Router();
     for (const d of defaultDepts) {
       await sql`INSERT INTO config_departments (id, name) VALUES (${d.toLowerCase().replace(/\s+/g,'-')}, ${d}) ON CONFLICT (id) DO NOTHING`;
     }
-    // Seed default shifts — late_after = shift start + 1 hour (Late if punch-in > 1hr past start)
+    // Seed default shifts — only if rows don't exist, never overrides HR-configured values
     await sql`INSERT INTO config_shifts (id, name, start_time, end_time, late_after) VALUES ('day','Day Shift','09:00','18:00','10:00') ON CONFLICT (id) DO NOTHING`;
     await sql`INSERT INTO config_shifts (id, name, start_time, end_time, late_after) VALUES ('night','Night Shift','18:30','03:30','19:30') ON CONFLICT (id) DO NOTHING`;
-    // One-time fix: restore correct values if yesterday's bad migration reset them to start_time
-    await sql`UPDATE config_shifts SET late_after='10:00' WHERE id='day'   AND late_after='09:00'`;
-    await sql`UPDATE config_shifts SET late_after='19:30' WHERE id='night' AND late_after='18:30'`;
   } catch (e) { console.error('[config migration]', e); }
 })();
 

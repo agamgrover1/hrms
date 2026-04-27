@@ -229,7 +229,8 @@ app.post('/api/attendance/clock-in', async (req, res) => {
     const time = now.toTimeString().slice(0, 5);
     const empRow = await sql`SELECT shift FROM employees WHERE id=${employee_id}` as any[];
     const empShift = empRow[0]?.shift ?? 'day';
-    const status = isLateV(time, empShift) ? 'late' : 'present';
+    const lateAfter = await getShiftLateAfterV(empShift);
+    const status = isLateByTime(time, lateAfter) ? 'late' : 'present';
     const rows = await sql`
       INSERT INTO attendance_records (employee_id, date, check_in, status, total_hours)
       VALUES (${employee_id}, ${today}, ${time}, ${status}, 0)
@@ -285,13 +286,16 @@ const ET_STATUS_MAP: Record<string, string> = {
 };
 
 // Late if punch-in is more than 1 hour after shift start
-const SHIFT_CFG: Record<string, { lateAfter: string }> = {
-  day:   { lateAfter: '10:00' },
-  night: { lateAfter: '19:30' },
-};
-function isLateV(inTime: string, shift: string): boolean {
-  const [lh,lm] = (SHIFT_CFG[shift] ?? SHIFT_CFG.day).lateAfter.split(':').map(Number);
-  const [ch,cm] = inTime.split(':').map(Number);
+// Load shift late_after from DB — never hardcoded so Config changes take effect immediately
+async function getShiftLateAfterV(shift: string): Promise<string> {
+  try {
+    const rows = await sql`SELECT late_after FROM config_shifts WHERE id=${shift}`;
+    return (rows[0] as any)?.late_after ?? '10:00';
+  } catch { return '10:00'; }
+}
+function isLateByTime(inTime: string, lateAfter: string): boolean {
+  const [lh, lm] = lateAfter.split(':').map(Number);
+  const [ch, cm] = inTime.split(':').map(Number);
   return ch > lh || (ch === lh && cm > lm);
 }
 function parseEtTimeV(t: string|null): string|null {
@@ -330,6 +334,10 @@ async function runBiometricSyncV(trigger: string, triggeredBy?: string, fromDate
     empMap.set(key, e.id);
     shiftMap.set(e.id, e.shift ?? 'day');
   }
+  // Load late_after per shift from DB — reflects HR config changes
+  const shiftCfgRows = await sql`SELECT id, late_after FROM config_shifts` as any[];
+  const shiftLateAfter = Object.fromEntries(shiftCfgRows.map((r: any) => [r.id, r.late_after]));
+
   const syncId = crypto.randomUUID();
   let updated = 0, created = 0;
 
@@ -345,8 +353,9 @@ async function runBiometricSyncV(trigger: string, triggeredBy?: string, fromDate
     const inTime  = parseEtTimeV(rec.INTime);
     const outTime = parseEtTimeV(rec.OUTTime);
     const empShift = shiftMap.get(iid) ?? 'day';
+    const lateAfter = shiftLateAfter[empShift] ?? '10:00';
     const status  = inTime
-      ? (isLateV(inTime, empShift) ? 'late' : 'present')
+      ? (isLateByTime(inTime, lateAfter) ? 'late' : 'present')
       : (ET_STATUS_MAP[(rec.Status??'A').toUpperCase()] ?? 'absent');
     if (isWeekendV(recDate)) continue; // Sat/Sun are non-working days
     if (status === 'holiday' && !inTime) continue;
@@ -995,11 +1004,9 @@ async function ensureConfigTables() {
   for (const d of depts) {
     await sql`INSERT INTO config_departments (id,name) VALUES (${d.toLowerCase().replace(/\s+/g,'-')},${d}) ON CONFLICT (id) DO NOTHING`;
   }
+  // Only seeds if rows don't exist — never overrides HR-configured values
   await sql`INSERT INTO config_shifts (id,name,start_time,end_time,late_after) VALUES ('day','Day Shift','09:00','18:00','10:00') ON CONFLICT (id) DO NOTHING`;
   await sql`INSERT INTO config_shifts (id,name,start_time,end_time,late_after) VALUES ('night','Night Shift','18:30','03:30','19:30') ON CONFLICT (id) DO NOTHING`;
-  // One-time fix: restore correct values if bad migration reset them to start_time
-  await sql`UPDATE config_shifts SET late_after='10:00' WHERE id='day'   AND late_after='09:00'`;
-  await sql`UPDATE config_shifts SET late_after='19:30' WHERE id='night' AND late_after='18:30'`;
 }
 
 app.get('/api/config/departments', async (_req, res) => {
