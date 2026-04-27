@@ -35,6 +35,8 @@ const statusConfig = {
   unpaid_leave: { label: 'Unpaid Leave', color: 'bg-rose-50 text-rose-600',     dot: 'bg-rose-400' },
   weekend:      { label: 'Weekend',      color: 'bg-gray-50 text-gray-400',     dot: 'bg-gray-300' },
   holiday:      { label: 'Holiday',      color: 'bg-purple-50 text-purple-500', dot: 'bg-purple-400' },
+  wfh:          { label: 'Work From Home',    color: 'bg-teal-50 text-teal-600',    dot: 'bg-teal-500' },
+  wfh_half:     { label: 'Half Day WFH',      color: 'bg-teal-50 text-teal-500',    dot: 'bg-teal-400' },
 };
 
 function generateCalendarDays(year: number, month: number) {
@@ -575,7 +577,7 @@ export default function Attendance() {
             })}
           </div>
           <div className="mt-4 flex flex-wrap gap-3">
-            {['present', 'absent', 'late', 'half-day', 'short_leave', 'on_leave', 'unpaid_leave', 'weekend'].map(s => {
+            {['present', 'absent', 'late', 'half-day', 'short_leave', 'on_leave', 'unpaid_leave', 'wfh', 'wfh_half', 'weekend'].map(s => {
               const cfg = statusConfig[s as keyof typeof statusConfig];
               return (
                 <div key={s} className="flex items-center gap-1.5 text-xs text-gray-500">

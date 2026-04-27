@@ -1,5 +1,5 @@
 import { useState, useEffect, Component, type ReactNode } from 'react';
-import { Clock, Calendar, DollarSign, User, CheckCircle, XCircle, AlertCircle, Plus, X, Target, FileText, Lock, Trash2, Save, Users } from 'lucide-react';
+import { Clock, Calendar, DollarSign, User, CheckCircle, XCircle, AlertCircle, Plus, X, Target, FileText, Lock, Trash2, Save, Users, Monitor } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
 import { api } from '../../services/api';
 
@@ -55,6 +55,7 @@ const baseTabs = [
   { key: 'overview',     label: 'Overview',     icon: User },
   { key: 'attendance',   label: 'Attendance',   icon: Clock },
   { key: 'leave',        label: 'My Leaves',    icon: Calendar },
+  { key: 'wfh',          label: 'Work From Home', icon: Monitor },
   { key: 'payslip',      label: 'Pay Slip',     icon: DollarSign },
   { key: 'performance',  label: 'Performance',  icon: Target },
 ];
@@ -90,6 +91,8 @@ const statusConfig = {
   unpaid_leave: { label: 'Unpaid Leave', color: 'bg-rose-50 text-rose-600',     dot: 'bg-rose-400' },
   weekend:      { label: 'Weekend',      color: 'bg-gray-50 text-gray-400',     dot: 'bg-gray-300' },
   holiday:      { label: 'Holiday',      color: 'bg-purple-50 text-purple-500', dot: 'bg-purple-400' },
+  wfh:          { label: 'Work From Home',    color: 'bg-teal-50 text-teal-600',    dot: 'bg-teal-500' },
+  wfh_half:     { label: 'Half Day WFH',      color: 'bg-teal-50 text-teal-500',    dot: 'bg-teal-400' },
 };
 
 const leaveStatusConfig = {
@@ -185,6 +188,10 @@ export default function MyPortal() {
   const { user } = useAuth();
   const [tab, setTab] = useState('overview');
   const [applyLeave, setApplyLeave] = useState(false);
+  const [wfhRequests, setWfhRequests] = useState<any[]>([]);
+  const [applyWfh, setApplyWfh] = useState(false);
+  const [wfhForm, setWfhForm] = useState({ date: '', type: 'full_day', reason: '' });
+  const [savingWfh, setSavingWfh] = useState(false);
   const [attendance, setAttendance] = useState<any[]>([]);
   const [leaves, setLeaves] = useState<any[]>([]);
   const [payroll, setPayroll] = useState<any | null>(null);
@@ -242,9 +249,11 @@ export default function MyPortal() {
         api.getLeaveBalance(emp.id).catch(() => ({ casual: 10, sick: 7, earned: 15 })),
         api.getMonthlyPerformance(emp.id, currentYear),
         api.getAppraisalGoals({ employee_id: emp.id }),
-      ]).then(([att, lv, pay, bal, perf, appraisals]) => {
+        api.getWfhRequests({ employee_id: emp.id }),
+      ]).then(([att, lv, pay, bal, perf, appraisals, wfh]) => {
         setAttendance(att);
         setLeaves(lv);
+        setWfhRequests(Array.isArray(wfh) ? wfh : []);
         setPayroll(Array.isArray(pay) ? pay[0] : pay);
         setBalance(bal);
         setMonthlyPerf(perf);
@@ -762,6 +771,166 @@ export default function MyPortal() {
           {applyLeave && <ApplyLeaveModal onClose={() => setApplyLeave(false)} onSubmit={handleApplyLeave} balance={balance} />}
         </div>
         </TabErrorBoundary>
+      )}
+
+      {/* ── Work From Home ── */}
+      {tab === 'wfh' && (
+        <div className="space-y-4">
+          <div className="flex justify-end">
+            <button onClick={() => { setApplyWfh(true); setWfhForm({ date: '', type: 'full_day', reason: '' }); }}
+              className="flex items-center gap-2 px-4 py-2.5 text-white text-sm font-semibold rounded-xl shadow-sm"
+              style={{ background: 'linear-gradient(135deg, #0d9488 0%, #0f766e 100%)' }}>
+              <Plus size={15} /> Apply WFH
+            </button>
+          </div>
+
+          {/* WFH request list */}
+          <div className="bg-white rounded-xl border border-gray-100 shadow-sm overflow-hidden">
+            {wfhRequests.length === 0 ? (
+              <div className="flex flex-col items-center justify-center py-16 gap-2">
+                <Monitor size={32} className="text-gray-200" />
+                <p className="text-sm text-gray-400">No WFH requests yet</p>
+              </div>
+            ) : (
+              <div className="overflow-x-auto">
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr className="bg-gray-50 border-b border-gray-100">
+                      {['Date', 'Type', 'Reason', 'Applied On', 'Status', 'Action'].map(h => (
+                        <th key={h} className="text-left text-xs font-semibold text-gray-500 px-4 py-3 uppercase tracking-wide whitespace-nowrap">{h}</th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {wfhRequests.map(w => {
+                      const statusColor: Record<string,string> = {
+                        approved: 'bg-teal-50 text-teal-700 border-teal-200',
+                        rejected: 'bg-red-50 text-red-600 border-red-200',
+                        pending:  'bg-amber-50 text-amber-600 border-amber-200',
+                        cancelled:'bg-gray-100 text-gray-500 border-gray-200',
+                      };
+                      return (
+                        <tr key={w.id} className="border-b border-gray-50 last:border-0">
+                          <td className="px-4 py-3 font-medium text-gray-800 whitespace-nowrap">
+                            {parseLocalDate(w.date).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' })}
+                          </td>
+                          <td className="px-4 py-3 whitespace-nowrap">
+                            <span className="text-xs font-semibold px-2 py-1 rounded-full bg-teal-50 text-teal-700">
+                              {w.type === 'half_day' ? 'Half Day' : 'Full Day'}
+                            </span>
+                          </td>
+                          <td className="px-4 py-3 text-gray-500 max-w-[160px] truncate">{w.reason}</td>
+                          <td className="px-4 py-3 text-xs text-gray-400 whitespace-nowrap">
+                            {new Date(w.created_at).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' })}
+                          </td>
+                          <td className="px-4 py-3">
+                            <div className="space-y-1">
+                              <span className={`inline-flex items-center text-xs px-2.5 py-0.5 rounded-full border font-medium ${statusColor[w.status] ?? 'bg-gray-50 text-gray-500 border-gray-200'}`}>
+                                {w.status.charAt(0).toUpperCase() + w.status.slice(1)}
+                              </span>
+                              {w.manager_status === 'approved' && w.status === 'pending' && (
+                                <p className="text-xs text-green-600">✓ Manager approved</p>
+                              )}
+                              {w.manager_status === 'rejected' && (
+                                <p className="text-xs text-red-500">✕ Manager rejected</p>
+                              )}
+                            </div>
+                          </td>
+                          <td className="px-4 py-3">
+                            {(w.status === 'pending' || w.status === 'approved') && (
+                              <button
+                                onClick={async () => {
+                                  const reason = prompt('Reason for cancellation (required):');
+                                  if (!reason?.trim()) return;
+                                  await api.cancelWfh(w.id, user?.name ?? 'Employee', reason.trim());
+                                  setWfhRequests(prev => prev.map(x => x.id === w.id ? { ...x, status: 'cancelled' } : x));
+                                }}
+                                className="text-xs px-2.5 py-1 bg-gray-100 text-gray-600 rounded-md hover:bg-gray-200 font-medium whitespace-nowrap">
+                                Cancel
+                              </button>
+                            )}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+
+          {/* Apply WFH modal */}
+          {applyWfh && (
+            <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 backdrop-blur-sm p-4">
+              <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md">
+                <div className="flex items-center justify-between px-6 py-4 border-b border-gray-100">
+                  <div className="flex items-center gap-3">
+                    <div className="w-9 h-9 rounded-lg flex items-center justify-center" style={{ background: '#f0fdfa' }}>
+                      <Monitor size={17} className="text-teal-600" />
+                    </div>
+                    <h2 className="text-base font-semibold text-gray-900">Apply Work From Home</h2>
+                  </div>
+                  <button onClick={() => setApplyWfh(false)} className="p-1.5 hover:bg-gray-100 rounded-lg">
+                    <X size={16} className="text-gray-400" />
+                  </button>
+                </div>
+                <div className="p-6 space-y-4">
+                  <div>
+                    <label className="text-xs font-medium text-gray-600 mb-1 block">Date <span className="text-red-400">*</span></label>
+                    <input type="date" value={wfhForm.date}
+                      onChange={e => setWfhForm(f => ({ ...f, date: e.target.value }))}
+                      className="w-full text-sm border border-gray-200 rounded-lg px-3 py-2.5 focus:outline-none focus:ring-2 focus:ring-teal-200" />
+                  </div>
+                  <div>
+                    <label className="text-xs font-medium text-gray-600 mb-1 block">Type</label>
+                    <div className="flex gap-3">
+                      {[{ key: 'full_day', label: 'Full Day' }, { key: 'half_day', label: 'Half Day' }].map(t => (
+                        <button key={t.key} type="button"
+                          onClick={() => setWfhForm(f => ({ ...f, type: t.key }))}
+                          className={`flex-1 py-2.5 rounded-lg border text-sm font-medium transition-all ${wfhForm.type === t.key ? 'border-teal-500 bg-teal-50 text-teal-700' : 'border-gray-200 text-gray-600 hover:border-gray-300'}`}>
+                          {t.label}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                  <div>
+                    <label className="text-xs font-medium text-gray-600 mb-1 block">Reason <span className="text-red-400">*</span></label>
+                    <textarea value={wfhForm.reason} onChange={e => setWfhForm(f => ({ ...f, reason: e.target.value }))}
+                      rows={3} placeholder="Briefly describe the reason for WFH..."
+                      className="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm focus:outline-none resize-none" />
+                  </div>
+                  <div className="flex gap-3 pt-1">
+                    <button onClick={() => setApplyWfh(false)}
+                      className="flex-1 py-2.5 border border-gray-200 rounded-lg text-sm font-medium text-gray-600 hover:bg-gray-50">
+                      Cancel
+                    </button>
+                    <button
+                      disabled={savingWfh || !wfhForm.date || !wfhForm.reason?.trim()}
+                      onClick={async () => {
+                        setSavingWfh(true);
+                        try {
+                          const created = await api.applyWfh({
+                            employee_id: empDbId,
+                            employee_name: user?.name,
+                            date: wfhForm.date,
+                            type: wfhForm.type,
+                            reason: wfhForm.reason.trim(),
+                          });
+                          setWfhRequests(prev => [created, ...prev]);
+                          setApplyWfh(false);
+                        } catch { /* ignore */ }
+                        finally { setSavingWfh(false); }
+                      }}
+                      className="flex-1 py-2.5 text-white rounded-lg text-sm font-semibold disabled:opacity-60"
+                      style={{ background: 'linear-gradient(135deg, #0d9488 0%, #0f766e 100%)' }}>
+                      {savingWfh ? 'Submitting…' : 'Submit WFH Request'}
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
       )}
 
       {/* ── Pay Slip ── */}

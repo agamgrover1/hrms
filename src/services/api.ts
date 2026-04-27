@@ -122,6 +122,23 @@ export const api = {
   selfUpdateGoalStatuses: (data: { employee_id: string; year: number; month: number; employee_statuses: { index: number; employee_status: string }[] }) =>
     request<any>('/performance/appraisal-goals/self-update', { method: 'PATCH', body: JSON.stringify(data) }),
 
+  // WFH
+  getWfhRequests: (params?: { employee_id?: string; status?: string; reporting_manager_id?: string }) => {
+    const qs = new URLSearchParams();
+    if (params?.employee_id) qs.set('employee_id', params.employee_id);
+    if (params?.status) qs.set('status', params.status);
+    if (params?.reporting_manager_id) qs.set('reporting_manager_id', params.reporting_manager_id);
+    return request<any[]>(`/wfh/requests?${qs}`);
+  },
+  applyWfh: (data: { employee_id: string; employee_name?: string; date: string; type: string; reason: string }) =>
+    request<any>('/wfh/requests', { method: 'POST', body: JSON.stringify(data) }),
+  managerApproveWfh: (id: string, data: { status: 'approved' | 'rejected'; manager_id: string; manager_name?: string; rejection_reason?: string }) =>
+    request<any>(`/wfh/requests/${id}/manager-approve`, { method: 'PATCH', body: JSON.stringify(data) }),
+  hrApproveWfh: (id: string, data: { status: 'approved' | 'rejected'; actioner_name?: string; rejection_reason?: string }) =>
+    request<any>(`/wfh/requests/${id}`, { method: 'PATCH', body: JSON.stringify(data) }),
+  cancelWfh: (id: string, cancelled_by: string, cancellation_reason: string) =>
+    request<any>(`/wfh/requests/${id}/cancel`, { method: 'PATCH', body: JSON.stringify({ cancelled_by, cancellation_reason }) }),
+
   // Configuration
   getConfigDepartments: () => request<any[]>('/config/departments'),
   addConfigDepartment: (name: string) => request<any>('/config/departments', { method: 'POST', body: JSON.stringify({ name }) }),

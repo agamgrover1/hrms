@@ -10,6 +10,7 @@ import performanceRoutes from './routes/performance';
 import userRoutes from './routes/users';
 import notificationRoutes from './routes/notifications';
 import configRoutes from './routes/config';
+import wfhRoutes from './routes/wfh';
 
 // Add audit columns to leave_requests if they don't exist yet
 (async () => {
@@ -52,6 +53,7 @@ app.use('/api/performance', performanceRoutes);
 app.use('/api/users', userRoutes);
 app.use('/api/notifications', notificationRoutes);
 app.use('/api/config', configRoutes);
+app.use('/api/wfh', wfhRoutes);
 
 app.get('/api/health', (_, res) => res.json({ status: 'ok' }));
 

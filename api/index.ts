@@ -359,6 +359,9 @@ async function runBiometricSyncV(trigger: string, triggeredBy?: string, fromDate
       : (ET_STATUS_MAP[(rec.Status??'A').toUpperCase()] ?? 'absent');
     if (isWeekendV(recDate)) continue; // Sat/Sun are non-working days
     if (status === 'holiday' && !inTime) continue;
+    // Preserve approved WFH — don't let biometric override
+    const wfhCheck = await sql`SELECT id FROM wfh_requests WHERE employee_id=${iid} AND date::date=${recDate}::date AND status='approved'`.catch(() => []);
+    if ((wfhCheck as any[]).length > 0) continue;
     const hours = parseEtWorkTimeV(rec.WorkTime);
     const ex  = await sql`SELECT * FROM attendance_records WHERE employee_id=${iid} AND date=${recDate}` as any[];
     const had = ex.length > 0; const old = ex[0] ?? {};
@@ -1072,6 +1075,83 @@ app.put('/api/config/shifts/:id', async (req, res) => {
 app.delete('/api/config/shifts/:id', async (req, res) => {
   try { await sql`DELETE FROM config_shifts WHERE id=${req.params.id}`; res.json({ success: true }); }
   catch { res.status(500).json({ error: 'Server error' }); }
+});
+
+// ── WFH ───────────────────────────────────────────────────────────────────
+async function ensureWfhTable() {
+  await sql`CREATE TABLE IF NOT EXISTS wfh_requests (
+    id TEXT PRIMARY KEY, employee_id TEXT NOT NULL, employee_name TEXT,
+    date DATE NOT NULL, type TEXT NOT NULL DEFAULT 'full_day', reason TEXT,
+    status TEXT NOT NULL DEFAULT 'pending', manager_status TEXT NOT NULL DEFAULT 'pending',
+    manager_id TEXT, manager_name TEXT, manager_approved_at TIMESTAMPTZ,
+    manager_rejection_reason TEXT, hr_actioner_name TEXT, hr_actioned_at TIMESTAMPTZ,
+    rejection_reason TEXT, cancelled_by TEXT, cancelled_at TIMESTAMPTZ,
+    cancellation_reason TEXT, applied_on TIMESTAMPTZ DEFAULT NOW(), created_at TIMESTAMPTZ DEFAULT NOW()
+  )`;
+}
+app.get('/api/wfh/requests', async (req, res) => {
+  try {
+    await ensureWfhTable();
+    const { employee_id, status, reporting_manager_id } = req.query as any;
+    let rows;
+    if (reporting_manager_id) {
+      rows = await sql`SELECT wr.* FROM wfh_requests wr JOIN employees e ON e.id=wr.employee_id WHERE e.reporting_manager_id=${reporting_manager_id} AND wr.manager_status='pending' AND wr.status='pending' ORDER BY wr.applied_on DESC`;
+    } else if (employee_id) {
+      rows = await sql`SELECT * FROM wfh_requests WHERE employee_id=${employee_id} ORDER BY applied_on DESC`;
+    } else if (status) {
+      rows = await sql`SELECT * FROM wfh_requests WHERE status=${status} ORDER BY applied_on DESC`;
+    } else {
+      rows = await sql`SELECT * FROM wfh_requests ORDER BY applied_on DESC`;
+    }
+    res.json(rows);
+  } catch { res.status(500).json({ error: 'Server error' }); }
+});
+app.post('/api/wfh/requests', async (req, res) => {
+  try {
+    await ensureWfhTable();
+    const { employee_id, employee_name, date, type, reason } = req.body;
+    const id = `wfh_${Date.now()}`;
+    const rows = await sql`INSERT INTO wfh_requests (id,employee_id,employee_name,date,type,reason) VALUES (${id},${employee_id},${employee_name??null},${date},${type},${reason??null}) RETURNING *`;
+    res.status(201).json(rows[0]);
+  } catch (e: any) { res.status(500).json({ error: e.message }); }
+});
+app.patch('/api/wfh/requests/:id/manager-approve', async (req, res) => {
+  try {
+    const { status, manager_id, manager_name, rejection_reason } = req.body;
+    if (status === 'rejected') {
+      const rows = await sql`UPDATE wfh_requests SET manager_status='rejected',manager_id=${manager_id??null},manager_name=${manager_name??null},manager_approved_at=NOW(),manager_rejection_reason=${rejection_reason??null},status='rejected' WHERE id=${req.params.id} RETURNING *`;
+      return res.json(rows[0]);
+    }
+    const rows = await sql`UPDATE wfh_requests SET manager_status='approved',manager_id=${manager_id??null},manager_name=${manager_name??null},manager_approved_at=NOW() WHERE id=${req.params.id} RETURNING *`;
+    res.json(rows[0]);
+  } catch { res.status(500).json({ error: 'Server error' }); }
+});
+app.patch('/api/wfh/requests/:id', async (req, res) => {
+  try {
+    const { status, actioner_name, rejection_reason } = req.body;
+    const rows = await sql`UPDATE wfh_requests SET status=${status},hr_actioner_name=${actioner_name??null},hr_actioned_at=NOW(),rejection_reason=${status==='rejected'?(rejection_reason??null):null} WHERE id=${req.params.id} RETURNING *`;
+    if (!rows.length) return res.status(404).json({ error: 'Not found' });
+    const w = rows[0] as any;
+    const dateStr = w.date.includes('T') ? new Date(new Date(w.date).getTime()+5.5*60*60*1000).toISOString().slice(0,10) : w.date.slice(0,10);
+    const wfhStatus = w.type === 'half_day' ? 'wfh_half' : 'wfh';
+    if (status === 'approved') {
+      await sql`INSERT INTO attendance_records (employee_id,date,status,total_hours,source) VALUES (${w.employee_id},${dateStr},${wfhStatus},0,'wfh') ON CONFLICT (employee_id,date) DO UPDATE SET status=${wfhStatus},source='wfh'`.catch(()=>{});
+    } else {
+      await sql`DELETE FROM attendance_records WHERE employee_id=${w.employee_id} AND date::date=${dateStr}::date AND source='wfh'`.catch(()=>{});
+    }
+    res.json(w);
+  } catch { res.status(500).json({ error: 'Server error' }); }
+});
+app.patch('/api/wfh/requests/:id/cancel', async (req, res) => {
+  try {
+    const { cancelled_by, cancellation_reason } = req.body;
+    const rows = await sql`UPDATE wfh_requests SET status='cancelled',cancelled_by=${cancelled_by??null},cancelled_at=NOW(),cancellation_reason=${cancellation_reason??null} WHERE id=${req.params.id} AND status IN ('pending','approved') RETURNING *`;
+    if (!rows.length) return res.status(404).json({ error: 'Not found or not cancellable' });
+    const w = rows[0] as any;
+    const dateStr = w.date.includes('T') ? new Date(new Date(w.date).getTime()+5.5*60*60*1000).toISOString().slice(0,10) : w.date.slice(0,10);
+    await sql`DELETE FROM attendance_records WHERE employee_id=${w.employee_id} AND date::date=${dateStr}::date AND source='wfh'`.catch(()=>{});
+    res.json(w);
+  } catch { res.status(500).json({ error: 'Server error' }); }
 });
 
 // ── Users ─────────────────────────────────────────────────────────────────

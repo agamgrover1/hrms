@@ -279,6 +279,7 @@ function EmployeeLeaveBalance({ balance }: { balance: any }) {
 
 export default function Leave() {
   const { user } = useAuth();
+  const [pageView, setPageView] = useState<'leaves' | 'wfh'>('leaves');
   const [tab, setTab] = useState<'all' | 'pending' | 'approved' | 'rejected' | 'cancelled'>('all');
   const [showApply, setShowApply] = useState(false);
   const [rejectTarget, setRejectTarget] = useState<string | null>(null);
@@ -286,6 +287,10 @@ export default function Leave() {
   const [requests, setRequests] = useState<any[]>([]);
   const [balance, setBalance] = useState<any>(null);
   const [loading, setLoading] = useState(true);
+  // WFH
+  const [wfhRequests, setWfhRequests] = useState<any[]>([]);
+  const [wfhTab, setWfhTab] = useState<'all' | 'pending' | 'approved' | 'rejected'>('all');
+  const [rejectWfhTarget, setRejectWfhTarget] = useState<string | null>(null);
 
   // Employee filter
   const [employees, setEmployees] = useState<any[]>([]);
@@ -301,6 +306,7 @@ export default function Leave() {
       api.getEmployees().then(emps => setEmployees(emps)),
       loadRequests(),
       api.getLeaveBalance('e5').then(setBalance).catch(() => {}),
+      api.getWfhRequests().then(setWfhRequests).catch(() => {}),
     ]).finally(() => setLoading(false));
   }, []);
 
@@ -358,6 +364,115 @@ export default function Leave() {
 
   return (
     <div className="space-y-5">
+      {/* Page view switcher */}
+      <div className="flex gap-1 bg-white rounded-xl p-1 border border-gray-100 shadow-sm w-fit">
+        {([
+          { key: 'leaves', label: 'Leave Management' },
+          { key: 'wfh',    label: 'Work From Home'   },
+        ] as const).map(v => (
+          <button key={v.key} onClick={() => setPageView(v.key)}
+            className="px-4 py-2 rounded-lg text-sm font-semibold transition-all"
+            style={pageView === v.key ? { background: '#192250', color: '#fff' } : { color: '#6b7280' }}>
+            {v.label}
+          </button>
+        ))}
+      </div>
+
+      {/* ── WFH management view ─────────────────────────────────────────────── */}
+      {pageView === 'wfh' && (
+        <div className="space-y-4">
+          <div className="flex gap-1 bg-gray-100 p-1 rounded-lg w-fit">
+            {(['all','pending','approved','rejected'] as const).map(t => (
+              <button key={t} onClick={() => setWfhTab(t)}
+                className={`px-3 py-1.5 text-sm font-medium rounded-md capitalize transition-all ${wfhTab === t ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500 hover:text-gray-700'}`}>
+                {t}
+              </button>
+            ))}
+          </div>
+          <div className="bg-white rounded-2xl border border-gray-100 shadow-sm overflow-hidden">
+            {(wfhTab === 'all' ? wfhRequests : wfhRequests.filter(w => w.status === wfhTab)).length === 0 ? (
+              <p className="text-center text-gray-400 text-sm py-16">No WFH requests</p>
+            ) : (
+              <div className="overflow-x-auto">
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr className="bg-gray-50 border-b border-gray-100">
+                      {['Employee','Date','Type','Reason','Applied On','Manager','Status','Action'].map(h => (
+                        <th key={h} className="text-left text-xs font-semibold text-gray-500 px-4 py-3 uppercase tracking-wide whitespace-nowrap">{h}</th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {(wfhTab === 'all' ? wfhRequests : wfhRequests.filter(w => w.status === wfhTab)).map(w => (
+                      <tr key={w.id} className="border-b border-gray-50 last:border-0">
+                        <td className="px-4 py-3 font-medium text-gray-800">{w.employee_name}</td>
+                        <td className="px-4 py-3 whitespace-nowrap text-gray-600">
+                          {parseLocalDate(w.date).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' })}
+                        </td>
+                        <td className="px-4 py-3">
+                          <span className="text-xs font-semibold px-2 py-0.5 rounded-full bg-teal-50 text-teal-700">
+                            {w.type === 'half_day' ? 'Half Day' : 'Full Day'}
+                          </span>
+                        </td>
+                        <td className="px-4 py-3 text-gray-500 max-w-[140px] truncate">{w.reason}</td>
+                        <td className="px-4 py-3 text-xs text-gray-400 whitespace-nowrap">
+                          {new Date(w.created_at).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' })}
+                        </td>
+                        <td className="px-4 py-3 text-xs">
+                          {w.manager_status === 'approved' && <span className="text-green-600 font-semibold">✓ {w.manager_name}</span>}
+                          {w.manager_status === 'rejected' && <span className="text-red-500 font-semibold">✕ Rejected</span>}
+                          {w.manager_status === 'pending' && <span className="text-amber-500">Pending</span>}
+                        </td>
+                        <td className="px-4 py-3">
+                          <span className={`text-xs px-2.5 py-0.5 rounded-full border font-medium ${
+                            w.status === 'approved' ? 'bg-teal-50 text-teal-700 border-teal-200' :
+                            w.status === 'rejected' ? 'bg-red-50 text-red-600 border-red-200' :
+                            w.status === 'cancelled' ? 'bg-gray-100 text-gray-500 border-gray-200' :
+                            'bg-amber-50 text-amber-600 border-amber-200'}`}>
+                            {w.status.charAt(0).toUpperCase() + w.status.slice(1)}
+                          </span>
+                        </td>
+                        <td className="px-4 py-3">
+                          {w.status === 'pending' && w.manager_status === 'approved' && (
+                            <div className="flex gap-1.5">
+                              <button onClick={async () => {
+                                await api.hrApproveWfh(w.id, { status: 'approved', actioner_name: user?.name });
+                                setWfhRequests(prev => prev.map(x => x.id === w.id ? { ...x, status: 'approved', hr_actioner_name: user?.name } : x));
+                              }} className="text-xs px-2.5 py-1 bg-teal-500 text-white rounded-md font-medium hover:bg-teal-600">Approve</button>
+                              <button onClick={() => setRejectWfhTarget(w.id)}
+                                className="text-xs px-2.5 py-1 bg-red-50 text-red-600 rounded-md font-medium hover:bg-red-100">Reject</button>
+                            </div>
+                          )}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+          {/* Reject WFH modal */}
+          {rejectWfhTarget && (
+            <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 backdrop-blur-sm p-4">
+              <div className="bg-white rounded-2xl shadow-2xl w-full max-w-sm p-6">
+                <div className="flex items-center justify-between mb-4">
+                  <h3 className="text-base font-semibold">Reject WFH Request</h3>
+                  <button onClick={() => setRejectWfhTarget(null)}><X size={16} className="text-gray-400" /></button>
+                </div>
+                <RejectReasonModal title="Reason for rejection" onClose={() => setRejectWfhTarget(null)}
+                  onConfirm={async (reason) => {
+                    await api.hrApproveWfh(rejectWfhTarget, { status: 'rejected', actioner_name: user?.name, rejection_reason: reason });
+                    setWfhRequests(prev => prev.map(x => x.id === rejectWfhTarget ? { ...x, status: 'rejected' } : x));
+                    setRejectWfhTarget(null);
+                  }} />
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* ── Leave management view ─────────────────────────────────────────────── */}
+      {pageView === 'leaves' && <>
       {/* Leave Balance (own) */}
       <div className="grid grid-cols-3 gap-4">
         <div className="bg-gradient-to-br from-blue-500 to-blue-400 rounded-xl p-5 text-white">
@@ -554,6 +669,7 @@ export default function Leave() {
           onConfirm={reason => handleCancel(cancelTarget, reason)}
         />
       )}
+      </>}
     </div>
   );
 }

@@ -119,6 +119,11 @@ export default function MyTeam() {
   const [loadingMemberLeaves, setLoadingMemberLeaves] = useState(false);
   const [cancelTarget, setCancelTarget] = useState<string | null>(null);
 
+  // ── WFH state ────────────────────────────────────────────────────────────────
+  const [pendingWfh, setPendingWfh] = useState<any[]>([]);
+  const [approvingWfh, setApprovingWfh] = useState<Record<string, boolean>>({});
+  const [rejectWfhTarget, setRejectWfhTarget] = useState<string | null>(null);
+
   // ── Performance state ───────────────────────────────────────────────────────
   const [teamPerf, setTeamPerf] = useState<Record<string, any[]>>({});
   const [showReview, setShowReview] = useState<any | null>(null);
@@ -146,6 +151,8 @@ export default function MyTeam() {
         if (!members.length) return;
         api.getLeaveRequests({ reporting_manager_id: eid })
           .then(lv => setPendingLeaves(lv.filter((l: any) => l.manager_status === 'pending')));
+        api.getWfhRequests({ reporting_manager_id: eid })
+          .then((wfh: any[]) => setPendingWfh(wfh.filter(w => w.manager_status === 'pending' && w.status === 'pending')));
         members.forEach((m: any) => {
           api.getMonthlyPerformance(m.id, currentYear)
             .then(perf => setTeamPerf(prev => ({ ...prev, [m.id]: perf })));
@@ -190,6 +197,16 @@ export default function MyTeam() {
       ? { ...l, status: 'cancelled', cancelled_by: user?.name, cancelled_at: new Date().toISOString(), cancellation_reason: reason }
       : l));
     if (viewLeavesFor) api.getLeaveBalance(viewLeavesFor.id).then(setMemberBalance).catch(() => {});
+  };
+
+  // ── WFH handler ──────────────────────────────────────────────────────────────
+  const handleApproveWfh = async (id: string, status: 'approved' | 'rejected', reason?: string) => {
+    setApprovingWfh(p => ({ ...p, [id]: true }));
+    try {
+      await api.managerApproveWfh(id, { status, manager_id: empDbId, manager_name: user?.name, rejection_reason: reason });
+      setPendingWfh(p => p.filter(w => w.id !== id));
+    } catch { /* ignore */ }
+    finally { setApprovingWfh(p => ({ ...p, [id]: false })); }
   };
 
   // ── Performance handlers ────────────────────────────────────────────────────
@@ -523,6 +540,44 @@ export default function MyTeam() {
             )}
           </div>
 
+          {/* Pending WFH requests */}
+          {pendingWfh.length > 0 && (
+            <div className="bg-white rounded-2xl border border-gray-100 shadow-sm overflow-hidden">
+              <div className="px-5 py-4 border-b border-gray-100 flex items-center justify-between">
+                <h3 className="font-bold text-sm flex items-center gap-2" style={{ color: '#192250' }}>
+                  <span style={{ color: '#0d9488' }}>⊡</span> Pending WFH Requests
+                </h3>
+                <span className="text-xs font-bold px-2 py-0.5 rounded-full bg-teal-50 text-teal-700">{pendingWfh.length}</span>
+              </div>
+              <div className="divide-y divide-gray-50">
+                {pendingWfh.map(w => (
+                  <div key={w.id} className="flex items-start justify-between px-5 py-4 gap-3">
+                    <div className="flex-1 min-w-0">
+                      <p className="text-sm font-semibold text-gray-800">{w.employee_name}</p>
+                      <p className="text-xs text-gray-400 mt-0.5">
+                        {w.type === 'half_day' ? 'Half Day WFH' : 'Full Day WFH'} · {' '}
+                        {parseLocalDate(w.date).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' })}
+                      </p>
+                      {w.reason && <p className="text-xs text-gray-400 mt-0.5 italic">"{w.reason}"</p>}
+                    </div>
+                    <div className="flex gap-2 flex-shrink-0">
+                      <button onClick={() => handleApproveWfh(w.id, 'approved')} disabled={approvingWfh[w.id]}
+                        className="flex items-center gap-1 px-3 py-1.5 text-xs font-semibold rounded-lg disabled:opacity-50"
+                        style={{ background: '#ccfbf1', color: '#0f766e' }}>
+                        <CheckCircle size={12} /> {approvingWfh[w.id] ? '…' : 'Approve'}
+                      </button>
+                      <button onClick={() => setRejectWfhTarget(w.id)} disabled={approvingWfh[w.id]}
+                        className="flex items-center gap-1 px-3 py-1.5 text-xs font-semibold rounded-lg disabled:opacity-50"
+                        style={{ background: '#fee2e2', color: '#dc2626' }}>
+                        <XCircle size={12} /> Reject
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
           {/* Per-member leave history */}
           <div className="bg-white rounded-2xl border border-gray-100 shadow-sm overflow-hidden">
             <div className="px-5 py-4 border-b border-gray-100">
@@ -822,6 +877,20 @@ export default function MyTeam() {
               confirmLabel="Confirm Cancel" confirmClass="bg-gray-700 hover:bg-gray-800"
               onClose={() => setCancelTarget(null)}
               onConfirm={reason => { handleCancelLeave(cancelTarget, reason); setCancelTarget(null); }} />
+          </div>
+        </div>
+      )}
+
+      {/* ── Reject WFH modal ─────────────────────────────────────────────────── */}
+      {rejectWfhTarget && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 backdrop-blur-sm p-4">
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-sm p-6">
+            <div className="flex items-center justify-between mb-4">
+              <h3 className="text-base font-semibold text-gray-900">Reason for WFH Rejection</h3>
+              <button onClick={() => setRejectWfhTarget(null)}><X size={16} className="text-gray-400" /></button>
+            </div>
+            <RejectInput onClose={() => setRejectWfhTarget(null)}
+              onConfirm={reason => { handleApproveWfh(rejectWfhTarget, 'rejected', reason); setRejectWfhTarget(null); }} />
           </div>
         </div>
       )}

@@ -223,6 +223,11 @@ export async function runBiometricSync(
     if (isWeekend(recDate)) continue;
     // Skip holidays with no clock-in
     if (status === 'holiday' && !inTime) continue;
+    // Preserve approved WFH days — don't let biometric override them
+    const wfhRows = await sql`
+      SELECT id FROM wfh_requests WHERE employee_id=${internalId} AND date::date=${recDate}::date AND status='approved'
+    `.catch(() => []);
+    if ((wfhRows as any[]).length > 0) continue;
 
     // Snapshot pre-sync state for rollback
     const existing = await sql`
