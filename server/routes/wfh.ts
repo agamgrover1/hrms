@@ -94,6 +94,18 @@ router.post('/requests', async (req, res) => {
   try {
     const { employee_id, employee_name, date, type, reason } = req.body;
     if (!employee_id || !date || !type) return res.status(400).json({ error: 'employee_id, date, type are required' });
+
+    // Block WFH during probation
+    const empRows = await sql`SELECT join_date, probation_end_date FROM employees WHERE id = ${employee_id}` as any[];
+    if (empRows.length) {
+      const { join_date, probation_end_date } = empRows[0];
+      const end = probation_end_date
+        ? new Date(probation_end_date instanceof Date ? probation_end_date.toISOString() : String(probation_end_date))
+        : (() => { const d = new Date(join_date instanceof Date ? join_date.toISOString() : String(join_date)); d.setDate(d.getDate() + 90); return d; })();
+      if (new Date() < end) {
+        return res.status(403).json({ error: 'Work From Home is not available during the probation period.' });
+      }
+    }
     const id = `wfh_${Date.now()}`;
     const rows = await sql`
       INSERT INTO wfh_requests (id, employee_id, employee_name, date, type, reason)

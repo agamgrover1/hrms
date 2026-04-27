@@ -410,7 +410,7 @@ export default function Leave() {
                           {parseLocalDate(w.date).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' })}
                         </td>
                         <td className="px-4 py-3">
-                          <span className="text-xs font-semibold px-2 py-0.5 rounded-full bg-teal-50 text-teal-700">
+                          <span className="text-xs font-semibold px-2 py-0.5 rounded-full" style={{ background: 'rgba(25,34,80,0.08)', color: '#192250' }}>
                             {w.type === 'half_day' ? 'Half Day' : 'Full Day'}
                           </span>
                         </td>
@@ -425,7 +425,7 @@ export default function Leave() {
                         </td>
                         <td className="px-4 py-3">
                           <span className={`text-xs px-2.5 py-0.5 rounded-full border font-medium ${
-                            w.status === 'approved' ? 'bg-teal-50 text-teal-700 border-teal-200' :
+                            w.status === 'approved' ? 'bg-[#192250]/10 text-[#192250] border-[#192250]/20' :
                             w.status === 'rejected' ? 'bg-red-50 text-red-600 border-red-200' :
                             w.status === 'cancelled' ? 'bg-gray-100 text-gray-500 border-gray-200' :
                             'bg-amber-50 text-amber-600 border-amber-200'}`}>
@@ -438,7 +438,7 @@ export default function Leave() {
                               <button onClick={async () => {
                                 await api.hrApproveWfh(w.id, { status: 'approved', actioner_name: user?.name });
                                 setWfhRequests(prev => prev.map(x => x.id === w.id ? { ...x, status: 'approved', hr_actioner_name: user?.name } : x));
-                              }} className="text-xs px-2.5 py-1 bg-teal-500 text-white rounded-md font-medium hover:bg-teal-600">Approve</button>
+                              }} className="text-xs px-2.5 py-1 text-white rounded-md font-medium" style={{ background: '#192250' }}>Approve</button>
                               <button onClick={() => setRejectWfhTarget(w.id)}
                                 className="text-xs px-2.5 py-1 bg-red-50 text-red-600 rounded-md font-medium hover:bg-red-100">Reject</button>
                             </div>

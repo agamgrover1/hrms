@@ -35,8 +35,8 @@ const statusConfig = {
   unpaid_leave: { label: 'Unpaid Leave', color: 'bg-rose-50 text-rose-600',     dot: 'bg-rose-400' },
   weekend:      { label: 'Weekend',      color: 'bg-gray-50 text-gray-400',     dot: 'bg-gray-300' },
   holiday:      { label: 'Holiday',      color: 'bg-purple-50 text-purple-500', dot: 'bg-purple-400' },
-  wfh:          { label: 'Work From Home',    color: 'bg-teal-50 text-teal-600',    dot: 'bg-teal-500' },
-  wfh_half:     { label: 'Half Day WFH',      color: 'bg-teal-50 text-teal-500',    dot: 'bg-teal-400' },
+  wfh:          { label: 'Work From Home',    color: 'bg-[#192250]/10 text-[#192250]',  dot: 'bg-[#192250]' },
+  wfh_half:     { label: 'Half Day WFH',      color: 'bg-[#EE2770]/10 text-[#EE2770]', dot: 'bg-[#EE2770]' },
 };
 
 function generateCalendarDays(year: number, month: number) {

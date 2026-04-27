@@ -1,7 +1,7 @@
 import { useState, useEffect, useMemo } from 'react';
 import { useSearchParams, useNavigate } from 'react-router-dom';
 import { Users, Calendar, TrendingUp, CheckCircle, XCircle, AlertCircle,
-  X, Save, RefreshCw, Clock, UserCheck } from 'lucide-react';
+  X, Save, RefreshCw, Clock, UserCheck, Monitor } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
 import { api } from '../../services/api';
 import { GOAL_STATUSES, GOAL_STATUS_CONFIG } from '../Performance';
@@ -264,10 +264,15 @@ export default function MyTeam() {
       name: m.name.split(' ')[0],
       Present: att.filter((r: any) => r.status === 'present').length,
       Late: att.filter((r: any) => r.status === 'late').length,
-      Absent: att.filter((r: any) => r.status === 'absent').length,
+      WFH: att.filter((r: any) => ['wfh','wfh_half'].includes(r.status)).length,
       Leave: att.filter((r: any) => leaveStatuses.has(r.status)).length,
+      Absent: att.filter((r: any) => r.status === 'absent').length,
     };
   });
+
+  const totalWfhToday = teamMembers.filter(m =>
+    ['wfh','wfh_half'].includes(teamAttendance[m.id]?.find((r: any) => r.date === todayStr)?.status ?? '')
+  ).length;
 
   // Leave distribution this month (donut)
   const leaveTypeLabels: Record<string,string> = { full_day:'Full Day', half_day:'Half Day', short_leave:'Short Leave', unpaid:'Unpaid' };
@@ -336,10 +341,11 @@ export default function MyTeam() {
         <div className="space-y-5">
 
           {/* KPI cards */}
-          <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
+          <div className="grid grid-cols-2 sm:grid-cols-5 gap-4">
             {[
               { label: 'Team Size',     value: teamMembers.length, icon: Users,      color: '#192250', bg: 'rgba(25,34,80,0.07)'   },
               { label: 'Present Today', value: presentToday,       icon: UserCheck,  color: '#16a34a', bg: 'rgba(22,163,74,0.08)'  },
+              { label: 'WFH Today',     value: totalWfhToday,      icon: Monitor,    color: '#192250', bg: 'rgba(25,34,80,0.07)'   },
               { label: 'Late Today',    value: lateToday,          icon: Clock,      color: '#d97706', bg: 'rgba(217,119,6,0.08)'  },
               { label: 'On Leave',      value: onLeaveToday,       icon: Calendar,   color: '#EE2770', bg: 'rgba(238,39,112,0.08)' },
             ].map(({ label, value, icon: Icon, color, bg }) => (
@@ -374,6 +380,7 @@ export default function MyTeam() {
                     <Legend iconSize={10} wrapperStyle={{ fontSize: 11 }} />
                     <Bar dataKey="Present" stackId="a" fill="#16a34a" radius={[0,0,0,0]} />
                     <Bar dataKey="Late"    stackId="a" fill="#d97706" />
+                    <Bar dataKey="WFH"     stackId="a" fill="#192250" />
                     <Bar dataKey="Leave"   stackId="a" fill="#6366f1" />
                     <Bar dataKey="Absent"  stackId="a" fill="#ef4444" radius={[0,4,4,0]} />
                   </BarChart>
@@ -547,7 +554,7 @@ export default function MyTeam() {
                 <h3 className="font-bold text-sm flex items-center gap-2" style={{ color: '#192250' }}>
                   <span style={{ color: '#0d9488' }}>⊡</span> Pending WFH Requests
                 </h3>
-                <span className="text-xs font-bold px-2 py-0.5 rounded-full bg-teal-50 text-teal-700">{pendingWfh.length}</span>
+                <span className="text-xs font-bold px-2 py-0.5 rounded-full" style={{ background: 'rgba(25,34,80,0.1)', color: '#192250' }}>{pendingWfh.length}</span>
               </div>
               <div className="divide-y divide-gray-50">
                 {pendingWfh.map(w => (
@@ -563,7 +570,7 @@ export default function MyTeam() {
                     <div className="flex gap-2 flex-shrink-0">
                       <button onClick={() => handleApproveWfh(w.id, 'approved')} disabled={approvingWfh[w.id]}
                         className="flex items-center gap-1 px-3 py-1.5 text-xs font-semibold rounded-lg disabled:opacity-50"
-                        style={{ background: '#ccfbf1', color: '#0f766e' }}>
+                        style={{ background: 'rgba(25,34,80,0.08)', color: '#192250' }}>
                         <CheckCircle size={12} /> {approvingWfh[w.id] ? '…' : 'Approve'}
                       </button>
                       <button onClick={() => setRejectWfhTarget(w.id)} disabled={approvingWfh[w.id]}
