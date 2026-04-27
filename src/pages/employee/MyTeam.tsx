@@ -119,6 +119,7 @@ export default function MyTeam() {
   const [reviewComment, setReviewComment] = useState('');
   const [paramNotes, setParamNotes] = useState<Record<string, string>>({});
   const [savingReview, setSavingReview] = useState(false);
+  const [reviewError, setReviewError] = useState('');
   const [appraisals, setAppraisals] = useState<Record<string, any[]>>({});
 
   // ── Load team ───────────────────────────────────────────────────────────────
@@ -184,11 +185,13 @@ export default function MyTeam() {
     setScores(Object.fromEntries(SCORE_CATEGORIES.map(c => [c.key, 75])));
     setReviewComment('');
     setParamNotes({});
+    setReviewError('');
   };
 
   const handleSaveReview = async () => {
     if (!showReview || !empDbId) return;
     setSavingReview(true);
+    setReviewError('');
     try {
       const overall = Math.round(Object.values(scores).reduce((a, b) => a + b, 0) / SCORE_CATEGORIES.length);
       await api.saveMonthlyPerformance({
@@ -202,7 +205,9 @@ export default function MyTeam() {
       api.getMonthlyPerformance(showReview.id, currentYear)
         .then(perf => setTeamPerf(prev => ({ ...prev, [showReview.id]: perf })));
       setShowReview(null);
-    } catch { /* ignore */ }
+    } catch (err: any) {
+      setReviewError(err.message ?? 'Failed to save review');
+    }
     finally { setSavingReview(false); }
   };
 
@@ -563,6 +568,11 @@ export default function MyTeam() {
                   className="w-full border border-gray-200 rounded-xl px-3 py-2.5 text-sm resize-none focus:outline-none" />
               </div>
             </div>
+            {reviewError && (
+              <div className="mx-6 mb-2 px-4 py-2.5 rounded-xl text-xs font-semibold bg-red-50 text-red-600 border border-red-100 flex items-center gap-2">
+                <AlertCircle size={13} /> {reviewError}
+              </div>
+            )}
             <div className="flex gap-3 px-6 py-4 border-t border-gray-100">
               <button onClick={() => setShowReview(null)} className="flex-1 py-2.5 border border-gray-200 rounded-xl text-sm font-semibold text-gray-600 hover:bg-gray-50">Cancel</button>
               <button onClick={handleSaveReview} disabled={savingReview}

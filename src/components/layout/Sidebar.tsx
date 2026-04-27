@@ -3,8 +3,9 @@ import {
   LayoutDashboard, Users, Clock, Calendar, DollarSign, Target,
   ChevronLeft, ChevronRight, UserCog, User, Settings, ChevronDown,
 } from 'lucide-react';
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useAuth } from '../../context/AuthContext';
+import { api } from '../../services/api';
 
 const adminNavItems = [
   { to: '/', icon: LayoutDashboard, label: 'Dashboard' },
@@ -26,12 +27,27 @@ const teamSubItems = [
 export default function Sidebar() {
   const [collapsed, setCollapsed] = useState(false);
   const [teamOpen, setTeamOpen] = useState(true);
+  const [isManager, setIsManager] = useState(false);
   const { user } = useAuth();
   const location = useLocation();
   const role = user?.role ?? 'employee';
 
   const isEmployee = role === 'employee';
   const isOnTeam = location.pathname === '/my-team';
+
+  // Determine if this employee manages anyone (has direct reports)
+  useEffect(() => {
+    if (!isEmployee || !user?.employee_id_ref) return;
+    api.getEmployees()
+      .then(emps => {
+        const emp = emps.find((e: any) => e.employee_id === user.employee_id_ref);
+        if (!emp) return;
+        api.getTeamMembers(emp.id)
+          .then((members: any[]) => setIsManager(members.length > 0))
+          .catch(() => {});
+      })
+      .catch(() => {});
+  }, [user?.employee_id_ref, isEmployee]);
 
   const navLinkClass = (isActive: boolean) =>
     `flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-all duration-150 group
@@ -103,8 +119,8 @@ export default function Sidebar() {
               )}
             </NavLink>
 
-            {/* My Team — expandable section */}
-            <div>
+            {/* My Team — only shown if this employee manages others */}
+            {isManager && <div>
               {/* Section header button */}
               <button
                 onClick={() => !collapsed && setTeamOpen(v => !v)}
@@ -144,7 +160,7 @@ export default function Sidebar() {
                   </NavLink>
                 </div>
               )}
-            </div>
+            </div>}
           </>
         )}
       </nav>
