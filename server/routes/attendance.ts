@@ -122,8 +122,8 @@ async function getShiftConfig(): Promise<Record<string, { start: string; end: st
     _shiftCacheTs = Date.now();
     return cfg;
   } catch {
-    // fallback defaults
-    return { day: { start: '09:00', end: '18:00', lateAfter: '09:30' }, night: { start: '18:30', end: '03:30', lateAfter: '18:45' } };
+    // fallback: any punch after shift start = Late (no grace period)
+    return { day: { start: '09:00', end: '18:00', lateAfter: '09:00' }, night: { start: '18:30', end: '03:30', lateAfter: '18:30' } };
   }
 }
 
@@ -135,7 +135,7 @@ function isLateForShiftCfg(inTime: string, cfg: { lateAfter: string }): boolean 
 
 // Sync fallback (uses cached value or hardcoded default)
 function isLateForShift(inTime: string, shift: string): boolean {
-  const cfg = _shiftCache?.[shift] ?? { lateAfter: '09:30' };
+  const cfg = _shiftCache?.[shift] ?? { lateAfter: '09:00' };
   return isLateForShiftCfg(inTime, cfg);
 }
 
@@ -304,7 +304,7 @@ router.post('/clock-in', async (req, res) => {
     const empRow = await sql`SELECT shift FROM employees WHERE id = ${employee_id}` as any[];
     const shift = empRow[0]?.shift ?? 'day';
     const shiftCfg = await getShiftConfig();
-    const status = isLateForShiftCfg(time, shiftCfg[shift] ?? { lateAfter: '09:30' }) ? 'late' : 'present';
+    const status = isLateForShiftCfg(time, shiftCfg[shift] ?? { lateAfter: '09:00' }) ? 'late' : 'present';
     const rows = await sql`
       INSERT INTO attendance_records (employee_id, date, check_in, status, total_hours, source)
       VALUES (${employee_id}, ${today}, ${time}, ${status}, 0, 'clock_in')

@@ -27,7 +27,7 @@ export default function Config() {
   // ── Shifts ───────────────────────────────────────────────────────────────────
   const [shifts, setShifts] = useState<any[]>([]);
   const [editingShift, setEditingShift] = useState<any | null>(null);
-  const [newShift, setNewShift] = useState({ name: '', start_time: '09:00', end_time: '18:00', late_after: '09:30' });
+  const [newShift, setNewShift] = useState({ name: '', start_time: '09:00', end_time: '18:00', late_after: '09:00' });
   const [showAddShift, setShowAddShift] = useState(false);
   const [savingShift, setSavingShift] = useState(false);
 
@@ -82,7 +82,7 @@ export default function Config() {
     try {
       const s = await api.addConfigShift(newShift);
       setShifts(prev => [...prev, s]);
-      setNewShift({ name: '', start_time: '09:00', end_time: '18:00', late_after: '09:30' });
+      setNewShift({ name: '', start_time: '09:00', end_time: '18:00', late_after: '09:00' });
       setShowAddShift(false);
     } catch (e: any) { setError(e.message ?? 'Failed'); }
     finally { setSavingShift(false); }
@@ -232,7 +232,7 @@ export default function Config() {
                         <input value={editingShift.name} onChange={e => setEditingShift((p: any) => ({ ...p, name: e.target.value }))} className={inputCls} />
                       </div>
                       <div>
-                        <label className="text-xs font-semibold text-gray-500 block mb-1.5">Late After (grace cutoff)</label>
+                        <label className="text-xs font-semibold text-gray-500 block mb-1.5">Late After (any punch after this = Late)</label>
                         <input type="time" value={editingShift.late_after} onChange={e => setEditingShift((p: any) => ({ ...p, late_after: e.target.value }))} className={inputCls} />
                       </div>
                       <div>
@@ -264,7 +264,7 @@ export default function Config() {
                       <p className="text-xs text-gray-400 mt-0.5">
                         {fmt12(s.start_time)} – {fmt12(s.end_time)}
                         <span className="mx-1.5">·</span>
-                        Late after {fmt12(s.late_after)}
+                        Late if after {fmt12(s.late_after)}
                       </p>
                     </div>
                     <div className="flex gap-1.5">
@@ -306,7 +306,7 @@ export default function Config() {
                   </div>
                 </div>
                 <p className="text-xs text-gray-400">
-                  Employees clocking in after the "Late After" time will be marked <strong>Late</strong>.
+                  Any punch-in after "Late After" time is marked <strong>Late</strong>. Typically set to the shift start time.
                 </p>
                 <div className="flex gap-2">
                   <button onClick={() => setShowAddShift(false)} className="flex-1 py-2 border border-gray-200 rounded-lg text-sm font-medium text-gray-600 hover:bg-gray-50">

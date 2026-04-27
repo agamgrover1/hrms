@@ -284,9 +284,10 @@ const ET_STATUS_MAP: Record<string, string> = {
   'EL':'on_leave','ML':'on_leave','OD':'present','WFH':'present','CO':'present',
 };
 
+// Any punch after shift start = Late (no grace period)
 const SHIFT_CFG: Record<string, { lateAfter: string }> = {
-  day:   { lateAfter: '09:30' },
-  night: { lateAfter: '18:45' },
+  day:   { lateAfter: '09:00' },
+  night: { lateAfter: '18:30' },
 };
 function isLateV(inTime: string, shift: string): boolean {
   const [lh,lm] = (SHIFT_CFG[shift] ?? SHIFT_CFG.day).lateAfter.split(':').map(Number);
@@ -994,8 +995,9 @@ async function ensureConfigTables() {
   for (const d of depts) {
     await sql`INSERT INTO config_departments (id,name) VALUES (${d.toLowerCase().replace(/\s+/g,'-')},${d}) ON CONFLICT (id) DO NOTHING`;
   }
-  await sql`INSERT INTO config_shifts (id,name,start_time,end_time,late_after) VALUES ('day','Day Shift','09:00','18:00','09:30') ON CONFLICT (id) DO NOTHING`;
-  await sql`INSERT INTO config_shifts (id,name,start_time,end_time,late_after) VALUES ('night','Night Shift','18:30','03:30','18:45') ON CONFLICT (id) DO NOTHING`;
+  await sql`INSERT INTO config_shifts (id,name,start_time,end_time,late_after) VALUES ('day','Day Shift','09:00','18:00','09:00') ON CONFLICT (id) DO NOTHING`;
+  await sql`INSERT INTO config_shifts (id,name,start_time,end_time,late_after) VALUES ('night','Night Shift','18:30','03:30','18:30') ON CONFLICT (id) DO NOTHING`;
+  await sql`UPDATE config_shifts SET late_after=start_time WHERE id IN ('day','night') AND late_after!=start_time`;
 }
 
 app.get('/api/config/departments', async (_req, res) => {
