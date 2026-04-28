@@ -69,8 +69,10 @@ async function runStartupMigrations() {
     await sql`ALTER TABLE leave_requests ADD COLUMN IF NOT EXISTS cancelled_by VARCHAR(200)`;
     await sql`ALTER TABLE leave_requests ADD COLUMN IF NOT EXISTS cancelled_at TIMESTAMPTZ`;
     await sql`ALTER TABLE leave_requests ADD COLUMN IF NOT EXISTS cancellation_reason TEXT`;
-    // Remove weekend (Sat/Sun) attendance records created by old syncs/leave marking
+    // Remove weekend records created by old syncs
     await sql`DELETE FROM attendance_records WHERE EXTRACT(DOW FROM date) IN (0, 6)`;
+    // Remove future-date absent records created by biometric sync
+    await sql`DELETE FROM attendance_records WHERE date > CURRENT_DATE AND source = 'biometric'`;
   } catch { /* non-fatal — columns may already exist */ }
 }
 
@@ -216,7 +218,8 @@ app.get('/api/attendance', async (req, res) => {
     } else {
       rows = await sql`SELECT * FROM attendance_records ORDER BY date DESC, employee_id`;
     }
-    res.json((rows as any[]).map(normDateV).filter((r: any) => !isWeekendV(r.date)));
+    const todayV = new Date().toISOString().split('T')[0];
+    res.json((rows as any[]).map(normDateV).filter((r: any) => !isWeekendV(r.date) && r.date <= todayV));
   } catch (err) { res.status(500).json({ error: 'Server error' }); }
 });
 
@@ -357,6 +360,7 @@ async function runBiometricSyncV(trigger: string, triggeredBy?: string, fromDate
     const status  = inTime
       ? (isLateByTime(inTime, lateAfter) ? 'late' : 'present')
       : (ET_STATUS_MAP[(rec.Status??'A').toUpperCase()] ?? 'absent');
+    if (recDate > today) continue; // never store future-date attendance
     if (isWeekendV(recDate)) continue; // Sat/Sun are non-working days
     if (status === 'holiday' && !inTime) continue;
     // Preserve approved WFH — don't let biometric override

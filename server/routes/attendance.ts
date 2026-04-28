@@ -40,12 +40,10 @@ const router = Router();
         total_hours_before NUMERIC
       )
     `;
-    // One-time cleanup: remove any attendance records that fell on Sat (DOW=6) or Sun (DOW=0)
-    // These were created by old biometric syncs / leave marking before the weekend fix.
-    await sql`
-      DELETE FROM attendance_records
-      WHERE EXTRACT(DOW FROM date) IN (0, 6)
-    `.catch(() => {});
+    // Remove weekend attendance records (created before weekend fix)
+    await sql`DELETE FROM attendance_records WHERE EXTRACT(DOW FROM date) IN (0, 6)`.catch(() => {});
+    // Remove future-date records — eTimeOffice marks absent for future dates; they should be blank
+    await sql`DELETE FROM attendance_records WHERE date > CURRENT_DATE AND source = 'biometric'`.catch(() => {});
   } catch (e) { console.error('[attendance migration]', e); }
 })();
 
@@ -219,6 +217,8 @@ export async function runBiometricSync(
       return Math.round(((oh * 60 + om) - (ih * 60 + im)) / 6) / 10;
     })() : 0);
 
+    // Never create attendance records for future dates
+    if (recDate > today) continue;
     // Saturdays and Sundays are never working days — skip entirely
     if (isWeekend(recDate)) continue;
     // Skip holidays with no clock-in
@@ -290,8 +290,9 @@ router.get('/', async (req, res) => {
     } else {
       rows = await sql`SELECT * FROM attendance_records ORDER BY date DESC, employee_id`;
     }
-    // Strip any weekend records before sending to client (safety net)
-    const filtered = (rows as any[]).map(normDate).filter(r => !isWeekend(r.date));
+    const todayStr = new Date().toISOString().split('T')[0];
+    // Strip weekend and future-date records — future dates should never show attendance
+    const filtered = (rows as any[]).map(normDate).filter(r => !isWeekend(r.date) && r.date <= todayStr);
     res.json(filtered);
   } catch (err) {
     console.error(err);
