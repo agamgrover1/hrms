@@ -215,6 +215,8 @@ app.get('/api/attendance', async (req, res) => {
       rows = await sql`SELECT * FROM attendance_records WHERE employee_id=${employee_id} AND EXTRACT(MONTH FROM date)=${Number(month)} AND EXTRACT(YEAR FROM date)=${Number(year)} ORDER BY date`;
     } else if (employee_id) {
       rows = await sql`SELECT * FROM attendance_records WHERE employee_id=${employee_id} ORDER BY date DESC`;
+    } else if (month && year) {
+      rows = await sql`SELECT * FROM attendance_records WHERE EXTRACT(MONTH FROM date)=${Number(month)} AND EXTRACT(YEAR FROM date)=${Number(year)} ORDER BY date DESC, employee_id`;
     } else {
       rows = await sql`SELECT * FROM attendance_records ORDER BY date DESC, employee_id`;
     }

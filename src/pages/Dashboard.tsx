@@ -38,7 +38,8 @@ export default function Dashboard() {
   const pendingLeaves = leaveRequests.filter((l: any) => l.status === 'pending');
   const totalNetPay = payroll.reduce((s: number, p: any) => s + Number(p.net_pay), 0);
 
-  const todayStr = now.toISOString().split('T')[0];
+  // Use local date for "today" so IST users see correct date
+  const todayStr = `${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}-${String(now.getDate()).padStart(2,'0')}`;
   const todayPresent = attendance.filter(r => r.date === todayStr && (r.status === 'present' || r.status === 'late')).length;
   const attendanceRate = activeEmployees ? Math.round((todayPresent / activeEmployees) * 100) : 0;
 
@@ -51,7 +52,7 @@ export default function Dashboard() {
   const attendanceTrend = uniqueDates.map(date => {
     const dayRecords = attendance.filter(r => r.date === date);
     const present = dayRecords.filter(r => r.status === 'present' || r.status === 'late').length;
-    return { day: DAY_LABELS[new Date(date + 'T12:00:00').getDay()], present, absent: Math.max(0, activeEmployees - present) };
+    return { day: DAY_LABELS[new Date(date + 'T12:00:00Z').getUTCDay()], present, absent: Math.max(0, activeEmployees - present) };
   });
 
   // Headcount per month: count employees whose join_date <= end of that month

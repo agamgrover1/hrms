@@ -287,6 +287,14 @@ router.get('/', async (req, res) => {
       `;
     } else if (employee_id) {
       rows = await sql`SELECT * FROM attendance_records WHERE employee_id = ${employee_id as string} ORDER BY date DESC`;
+    } else if (month && year) {
+      // Dashboard: all employees, specific month — was falling through to unfiltered query
+      rows = await sql`
+        SELECT * FROM attendance_records
+        WHERE EXTRACT(MONTH FROM date) = ${Number(month)}
+          AND EXTRACT(YEAR FROM date) = ${Number(year)}
+        ORDER BY date DESC, employee_id
+      `;
     } else {
       rows = await sql`SELECT * FROM attendance_records ORDER BY date DESC, employee_id`;
     }
