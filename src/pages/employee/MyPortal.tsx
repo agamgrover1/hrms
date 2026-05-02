@@ -626,16 +626,24 @@ export default function MyPortal() {
           <div className="divide-y divide-gray-50">
             {attendance.filter(r => r.status !== 'weekend').map(r => {
               const cfg = statusConfig[r.status as keyof typeof statusConfig];
+              const isShortDay = (r.status === 'present' || r.status === 'late')
+                && r.check_out && Number(r.total_hours) > 0 && Number(r.total_hours) < 9;
               return (
                 <div key={r.date} className="flex items-center justify-between px-5 py-3 hover:bg-gray-50/50">
-                  <div className="flex items-center gap-3">
-                    <span className={`w-2 h-2 rounded-full ${cfg?.dot}`} />
+                  <div className="flex items-center gap-3 flex-wrap">
+                    <span className={`w-2 h-2 rounded-full ${cfg?.dot} flex-shrink-0`} />
                     <span className="text-sm text-gray-700">
                       {parseLocalDate(r.date).toLocaleDateString('en-IN', { weekday: 'short', day: 'numeric', month: 'short' })}
                     </span>
                     <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${cfg?.color}`}>{cfg?.label}</span>
+                    {isShortDay && (
+                      <span className="text-xs px-2 py-0.5 rounded-full font-semibold"
+                        style={{ background: '#fffbeb', color: '#b45309', border: '1px solid #fde68a' }}>
+                        Short Day
+                      </span>
+                    )}
                   </div>
-                  <span className="text-sm text-gray-400">
+                  <span className="text-sm text-gray-400 whitespace-nowrap">
                     {r.check_in ? `${r.check_in} – ${r.check_out ?? '—'} (${fmtHours(r.total_hours)})` : '—'}
                   </span>
                 </div>

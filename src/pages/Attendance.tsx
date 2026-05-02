@@ -602,10 +602,18 @@ export default function Attendance() {
                 const cfg = statusConfig[r.status as keyof typeof statusConfig];
                 const leave = getLeaveForDay(r.date);
                 const leaveTag = leave ? LEAVE_TAG[leave.type] : null;
+                const isShortDay = (r.status === 'present' || r.status === 'late')
+                  && r.check_out && Number(r.total_hours) > 0 && Number(r.total_hours) < 9;
                 return (
                   <div key={r.date} className="flex items-center justify-between py-2 border-b border-gray-50 last:border-0">
                     <div className="flex items-center gap-2 flex-wrap">
                       <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${cfg?.color}`}>{cfg?.label}</span>
+                      {isShortDay && (
+                        <span className="text-xs px-2 py-0.5 rounded-full font-semibold border"
+                          style={{ background: '#fffbeb', color: '#b45309', borderColor: '#fde68a' }}>
+                          Short Day
+                        </span>
+                      )}
                       {leaveTag && (
                         <span className="text-xs px-2 py-0.5 rounded-full font-semibold border"
                           style={{ background: leaveTag.bg, color: leaveTag.color, borderColor: leaveTag.color + '40' }}>
