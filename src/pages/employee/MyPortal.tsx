@@ -56,6 +56,7 @@ const baseTabs = [
   { key: 'attendance',   label: 'Attendance',   icon: Clock },
   { key: 'leave',        label: 'My Leaves',    icon: Calendar },
   { key: 'wfh',          label: 'Work From Home', icon: Monitor },
+  { key: 'incentives',   label: 'Incentives',     icon: Target  },
   { key: 'payslip',      label: 'Pay Slip',     icon: DollarSign },
   { key: 'performance',  label: 'Performance',  icon: Target },
 ];
@@ -188,6 +189,10 @@ export default function MyPortal() {
   const { user } = useAuth();
   const [tab, setTab] = useState('overview');
   const [applyLeave, setApplyLeave] = useState(false);
+  const [myIncentives, setMyIncentives] = useState<any[]>([]);
+  const [showUpsellForm, setShowUpsellForm] = useState(false);
+  const [upsellForm, setUpsellForm] = useState({ client_name: '', service_description: '', deal_value: '', requested_amount: '', notes: '' });
+  const [submittingUpsell, setSubmittingUpsell] = useState(false);
   const [myWarnings, setMyWarnings] = useState<any[]>([]);
   const [myPip, setMyPip] = useState<any | null>(null);
   const [wfhRequests, setWfhRequests] = useState<any[]>([]);
@@ -255,6 +260,7 @@ export default function MyPortal() {
       ]).then(([att, lv, pay, bal, perf, appraisals, wfh]) => {
         api.getWarnings(emp.id).then(setMyWarnings).catch(() => {});
         api.getPips(emp.id).then(pips => setMyPip((pips as any[]).find(p => p.status === 'active') ?? null)).catch(() => {});
+        api.getUpsellRequests(emp.id).then(setMyIncentives).catch(() => {});
         setAttendance(att);
         setLeaves(lv);
         setWfhRequests(Array.isArray(wfh) ? wfh : []);
@@ -951,6 +957,142 @@ export default function MyPortal() {
           )}
         </div>
       )}
+
+      {/* ── Incentives ── */}
+      {tab === 'incentives' && (() => {
+        const STATUS_CFG: Record<string,{label:string;color:string;bg:string}> = {
+          pending:  { label: 'Pending Review', color: '#d97706', bg: '#fffbeb' },
+          approved: { label: 'Approved',       color: '#15803d', bg: '#f0fdf4' },
+          rejected: { label: 'Not Approved',   color: '#dc2626', bg: '#fef2f2' },
+          paid:     { label: 'Paid',           color: '#7c3aed', bg: '#f5f3ff' },
+        };
+        const fmtAmt = (n: any) => n != null ? `₹${Number(n).toLocaleString('en-IN')}` : '—';
+        return (
+          <div className="space-y-4">
+            <div className="flex justify-end">
+              <button onClick={() => { setShowUpsellForm(true); setUpsellForm({ client_name:'', service_description:'', deal_value:'', requested_amount:'', notes:'' }); }}
+                className="flex items-center gap-2 px-4 py-2.5 text-white text-sm font-semibold rounded-xl shadow-sm"
+                style={{ background: 'linear-gradient(135deg, #192250 0%, #141c43 100%)' }}>
+                <Plus size={15} /> Request Incentive
+              </button>
+            </div>
+
+            {/* Incentive list */}
+            <div className="bg-white rounded-xl border border-gray-100 shadow-sm overflow-hidden">
+              {myIncentives.length === 0 ? (
+                <div className="flex flex-col items-center py-16 gap-2">
+                  <Target size={32} className="text-gray-200" />
+                  <p className="text-sm text-gray-400">No incentive requests yet</p>
+                  <p className="text-xs text-gray-300">Submit a request when you upsell a service to a client</p>
+                </div>
+              ) : (
+                <div className="divide-y divide-gray-50">
+                  {myIncentives.map(r => {
+                    const cfg = STATUS_CFG[r.status] ?? STATUS_CFG.pending;
+                    return (
+                      <div key={r.id} className="px-5 py-4">
+                        <div className="flex items-start justify-between gap-3">
+                          <div className="flex-1 min-w-0">
+                            <p className="font-semibold text-gray-800">{r.client_name}</p>
+                            <p className="text-xs text-gray-500 mt-0.5">{r.service_description}</p>
+                            <div className="flex items-center gap-3 mt-2 flex-wrap">
+                              <span className="text-xs text-gray-400">Requested: <strong style={{ color: '#192250' }}>{fmtAmt(r.requested_amount)}</strong></span>
+                              {r.deal_value && <span className="text-xs text-gray-400">Deal: {fmtAmt(r.deal_value)}</span>}
+                              {r.approved_amount && <span className="text-xs font-semibold" style={{ color: '#15803d' }}>Approved: {fmtAmt(r.approved_amount)}</span>}
+                            </div>
+                            {r.rejection_reason && <p className="text-xs text-red-500 mt-1 italic">"{r.rejection_reason}"</p>}
+                            {r.payment_note && <p className="text-xs text-purple-500 mt-1">{r.payment_note}</p>}
+                          </div>
+                          <div className="flex flex-col items-end gap-1 flex-shrink-0">
+                            <span className="text-xs px-2.5 py-1 rounded-full font-semibold" style={{ background: cfg.bg, color: cfg.color }}>{cfg.label}</span>
+                            <span className="text-[10px] text-gray-300">
+                              {new Date(r.created_at).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' })}
+                            </span>
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+
+            {/* Submit form modal */}
+            {showUpsellForm && (
+              <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 backdrop-blur-sm p-4">
+                <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md overflow-hidden">
+                  <div className="flex items-center justify-between px-6 py-4 border-b border-gray-100">
+                    <h2 className="font-bold text-base" style={{ color: '#192250' }}>Request Upsell Incentive</h2>
+                    <button onClick={() => setShowUpsellForm(false)}><X size={16} className="text-gray-400" /></button>
+                  </div>
+                  <div className="p-6 space-y-4">
+                    {[
+                      { key: 'client_name', label: 'Client Name', placeholder: 'e.g. Acme Corp', required: true },
+                      { key: 'service_description', label: 'Service Upsold', placeholder: 'e.g. SEO Package upgraded to Premium', required: true },
+                    ].map(({ key, label, placeholder, required }) => (
+                      <div key={key}>
+                        <label className="text-xs font-medium text-gray-600 mb-1 block">{label} {required && <span className="text-red-400">*</span>}</label>
+                        <input value={upsellForm[key as keyof typeof upsellForm]}
+                          onChange={e => setUpsellForm(f => ({ ...f, [key]: e.target.value }))}
+                          placeholder={placeholder}
+                          className="w-full text-sm border border-gray-200 rounded-lg px-3 py-2.5 focus:outline-none focus:ring-2 focus:ring-primary-200" />
+                      </div>
+                    ))}
+                    <div className="grid grid-cols-2 gap-3">
+                      <div>
+                        <label className="text-xs font-medium text-gray-600 mb-1 block">Total Deal Value (₹)</label>
+                        <input type="number" value={upsellForm.deal_value}
+                          onChange={e => setUpsellForm(f => ({ ...f, deal_value: e.target.value }))}
+                          placeholder="e.g. 50000"
+                          className="w-full text-sm border border-gray-200 rounded-lg px-3 py-2.5 focus:outline-none" />
+                      </div>
+                      <div>
+                        <label className="text-xs font-medium text-gray-600 mb-1 block">Incentive Requested (₹) <span className="text-red-400">*</span></label>
+                        <input type="number" value={upsellForm.requested_amount}
+                          onChange={e => setUpsellForm(f => ({ ...f, requested_amount: e.target.value }))}
+                          placeholder="e.g. 5000"
+                          className="w-full text-sm border border-gray-200 rounded-lg px-3 py-2.5 focus:outline-none" />
+                      </div>
+                    </div>
+                    <div>
+                      <label className="text-xs font-medium text-gray-600 mb-1 block">Additional Notes</label>
+                      <textarea value={upsellForm.notes} onChange={e => setUpsellForm(f => ({ ...f, notes: e.target.value }))}
+                        rows={3} placeholder="Describe your contribution to the upsell…"
+                        className="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm focus:outline-none resize-none" />
+                    </div>
+                    <div className="flex gap-3 pt-1">
+                      <button onClick={() => setShowUpsellForm(false)}
+                        className="flex-1 py-2.5 border border-gray-200 rounded-lg text-sm font-medium text-gray-600 hover:bg-gray-50">Cancel</button>
+                      <button
+                        disabled={submittingUpsell || !upsellForm.client_name.trim() || !upsellForm.service_description.trim() || !upsellForm.requested_amount}
+                        onClick={async () => {
+                          setSubmittingUpsell(true);
+                          try {
+                            const created = await api.submitUpsell({
+                              employee_id: empDbId, employee_name: user?.name,
+                              client_name: upsellForm.client_name.trim(),
+                              service_description: upsellForm.service_description.trim(),
+                              deal_value: upsellForm.deal_value ? Number(upsellForm.deal_value) : undefined,
+                              requested_amount: Number(upsellForm.requested_amount),
+                              notes: upsellForm.notes.trim() || undefined,
+                            });
+                            setMyIncentives(prev => [created, ...prev]);
+                            setShowUpsellForm(false);
+                          } catch { /* ignore */ }
+                          finally { setSubmittingUpsell(false); }
+                        }}
+                        className="flex-1 py-2.5 text-white rounded-lg text-sm font-semibold disabled:opacity-50"
+                        style={{ background: 'linear-gradient(135deg, #192250 0%, #141c43 100%)' }}>
+                        {submittingUpsell ? 'Submitting…' : 'Submit Request'}
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
+        );
+      })()}
 
       {/* ── Pay Slip ── */}
       {tab === 'payslip' && (

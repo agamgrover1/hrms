@@ -70,9 +70,16 @@ function getNotifRoute(type: string, role: string): string {
     case 'pip_assigned':
       return isHR ? '/employees' : '/my?tab=performance';
 
+    // ── Upsell Incentives ──────────────────────────────────────────────────────
+    case 'upsell_submitted':
+      return isHR ? '/incentives' : '/my?tab=incentives';
+    case 'upsell_approved':
+    case 'upsell_rejected':
+    case 'upsell_paid':
+      return '/my?tab=incentives';
+
     // ── General ────────────────────────────────────────────────────────────────
     case 'info':
-      // Used for probation/confirmation updates → employee portal
       return isHR ? '/' : '/my';
 
     default:
@@ -102,6 +109,11 @@ const TYPE_CONFIG: Record<string, { icon: any; color: string; bg: string }> = {
   // Warnings & PIP
   warning_issued:          { icon: AlertTriangle,  color: '#d97706', bg: '#fffbeb' },
   pip_assigned:            { icon: ShieldAlert,    color: '#dc2626', bg: '#fef2f2' },
+  // Upsell Incentives
+  upsell_submitted:        { icon: TrendingUp,     color: '#0d9488', bg: '#f0fdfa' },
+  upsell_approved:         { icon: CheckCircle,    color: '#15803d', bg: '#f0fdf4' },
+  upsell_rejected:         { icon: XCircle,        color: '#dc2626', bg: '#fef2f2' },
+  upsell_paid:             { icon: Award,          color: '#d97706', bg: '#fffbeb' },
   // General
   info:                    { icon: CheckCircle,    color: '#15803d', bg: '#f0fdf4' },
 };

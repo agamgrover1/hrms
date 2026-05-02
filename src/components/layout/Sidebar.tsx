@@ -1,7 +1,7 @@
 import { NavLink, useLocation } from 'react-router-dom';
 import {
   LayoutDashboard, Users, Clock, Calendar, DollarSign, Target,
-  ChevronLeft, ChevronRight, UserCog, User, Settings, ChevronDown,
+  ChevronLeft, ChevronRight, UserCog, User, Settings, TrendingUp, ChevronDown,
 } from 'lucide-react';
 import { useState, useEffect } from 'react';
 import { useAuth } from '../../context/AuthContext';
@@ -15,6 +15,7 @@ const adminNavItems = [
   { to: '/payroll', icon: DollarSign, label: 'Payroll' },
   { to: '/performance', icon: Target, label: 'Performance' },
   { to: '/users', icon: UserCog, label: 'User Management' },
+  { to: '/incentives', icon: TrendingUp, label: 'Upsell Incentives' },
   { to: '/config', icon: Settings, label: 'Configuration' },
 ];
 

@@ -122,6 +122,14 @@ export const api = {
   selfUpdateGoalStatuses: (data: { employee_id: string; year: number; month: number; employee_statuses: { index: number; employee_status: string }[] }) =>
     request<any>('/performance/appraisal-goals/self-update', { method: 'PATCH', body: JSON.stringify(data) }),
 
+  // Upsell Incentives
+  getUpsellRequests: (employeeId?: string) =>
+    request<any[]>(`/upsell${employeeId ? `?employee_id=${employeeId}` : ''}`),
+  submitUpsell: (data: { employee_id: string; employee_name?: string; client_name: string; service_description: string; deal_value?: number; requested_amount: number; notes?: string }) =>
+    request<any>('/upsell', { method: 'POST', body: JSON.stringify(data) }),
+  reviewUpsell: (id: string, data: { status: string; reviewed_by?: string; rejection_reason?: string; approved_amount?: number; payment_note?: string }) =>
+    request<any>(`/upsell/${id}`, { method: 'PATCH', body: JSON.stringify(data) }),
+
   // Warnings & PIP
   getWarnings: (employeeId?: string) =>
     request<any[]>(`/warnings${employeeId ? `?employee_id=${employeeId}` : ''}`),
