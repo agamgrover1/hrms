@@ -122,6 +122,18 @@ export const api = {
   selfUpdateGoalStatuses: (data: { employee_id: string; year: number; month: number; employee_statuses: { index: number; employee_status: string }[] }) =>
     request<any>('/performance/appraisal-goals/self-update', { method: 'PATCH', body: JSON.stringify(data) }),
 
+  // Warnings & PIP
+  getWarnings: (employeeId?: string) =>
+    request<any[]>(`/warnings${employeeId ? `?employee_id=${employeeId}` : ''}`),
+  issueWarning: (data: { employee_id: string; employee_name?: string; reason: string; severity?: string; issued_by?: string; issued_by_role?: string }) =>
+    request<any>('/warnings', { method: 'POST', body: JSON.stringify(data) }),
+  deleteWarning: (id: string) =>
+    request<any>(`/warnings/${id}`, { method: 'DELETE' }),
+  getPips: (employeeId?: string) =>
+    request<any[]>(`/warnings/pips${employeeId ? `?employee_id=${employeeId}` : ''}`),
+  updatePip: (id: string, data: { status?: string; goals?: string }) =>
+    request<any>(`/warnings/pips/${id}`, { method: 'PATCH', body: JSON.stringify(data) }),
+
   // WFH
   getWfhRequests: (params?: { employee_id?: string; status?: string; reporting_manager_id?: string }) => {
     const qs = new URLSearchParams();

@@ -188,6 +188,8 @@ export default function MyPortal() {
   const { user } = useAuth();
   const [tab, setTab] = useState('overview');
   const [applyLeave, setApplyLeave] = useState(false);
+  const [myWarnings, setMyWarnings] = useState<any[]>([]);
+  const [myPip, setMyPip] = useState<any | null>(null);
   const [wfhRequests, setWfhRequests] = useState<any[]>([]);
   const [applyWfh, setApplyWfh] = useState(false);
   const [wfhForm, setWfhForm] = useState({ date: '', type: 'full_day', reason: '' });
@@ -251,6 +253,8 @@ export default function MyPortal() {
         api.getAppraisalGoals({ employee_id: emp.id }),
         api.getWfhRequests({ employee_id: emp.id }),
       ]).then(([att, lv, pay, bal, perf, appraisals, wfh]) => {
+        api.getWarnings(emp.id).then(setMyWarnings).catch(() => {});
+        api.getPips(emp.id).then(pips => setMyPip((pips as any[]).find(p => p.status === 'active') ?? null)).catch(() => {});
         setAttendance(att);
         setLeaves(lv);
         setWfhRequests(Array.isArray(wfh) ? wfh : []);
@@ -992,6 +996,55 @@ export default function MyPortal() {
       {/* ── Performance ── */}
       {tab === 'performance' && (
         <div className="space-y-5">
+
+          {/* PIP Alert */}
+          {myPip && (
+            <div className="rounded-2xl p-4 border border-red-200" style={{ background: '#fff1f2' }}>
+              <div className="flex items-start gap-3">
+                <div className="w-9 h-9 rounded-xl bg-red-100 flex items-center justify-center flex-shrink-0">
+                  <AlertCircle size={18} className="text-red-600" />
+                </div>
+                <div>
+                  <p className="font-bold text-sm text-red-800">You are on a Performance Improvement Plan (PIP)</p>
+                  <p className="text-xs text-red-600 mt-1">
+                    Active from {new Date(myPip.start_date + 'T12:00:00Z').toLocaleDateString('en-IN', { day: 'numeric', month: 'long', year: 'numeric' })}
+                    {' '}until{' '}
+                    {new Date(myPip.end_date + 'T12:00:00Z').toLocaleDateString('en-IN', { day: 'numeric', month: 'long', year: 'numeric' })}
+                  </p>
+                  {myPip.goals && <p className="text-xs text-red-500 mt-1 italic">Goals: {myPip.goals}</p>}
+                  <p className="text-xs text-red-500 mt-1">Please speak to your HR manager for guidance.</p>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Warnings */}
+          {myWarnings.length > 0 && (
+            <div className="bg-white rounded-2xl border border-gray-100 shadow-sm overflow-hidden">
+              <div className="px-5 py-4 border-b border-gray-100 flex items-center gap-2">
+                <AlertCircle size={15} className="text-amber-500" />
+                <h3 className="font-bold text-sm" style={{ color: '#192250' }}>Warnings on Record</h3>
+                <span className={`text-xs font-bold px-2 py-0.5 rounded-full ml-auto ${myWarnings.length >= 3 ? 'bg-red-100 text-red-700' : myWarnings.length === 2 ? 'bg-orange-100 text-orange-700' : 'bg-amber-100 text-amber-700'}`}>
+                  {myWarnings.length} {myWarnings.length === 1 ? 'warning' : 'warnings'}
+                </span>
+              </div>
+              <div className="divide-y divide-gray-50">
+                {myWarnings.map((w, i) => (
+                  <div key={w.id} className="flex items-start gap-3 px-5 py-3">
+                    <div className={`w-6 h-6 rounded-full flex items-center justify-center text-xs font-black flex-shrink-0 mt-0.5 ${w.severity === 'final' ? 'bg-red-500 text-white' : w.severity === 'serious' ? 'bg-orange-500 text-white' : 'bg-amber-400 text-white'}`}>{i+1}</div>
+                    <div className="flex-1 min-w-0">
+                      <p className="text-sm text-gray-700">{w.reason}</p>
+                      <p className="text-xs text-gray-400 mt-0.5 capitalize">
+                        {w.severity} · {w.issued_by ? `Issued by ${w.issued_by} · ` : ''}
+                        {new Date(w.created_at).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' })}
+                      </p>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
           {/* KPI summary */}
           <div className="grid grid-cols-3 gap-3">
             {(() => {

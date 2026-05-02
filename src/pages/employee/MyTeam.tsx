@@ -134,6 +134,10 @@ export default function MyTeam() {
   const [paramNotes, setParamNotes] = useState<Record<string, string>>({});
   const [savingReview, setSavingReview] = useState(false);
   const [reviewError, setReviewError] = useState('');
+  const [warnTarget, setWarnTarget] = useState<any | null>(null);
+  const [warnReason, setWarnReason] = useState('');
+  const [warnSeverity, setWarnSeverity] = useState('warning');
+  const [issuingWarn, setIssuingWarn] = useState(false);
   const [appraisals, setAppraisals] = useState<Record<string, any[]>>({});
 
   // ── Load team ───────────────────────────────────────────────────────────────
@@ -729,6 +733,11 @@ export default function MyTeam() {
                       style={{ color: '#192250', borderColor: '#e2e4ed' }}>
                       <TrendingUp size={12} /> Add Review
                     </button>
+                    <button onClick={() => setWarnTarget(member)}
+                      className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-lg border hover:bg-amber-50"
+                      style={{ color: '#d97706', borderColor: '#fde68a' }}>
+                      <AlertCircle size={12} /> Warn
+                    </button>
                   </div>
                 </div>
 
@@ -884,6 +893,52 @@ export default function MyTeam() {
               confirmLabel="Confirm Cancel" confirmClass="bg-gray-700 hover:bg-gray-800"
               onClose={() => setCancelTarget(null)}
               onConfirm={reason => { handleCancelLeave(cancelTarget, reason); setCancelTarget(null); }} />
+          </div>
+        </div>
+      )}
+
+      {/* ── Issue Warning modal ──────────────────────────────────────────────── */}
+      {warnTarget && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 backdrop-blur-sm p-4">
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-sm p-6">
+            <div className="flex items-center justify-between mb-4">
+              <h3 className="text-base font-semibold text-gray-900">Issue Warning — {warnTarget.name}</h3>
+              <button onClick={() => { setWarnTarget(null); setWarnReason(''); setWarnSeverity('warning'); }}>
+                <X size={16} className="text-gray-400" />
+              </button>
+            </div>
+            <div className="space-y-3">
+              <div className="flex gap-2">
+                {(['warning','serious','final'] as const).map(s => (
+                  <button key={s} onClick={() => setWarnSeverity(s)}
+                    className={`flex-1 py-2 text-xs font-semibold rounded-lg border capitalize transition-all ${warnSeverity === s
+                      ? s === 'final' ? 'bg-red-500 text-white border-red-500' : s === 'serious' ? 'bg-orange-500 text-white border-orange-500' : 'bg-amber-500 text-white border-amber-500'
+                      : 'bg-gray-50 text-gray-600 border-gray-200'}`}>
+                    {s}
+                  </button>
+                ))}
+              </div>
+              <textarea value={warnReason} onChange={e => setWarnReason(e.target.value)} rows={3}
+                placeholder="Describe the reason for this warning…"
+                className="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm focus:outline-none resize-none" />
+              <div className="flex gap-3">
+                <button onClick={() => { setWarnTarget(null); setWarnReason(''); }}
+                  className="flex-1 py-2.5 border border-gray-200 rounded-xl text-sm font-medium text-gray-600 hover:bg-gray-50">Cancel</button>
+                <button disabled={issuingWarn || !warnReason.trim()}
+                  onClick={async () => {
+                    setIssuingWarn(true);
+                    try {
+                      await api.issueWarning({ employee_id: warnTarget.id, employee_name: warnTarget.name, reason: warnReason.trim(), severity: warnSeverity, issued_by: user?.name, issued_by_role: 'manager' });
+                      setWarnTarget(null); setWarnReason(''); setWarnSeverity('warning');
+                    } catch { /* ignore */ }
+                    finally { setIssuingWarn(false); }
+                  }}
+                  className="flex-1 py-2.5 text-white rounded-xl text-sm font-semibold disabled:opacity-50"
+                  style={{ background: '#d97706' }}>
+                  {issuingWarn ? 'Issuing…' : 'Issue Warning'}
+                </button>
+              </div>
+            </div>
           </div>
         </div>
       )}

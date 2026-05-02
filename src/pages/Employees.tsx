@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
-import { Search, Filter, Plus, Mail, Phone, MapPin, ChevronRight, X, User, Pencil, Trash2, Eye, EyeOff } from 'lucide-react';
+import { Search, Filter, Plus, Mail, Phone, MapPin, ChevronRight, X, User, Pencil, Trash2, Eye, EyeOff, AlertTriangle, Shield } from 'lucide-react';
 import { api } from '../services/api';
+import { useAuth } from '../context/AuthContext';
 // departments now loaded from API (Config → Departments)
 
 const avatarColors = [
@@ -12,7 +13,7 @@ const avatarColors = [
   'bg-teal-100 text-teal-700',
 ];
 
-function EmployeeCard({ emp, index, onClick }: { emp: any; index: number; onClick: () => void }) {
+function EmployeeCard({ emp, index, onClick, warningCount = 0, onPip = false }: { emp: any; index: number; onClick: () => void; warningCount?: number; onPip?: boolean }) {
   const colorClass = avatarColors[index % avatarColors.length];
   return (
     <div
@@ -35,7 +36,11 @@ function EmployeeCard({ emp, index, onClick }: { emp: any; index: number; onClic
               {emp.employee_id}
             </span>
           )}
-          <ChevronRight size={16} className="text-gray-300 group-hover:text-primary-400 transition-colors" />
+          <div className="flex items-center gap-1">
+            {onPip && <span className="text-[9px] font-bold px-1.5 py-0.5 rounded-full bg-red-100 text-red-600">PIP</span>}
+            {warningCount > 0 && <span className={`text-[9px] font-bold px-1.5 py-0.5 rounded-full ${warningCount >= 3 ? 'bg-red-100 text-red-600' : warningCount === 2 ? 'bg-orange-100 text-orange-600' : 'bg-amber-100 text-amber-600'}`}>⚠ {warningCount}</span>}
+            <ChevronRight size={16} className="text-gray-300 group-hover:text-primary-400 transition-colors" />
+          </div>
         </div>
       </div>
       <div className="mt-4 space-y-1.5">
@@ -68,12 +73,43 @@ function EmployeeDetail({ emp, onClose, onEdit, onDelete }: { emp: any; onClose:
   const [probationError, setProbationError] = useState('');
   const [balError, setBalError] = useState('');
 
+  // Warnings & PIP
+  const { user: currentUser } = useAuth();
+  const [warnings, setWarnings] = useState<any[]>([]);
+  const [pip, setPip] = useState<any | null>(null);
+  const [showWarnForm, setShowWarnForm] = useState(false);
+  const [warnReason, setWarnReason] = useState('');
+  const [warnSeverity, setWarnSeverity] = useState('warning');
+  const [issuingWarn, setIssuingWarn] = useState(false);
+
   useEffect(() => {
     api.getLeaveBalance(emp.id).then(bal => {
       setBalAdj({ full_day: bal.full_day ?? 0, short_leave: bal.short_leave ?? 0 });
       setBalLoaded(true);
     }).catch(() => setBalLoaded(true));
+    api.getWarnings(emp.id).then(setWarnings).catch(() => {});
+    api.getPips(emp.id).then(pips => setPip(pips.find((p: any) => p.status === 'active') ?? null)).catch(() => {});
   }, [emp.id]);
+
+  const handleIssueWarning = async () => {
+    if (!warnReason.trim()) return;
+    setIssuingWarn(true);
+    try {
+      const w = await api.issueWarning({
+        employee_id: emp.id, employee_name: emp.name,
+        reason: warnReason.trim(), severity: warnSeverity,
+        issued_by: currentUser?.name, issued_by_role: currentUser?.role,
+      });
+      const newWarnings = [...warnings, w];
+      setWarnings(newWarnings);
+      if (newWarnings.length >= 3) {
+        // Refresh PIP
+        api.getPips(emp.id).then(pips => setPip(pips.find((p: any) => p.status === 'active') ?? null)).catch(() => {});
+      }
+      setWarnReason(''); setShowWarnForm(false);
+    } catch { /* ignore */ }
+    finally { setIssuingWarn(false); }
+  };
 
   const effectiveEnd = probationEnd || defaultProbationEnd;
   const onProbation = effectiveEnd ? new Date() < new Date(effectiveEnd) : false;
@@ -233,6 +269,102 @@ function EmployeeDetail({ emp, onClose, onEdit, onDelete }: { emp: any; onClose:
                 </button>
                 {balError && <p className="text-xs text-red-500">{balError}</p>}
               </div>
+            )}
+          </div>
+
+          {/* ── Warnings & PIP ── */}
+          <div className="mt-4 p-4 border border-gray-100 rounded-xl">
+            <div className="flex items-center justify-between mb-3">
+              <div className="flex items-center gap-2">
+                <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide">Warnings</p>
+                {warnings.length > 0 && (
+                  <span className={`text-xs font-bold px-2 py-0.5 rounded-full ${warnings.length >= 3 ? 'bg-red-100 text-red-700' : warnings.length === 2 ? 'bg-orange-100 text-orange-700' : 'bg-amber-100 text-amber-700'}`}>
+                    {warnings.length} {warnings.length === 1 ? 'warning' : 'warnings'}
+                  </span>
+                )}
+              </div>
+              <button onClick={() => setShowWarnForm(v => !v)}
+                className="text-xs font-semibold px-2.5 py-1 rounded-lg border border-amber-200 bg-amber-50 text-amber-700 hover:bg-amber-100 flex items-center gap-1">
+                <AlertTriangle size={11} /> Issue Warning
+              </button>
+            </div>
+
+            {/* PIP banner */}
+            {pip && (
+              <div className="mb-3 p-3 rounded-xl border border-red-200 bg-red-50 flex items-start gap-2">
+                <Shield size={14} className="text-red-500 mt-0.5 flex-shrink-0" />
+                <div className="flex-1 min-w-0">
+                  <p className="text-xs font-bold text-red-700">On Performance Improvement Plan (PIP)</p>
+                  <p className="text-xs text-red-600 mt-0.5">
+                    {new Date(pip.start_date + 'T12:00:00Z').toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' })}
+                    {' → '}
+                    {new Date(pip.end_date + 'T12:00:00Z').toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' })}
+                  </p>
+                  {pip.goals && <p className="text-xs text-red-500 mt-1 italic">"{pip.goals}"</p>}
+                </div>
+                <select value={pip.status}
+                  onChange={async e => { const updated = await api.updatePip(pip.id, { status: e.target.value }); setPip(updated.status === 'active' ? updated : null); }}
+                  className="text-xs border border-red-200 rounded-lg px-1.5 py-1 bg-white text-red-600 focus:outline-none flex-shrink-0">
+                  <option value="active">Active</option>
+                  <option value="completed">Completed</option>
+                  <option value="dismissed">Dismissed</option>
+                </select>
+              </div>
+            )}
+
+            {/* Issue warning form */}
+            {showWarnForm && (
+              <div className="mb-3 p-3 rounded-xl border border-amber-100 bg-amber-50 space-y-2.5">
+                <div className="flex gap-2">
+                  {(['warning','serious','final'] as const).map(s => (
+                    <button key={s} onClick={() => setWarnSeverity(s)}
+                      className={`flex-1 py-1.5 text-xs font-semibold rounded-lg border capitalize transition-all ${warnSeverity === s
+                        ? s === 'final' ? 'bg-red-500 text-white border-red-500' : s === 'serious' ? 'bg-orange-500 text-white border-orange-500' : 'bg-amber-500 text-white border-amber-500'
+                        : 'bg-white text-gray-600 border-gray-200 hover:border-gray-300'}`}>
+                      {s}
+                    </button>
+                  ))}
+                </div>
+                <textarea value={warnReason} onChange={e => setWarnReason(e.target.value)} rows={2}
+                  placeholder="Describe the reason for this warning…"
+                  className="w-full text-xs border border-gray-200 rounded-lg px-2.5 py-2 focus:outline-none resize-none" />
+                <div className="flex gap-2">
+                  <button onClick={() => setShowWarnForm(false)} className="flex-1 py-1.5 border border-gray-200 rounded-lg text-xs font-medium text-gray-600 hover:bg-white">Cancel</button>
+                  <button onClick={handleIssueWarning} disabled={issuingWarn || !warnReason.trim()}
+                    className="flex-1 py-1.5 text-white rounded-lg text-xs font-semibold disabled:opacity-50"
+                    style={{ background: '#d97706' }}>
+                    {issuingWarn ? 'Issuing…' : 'Issue Warning'}
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {/* Warning list */}
+            {warnings.length === 0 ? (
+              <p className="text-xs text-gray-400">No warnings on record.</p>
+            ) : (
+              <div className="space-y-2">
+                {warnings.map((w, i) => (
+                  <div key={w.id} className={`flex items-start gap-2.5 p-2.5 rounded-xl border ${w.severity === 'final' ? 'border-red-200 bg-red-50' : w.severity === 'serious' ? 'border-orange-200 bg-orange-50' : 'border-amber-100 bg-amber-50'}`}>
+                    <div className={`w-5 h-5 rounded-full flex items-center justify-center text-[10px] font-black flex-shrink-0 mt-0.5 ${w.severity === 'final' ? 'bg-red-500 text-white' : w.severity === 'serious' ? 'bg-orange-500 text-white' : 'bg-amber-400 text-white'}`}>{i + 1}</div>
+                    <div className="flex-1 min-w-0">
+                      <p className="text-xs text-gray-700 leading-snug">{w.reason}</p>
+                      <p className="text-[10px] text-gray-400 mt-0.5">
+                        {w.issued_by ? `By ${w.issued_by} · ` : ''}{new Date(w.created_at).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' })}
+                      </p>
+                    </div>
+                    <button onClick={async () => { await api.deleteWarning(w.id); setWarnings(prev => prev.filter(x => x.id !== w.id)); }}
+                      className="text-gray-300 hover:text-red-400 transition-colors flex-shrink-0 mt-0.5">
+                      <Trash2 size={12} />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+            {warnings.length === 2 && !pip && (
+              <p className="text-xs text-orange-600 font-semibold mt-2 flex items-center gap-1">
+                <AlertTriangle size={11} /> 1 more warning will trigger a PIP.
+              </p>
             )}
           </div>
         </div>
@@ -720,6 +852,8 @@ export default function Employees() {
   const [employees, setEmployees] = useState<any[]>([]);
   const [departments, setDepartments] = useState<string[]>([]);
   const [designations, setDesignations] = useState<string[]>([]);
+  const [warningCounts, setWarningCounts] = useState<Record<string, number>>({});
+  const [pipEmployees, setPipEmployees] = useState<Set<string>>(new Set());
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
   const [deptFilter, setDeptFilter] = useState('All');
@@ -747,6 +881,14 @@ export default function Employees() {
     api.getEmployees().then(setEmployees).finally(() => setLoading(false));
     api.getConfigDepartments().then(d => setDepartments(d.map((x: any) => x.name))).catch(() => {});
     api.getConfigDesignations().then(d => setDesignations(d.map((x: any) => x.name))).catch(() => {});
+    api.getWarnings().then(ws => {
+      const counts: Record<string, number> = {};
+      (ws as any[]).forEach(w => { counts[w.employee_id] = (counts[w.employee_id] ?? 0) + 1; });
+      setWarningCounts(counts);
+    }).catch(() => {});
+    api.getPips().then(pips => {
+      setPipEmployees(new Set((pips as any[]).filter(p => p.status === 'active').map(p => p.employee_id)));
+    }).catch(() => {});
   }, []);
 
   const filtered = employees.filter(e => {
@@ -796,7 +938,8 @@ export default function Employees() {
           <p className="text-sm text-gray-500">{filtered.length} employee{filtered.length !== 1 ? 's' : ''} found</p>
           <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-4">
             {filtered.map((emp, i) => (
-              <EmployeeCard key={emp.id} emp={emp} index={i} onClick={() => setSelected(emp)} />
+              <EmployeeCard key={emp.id} emp={emp} index={i} onClick={() => setSelected(emp)}
+                warningCount={warningCounts[emp.id] ?? 0} onPip={pipEmployees.has(emp.id)} />
             ))}
           </div>
         </>

@@ -1083,6 +1083,61 @@ app.delete('/api/config/shifts/:id', async (req, res) => {
   catch { res.status(500).json({ error: 'Server error' }); }
 });
 
+// ── Warnings & PIP ────────────────────────────────────────────────────────
+async function ensureWarningsTables() {
+  await sql`CREATE TABLE IF NOT EXISTS employee_warnings (id TEXT PRIMARY KEY, employee_id TEXT NOT NULL, employee_name TEXT, reason TEXT NOT NULL, severity TEXT NOT NULL DEFAULT 'warning', issued_by TEXT, issued_by_role TEXT, created_at TIMESTAMPTZ DEFAULT NOW())`.catch(()=>{});
+  await sql`CREATE TABLE IF NOT EXISTS employee_pips (id TEXT PRIMARY KEY, employee_id TEXT NOT NULL, employee_name TEXT, start_date DATE NOT NULL, end_date DATE NOT NULL, reason TEXT, goals TEXT, status TEXT NOT NULL DEFAULT 'active', created_at TIMESTAMPTZ DEFAULT NOW())`.catch(()=>{});
+}
+app.get('/api/warnings', async (req, res) => {
+  try {
+    await ensureWarningsTables();
+    const { employee_id } = req.query as any;
+    const rows = employee_id ? await sql`SELECT * FROM employee_warnings WHERE employee_id=${employee_id} ORDER BY created_at DESC` : await sql`SELECT * FROM employee_warnings ORDER BY created_at DESC`;
+    res.json(rows);
+  } catch { res.status(500).json({ error: 'Server error' }); }
+});
+app.post('/api/warnings', async (req, res) => {
+  try {
+    await ensureWarningsTables();
+    const { employee_id, employee_name, reason, severity, issued_by, issued_by_role } = req.body;
+    if (!employee_id || !reason?.trim()) return res.status(400).json({ error: 'employee_id and reason required' });
+    const id = `warn_${Date.now()}`;
+    const rows = await sql`INSERT INTO employee_warnings (id,employee_id,employee_name,reason,severity,issued_by,issued_by_role) VALUES (${id},${employee_id},${employee_name??null},${reason.trim()},${severity??'warning'},${issued_by??null},${issued_by_role??null}) RETURNING *`;
+    const warn = rows[0] as any;
+    // Auto-trigger PIP on 3rd warning
+    const allWarns = await sql`SELECT id FROM employee_warnings WHERE employee_id=${employee_id}`;
+    if ((allWarns as any[]).length >= 3) {
+      const active = await sql`SELECT id FROM employee_pips WHERE employee_id=${employee_id} AND status='active'`;
+      if (!(active as any[]).length) {
+        const pid=`pip_${Date.now()}`; const today=new Date().toISOString().split('T')[0];
+        const ed=new Date(); ed.setMonth(ed.getMonth()+1); const end=ed.toISOString().split('T')[0];
+        await sql`INSERT INTO employee_pips (id,employee_id,employee_name,start_date,end_date,reason,status) VALUES (${pid},${employee_id},${employee_name??null},${today},${end},'Automatically triggered after 3 warnings','active')`;
+      }
+    }
+    res.status(201).json(warn);
+  } catch (e: any) { res.status(500).json({ error: e.message }); }
+});
+app.delete('/api/warnings/:id', async (req, res) => {
+  try { await sql`DELETE FROM employee_warnings WHERE id=${req.params.id}`; res.json({ success: true }); }
+  catch { res.status(500).json({ error: 'Server error' }); }
+});
+app.get('/api/warnings/pips', async (req, res) => {
+  try {
+    await ensureWarningsTables();
+    const { employee_id } = req.query as any;
+    const rows = employee_id ? await sql`SELECT * FROM employee_pips WHERE employee_id=${employee_id} ORDER BY created_at DESC` : await sql`SELECT * FROM employee_pips ORDER BY created_at DESC`;
+    res.json(rows);
+  } catch { res.status(500).json({ error: 'Server error' }); }
+});
+app.patch('/api/warnings/pips/:id', async (req, res) => {
+  try {
+    const { status, goals } = req.body;
+    const rows = await sql`UPDATE employee_pips SET status=${status??'active'},goals=${goals??null} WHERE id=${req.params.id} RETURNING *`;
+    if (!(rows as any[]).length) return res.status(404).json({ error: 'Not found' });
+    res.json((rows as any[])[0]);
+  } catch { res.status(500).json({ error: 'Server error' }); }
+});
+
 // ── WFH ───────────────────────────────────────────────────────────────────
 async function ensureWfhTable() {
   await sql`CREATE TABLE IF NOT EXISTS wfh_requests (
