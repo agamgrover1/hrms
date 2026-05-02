@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { sql } from '../db';
 import { notifyEmployeeUser } from '../lib/notify';
+import bcrypt from 'bcryptjs';
 
 const router = Router();
 
@@ -50,9 +51,10 @@ router.post('/', async (req, res) => {
     if (password) {
       const existingUser = await sql`SELECT id FROM app_users WHERE LOWER(email)=LOWER(${email})`;
       if (!existingUser.length) {
+        const hashedPw = await bcrypt.hash(password, 10);
         await sql`
           INSERT INTO app_users (id, employee_id_ref, name, email, password, role, department, designation, avatar, active)
-          VALUES (${`u_${id}`}, ${employee_id}, ${name}, ${email}, ${password}, ${role ?? 'employee'}, ${department}, ${designation}, ${avatar}, true)
+          VALUES (${`u_${id}`}, ${employee_id}, ${name}, ${email}, ${hashedPw}, ${role ?? 'employee'}, ${department}, ${designation}, ${avatar}, true)
         `;
       }
     }

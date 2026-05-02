@@ -1,6 +1,7 @@
 import express from 'express';
 import cors from 'cors';
 import { neon } from '@neondatabase/serverless';
+import bcrypt from 'bcryptjs';
 
 // Lazy Neon client — always typed as Promise<any[]> to satisfy TypeScript 6 strict mode
 let _sql: ReturnType<typeof neon> | null = null;
@@ -99,10 +100,15 @@ app.post('/api/auth/login', async (req, res) => {
   try {
     const { email, password } = req.body;
     if (!email || !password) return res.status(400).json({ error: 'Email and password required' });
-    const rows = await sql`SELECT * FROM app_users WHERE LOWER(email) = LOWER(${email}) AND password = ${password} LIMIT 1`;
+    const rows = await sql`SELECT * FROM app_users WHERE LOWER(email) = LOWER(${email}) LIMIT 1`;
     if (!rows.length) return res.status(401).json({ error: 'Invalid email or password.' });
     const user = rows[0] as any;
     if (!user.active) return res.status(403).json({ error: 'Your account has been deactivated. Contact HR.' });
+    const isHashed = typeof user.password === 'string' && user.password.startsWith('$2');
+    const valid = isHashed ? await bcrypt.compare(password, user.password) : user.password === password;
+    if (!valid) return res.status(401).json({ error: 'Invalid email or password.' });
+    // Auto-upgrade plain-text to bcrypt
+    if (!isHashed) { const h = await bcrypt.hash(password, 10); await sql`UPDATE app_users SET password=${h} WHERE id=${user.id}`.catch(()=>{}); }
     const { password: _pw, ...safeUser } = user;
     res.json({ user: safeUser });
   } catch (err) {
@@ -1292,9 +1298,10 @@ app.post('/api/users', async (req, res) => {
     if (existing.length) return res.status(409).json({ error: 'A user with this email already exists.' });
     const id = `u_${Date.now()}`;
     const av = avatar || name.split(' ').map((n: string) => n[0]).join('').slice(0, 2).toUpperCase();
+    const hashedPw = await bcrypt.hash(password, 10);
     const rows = await sql`
       INSERT INTO app_users (id, employee_id_ref, name, email, password, role, department, designation, avatar, active)
-      VALUES (${id}, ${employee_id_ref ?? null}, ${name}, ${email}, ${password}, ${role}, ${department}, ${designation}, ${av}, true)
+      VALUES (${id}, ${employee_id_ref ?? null}, ${name}, ${email}, ${hashedPw}, ${role}, ${department}, ${designation}, ${av}, true)
       RETURNING id, employee_id_ref, name, email, role, department, designation, avatar, active, created_at`;
     res.status(201).json(rows[0]);
   } catch (err) { res.status(500).json({ error: 'Server error' }); }
@@ -1303,8 +1310,9 @@ app.post('/api/users', async (req, res) => {
 app.put('/api/users/:id', async (req, res) => {
   try {
     const { name, email, password, role, department, designation, avatar, active } = req.body;
+    const pwToStore = password && !password.startsWith('$2') ? await bcrypt.hash(password, 10) : password;
     const rows = await sql`
-      UPDATE app_users SET name=${name}, email=${email}, password=${password}, role=${role},
+      UPDATE app_users SET name=${name}, email=${email}, password=${pwToStore}, role=${role},
         department=${department}, designation=${designation}, avatar=${avatar}, active=${active}
       WHERE id=${req.params.id}
       RETURNING id, employee_id_ref, name, email, role, department, designation, avatar, active, created_at`;
@@ -1318,9 +1326,14 @@ app.patch('/api/users/:id/change-password', async (req, res) => {
     const { current_password, new_password } = req.body;
     if (!current_password || !new_password) return res.status(400).json({ error: 'current_password and new_password are required' });
     if (new_password.length < 6) return res.status(400).json({ error: 'New password must be at least 6 characters' });
-    const rows = await sql`SELECT id FROM app_users WHERE id=${req.params.id} AND password=${current_password}`;
-    if (!(rows as any[]).length) return res.status(401).json({ error: 'Current password is incorrect' });
-    await sql`UPDATE app_users SET password=${new_password} WHERE id=${req.params.id}`;
+    const userRows = await sql`SELECT password FROM app_users WHERE id=${req.params.id}`;
+    if (!(userRows as any[]).length) return res.status(404).json({ error: 'User not found' });
+    const storedPw = (userRows as any[])[0].password;
+    const isHashed = typeof storedPw === 'string' && storedPw.startsWith('$2');
+    const valid = isHashed ? await bcrypt.compare(current_password, storedPw) : storedPw === current_password;
+    if (!valid) return res.status(401).json({ error: 'Current password is incorrect' });
+    const hashed = await bcrypt.hash(new_password, 10);
+    await sql`UPDATE app_users SET password=${hashed} WHERE id=${req.params.id}`;
     res.json({ success: true });
   } catch { res.status(500).json({ error: 'Server error' }); }
 });
