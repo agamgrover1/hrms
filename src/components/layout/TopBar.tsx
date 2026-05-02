@@ -6,38 +6,75 @@ import { api } from '../../services/api';
 
 // Map notification type + user role → destination route
 function getNotifRoute(type: string, role: string): string {
-  const isHR = role === 'admin' || role === 'hr_manager';
+  const isHR  = role === 'admin' || role === 'hr_manager';
+  const isMgr = role === 'employee'; // employees can be managers
+
   switch (type) {
-    // Leave events
+    // ── Leave ──────────────────────────────────────────────────────────────────
     case 'leave_applied':
-      return isHR ? '/leave' : '/my-team?tab=leaves';   // HR sees leave mgmt, manager sees My Team
-    case 'leave_approved':
-    case 'leave_rejected':
-      return isHR ? '/leave' : '/my?tab=leave';
-    // WFH events
-    case 'wfh_applied':
+      // HR/Admin gets this → Leave Management page
+      // Manager (employee role) gets this → My Team pending leaves
       return isHR ? '/leave' : '/my-team?tab=leaves';
+
+    case 'leave_approved':
+      // Employee gets this (their own leave was approved)
+      return isHR ? '/leave' : '/my?tab=leave';
+
+    case 'leave_rejected':
+      // Employee gets this (their own leave was rejected)
+      return isHR ? '/leave' : '/my?tab=leave';
+
+    // ── WFH ────────────────────────────────────────────────────────────────────
+    case 'wfh_applied':
+      // HR/Admin gets this → Leave Management (WFH tab)
+      // Manager gets this → My Team pending WFH
+      return isHR ? '/leave' : '/my-team?tab=leaves';
+
     case 'wfh_approved':
+      return isHR ? '/leave' : '/my?tab=wfh';
+
     case 'wfh_rejected':
       return isHR ? '/leave' : '/my?tab=wfh';
-    // Performance events
+
+    // ── Attendance ─────────────────────────────────────────────────────────────
+    case 'attendance_marked':
+      return isHR ? '/attendance' : '/my?tab=attendance';
+
+    // ── Performance ────────────────────────────────────────────────────────────
     case 'review_added':
     case 'review_update':
+      // Employee receives → their performance tab
+      // HR/Admin receives → Performance management page
       return isHR ? '/performance' : '/my?tab=performance';
+
     case 'appraisal_submitted':
+      // HR/Admin receives when employee submits → Performance page
       return isHR ? '/performance' : '/my?tab=performance';
+
     case 'appraisal_reviewed':
+      // Employee receives → their performance tab
       return '/my?tab=performance';
+
     case 'self_assessment_updated':
+      // HR/Admin receives → Performance page
+      // Manager receives → My Team performance
       return isHR ? '/performance' : '/my-team?tab=performance';
-    // Warnings & PIP
+
+    // ── Warnings & PIP ─────────────────────────────────────────────────────────
     case 'warning_issued':
-      return isHR ? '/employees' : '/my?tab=performance';
+      // Employee → their performance tab (warnings shown there)
+      // HR/Admin → Employees directory (to see the employee)
+      // Manager → also gets this → Employees or My Team
+      return isHR ? '/employees' : isMgr ? '/my-team?tab=performance' : '/my?tab=performance';
+
     case 'pip_assigned':
       return isHR ? '/employees' : '/my?tab=performance';
-    // General info (probation, confirmation, etc.)
+
+    // ── General ────────────────────────────────────────────────────────────────
     case 'info':
+      // Used for probation/confirmation updates → employee portal
       return isHR ? '/' : '/my';
+
     default:
       return isHR ? '/' : '/my';
   }
@@ -48,17 +85,25 @@ interface Props {
 }
 
 const TYPE_CONFIG: Record<string, { icon: any; color: string; bg: string }> = {
-  leave_applied:          { icon: Calendar,    color: '#d97706', bg: '#fffbeb' },
-  leave_approved:         { icon: CheckCircle, color: '#15803d', bg: '#f0fdf4' },
-  leave_rejected:         { icon: XCircle,     color: '#dc2626', bg: '#fef2f2' },
-  review_added:           { icon: TrendingUp,  color: '#2563eb', bg: '#eff6ff' },
-  appraisal_submitted:    { icon: FileText,    color: '#7c3aed', bg: '#f5f3ff' },
-  appraisal_reviewed:     { icon: Award,       color: '#EE2770', bg: '#fff0f5' },
-  self_assessment_updated:{ icon: Target,      color: '#0891b2', bg: '#f0f9ff' },
-  info:                   { icon: CheckCircle,   color: '#15803d', bg: '#f0fdf4' },
-  review_update:          { icon: TrendingUp,    color: '#2563eb', bg: '#eff6ff' },
-  warning_issued:         { icon: AlertTriangle, color: '#d97706', bg: '#fffbeb' },
-  pip_assigned:           { icon: ShieldAlert,   color: '#dc2626', bg: '#fef2f2' },
+  // Leave
+  leave_applied:           { icon: Calendar,       color: '#d97706', bg: '#fffbeb' },
+  leave_approved:          { icon: CheckCircle,    color: '#15803d', bg: '#f0fdf4' },
+  leave_rejected:          { icon: XCircle,        color: '#dc2626', bg: '#fef2f2' },
+  // WFH
+  wfh_applied:             { icon: Calendar,       color: '#192250', bg: 'rgba(25,34,80,0.06)' },
+  wfh_approved:            { icon: CheckCircle,    color: '#15803d', bg: '#f0fdf4' },
+  wfh_rejected:            { icon: XCircle,        color: '#dc2626', bg: '#fef2f2' },
+  // Performance
+  review_added:            { icon: TrendingUp,     color: '#2563eb', bg: '#eff6ff' },
+  review_update:           { icon: TrendingUp,     color: '#2563eb', bg: '#eff6ff' },
+  appraisal_submitted:     { icon: FileText,       color: '#7c3aed', bg: '#f5f3ff' },
+  appraisal_reviewed:      { icon: Award,          color: '#EE2770', bg: '#fff0f5' },
+  self_assessment_updated: { icon: Target,         color: '#0891b2', bg: '#f0f9ff' },
+  // Warnings & PIP
+  warning_issued:          { icon: AlertTriangle,  color: '#d97706', bg: '#fffbeb' },
+  pip_assigned:            { icon: ShieldAlert,    color: '#dc2626', bg: '#fef2f2' },
+  // General
+  info:                    { icon: CheckCircle,    color: '#15803d', bg: '#f0fdf4' },
 };
 
 function timeAgo(dateStr: string) {

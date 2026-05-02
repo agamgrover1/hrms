@@ -1208,6 +1208,12 @@ app.post('/api/wfh/requests', async (req, res) => {
     }
     const id = `wfh_${Date.now()}`;
     const rows = await sql`INSERT INTO wfh_requests (id,employee_id,employee_name,date,type,reason) VALUES (${id},${employee_id},${employee_name??null},${date},${type},${reason??null}) RETURNING *`;
+    // Notify manager that their report applied for WFH
+    notifyManagerOfEmployee(employee_id,'wfh_applied','WFH Request',
+      `${employee_name??'Employee'} applied for ${type==='half_day'?'Half Day':'Full Day'} Work From Home.`).catch(()=>{});
+    // Also notify HR/Admin
+    notifyAdminsAndHR('wfh_applied','WFH Request Submitted',
+      `${employee_name??'An employee'} has applied for ${type==='half_day'?'Half Day':'Full Day'} WFH — awaiting manager approval.`).catch(()=>{});
     res.status(201).json(rows[0]);
   } catch (e: any) { res.status(500).json({ error: e.message }); }
 });
@@ -1216,10 +1222,15 @@ app.patch('/api/wfh/requests/:id/manager-approve', async (req, res) => {
     const { status, manager_id, manager_name, rejection_reason } = req.body;
     if (status === 'rejected') {
       const rows = await sql`UPDATE wfh_requests SET manager_status='rejected',manager_id=${manager_id??null},manager_name=${manager_name??null},manager_approved_at=NOW(),manager_rejection_reason=${rejection_reason??null},status='rejected' WHERE id=${req.params.id} RETURNING *`;
-      return res.json(rows[0]);
+      const w = rows[0] as any;
+      notifyEmployeeUser(w.employee_id,'wfh_rejected','WFH Request Rejected by Manager',`Your Work From Home request was rejected by your manager.`).catch(()=>{});
+      return res.json(w);
     }
     const rows = await sql`UPDATE wfh_requests SET manager_status='approved',manager_id=${manager_id??null},manager_name=${manager_name??null},manager_approved_at=NOW() WHERE id=${req.params.id} RETURNING *`;
-    res.json(rows[0]);
+    const w = rows[0] as any;
+    notifyAdminsAndHR('wfh_applied','WFH Needs HR Approval',
+      `${w.employee_name}'s WFH request approved by manager — awaiting final HR approval.`).catch(()=>{});
+    res.json(w);
   } catch { res.status(500).json({ error: 'Server error' }); }
 });
 app.patch('/api/wfh/requests/:id', async (req, res) => {
@@ -1233,8 +1244,10 @@ app.patch('/api/wfh/requests/:id', async (req, res) => {
     const wfhStatus = w.type === 'half_day' ? 'wfh_half' : 'wfh';
     if (status === 'approved') {
       await sql`INSERT INTO attendance_records (employee_id,date,status,total_hours,source) VALUES (${w.employee_id},${dateStr},${wfhStatus},0,'wfh') ON CONFLICT (employee_id,date) DO UPDATE SET status=${wfhStatus},source='wfh'`.catch(()=>{});
+      notifyEmployeeUser(w.employee_id,'wfh_approved','WFH Approved',`Your Work From Home request has been approved.`).catch(()=>{});
     } else {
       await sql`DELETE FROM attendance_records WHERE employee_id=${w.employee_id} AND date::date=${dateStr}::date AND source='wfh'`.catch(()=>{});
+      notifyEmployeeUser(w.employee_id,'wfh_rejected','WFH Request Rejected',`Your Work From Home request was rejected by HR.`).catch(()=>{});
     }
     res.json(w);
   } catch { res.status(500).json({ error: 'Server error' }); }

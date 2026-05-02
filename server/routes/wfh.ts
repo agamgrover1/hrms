@@ -114,7 +114,7 @@ router.post('/requests', async (req, res) => {
     `;
     const req2 = rows[0] as any;
     const dateLabel = new Date(date + 'T12:00:00Z').toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' });
-    notifyManagerOfEmployee(employee_id, 'leave_applied', 'WFH Request',
+    notifyManagerOfEmployee(employee_id, 'wfh_applied', 'WFH Request',
       `${employee_name ?? 'Employee'} has applied for ${type === 'half_day' ? 'Half Day' : 'Full Day'} Work From Home on ${dateLabel}.`).catch(() => {});
     res.status(201).json(req2);
   } catch (err: any) { res.status(500).json({ error: err.message }); }
@@ -133,7 +133,7 @@ router.patch('/requests/:id/manager-approve', async (req, res) => {
       `;
       if (!rows.length) return res.status(404).json({ error: 'Not found' });
       const w = rows[0] as any;
-      notifyEmployeeUser(w.employee_id, 'leave_rejected', 'WFH Request Rejected by Manager',
+      notifyEmployeeUser(w.employee_id, 'wfh_rejected', 'WFH Request Rejected by Manager',
         `Your Work From Home request was rejected by your manager.`).catch(() => {});
       return res.json(w);
     }
@@ -144,7 +144,7 @@ router.patch('/requests/:id/manager-approve', async (req, res) => {
     `;
     if (!rows.length) return res.status(404).json({ error: 'Not found' });
     const w = rows[0] as any;
-    notifyAdminsAndHR('leave_applied', 'WFH Needs HR Approval',
+    notifyAdminsAndHR('wfh_applied', 'WFH Needs HR Approval',
       `${w.employee_name}'s ${w.type === 'half_day' ? 'Half Day' : 'Full Day'} WFH request approved by manager — awaiting final approval.`).catch(() => {});
     res.json(w);
   } catch { res.status(500).json({ error: 'Server error' }); }
@@ -164,11 +164,11 @@ router.patch('/requests/:id', async (req, res) => {
     const w = rows[0] as any;
     if (status === 'approved') {
       await markWfhAttendance(w.employee_id, w.date, w.type);
-      notifyEmployeeUser(w.employee_id, 'leave_approved', 'WFH Approved',
+      notifyEmployeeUser(w.employee_id, 'wfh_approved', 'WFH Approved',
         `Your Work From Home request has been approved.`).catch(() => {});
     } else {
       await clearWfhAttendance(w.employee_id, w.date);
-      notifyEmployeeUser(w.employee_id, 'leave_rejected', 'WFH Request Rejected',
+      notifyEmployeeUser(w.employee_id, 'wfh_rejected', 'WFH Request Rejected',
         `Your Work From Home request was rejected.`).catch(() => {});
     }
     res.json(w);
