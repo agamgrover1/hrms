@@ -51,12 +51,21 @@ async function checkAndTriggerPip(employeeId: string, employeeName: string) {
         VALUES (${id}, ${employeeId}, ${employeeName ?? null}, ${today}, ${end},
           'Automatically triggered after 3 warnings', 'active')
       `;
-      notifyEmployeeUser(employeeId, 'info',
+      // Notify employee
+      notifyEmployeeUser(employeeId, 'pip_assigned',
         'Performance Improvement Plan Assigned',
-        `You have been placed on a Performance Improvement Plan (PIP) effective ${today}. Duration: 1 month. Please speak to your HR manager.`
+        `You have been placed on a Performance Improvement Plan (PIP) effective ${today} for 1 month. Please speak to your HR manager.`
       ).catch(() => {});
-      notifyAdminsAndHR('info', 'PIP Auto-Triggered',
-        `${employeeName ?? 'Employee'} has been placed on a PIP after receiving 3 warnings.`
+      // Notify HR/Admin
+      notifyAdminsAndHR('pip_assigned',
+        'PIP Auto-Triggered',
+        `${employeeName ?? 'An employee'} has been placed on a PIP after receiving 3 warnings. PIP period: ${today} to ${end}.`
+      ).catch(() => {});
+      // Notify the reporting manager of this employee
+      notifyManagerOfEmployee(employeeId,
+        'pip_assigned',
+        'Team Member Placed on PIP',
+        `${employeeName ?? 'Your team member'} has been placed on a Performance Improvement Plan after 3 warnings.`
       ).catch(() => {});
     }
   }
@@ -85,10 +94,32 @@ router.post('/', async (req, res) => {
       RETURNING *
     `;
     const warn = rows[0] as any;
-    // Notify employee
-    notifyEmployeeUser(employee_id, 'info', 'Warning Issued',
-      `A ${severity ?? 'warning'} has been issued to you. Reason: ${reason.trim()}`).catch(() => {});
-    // Check if PIP should be triggered
+    const sevLabel = (severity ?? 'warning').charAt(0).toUpperCase() + (severity ?? 'warning').slice(1);
+
+    // 1. Notify the employee who received the warning
+    notifyEmployeeUser(employee_id, 'warning_issued',
+      `${sevLabel} Warning Issued`,
+      `A ${severity ?? 'warning'} warning has been issued by ${issued_by ?? 'HR/Admin'}. Reason: ${reason.trim()}`
+    ).catch(() => {});
+
+    // 2. If issued by a manager → notify HR/Admin so they're aware
+    if (issued_by_role === 'manager' || issued_by_role === 'employee') {
+      notifyAdminsAndHR('warning_issued',
+        `Warning Issued by Manager`,
+        `${issued_by ?? 'A manager'} issued a ${severity ?? 'warning'} warning to ${employee_name ?? 'an employee'}. Reason: ${reason.trim()}`
+      ).catch(() => {});
+    }
+
+    // 3. If issued by HR/Admin → notify the reporting manager so they're aware
+    if (issued_by_role === 'admin' || issued_by_role === 'hr_manager') {
+      notifyManagerOfEmployee(employee_id,
+        'warning_issued',
+        `Warning Issued to Your Team Member`,
+        `HR issued a ${severity ?? 'warning'} warning to ${employee_name ?? 'your team member'}. Reason: ${reason.trim()}`
+      ).catch(() => {});
+    }
+
+    // Check if PIP should be triggered (sends its own notifications)
     await checkAndTriggerPip(employee_id, employee_name);
     res.status(201).json(warn);
   } catch (err: any) { res.status(500).json({ error: err.message }); }

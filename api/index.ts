@@ -1104,6 +1104,26 @@ app.post('/api/warnings', async (req, res) => {
     const id = `warn_${Date.now()}`;
     const rows = await sql`INSERT INTO employee_warnings (id,employee_id,employee_name,reason,severity,issued_by,issued_by_role) VALUES (${id},${employee_id},${employee_name??null},${reason.trim()},${severity??'warning'},${issued_by??null},${issued_by_role??null}) RETURNING *`;
     const warn = rows[0] as any;
+    const sevLabel = (severity??'warning').charAt(0).toUpperCase()+(severity??'warning').slice(1);
+
+    // 1. Notify the employee
+    notifyEmployeeUser(employee_id, 'warning_issued',
+      `${sevLabel} Warning Issued`,
+      `A ${severity??'warning'} warning has been issued by ${issued_by??'HR/Admin'}. Reason: ${reason.trim()}`
+    ).catch(()=>{});
+    // 2. Manager issued → notify HR/Admin
+    if (issued_by_role==='manager'||issued_by_role==='employee') {
+      notifyAdminsAndHR('warning_issued','Warning Issued by Manager',
+        `${issued_by??'A manager'} issued a ${severity??'warning'} warning to ${employee_name??'an employee'}. Reason: ${reason.trim()}`
+      ).catch(()=>{});
+    }
+    // 3. HR/Admin issued → notify reporting manager
+    if (issued_by_role==='admin'||issued_by_role==='hr_manager') {
+      notifyManagerOfEmployee(employee_id,'warning_issued','Warning Issued to Your Team Member',
+        `HR issued a ${severity??'warning'} warning to ${employee_name??'your team member'}. Reason: ${reason.trim()}`
+      ).catch(()=>{});
+    }
+
     // Auto-trigger PIP on 3rd warning
     const allWarns = await sql`SELECT id FROM employee_warnings WHERE employee_id=${employee_id}`;
     if ((allWarns as any[]).length >= 3) {
@@ -1112,6 +1132,12 @@ app.post('/api/warnings', async (req, res) => {
         const pid=`pip_${Date.now()}`; const today=new Date().toISOString().split('T')[0];
         const ed=new Date(); ed.setMonth(ed.getMonth()+1); const end=ed.toISOString().split('T')[0];
         await sql`INSERT INTO employee_pips (id,employee_id,employee_name,start_date,end_date,reason,status) VALUES (${pid},${employee_id},${employee_name??null},${today},${end},'Automatically triggered after 3 warnings','active')`;
+        notifyEmployeeUser(employee_id,'pip_assigned','Performance Improvement Plan Assigned',
+          `You have been placed on a PIP effective ${today} for 1 month. Please speak to your HR manager.`).catch(()=>{});
+        notifyAdminsAndHR('pip_assigned','PIP Auto-Triggered',
+          `${employee_name??'An employee'} has been placed on a PIP after 3 warnings.`).catch(()=>{});
+        notifyManagerOfEmployee(employee_id,'pip_assigned','Team Member Placed on PIP',
+          `${employee_name??'Your team member'} has been placed on a PIP after 3 warnings.`).catch(()=>{});
       }
     }
     res.status(201).json(warn);

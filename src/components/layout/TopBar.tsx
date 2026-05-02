@@ -1,4 +1,4 @@
-import { Bell, ChevronDown, LogOut, CheckCircle, Calendar, TrendingUp, FileText, Target, XCircle, Award, Check, Trash2 } from 'lucide-react';
+import { Bell, ChevronDown, LogOut, CheckCircle, Calendar, TrendingUp, FileText, Target, XCircle, Award, Check, Trash2, AlertTriangle, ShieldAlert } from 'lucide-react';
 import { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../../context/AuthContext';
@@ -30,6 +30,11 @@ function getNotifRoute(type: string, role: string): string {
       return '/my?tab=performance';
     case 'self_assessment_updated':
       return isHR ? '/performance' : '/my-team?tab=performance';
+    // Warnings & PIP
+    case 'warning_issued':
+      return isHR ? '/employees' : '/my?tab=performance';
+    case 'pip_assigned':
+      return isHR ? '/employees' : '/my?tab=performance';
     // General info (probation, confirmation, etc.)
     case 'info':
       return isHR ? '/' : '/my';
@@ -50,8 +55,10 @@ const TYPE_CONFIG: Record<string, { icon: any; color: string; bg: string }> = {
   appraisal_submitted:    { icon: FileText,    color: '#7c3aed', bg: '#f5f3ff' },
   appraisal_reviewed:     { icon: Award,       color: '#EE2770', bg: '#fff0f5' },
   self_assessment_updated:{ icon: Target,      color: '#0891b2', bg: '#f0f9ff' },
-  info:                   { icon: CheckCircle, color: '#15803d', bg: '#f0fdf4' },
-  review_update:          { icon: TrendingUp,  color: '#2563eb', bg: '#eff6ff' },
+  info:                   { icon: CheckCircle,   color: '#15803d', bg: '#f0fdf4' },
+  review_update:          { icon: TrendingUp,    color: '#2563eb', bg: '#eff6ff' },
+  warning_issued:         { icon: AlertTriangle, color: '#d97706', bg: '#fffbeb' },
+  pip_assigned:           { icon: ShieldAlert,   color: '#dc2626', bg: '#fef2f2' },
 };
 
 function timeAgo(dateStr: string) {
