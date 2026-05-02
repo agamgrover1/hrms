@@ -1313,6 +1313,18 @@ app.put('/api/users/:id', async (req, res) => {
   } catch (err) { res.status(500).json({ error: 'Server error' }); }
 });
 
+app.patch('/api/users/:id/change-password', async (req, res) => {
+  try {
+    const { current_password, new_password } = req.body;
+    if (!current_password || !new_password) return res.status(400).json({ error: 'current_password and new_password are required' });
+    if (new_password.length < 6) return res.status(400).json({ error: 'New password must be at least 6 characters' });
+    const rows = await sql`SELECT id FROM app_users WHERE id=${req.params.id} AND password=${current_password}`;
+    if (!(rows as any[]).length) return res.status(401).json({ error: 'Current password is incorrect' });
+    await sql`UPDATE app_users SET password=${new_password} WHERE id=${req.params.id}`;
+    res.json({ success: true });
+  } catch { res.status(500).json({ error: 'Server error' }); }
+});
+
 app.patch('/api/users/:id/active', async (req, res) => {
   try {
     const { active } = req.body;

@@ -180,5 +180,7 @@ export const api = {
   updateUser: (id: string, data: any) => request<any>(`/users/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
   toggleUserActive: (id: string, active: boolean) =>
     request<any>(`/users/${id}/active`, { method: 'PATCH', body: JSON.stringify({ active }) }),
+  changePassword: (id: string, current_password: string, new_password: string) =>
+    request<any>(`/users/${id}/change-password`, { method: 'PATCH', body: JSON.stringify({ current_password, new_password }) }),
   deleteUser: (id: string) => request<any>(`/users/${id}`, { method: 'DELETE' }),
 };

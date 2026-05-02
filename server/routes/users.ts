@@ -61,6 +61,28 @@ router.patch('/:id/active', async (req, res) => {
   }
 });
 
+// Change password — verifies current password before updating
+router.patch('/:id/change-password', async (req, res) => {
+  try {
+    const { current_password, new_password } = req.body;
+    if (!current_password || !new_password) {
+      return res.status(400).json({ error: 'current_password and new_password are required' });
+    }
+    if (new_password.length < 6) {
+      return res.status(400).json({ error: 'New password must be at least 6 characters' });
+    }
+    // Verify current password
+    const rows = await sql`SELECT id FROM app_users WHERE id = ${req.params.id} AND password = ${current_password}` as any[];
+    if (!rows.length) {
+      return res.status(401).json({ error: 'Current password is incorrect' });
+    }
+    await sql`UPDATE app_users SET password = ${new_password} WHERE id = ${req.params.id}`;
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
 router.delete('/:id', async (req, res) => {
   try {
     await sql`DELETE FROM app_users WHERE id = ${req.params.id}`;

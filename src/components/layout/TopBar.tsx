@@ -1,4 +1,4 @@
-import { Bell, ChevronDown, LogOut, CheckCircle, Calendar, TrendingUp, FileText, Target, XCircle, Award, Check, Trash2, AlertTriangle, ShieldAlert } from 'lucide-react';
+import { Bell, ChevronDown, LogOut, CheckCircle, Calendar, TrendingUp, FileText, Target, XCircle, Award, Check, Trash2, AlertTriangle, ShieldAlert, KeyRound, Eye, EyeOff } from 'lucide-react';
 import { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../../context/AuthContext';
@@ -121,6 +121,12 @@ export default function TopBar({ title }: Props) {
   const navigate = useNavigate();
   const [showMenu, setShowMenu] = useState(false);
   const [showNotifs, setShowNotifs] = useState(false);
+  const [showChangePw, setShowChangePw] = useState(false);
+  const [pwForm, setPwForm] = useState({ current: '', next: '', confirm: '' });
+  const [showPw, setShowPw] = useState({ current: false, next: false, confirm: false });
+  const [pwError, setPwError] = useState('');
+  const [pwSuccess, setPwSuccess] = useState(false);
+  const [savingPw, setSavingPw] = useState(false);
   const [notifications, setNotifications] = useState<any[]>([]);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const notifsRef = useRef<HTMLDivElement>(null);
@@ -181,6 +187,7 @@ export default function TopBar({ title }: Props) {
   };
 
   return (
+    <>
     <header className="h-16 bg-white border-b border-gray-100 flex items-center px-6 gap-4 sticky top-0 z-10 shadow-sm">
       <h1 className="text-lg font-bold flex-shrink-0" style={{ color: '#192250' }}>{title}</h1>
 
@@ -323,8 +330,14 @@ export default function TopBar({ title }: Props) {
                   <p className="text-xs text-gray-400">{user?.email}</p>
                 </div>
                 <button
+                  onClick={() => { setShowMenu(false); setPwForm({ current: '', next: '', confirm: '' }); setPwError(''); setPwSuccess(false); setShowChangePw(true); }}
+                  className="w-full flex items-center gap-2.5 px-4 py-2.5 text-sm hover:bg-gray-50 transition-colors mt-1 text-gray-700"
+                >
+                  <KeyRound size={15} className="text-gray-400" /> Change Password
+                </button>
+                <button
                   onClick={logout}
-                  className="w-full flex items-center gap-2.5 px-4 py-2.5 text-sm hover:bg-red-50 transition-colors mt-1"
+                  className="w-full flex items-center gap-2.5 px-4 py-2.5 text-sm hover:bg-red-50 transition-colors"
                   style={{ color: '#EE2770' }}
                 >
                   <LogOut size={15} /> Sign Out
@@ -335,5 +348,98 @@ export default function TopBar({ title }: Props) {
         </div>
       </div>
     </header>
+
+    {/* ── Change Password Modal ─────────────────────────────────────────────── */}
+    {showChangePw && (
+      <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 backdrop-blur-sm p-4">
+        <div className="bg-white rounded-2xl shadow-2xl w-full max-w-sm overflow-hidden">
+          {/* Header */}
+          <div className="flex items-center justify-between px-6 py-4 border-b border-gray-100">
+            <div className="flex items-center gap-2.5">
+              <div className="w-8 h-8 rounded-lg flex items-center justify-center" style={{ background: 'rgba(25,34,80,0.08)' }}>
+                <KeyRound size={15} style={{ color: '#192250' }} />
+              </div>
+              <p className="font-bold text-sm" style={{ color: '#192250' }}>Change Password</p>
+            </div>
+            <button onClick={() => setShowChangePw(false)} className="p-1.5 hover:bg-gray-100 rounded-lg">
+              <XCircle size={16} className="text-gray-400" />
+            </button>
+          </div>
+
+          {/* Form */}
+          <div className="p-6 space-y-4">
+            {pwSuccess ? (
+              <div className="flex flex-col items-center gap-3 py-4">
+                <div className="w-12 h-12 rounded-full bg-green-100 flex items-center justify-center">
+                  <Check size={22} className="text-green-600" />
+                </div>
+                <p className="font-semibold text-gray-800">Password changed!</p>
+                <p className="text-xs text-gray-400 text-center">Your password has been updated successfully.</p>
+                <button onClick={() => setShowChangePw(false)}
+                  className="mt-2 px-5 py-2 text-sm font-semibold text-white rounded-xl"
+                  style={{ background: '#192250' }}>Done</button>
+              </div>
+            ) : (
+              <>
+                {(['current','next','confirm'] as const).map((field, idx) => {
+                  const labels = { current: 'Current Password', next: 'New Password', confirm: 'Confirm New Password' };
+                  return (
+                    <div key={field}>
+                      <label className="text-xs font-semibold text-gray-500 block mb-1.5">{labels[field]}</label>
+                      <div className="relative">
+                        <input
+                          type={showPw[field] ? 'text' : 'password'}
+                          value={pwForm[field]}
+                          onChange={e => { setPwForm(f => ({ ...f, [field]: e.target.value })); setPwError(''); }}
+                          placeholder={idx === 0 ? 'Enter current password' : idx === 1 ? 'Min. 6 characters' : 'Re-enter new password'}
+                          className="w-full text-sm border border-gray-200 rounded-lg px-3 py-2.5 pr-10 focus:outline-none focus:ring-2 focus:ring-primary-200"
+                        />
+                        <button type="button"
+                          onClick={() => setShowPw(p => ({ ...p, [field]: !p[field] }))}
+                          className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600">
+                          {showPw[field] ? <EyeOff size={14} /> : <Eye size={14} />}
+                        </button>
+                      </div>
+                    </div>
+                  );
+                })}
+
+                {pwError && (
+                  <div className="flex items-center gap-2 text-xs text-red-600 bg-red-50 border border-red-100 rounded-lg px-3 py-2">
+                    <AlertTriangle size={12} /> {pwError}
+                  </div>
+                )}
+
+                <div className="flex gap-3 pt-1">
+                  <button onClick={() => setShowChangePw(false)}
+                    className="flex-1 py-2.5 border border-gray-200 rounded-xl text-sm font-medium text-gray-600 hover:bg-gray-50">
+                    Cancel
+                  </button>
+                  <button
+                    disabled={savingPw || !pwForm.current || !pwForm.next || !pwForm.confirm}
+                    onClick={async () => {
+                      if (pwForm.next !== pwForm.confirm) { setPwError('New passwords do not match'); return; }
+                      if (pwForm.next.length < 6) { setPwError('New password must be at least 6 characters'); return; }
+                      if (pwForm.next === pwForm.current) { setPwError('New password must be different from current password'); return; }
+                      setSavingPw(true); setPwError('');
+                      try {
+                        await api.changePassword(user!.id, pwForm.current, pwForm.next);
+                        setPwSuccess(true);
+                      } catch (err: any) {
+                        setPwError(err.message ?? 'Failed to change password');
+                      } finally { setSavingPw(false); }
+                    }}
+                    className="flex-1 py-2.5 text-white rounded-xl text-sm font-semibold disabled:opacity-50"
+                    style={{ background: 'linear-gradient(135deg, #192250 0%, #141c43 100%)' }}>
+                    {savingPw ? 'Updating…' : 'Update Password'}
+                  </button>
+                </div>
+              </>
+            )}
+          </div>
+        </div>
+      </div>
+    )}
+    </>
   );
 }
