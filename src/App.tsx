@@ -11,6 +11,7 @@ import Performance from './pages/Performance';
 import UserManagement from './pages/UserManagement';
 import Config from './pages/Config';
 import Incentives from './pages/Incentives';
+import EmployeeProfile from './pages/EmployeeProfile';
 import MyPortal from './pages/employee/MyPortal';
 import MyTeam from './pages/employee/MyTeam';
 
@@ -32,6 +33,7 @@ function AppRoutes() {
         {/* Admin & HR Manager routes */}
         <Route index element={<ProtectedRoute roles={['admin', 'hr_manager']}><Dashboard /></ProtectedRoute>} />
         <Route path="employees" element={<ProtectedRoute roles={['admin', 'hr_manager']}><Employees /></ProtectedRoute>} />
+        <Route path="employees/:id" element={<ProtectedRoute roles={['admin', 'hr_manager']}><EmployeeProfile /></ProtectedRoute>} />
         <Route path="attendance" element={<ProtectedRoute roles={['admin', 'hr_manager']}><Attendance /></ProtectedRoute>} />
         <Route path="leave" element={<ProtectedRoute roles={['admin', 'hr_manager']}><Leave /></ProtectedRoute>} />
         <Route path="payroll" element={<ProtectedRoute roles={['admin', 'hr_manager']}><Payroll /></ProtectedRoute>} />

@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { Search, Filter, Plus, Mail, Phone, MapPin, ChevronRight, X, User, Pencil, Trash2, Eye, EyeOff, AlertTriangle, Shield } from 'lucide-react';
 import { api } from '../services/api';
 import { useAuth } from '../context/AuthContext';
@@ -631,7 +632,7 @@ function AddEmployeeModal({ onClose, onSaved, existingEmployees, departments = [
   );
 }
 
-function EditEmployeeModal({ emp, onClose, onSaved, allEmployees, departments = [], designations = [] }: {
+export function EditEmployeeModal({ emp, onClose, onSaved, allEmployees, departments = [], designations = [] }: {
   emp: any;
   onClose: () => void;
   onSaved: (updated: any) => void;
@@ -849,6 +850,7 @@ function EditEmployeeModal({ emp, onClose, onSaved, allEmployees, departments = 
 }
 
 export default function Employees() {
+  const navigate = useNavigate();
   const [employees, setEmployees] = useState<any[]>([]);
   const [departments, setDepartments] = useState<string[]>([]);
   const [designations, setDesignations] = useState<string[]>([]);
@@ -858,8 +860,6 @@ export default function Employees() {
   const [search, setSearch] = useState('');
   const [deptFilter, setDeptFilter] = useState('All');
   const [statusFilter, setStatusFilter] = useState('All');
-  const [selected, setSelected] = useState<any | null>(null);
-  const [editing, setEditing] = useState<any | null>(null);
   const [showAdd, setShowAdd] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState<any | null>(null);
   const [deleting, setDeleting] = useState(false);
@@ -938,20 +938,11 @@ export default function Employees() {
           <p className="text-sm text-gray-500">{filtered.length} employee{filtered.length !== 1 ? 's' : ''} found</p>
           <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-4">
             {filtered.map((emp, i) => (
-              <EmployeeCard key={emp.id} emp={emp} index={i} onClick={() => setSelected(emp)}
+              <EmployeeCard key={emp.id} emp={emp} index={i} onClick={() => navigate(`/employees/${emp.id}`)}
                 warningCount={warningCounts[emp.id] ?? 0} onPip={pipEmployees.has(emp.id)} />
             ))}
           </div>
         </>
-      )}
-
-      {selected && (
-        <EmployeeDetail
-          emp={selected}
-          onClose={() => setSelected(null)}
-          onEdit={() => { setEditing(selected); setSelected(null); }}
-          onDelete={() => { setConfirmDelete(selected); setSelected(null); }}
-        />
       )}
 
       {confirmDelete && (
@@ -974,20 +965,6 @@ export default function Employees() {
             </div>
           </div>
         </div>
-      )}
-
-      {editing && (
-        <EditEmployeeModal
-          emp={editing}
-          allEmployees={employees}
-          departments={departments}
-          designations={designations}
-          onClose={() => setEditing(null)}
-          onSaved={updated => {
-            setEmployees(prev => prev.map(e => e.id === updated.id ? updated : e));
-            setEditing(null);
-          }}
-        />
       )}
 
       {showAdd && (

@@ -16,9 +16,15 @@ const pageTitles: Record<string, string> = {
   '/my-team': 'My Team',
 };
 
+function getTitle(pathname: string): string {
+  if (pageTitles[pathname]) return pageTitles[pathname];
+  if (/^\/employees\/.+/.test(pathname)) return 'Employee Profile';
+  return 'Digital Leap HRMS';
+}
+
 export default function Layout() {
   const location = useLocation();
-  const title = pageTitles[location.pathname] || 'Digital Leap HRMS';
+  const title = getTitle(location.pathname);
 
   return (
     <div className="flex min-h-screen bg-gray-50">
