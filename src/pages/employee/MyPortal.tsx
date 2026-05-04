@@ -1,4 +1,5 @@
 import { useState, useEffect, Component, type ReactNode } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { Clock, Calendar, DollarSign, User, CheckCircle, XCircle, AlertCircle, Plus, X, Target, FileText, Lock, Trash2, Save, Users, Monitor } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
 import { api } from '../../services/api';
@@ -187,7 +188,10 @@ function ApplyLeaveModal({ onClose, onSubmit, balance }: { onClose: () => void; 
 
 export default function MyPortal() {
   const { user } = useAuth();
-  const [tab, setTab] = useState('overview');
+  const [searchParams] = useSearchParams();
+  const [tab, setTab] = useState(() => searchParams.get('tab') ?? 'overview');
+  // Keep tab in sync if user navigates via notification while already on this page
+  useEffect(() => { const t = searchParams.get('tab'); if (t) setTab(t); }, [searchParams]);
   const [applyLeave, setApplyLeave] = useState(false);
   const [myIncentives, setMyIncentives] = useState<any[]>([]);
   const [showUpsellForm, setShowUpsellForm] = useState(false);
