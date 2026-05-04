@@ -43,22 +43,20 @@ router.get('/', async (req, res) => {
 
 router.post('/', async (req, res) => {
   try {
-    const { employee_id, employee_name, client_name, service_description, deal_value, requested_amount, notes } = req.body;
-    if (!employee_id || !client_name?.trim() || !service_description?.trim() || !requested_amount) {
-      return res.status(400).json({ error: 'employee_id, client_name, service_description, requested_amount are required' });
+    const { employee_id, employee_name, client_name, service_description, deal_value, notes } = req.body;
+    if (!employee_id || !client_name?.trim() || !service_description?.trim()) {
+      return res.status(400).json({ error: 'employee_id, client_name, service_description are required' });
     }
     const id = `ups_${Date.now()}`;
     const rows = await sql`
       INSERT INTO upsell_requests
-        (id, employee_id, employee_name, client_name, service_description, deal_value, requested_amount, notes)
+        (id, employee_id, employee_name, client_name, service_description, deal_value, notes)
       VALUES (${id}, ${employee_id}, ${employee_name ?? null}, ${client_name.trim()},
-              ${service_description.trim()}, ${deal_value ?? null}, ${requested_amount}, ${notes?.trim() ?? null})
+              ${service_description.trim()}, ${deal_value ?? null}, ${notes?.trim() ?? null})
       RETURNING *
     `;
-    // Notify HR/Admin
-    notifyAdminsAndHR('upsell_submitted',
-      'Upsell Incentive Request',
-      `${employee_name ?? 'An employee'} submitted an upsell incentive request for client "${client_name.trim()}" — ₹${Number(requested_amount).toLocaleString('en-IN')}.`
+    notifyAdminsAndHR('upsell_submitted', 'Upsell Incentive Request',
+      `${employee_name ?? 'An employee'} reported an upsell for "${client_name.trim()}"${deal_value ? ` — Deal: ₹${Number(deal_value).toLocaleString('en-IN')}` : ''}. Set their incentive amount.`
     ).catch(() => {});
     res.status(201).json(rows[0]);
   } catch (err: any) { res.status(500).json({ error: err.message }); }
@@ -82,7 +80,7 @@ router.patch('/:id', async (req, res) => {
 
     // Notify employee of the decision
     if (status === 'approved') {
-      const amt = approved_amount ?? req2.requested_amount;
+      const amt = approved_amount;
       notifyEmployeeUser(req2.employee_id, 'upsell_approved',
         'Incentive Request Approved 🎉',
         `Your upsell incentive request for "${req2.client_name}" has been approved! Amount: ₹${Number(amt).toLocaleString('en-IN')}.`

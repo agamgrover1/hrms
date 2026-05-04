@@ -15,7 +15,7 @@ const adminNavItems = [
   { to: '/payroll', icon: DollarSign, label: 'Payroll' },
   { to: '/performance', icon: Target, label: 'Performance' },
   { to: '/users', icon: UserCog, label: 'User Management' },
-  { to: '/incentives', icon: TrendingUp, label: 'Upsell Incentives' },
+  { to: '/incentives', icon: TrendingUp, label: 'Finance' },
   { to: '/config', icon: Settings, label: 'Configuration' },
 ];
 

@@ -1141,6 +1141,43 @@ app.patch('/api/upsell/:id', async (req, res) => {
   } catch { res.status(500).json({ error: 'Server error' }); }
 });
 
+// ── Expenses ──────────────────────────────────────────────────────────────
+const EXPENSE_CATS = ['Travel','Food & Meals','Equipment','Software','Marketing','Training','Other'];
+app.get('/api/expenses/categories', (_req, res) => res.json(EXPENSE_CATS));
+app.get('/api/expenses', async (req, res) => {
+  try {
+    await sql`CREATE TABLE IF NOT EXISTS expense_requests (id TEXT PRIMARY KEY, employee_id TEXT NOT NULL, employee_name TEXT, category TEXT NOT NULL, description TEXT NOT NULL, amount NUMERIC NOT NULL, receipt_note TEXT, expense_date DATE, status TEXT NOT NULL DEFAULT 'pending', reviewed_by TEXT, reviewed_at TIMESTAMPTZ, rejection_reason TEXT, approved_amount NUMERIC, payment_note TEXT, created_at TIMESTAMPTZ DEFAULT NOW())`.catch(()=>{});
+    const { employee_id } = req.query as any;
+    const rows = employee_id ? await sql`SELECT * FROM expense_requests WHERE employee_id=${employee_id} ORDER BY created_at DESC` : await sql`SELECT * FROM expense_requests ORDER BY created_at DESC`;
+    res.json(rows);
+  } catch { res.status(500).json({ error: 'Server error' }); }
+});
+app.post('/api/expenses', async (req, res) => {
+  try {
+    const { employee_id, employee_name, category, description, amount, receipt_note, expense_date } = req.body;
+    if (!employee_id || !category || !description?.trim() || !amount) return res.status(400).json({ error: 'Missing required fields' });
+    const id = `exp_${Date.now()}`;
+    const rows = await sql`INSERT INTO expense_requests (id,employee_id,employee_name,category,description,amount,receipt_note,expense_date) VALUES (${id},${employee_id},${employee_name??null},${category},${description.trim()},${amount},${receipt_note?.trim()??null},${expense_date??null}) RETURNING *`;
+    notifyAdminsAndHR('expense_submitted','Expense Claim Submitted',`${employee_name??'An employee'} submitted a ${category} expense of ₹${Number(amount).toLocaleString('en-IN')}.`).catch(()=>{});
+    res.status(201).json(rows[0]);
+  } catch (e: any) { res.status(500).json({ error: e.message }); }
+});
+app.patch('/api/expenses/:id', async (req, res) => {
+  try {
+    const { status, reviewed_by, rejection_reason, approved_amount, payment_note } = req.body;
+    const rows = await sql`UPDATE expense_requests SET status=${status},reviewed_by=${reviewed_by??null},reviewed_at=NOW(),rejection_reason=${status==='rejected'?(rejection_reason??null):null},approved_amount=${approved_amount??null},payment_note=${payment_note??null} WHERE id=${req.params.id} RETURNING *`;
+    if (!(rows as any[]).length) return res.status(404).json({ error: 'Not found' });
+    const e = rows[0] as any;
+    if (status==='approved') notifyEmployeeUser(e.employee_id,'expense_approved','Expense Approved ✅',`Your ${e.category} expense of ₹${Number(approved_amount??e.amount).toLocaleString('en-IN')} has been approved.`).catch(()=>{});
+    else if (status==='rejected') notifyEmployeeUser(e.employee_id,'expense_rejected','Expense Not Approved',`Your ${e.category} expense was not approved.${rejection_reason?` Reason: ${rejection_reason}`:''}`).catch(()=>{});
+    else if (status==='paid') notifyEmployeeUser(e.employee_id,'expense_paid','Expense Reimbursed 💸',`Your ${e.category} expense reimbursement has been processed.${payment_note?` Note: ${payment_note}`:''}`).catch(()=>{});
+    res.json(e);
+  } catch { res.status(500).json({ error: 'Server error' }); }
+});
+
+// Also update upsell to not require requested_amount
+// (handled server-side; Vercel route already doesn't validate it strictly)
+
 // ── Warnings & PIP ────────────────────────────────────────────────────────
 async function ensureWarningsTables() {
   await sql`CREATE TABLE IF NOT EXISTS employee_warnings (id TEXT PRIMARY KEY, employee_id TEXT NOT NULL, employee_name TEXT, reason TEXT NOT NULL, severity TEXT NOT NULL DEFAULT 'warning', issued_by TEXT, issued_by_role TEXT, created_at TIMESTAMPTZ DEFAULT NOW())`.catch(()=>{});

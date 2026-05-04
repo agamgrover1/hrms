@@ -58,6 +58,7 @@ const baseTabs = [
   { key: 'leave',        label: 'My Leaves',    icon: Calendar },
   { key: 'wfh',          label: 'Work From Home', icon: Monitor },
   { key: 'incentives',   label: 'Incentives',     icon: Target  },
+  { key: 'expenses',    label: 'Expenses',       icon: DollarSign },
   { key: 'payslip',      label: 'Pay Slip',     icon: DollarSign },
   { key: 'performance',  label: 'Performance',  icon: Target },
 ];
@@ -195,7 +196,12 @@ export default function MyPortal() {
   const [applyLeave, setApplyLeave] = useState(false);
   const [myIncentives, setMyIncentives] = useState<any[]>([]);
   const [showUpsellForm, setShowUpsellForm] = useState(false);
-  const [upsellForm, setUpsellForm] = useState({ client_name: '', service_description: '', deal_value: '', requested_amount: '', notes: '' });
+  const [upsellForm, setUpsellForm] = useState({ client_name: '', service_description: '', deal_value: '', notes: '' });
+  const [myExpenses, setMyExpenses] = useState<any[]>([]);
+  const [showExpenseForm, setShowExpenseForm] = useState(false);
+  const [expCategories, setExpCategories] = useState<string[]>([]);
+  const [expenseForm, setExpenseForm] = useState({ category: '', description: '', amount: '', receipt_note: '', expense_date: '' });
+  const [submittingExp, setSubmittingExp] = useState(false);
   const [submittingUpsell, setSubmittingUpsell] = useState(false);
   const [myWarnings, setMyWarnings] = useState<any[]>([]);
   const [myPip, setMyPip] = useState<any | null>(null);
@@ -265,6 +271,8 @@ export default function MyPortal() {
         api.getWarnings(emp.id).then(setMyWarnings).catch(() => {});
         api.getPips(emp.id).then(pips => setMyPip((pips as any[]).find(p => p.status === 'active') ?? null)).catch(() => {});
         api.getUpsellRequests(emp.id).then(setMyIncentives).catch(() => {});
+        api.getExpenses(emp.id).then(setMyExpenses).catch(() => {});
+        api.getExpenseCategories().then(setExpCategories).catch(() => {});
         setAttendance(att);
         setLeaves(lv);
         setWfhRequests(Array.isArray(wfh) ? wfh : []);
@@ -974,7 +982,7 @@ export default function MyPortal() {
         return (
           <div className="space-y-4">
             <div className="flex justify-end">
-              <button onClick={() => { setShowUpsellForm(true); setUpsellForm({ client_name:'', service_description:'', deal_value:'', requested_amount:'', notes:'' }); }}
+              <button onClick={() => { setShowUpsellForm(true); setUpsellForm({ client_name:'', service_description:'', deal_value:'', notes:'' }); }}
                 className="flex items-center gap-2 px-4 py-2.5 text-white text-sm font-semibold rounded-xl shadow-sm"
                 style={{ background: 'linear-gradient(135deg, #192250 0%, #141c43 100%)' }}>
                 <Plus size={15} /> Request Incentive
@@ -1000,9 +1008,10 @@ export default function MyPortal() {
                             <p className="font-semibold text-gray-800">{r.client_name}</p>
                             <p className="text-xs text-gray-500 mt-0.5">{r.service_description}</p>
                             <div className="flex items-center gap-3 mt-2 flex-wrap">
-                              <span className="text-xs text-gray-400">Requested: <strong style={{ color: '#192250' }}>{fmtAmt(r.requested_amount)}</strong></span>
-                              {r.deal_value && <span className="text-xs text-gray-400">Deal: {fmtAmt(r.deal_value)}</span>}
-                              {r.approved_amount && <span className="text-xs font-semibold" style={{ color: '#15803d' }}>Approved: {fmtAmt(r.approved_amount)}</span>}
+                              {r.deal_value && <span className="text-xs text-gray-400">Deal: <strong style={{ color: '#192250' }}>{fmtAmt(r.deal_value)}</strong></span>}
+                              {r.approved_amount
+                                ? <span className="text-xs font-semibold" style={{ color: '#15803d' }}>Incentive: {fmtAmt(r.approved_amount)}</span>
+                                : <span className="text-xs text-gray-300 italic">Incentive amount to be set by HR</span>}
                             </div>
                             {r.rejection_reason && <p className="text-xs text-red-500 mt-1 italic">"{r.rejection_reason}"</p>}
                             {r.payment_note && <p className="text-xs text-purple-500 mt-1">{r.payment_note}</p>}
@@ -1043,19 +1052,13 @@ export default function MyPortal() {
                       </div>
                     ))}
                     <div className="grid grid-cols-2 gap-3">
-                      <div>
-                        <label className="text-xs font-medium text-gray-600 mb-1 block">Total Deal Value (₹)</label>
+                      <div className="col-span-2">
+                        <label className="text-xs font-medium text-gray-600 mb-1 block">Total Deal Value (₹) <span className="text-red-400">*</span></label>
                         <input type="number" value={upsellForm.deal_value}
                           onChange={e => setUpsellForm(f => ({ ...f, deal_value: e.target.value }))}
-                          placeholder="e.g. 50000"
+                          placeholder="e.g. 50000 — total value of the upsell"
                           className="w-full text-sm border border-gray-200 rounded-lg px-3 py-2.5 focus:outline-none" />
-                      </div>
-                      <div>
-                        <label className="text-xs font-medium text-gray-600 mb-1 block">Incentive Requested (₹) <span className="text-red-400">*</span></label>
-                        <input type="number" value={upsellForm.requested_amount}
-                          onChange={e => setUpsellForm(f => ({ ...f, requested_amount: e.target.value }))}
-                          placeholder="e.g. 5000"
-                          className="w-full text-sm border border-gray-200 rounded-lg px-3 py-2.5 focus:outline-none" />
+                        <p className="text-xs text-gray-400 mt-1">HR will review and set your incentive amount.</p>
                       </div>
                     </div>
                     <div>
@@ -1068,7 +1071,7 @@ export default function MyPortal() {
                       <button onClick={() => setShowUpsellForm(false)}
                         className="flex-1 py-2.5 border border-gray-200 rounded-lg text-sm font-medium text-gray-600 hover:bg-gray-50">Cancel</button>
                       <button
-                        disabled={submittingUpsell || !upsellForm.client_name.trim() || !upsellForm.service_description.trim() || !upsellForm.requested_amount}
+                        disabled={submittingUpsell || !upsellForm.client_name.trim() || !upsellForm.service_description.trim() || !upsellForm.deal_value}
                         onClick={async () => {
                           setSubmittingUpsell(true);
                           try {
@@ -1076,8 +1079,7 @@ export default function MyPortal() {
                               employee_id: empDbId, employee_name: user?.name,
                               client_name: upsellForm.client_name.trim(),
                               service_description: upsellForm.service_description.trim(),
-                              deal_value: upsellForm.deal_value ? Number(upsellForm.deal_value) : undefined,
-                              requested_amount: Number(upsellForm.requested_amount),
+                              deal_value: Number(upsellForm.deal_value),
                               notes: upsellForm.notes.trim() || undefined,
                             });
                             setMyIncentives(prev => [created, ...prev]);
@@ -1088,6 +1090,133 @@ export default function MyPortal() {
                         className="flex-1 py-2.5 text-white rounded-lg text-sm font-semibold disabled:opacity-50"
                         style={{ background: 'linear-gradient(135deg, #192250 0%, #141c43 100%)' }}>
                         {submittingUpsell ? 'Submitting…' : 'Submit Request'}
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
+        );
+      })()}
+
+      {/* ── Expenses ── */}
+      {tab === 'expenses' && (() => {
+        const EXP_STATUS: Record<string,{label:string;color:string;bg:string}> = {
+          pending:  {label:'Pending',  color:'#d97706',bg:'#fffbeb'},
+          approved: {label:'Approved', color:'#15803d',bg:'#f0fdf4'},
+          rejected: {label:'Rejected', color:'#dc2626',bg:'#fef2f2'},
+          paid:     {label:'Paid',     color:'#7c3aed',bg:'#f5f3ff'},
+        };
+        const fmtAmt2 = (n: any) => n!=null ? `₹${Number(n).toLocaleString('en-IN')}` : '—';
+        return (
+          <div className="space-y-4">
+            <div className="flex justify-end">
+              <button onClick={() => { setShowExpenseForm(true); setExpenseForm({ category: expCategories[0]??'', description: '', amount: '', receipt_note: '', expense_date: '' }); }}
+                className="flex items-center gap-2 px-4 py-2.5 text-white text-sm font-semibold rounded-xl shadow-sm"
+                style={{ background: 'linear-gradient(135deg, #192250 0%, #141c43 100%)' }}>
+                <Plus size={15} /> Submit Expense
+              </button>
+            </div>
+            <div className="bg-white rounded-xl border border-gray-100 shadow-sm overflow-hidden">
+              {myExpenses.length === 0 ? (
+                <div className="flex flex-col items-center py-16 gap-2">
+                  <DollarSign size={32} className="text-gray-200" />
+                  <p className="text-sm text-gray-400">No expense claims yet</p>
+                </div>
+              ) : (
+                <div className="divide-y divide-gray-50">
+                  {myExpenses.map(e => {
+                    const cfg = EXP_STATUS[e.status] ?? EXP_STATUS.pending;
+                    return (
+                      <div key={e.id} className="px-5 py-4 flex items-start justify-between gap-3">
+                        <div className="flex-1 min-w-0">
+                          <div className="flex items-center gap-2 flex-wrap">
+                            <span className="text-xs font-bold px-2 py-0.5 rounded-full" style={{ background: 'rgba(25,34,80,0.08)', color: '#192250' }}>{e.category}</span>
+                            <span className="font-semibold text-gray-800">{fmtAmt2(e.amount)}</span>
+                          </div>
+                          <p className="text-xs text-gray-500 mt-0.5">{e.description}</p>
+                          {e.approved_amount && <p className="text-xs font-semibold mt-1" style={{ color: '#15803d' }}>Approved: {fmtAmt2(e.approved_amount)}</p>}
+                          {e.rejection_reason && <p className="text-xs text-red-500 mt-1 italic">"{e.rejection_reason}"</p>}
+                        </div>
+                        <div className="flex flex-col items-end gap-1 flex-shrink-0">
+                          <span className="text-xs px-2.5 py-1 rounded-full font-semibold" style={{ background: cfg.bg, color: cfg.color }}>{cfg.label}</span>
+                          <span className="text-[10px] text-gray-300">
+                            {new Date(e.created_at).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' })}
+                          </span>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+            {showExpenseForm && (
+              <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 backdrop-blur-sm p-4">
+                <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md overflow-hidden">
+                  <div className="flex items-center justify-between px-6 py-4 border-b border-gray-100">
+                    <h2 className="font-bold text-base" style={{ color: '#192250' }}>Submit Expense Claim</h2>
+                    <button onClick={() => setShowExpenseForm(false)}><X size={16} className="text-gray-400" /></button>
+                  </div>
+                  <div className="p-6 space-y-4">
+                    <div className="grid grid-cols-2 gap-3">
+                      <div>
+                        <label className="text-xs font-medium text-gray-600 mb-1 block">Category <span className="text-red-400">*</span></label>
+                        <select value={expenseForm.category} onChange={e => setExpenseForm(f => ({ ...f, category: e.target.value }))}
+                          className="w-full text-sm border border-gray-200 rounded-lg px-3 py-2.5 focus:outline-none bg-white">
+                          {expCategories.map(c => <option key={c}>{c}</option>)}
+                        </select>
+                      </div>
+                      <div>
+                        <label className="text-xs font-medium text-gray-600 mb-1 block">Amount (₹) <span className="text-red-400">*</span></label>
+                        <input type="number" value={expenseForm.amount} onChange={e => setExpenseForm(f => ({ ...f, amount: e.target.value }))}
+                          placeholder="e.g. 2500"
+                          className="w-full text-sm border border-gray-200 rounded-lg px-3 py-2.5 focus:outline-none" />
+                      </div>
+                    </div>
+                    <div>
+                      <label className="text-xs font-medium text-gray-600 mb-1 block">Description <span className="text-red-400">*</span></label>
+                      <input value={expenseForm.description} onChange={e => setExpenseForm(f => ({ ...f, description: e.target.value }))}
+                        placeholder="e.g. Cab to client meeting at Connaught Place"
+                        className="w-full text-sm border border-gray-200 rounded-lg px-3 py-2.5 focus:outline-none" />
+                    </div>
+                    <div className="grid grid-cols-2 gap-3">
+                      <div>
+                        <label className="text-xs font-medium text-gray-600 mb-1 block">Expense Date</label>
+                        <input type="date" value={expenseForm.expense_date} onChange={e => setExpenseForm(f => ({ ...f, expense_date: e.target.value }))}
+                          className="w-full text-sm border border-gray-200 rounded-lg px-3 py-2.5 focus:outline-none" />
+                      </div>
+                      <div>
+                        <label className="text-xs font-medium text-gray-600 mb-1 block">Receipt / Reference</label>
+                        <input value={expenseForm.receipt_note} onChange={e => setExpenseForm(f => ({ ...f, receipt_note: e.target.value }))}
+                          placeholder="Bill no. / reference"
+                          className="w-full text-sm border border-gray-200 rounded-lg px-3 py-2.5 focus:outline-none" />
+                      </div>
+                    </div>
+                    <div className="flex gap-3 pt-1">
+                      <button onClick={() => setShowExpenseForm(false)}
+                        className="flex-1 py-2.5 border border-gray-200 rounded-lg text-sm font-medium text-gray-600 hover:bg-gray-50">Cancel</button>
+                      <button
+                        disabled={submittingExp || !expenseForm.category || !expenseForm.description.trim() || !expenseForm.amount}
+                        onClick={async () => {
+                          setSubmittingExp(true);
+                          try {
+                            const created = await api.submitExpense({
+                              employee_id: empDbId, employee_name: user?.name,
+                              category: expenseForm.category,
+                              description: expenseForm.description.trim(),
+                              amount: Number(expenseForm.amount),
+                              receipt_note: expenseForm.receipt_note.trim() || undefined,
+                              expense_date: expenseForm.expense_date || undefined,
+                            });
+                            setMyExpenses(prev => [created, ...prev]);
+                            setShowExpenseForm(false);
+                          } catch { /* ignore */ }
+                          finally { setSubmittingExp(false); }
+                        }}
+                        className="flex-1 py-2.5 text-white rounded-lg text-sm font-semibold disabled:opacity-50"
+                        style={{ background: 'linear-gradient(135deg, #192250 0%, #141c43 100%)' }}>
+                        {submittingExp ? 'Submitting…' : 'Submit Claim'}
                       </button>
                     </div>
                   </div>

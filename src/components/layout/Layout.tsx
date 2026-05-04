@@ -11,7 +11,7 @@ const pageTitles: Record<string, string> = {
   '/performance': 'Performance',
   '/users': 'User Management',
   '/config': 'Configuration',
-  '/incentives': 'Upsell Incentives',
+  '/incentives': 'Finance',
   '/my': 'My Portal',
   '/my-team': 'My Team',
 };

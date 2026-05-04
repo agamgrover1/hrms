@@ -13,6 +13,7 @@ import configRoutes from './routes/config';
 import wfhRoutes from './routes/wfh';
 import warningsRoutes from './routes/warnings';
 import upsellRoutes from './routes/upsell';
+import expensesRoutes from './routes/expenses';
 
 // Add audit columns to leave_requests if they don't exist yet
 (async () => {
@@ -58,6 +59,7 @@ app.use('/api/config', configRoutes);
 app.use('/api/wfh', wfhRoutes);
 app.use('/api/warnings', warningsRoutes);
 app.use('/api/upsell', upsellRoutes);
+app.use('/api/expenses', expensesRoutes);
 
 app.get('/api/health', (_, res) => res.json({ status: 'ok' }));
 

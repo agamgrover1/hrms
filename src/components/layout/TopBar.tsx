@@ -77,6 +77,12 @@ function getNotifRoute(type: string, role: string): string {
     case 'upsell_rejected':
     case 'upsell_paid':
       return '/my?tab=incentives';
+    case 'expense_submitted':
+      return isHR ? '/incentives' : '/my?tab=expenses';
+    case 'expense_approved':
+    case 'expense_rejected':
+    case 'expense_paid':
+      return '/my?tab=expenses';
 
     // ── General ────────────────────────────────────────────────────────────────
     case 'info':
@@ -114,6 +120,10 @@ const TYPE_CONFIG: Record<string, { icon: any; color: string; bg: string }> = {
   upsell_approved:         { icon: CheckCircle,    color: '#15803d', bg: '#f0fdf4' },
   upsell_rejected:         { icon: XCircle,        color: '#dc2626', bg: '#fef2f2' },
   upsell_paid:             { icon: Award,          color: '#d97706', bg: '#fffbeb' },
+  expense_submitted:       { icon: FileText,       color: '#2563eb', bg: '#eff6ff' },
+  expense_approved:        { icon: CheckCircle,    color: '#15803d', bg: '#f0fdf4' },
+  expense_rejected:        { icon: XCircle,        color: '#dc2626', bg: '#fef2f2' },
+  expense_paid:            { icon: Award,          color: '#7c3aed', bg: '#f5f3ff' },
   // General
   info:                    { icon: CheckCircle,    color: '#15803d', bg: '#f0fdf4' },
 };

@@ -125,10 +125,19 @@ export const api = {
   // Upsell Incentives
   getUpsellRequests: (employeeId?: string) =>
     request<any[]>(`/upsell${employeeId ? `?employee_id=${employeeId}` : ''}`),
-  submitUpsell: (data: { employee_id: string; employee_name?: string; client_name: string; service_description: string; deal_value?: number; requested_amount: number; notes?: string }) =>
+  submitUpsell: (data: { employee_id: string; employee_name?: string; client_name: string; service_description: string; deal_value?: number; notes?: string }) =>
     request<any>('/upsell', { method: 'POST', body: JSON.stringify(data) }),
   reviewUpsell: (id: string, data: { status: string; reviewed_by?: string; rejection_reason?: string; approved_amount?: number; payment_note?: string }) =>
     request<any>(`/upsell/${id}`, { method: 'PATCH', body: JSON.stringify(data) }),
+
+  // Expenses
+  getExpenses: (employeeId?: string) =>
+    request<any[]>(`/expenses${employeeId ? `?employee_id=${employeeId}` : ''}`),
+  getExpenseCategories: () => request<string[]>('/expenses/categories'),
+  submitExpense: (data: { employee_id: string; employee_name?: string; category: string; description: string; amount: number; receipt_note?: string; expense_date?: string }) =>
+    request<any>('/expenses', { method: 'POST', body: JSON.stringify(data) }),
+  reviewExpense: (id: string, data: { status: string; reviewed_by?: string; rejection_reason?: string; approved_amount?: number; payment_note?: string }) =>
+    request<any>(`/expenses/${id}`, { method: 'PATCH', body: JSON.stringify(data) }),
 
   // Warnings & PIP
   getWarnings: (employeeId?: string) =>
