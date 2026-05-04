@@ -14,6 +14,7 @@ import wfhRoutes from './routes/wfh';
 import warningsRoutes from './routes/warnings';
 import upsellRoutes from './routes/upsell';
 import expensesRoutes from './routes/expenses';
+import optionalLeaveRoutes from './routes/optional-leave';
 
 // Add audit columns to leave_requests if they don't exist yet
 (async () => {
@@ -60,6 +61,7 @@ app.use('/api/wfh', wfhRoutes);
 app.use('/api/warnings', warningsRoutes);
 app.use('/api/upsell', upsellRoutes);
 app.use('/api/expenses', expensesRoutes);
+app.use('/api/optional-leave', optionalLeaveRoutes);
 
 app.get('/api/health', (_, res) => res.json({ status: 'ok' }));
 

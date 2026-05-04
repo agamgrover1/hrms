@@ -171,14 +171,16 @@ app.post('/api/employees', async (req, res) => {
 
 app.put('/api/employees/:id', async (req, res) => {
   try {
-    const { name, email, phone, department, designation, location, manager, reporting_manager_id, status, salary, ctc, biometric_id, shift, next_appraisal_month, next_appraisal_year } = req.body;
+    const { name, email, phone, department, designation, location, manager, reporting_manager_id, status, salary, ctc, biometric_id, shift, next_appraisal_month, next_appraisal_year, date_of_birth } = req.body;
+    await sql`ALTER TABLE employees ADD COLUMN IF NOT EXISTS date_of_birth DATE`.catch(()=>{});
     const rows = await sql`
       UPDATE employees SET name=${name}, email=${email}, phone=${phone}, department=${department},
         designation=${designation}, location=${location}, manager=${manager ?? null},
         reporting_manager_id=${reporting_manager_id ?? null},
         status=${status}, salary=${salary}, ctc=${ctc},
         biometric_id=${biometric_id ?? null}, shift=${shift ?? 'day'},
-        next_appraisal_month=${next_appraisal_month ?? null}, next_appraisal_year=${next_appraisal_year ?? null}
+        next_appraisal_month=${next_appraisal_month ?? null}, next_appraisal_year=${next_appraisal_year ?? null},
+        date_of_birth=${date_of_birth || null}
       WHERE id=${req.params.id} RETURNING *`;
     res.json(rows[0]);
   } catch (err) { res.status(500).json({ error: 'Server error' }); }
@@ -582,9 +584,38 @@ app.get('/api/leave/requests', async (req, res) => {
 app.post('/api/leave/requests', async (req, res) => {
   try {
     const { employee_id, employee_name, type, from_date, to_date, days, reason } = req.body;
-    const empRows = await sql`SELECT join_date, probation_end_date, reporting_manager_id FROM employees WHERE id=${employee_id}`.catch(() => []);
+    const empRows = await sql`SELECT join_date, probation_end_date, reporting_manager_id, date_of_birth FROM employees WHERE id=${employee_id}`.catch(() => []);
     const emp = (empRows as any[])[0] ?? {};
     const onProbation = isOnProbation(emp.join_date ?? null, emp.probation_end_date ?? null);
+
+    // ── Optional leave ────────────────────────────────────────────────────
+    if (type === 'optional') {
+      if (onProbation) return res.status(400).json({ error: 'Optional leave is not available during the probation period.' });
+      const year = new Date(from_date).getFullYear();
+      const countRows = await sql`SELECT COUNT(*) FROM leave_requests WHERE employee_id=${employee_id} AND type='optional' AND status NOT IN ('rejected','cancelled') AND EXTRACT(YEAR FROM from_date)=${year}`;
+      if (Number((countRows[0] as any).count) >= 2)
+        return res.status(400).json({ error: 'You have already used or applied for your 2 optional leaves this year.' });
+      const norm = (v: any) => { const s = typeof v==='string'?v:(v instanceof Date?v.toISOString():String(v)); if(s.includes('T')){const d=new Date(s);d.setMinutes(d.getMinutes()+330);return d.toISOString().slice(0,10);} return s.slice(0,10); };
+      const pool = await sql`SELECT date FROM optional_leave_dates WHERE year=${year}`;
+      const poolSet = new Set((pool as any[]).map(r => norm(r.date)));
+      const dobStr = emp.date_of_birth ? norm(emp.date_of_birth) : null;
+      const birthday = dobStr ? `${year}-${dobStr.slice(5)}` : null;
+      const reqDate = from_date.slice(0,10);
+      if (!poolSet.has(reqDate) && birthday !== reqDate)
+        return res.status(400).json({ error: 'The selected date is not in the optional leave pool for this year.' });
+      const dupe = await sql`SELECT id FROM leave_requests WHERE employee_id=${employee_id} AND type='optional' AND from_date::date=${reqDate}::date AND status NOT IN ('rejected','cancelled')`;
+      if ((dupe as any[]).length) return res.status(400).json({ error: 'You have already applied for an optional leave on this date.' });
+      const id = `l_${Date.now()}`;
+      const rows = await sql`INSERT INTO leave_requests (id,employee_id,employee_name,type,from_date,to_date,days,reason,status,manager_status) VALUES (${id},${employee_id},${employee_name},'optional',${reqDate},${reqDate},1,${reason??''},'pending','pending') RETURNING *`;
+      const dateLabel = new Date(reqDate+'T12:00:00Z').toLocaleDateString('en-IN',{day:'numeric',month:'short'});
+      if (emp.reporting_manager_id) {
+        notifyEmployeeUser(emp.reporting_manager_id,'leave_applied','Optional Leave Request',`${employee_name} applied for an optional leave on ${dateLabel}`);
+      } else {
+        notifyAdminsAndHR('leave_applied','Optional Leave Request',`${employee_name} applied for an optional leave on ${dateLabel}`);
+      }
+      return res.status(201).json(rows[0]);
+    }
+
     const isUnpaid = type === 'unpaid';
 
     if (!isUnpaid && onProbation) {
@@ -1104,6 +1135,71 @@ app.delete('/api/config/shifts/:id', async (req, res) => {
   try { await sql`DELETE FROM config_shifts WHERE id=${req.params.id}`; res.json({ success: true }); }
   catch { res.status(500).json({ error: 'Server error' }); }
 });
+
+// ── Optional Leave ────────────────────────────────────────────────────────
+async function ensureOptionalLeaveTables() {
+  await sql`CREATE TABLE IF NOT EXISTS optional_leave_dates (id TEXT PRIMARY KEY, date DATE NOT NULL, label TEXT NOT NULL, year INTEGER NOT NULL, created_at TIMESTAMPTZ DEFAULT NOW(), UNIQUE(date,year))`.catch(()=>{});
+  await sql`ALTER TABLE employees ADD COLUMN IF NOT EXISTS date_of_birth DATE`.catch(()=>{});
+}
+
+app.get('/api/optional-leave/dates', async (req, res) => {
+  try {
+    await ensureOptionalLeaveTables();
+    const year = Number((req.query as any).year) || new Date().getFullYear();
+    res.json(await sql`SELECT * FROM optional_leave_dates WHERE year=${year} ORDER BY date ASC`);
+  } catch { res.status(500).json({ error: 'Server error' }); }
+});
+app.post('/api/optional-leave/dates', async (req, res) => {
+  try {
+    await ensureOptionalLeaveTables();
+    const { date, label, year } = req.body;
+    if (!date || !label?.trim() || !year) return res.status(400).json({ error: 'date, label, year are required' });
+    const id = `old_${Date.now()}`;
+    const rows = await sql`INSERT INTO optional_leave_dates (id,date,label,year) VALUES (${id},${date},${label.trim()},${Number(year)}) ON CONFLICT (date,year) DO UPDATE SET label=EXCLUDED.label RETURNING *`;
+    res.status(201).json(rows[0]);
+  } catch (e: any) { res.status(500).json({ error: e.message }); }
+});
+app.delete('/api/optional-leave/dates/:id', async (req, res) => {
+  try { await sql`DELETE FROM optional_leave_dates WHERE id=${req.params.id}`; res.json({ success: true }); }
+  catch { res.status(500).json({ error: 'Server error' }); }
+});
+
+app.get('/api/optional-leave/available', async (req, res) => {
+  try {
+    const { employee_id, year: yearStr } = req.query as any;
+    if (!employee_id) return res.status(400).json({ error: 'employee_id required' });
+    const year = Number(yearStr) || new Date().getFullYear();
+    const pool = await sql`SELECT id,date,label FROM optional_leave_dates WHERE year=${year} ORDER BY date ASC`;
+    const empRows = await sql`SELECT date_of_birth FROM employees WHERE id=${employee_id}`;
+    const dob = (empRows as any[])[0]?.date_of_birth;
+
+    const norm = (v: any): string => {
+      const s = typeof v === 'string' ? v : (v instanceof Date ? v.toISOString() : String(v));
+      if (s.includes('T')) { const d = new Date(s); d.setMinutes(d.getMinutes()+330); return d.toISOString().slice(0,10); }
+      return s.slice(0,10);
+    };
+
+    let birthdayThisYear: string|null = null;
+    if (dob) { const s = norm(dob); birthdayThisYear = `${year}-${s.slice(5)}`; }
+
+    // Already applied dates (pending + approved)
+    const used = await sql`SELECT from_date FROM leave_requests WHERE employee_id=${employee_id} AND type='optional' AND status NOT IN ('rejected','cancelled') AND EXTRACT(YEAR FROM from_date)=${year}`;
+    const usedSet = new Set((used as any[]).map(r => norm(r.from_date)));
+    const usedCount = (used as any[]).length;
+
+    const dates: any[] = (pool as any[]).map(r => ({
+      id: r.id, date: norm(r.date), label: r.label, is_birthday: false, already_applied: usedSet.has(norm(r.date)),
+    }));
+    if (birthdayThisYear && !dates.some(d => d.date === birthdayThisYear)) {
+      dates.push({ id:'birthday', date:birthdayThisYear, label:'Your Birthday 🎂', is_birthday:true, already_applied:usedSet.has(birthdayThisYear) });
+      dates.sort((a,b) => a.date.localeCompare(b.date));
+    }
+    res.json({ dates, used_count: usedCount, remaining: Math.max(0, 2 - usedCount) });
+  } catch (e: any) { res.status(500).json({ error: e.message }); }
+});
+
+// Extend leave apply to handle optional type
+// (Handled in the existing /api/leave/requests POST with optional type detection)
 
 // ── Upsell Incentives ─────────────────────────────────────────────────────
 app.get('/api/upsell', async (req, res) => {

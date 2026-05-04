@@ -544,6 +544,10 @@ function AddEmployeeModal({ onClose, onSaved, existingEmployees, departments = [
               <label className={labelCls}>Join Date</label>
               <input type="date" value={form.join_date} onChange={e => set('join_date', e.target.value)} className={inputCls} />
             </div>
+            <div>
+              <label className={labelCls}>Date of Birth <span className="text-gray-400 font-normal text-[10px]">(enables birthday optional leave)</span></label>
+              <input type="date" value={(form as any).date_of_birth ?? ''} onChange={e => set('date_of_birth', e.target.value)} max={new Date().toISOString().split('T')[0]} className={inputCls} />
+            </div>
           </div>
 
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
@@ -640,13 +644,20 @@ export function EditEmployeeModal({ emp, onClose, onSaved, allEmployees, departm
   departments?: string[];
   designations?: string[];
 }) {
+  const toDateStr = (v: any) => {
+    if (!v) return '';
+    const s = typeof v === 'string' ? v : String(v);
+    if (s.includes('T')) { const d = new Date(s); d.setMinutes(d.getMinutes()+330); return d.toISOString().slice(0,10); }
+    return s.slice(0,10);
+  };
   const [form, setForm] = useState({
     name: emp.name || '',
     email: emp.email || '',
     phone: emp.phone || '',
     department: emp.department || 'Engineering',
     designation: emp.designation || '',
-    join_date: emp.join_date ? emp.join_date.split('T')[0] : new Date().toISOString().split('T')[0],
+    join_date: toDateStr(emp.join_date) || new Date().toISOString().split('T')[0],
+    date_of_birth: toDateStr(emp.date_of_birth) || '',
     location: emp.location || '',
     manager: emp.manager || '',
     reporting_manager_id: emp.reporting_manager_id || '',
@@ -678,6 +689,7 @@ export function EditEmployeeModal({ emp, onClose, onSaved, allEmployees, departm
         salary: Number(form.salary) || 0,
         ctc: Number(form.ctc) || 0,
         reporting_manager_id: form.reporting_manager_id || null,
+        date_of_birth: (form as any).date_of_birth || null,
         next_appraisal_month: form.next_appraisal_month ? Number(form.next_appraisal_month) : null,
         next_appraisal_year:  form.next_appraisal_year  ? Number(form.next_appraisal_year)  : null,
       });
@@ -761,6 +773,10 @@ export function EditEmployeeModal({ emp, onClose, onSaved, allEmployees, departm
             <div>
               <label className={labelCls}>Join Date</label>
               <input type="date" value={form.join_date} onChange={e => set('join_date', e.target.value)} className={inputCls} />
+            </div>
+            <div>
+              <label className={labelCls}>Date of Birth <span className="text-gray-400 font-normal text-[10px]">(enables birthday optional leave)</span></label>
+              <input type="date" value={(form as any).date_of_birth ?? ''} onChange={e => set('date_of_birth', e.target.value)} max={new Date().toISOString().split('T')[0]} className={inputCls} />
             </div>
           </div>
 

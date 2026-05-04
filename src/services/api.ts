@@ -184,6 +184,16 @@ export const api = {
     request<any>(`/config/shifts/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
   deleteConfigShift: (id: string) => request<any>(`/config/shifts/${id}`, { method: 'DELETE' }),
 
+  // Optional Leave
+  getOptionalLeaveDates: (year: number) =>
+    request<any[]>(`/optional-leave/dates?year=${year}`),
+  addOptionalLeaveDate: (data: { date: string; label: string; year: number }) =>
+    request<any>('/optional-leave/dates', { method: 'POST', body: JSON.stringify(data) }),
+  deleteOptionalLeaveDate: (id: string) =>
+    request<any>(`/optional-leave/dates/${id}`, { method: 'DELETE' }),
+  getOptionalLeaveAvailable: (employeeId: string, year: number) =>
+    request<{ dates: any[]; used_count: number; remaining: number }>(`/optional-leave/available?employee_id=${employeeId}&year=${year}`),
+
   // Notifications
   getNotifications: (userId: string) => request<any[]>(`/notifications?user_id=${userId}`),
   markNotificationRead: (id: number) => request<any>(`/notifications/${id}/read`, { method: 'PATCH' }),

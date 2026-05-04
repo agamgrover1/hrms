@@ -214,11 +214,75 @@ router.post('/requests', async (req, res) => {
   try {
     const { employee_id, employee_name, type, from_date, to_date, days, reason } = req.body;
 
-    // Get employee join_date + probation_end_date for probation check
-    const empRows = await sql`SELECT join_date, probation_end_date FROM employees WHERE id = ${employee_id}`;
+    // Get employee join_date + probation_end_date + date_of_birth for checks
+    const empRows = await sql`SELECT join_date, probation_end_date, date_of_birth FROM employees WHERE id = ${employee_id}`;
     const joinDate = (empRows[0] as any)?.join_date ?? null;
     const probationEndDate = (empRows[0] as any)?.probation_end_date ?? null;
+    const dateOfBirth = (empRows[0] as any)?.date_of_birth ?? null;
     const onProbation = isOnProbation(joinDate, probationEndDate);
+
+    // ── Optional leave special validation ────────────────────────────────────
+    if (type === 'optional') {
+      if (onProbation) {
+        return res.status(400).json({ error: 'Optional leave is not available during the probation period.' });
+      }
+      // Max 2 optional leaves per calendar year (pending + approved)
+      const year = new Date(from_date).getFullYear();
+      const countRows = await sql`
+        SELECT COUNT(*) FROM leave_requests
+        WHERE employee_id = ${employee_id}
+          AND type = 'optional'
+          AND status NOT IN ('rejected', 'cancelled')
+          AND EXTRACT(YEAR FROM from_date) = ${year}
+      `;
+      const usedCount = Number((countRows[0] as any).count);
+      if (usedCount >= 2) {
+        return res.status(400).json({ error: 'You have already used or applied for your 2 optional leaves this year.' });
+      }
+      // Validate: date must be in the optional pool OR be the employee's birthday
+      const poolRows = await sql`
+        SELECT date FROM optional_leave_dates WHERE year = ${year}
+      `;
+      const poolDates = new Set((poolRows as any[]).map(r => neonDateToStr(typeof r.date === 'string' ? r.date : r.date.toISOString())));
+
+      // Birthday date this year
+      let birthdayThisYear: string | null = null;
+      if (dateOfBirth) {
+        const dobStr = neonDateToStr(typeof dateOfBirth === 'string' ? dateOfBirth : dateOfBirth.toISOString());
+        birthdayThisYear = `${year}-${dobStr.slice(5)}`;
+      }
+
+      const requestedDate = from_date.slice(0, 10);
+      const isInPool = poolDates.has(requestedDate);
+      const isBirthday = birthdayThisYear === requestedDate;
+      if (!isInPool && !isBirthday) {
+        return res.status(400).json({ error: 'The selected date is not in the optional leave pool for this year.' });
+      }
+
+      // Can't apply for the same date twice
+      const dupeRows = await sql`
+        SELECT id FROM leave_requests
+        WHERE employee_id = ${employee_id}
+          AND type = 'optional'
+          AND from_date::date = ${requestedDate}::date
+          AND status NOT IN ('rejected', 'cancelled')
+      `;
+      if ((dupeRows as any[]).length > 0) {
+        return res.status(400).json({ error: 'You have already applied for an optional leave on this date.' });
+      }
+
+      // Insert without balance deduction and notify
+      const id = `l_${Date.now()}`;
+      const rows = await sql`
+        INSERT INTO leave_requests (id, employee_id, employee_name, type, from_date, to_date, days, reason, status, manager_status)
+        VALUES (${id}, ${employee_id}, ${employee_name}, 'optional', ${requestedDate}, ${requestedDate}, 1, ${reason ?? ''}, 'pending', 'pending')
+        RETURNING *
+      `;
+      const dateLabel = new Date(requestedDate + 'T12:00:00Z').toLocaleDateString('en-IN', { day: 'numeric', month: 'short' });
+      notifyManagerOfEmployee(employee_id, 'leave_applied', 'Optional Leave Request',
+        `${employee_name} applied for an optional leave on ${dateLabel}`);
+      return res.status(201).json(rows[0]);
+    }
 
     // Unpaid leave is always allowed (no balance required)
     const isUnpaid = type === 'unpaid';

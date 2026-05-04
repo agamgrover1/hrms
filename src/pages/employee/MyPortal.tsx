@@ -194,6 +194,12 @@ export default function MyPortal() {
   // Keep tab in sync if user navigates via notification while already on this page
   useEffect(() => { const t = searchParams.get('tab'); if (t) setTab(t); }, [searchParams]);
   const [applyLeave, setApplyLeave] = useState(false);
+  // Optional leave
+  const [optionalLeaveData, setOptionalLeaveData] = useState<{dates:any[];used_count:number;remaining:number}|null>(null);
+  const [optionalLeaveLoaded, setOptionalLeaveLoaded] = useState(false);
+  const [applyingOptional, setApplyingOptional] = useState<string|null>(null); // date string being applied
+  const [optionalReason, setOptionalReason] = useState('');
+  const [optionalError, setOptionalError] = useState('');
   const [myIncentives, setMyIncentives] = useState<any[]>([]);
   const [showUpsellForm, setShowUpsellForm] = useState(false);
   const [upsellForm, setUpsellForm] = useState({ client_name: '', service_description: '', deal_value: '', notes: '' });
@@ -274,6 +280,10 @@ export default function MyPortal() {
         api.getPips(emp.id).then(pips => setMyPip((pips as any[]).find(p => p.status === 'active') ?? null)).catch(() => {});
         api.getUpsellRequests(emp.id).then(setMyIncentives).catch(() => {});
         api.getExpenses(emp.id).then(setMyExpenses).catch(() => {});
+        // Optional leave pool for current year
+        api.getOptionalLeaveAvailable(emp.id, new Date().getFullYear())
+          .then(d => { setOptionalLeaveData(d); setOptionalLeaveLoaded(true); })
+          .catch(() => setOptionalLeaveLoaded(true));
         api.getExpenseCategories().then(setExpCategories).catch(() => {});
         setAttendance(att);
         setLeaves(lv);
@@ -801,6 +811,122 @@ export default function MyPortal() {
             )}
           </div>
           {applyLeave && <ApplyLeaveModal onClose={() => setApplyLeave(false)} onSubmit={handleApplyLeave} balance={balance} />}
+
+          {/* ── Optional Leaves ── */}
+          {optionalLeaveLoaded && optionalLeaveData && (
+            <div className="bg-white rounded-xl border border-gray-100 shadow-sm overflow-hidden">
+              <div className="px-5 py-4 border-b border-gray-50 flex items-center justify-between">
+                <div>
+                  <p className="font-semibold text-sm text-gray-800">Optional Leaves</p>
+                  <p className="text-xs text-gray-400 mt-0.5">Pick any {optionalLeaveData.remaining > 0 ? optionalLeaveData.remaining : 0} more date{optionalLeaveData.remaining !== 1 ? 's' : ''} from the pool below — {2 - optionalLeaveData.used_count > 0 ? `${2 - optionalLeaveData.used_count} of 2 remaining this year` : '0 of 2 remaining — quota used'}</p>
+                </div>
+                <span className="text-xs font-bold px-2.5 py-1 rounded-full"
+                  style={{ background: optionalLeaveData.remaining > 0 ? 'rgba(22,163,74,0.1)' : 'rgba(220,38,38,0.1)', color: optionalLeaveData.remaining > 0 ? '#15803d' : '#dc2626' }}>
+                  {optionalLeaveData.remaining}/2 left
+                </span>
+              </div>
+
+              {balance?.on_probation && (
+                <div className="mx-4 mt-4 mb-2 px-3 py-2.5 rounded-xl text-xs font-medium" style={{ background: '#fef3c7', color: '#92400e' }}>
+                  Optional leave is available only after your probation period ends.
+                </div>
+              )}
+
+              {optionalLeaveData.dates.length === 0 ? (
+                <p className="text-sm text-gray-400 text-center py-8">No optional leave dates have been set by HR for this year yet.</p>
+              ) : (
+                <div className="divide-y divide-gray-50">
+                  {optionalLeaveData.dates.map(d => {
+                    const dateObj = new Date(d.date + 'T12:00:00Z');
+                    const isPast = d.date < new Date().toISOString().slice(0,10);
+                    const canApply = !d.already_applied && !balance?.on_probation && optionalLeaveData.remaining > 0 && !isPast;
+                    const statusColors: Record<string,string> = {
+                      pending: '#d97706', approved: '#15803d', rejected: '#dc2626',
+                    };
+
+                    return (
+                      <div key={d.id}>
+                        <div className="flex items-center gap-3 px-5 py-3.5">
+                          <div className="w-11 h-11 rounded-xl flex flex-col items-center justify-center flex-shrink-0"
+                            style={{ background: isPast ? '#f3f4f6' : d.is_birthday ? 'rgba(238,39,112,0.1)' : 'rgba(25,34,80,0.06)' }}>
+                            <span className="text-[9px] font-bold uppercase" style={{ color: isPast ? '#9ca3af' : d.is_birthday ? '#EE2770' : '#192250' }}>
+                              {['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'][dateObj.getUTCMonth()]}
+                            </span>
+                            <span className="text-base font-black leading-none" style={{ color: isPast ? '#9ca3af' : '#192250' }}>
+                              {dateObj.getUTCDate()}
+                            </span>
+                          </div>
+                          <div className="flex-1 min-w-0">
+                            <p className={`text-sm font-semibold ${isPast ? 'text-gray-400' : 'text-gray-800'}`}>{d.label}</p>
+                            <p className="text-xs text-gray-400">{dateObj.toLocaleDateString('en-IN', { weekday: 'short', day: 'numeric', month: 'long' })}</p>
+                          </div>
+                          <div className="flex-shrink-0 flex items-center gap-2">
+                            {d.already_applied ? (
+                              <span className="text-xs font-semibold px-2.5 py-1 rounded-full bg-amber-50 text-amber-600 border border-amber-100">Applied</span>
+                            ) : isPast ? (
+                              <span className="text-xs font-semibold px-2.5 py-1 rounded-full bg-gray-100 text-gray-400">Past</span>
+                            ) : canApply ? (
+                              <button
+                                onClick={() => { setApplyingOptional(d.date); setOptionalReason(''); setOptionalError(''); }}
+                                className="text-xs px-3 py-1.5 rounded-lg font-semibold text-white"
+                                style={{ background: 'linear-gradient(135deg,#192250 0%,#141c43 100%)' }}>
+                                Apply
+                              </button>
+                            ) : (
+                              <span className="text-xs text-gray-300 italic">{balance?.on_probation ? 'On probation' : 'Quota used'}</span>
+                            )}
+                          </div>
+                        </div>
+
+                        {/* Inline apply form */}
+                        {applyingOptional === d.date && (
+                          <div className="mx-5 mb-3 p-4 bg-gray-50 border border-gray-100 rounded-xl space-y-3">
+                            <p className="text-xs font-semibold text-gray-600">Applying optional leave for: <strong>{d.label}</strong> ({d.date})</p>
+                            <div>
+                              <label className="text-xs font-medium text-gray-500 mb-1 block">Reason <span className="text-red-400">*</span></label>
+                              <textarea value={optionalReason} onChange={e => { setOptionalReason(e.target.value); setOptionalError(''); }}
+                                rows={2} placeholder="Why are you taking this optional leave?"
+                                className="w-full text-sm border border-gray-200 rounded-lg px-3 py-2 resize-none focus:outline-none focus:ring-2 focus:ring-primary-200"/>
+                            </div>
+                            {optionalError && <p className="text-xs text-red-500 font-medium">{optionalError}</p>}
+                            <div className="flex gap-2">
+                              <button onClick={() => { setApplyingOptional(null); setOptionalError(''); }}
+                                className="flex-1 py-2 border border-gray-200 rounded-lg text-xs font-medium text-gray-600 hover:bg-white">
+                                Cancel
+                              </button>
+                              <button
+                                disabled={!optionalReason.trim()}
+                                onClick={async () => {
+                                  setOptionalError('');
+                                  try {
+                                    const created = await api.applyLeave({
+                                      employee_id: empDbId, employee_name: user?.name,
+                                      type: 'optional', from_date: d.date, to_date: d.date,
+                                      days: 1, reason: optionalReason.trim(),
+                                    });
+                                    setLeaves(prev => [created, ...prev]);
+                                    // Refresh optional leave data
+                                    api.getOptionalLeaveAvailable(empDbId, new Date().getFullYear())
+                                      .then(setOptionalLeaveData).catch(() => {});
+                                    setApplyingOptional(null);
+                                  } catch (e: any) {
+                                    setOptionalError(e.message ?? 'Failed to submit. Please try again.');
+                                  }
+                                }}
+                                className="flex-1 py-2 text-white rounded-lg text-xs font-semibold disabled:opacity-50"
+                                style={{ background: 'linear-gradient(135deg,#EE2770 0%,#d11f62 100%)' }}>
+                                Submit Request
+                              </button>
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          )}
         </div>
         </TabErrorBoundary>
       )}
