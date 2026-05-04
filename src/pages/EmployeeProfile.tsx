@@ -509,14 +509,15 @@ export default function EmployeeProfile() {
           </div>
 
           <div className="px-6 pb-5">
-            <div className="-mt-8 flex items-end gap-4 mb-4">
-              <div className="w-16 h-16 rounded-2xl bg-primary-100 text-primary-600 flex items-center justify-center text-xl font-bold border-4 border-white shadow-md flex-shrink-0">
+            {/* Avatar overlaps banner; name is in its own block below so it's never hidden */}
+            <div className="-mt-8 mb-3">
+              <div className="w-16 h-16 rounded-2xl bg-primary-100 text-primary-600 flex items-center justify-center text-xl font-bold border-4 border-white shadow-md">
                 {emp.avatar}
               </div>
-              <div className="pb-1">
-                <h1 className="text-xl font-bold text-gray-900">{emp.name}</h1>
-                <p className="text-sm text-primary-600 font-medium">{emp.designation}</p>
-              </div>
+            </div>
+            <div className="mb-4">
+              <h1 className="text-xl font-bold text-gray-900">{emp.name}</h1>
+              <p className="text-sm text-primary-600 font-medium">{emp.designation}</p>
             </div>
             <div className="flex flex-wrap gap-2">
               {[
@@ -741,10 +742,8 @@ export default function EmployeeProfile() {
           {leaveBalance && (
             <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
               {[
-                {label:'Full Day',           value:leaveBalance.full_day??0,    color:'#2563eb', bg:'rgba(37,99,235,0.08)'},
-                {label:'Short / Half Day',   value:leaveBalance.short_leave??0, color:'#7c3aed', bg:'rgba(124,58,237,0.08)'},
-                {label:'Casual',             value:leaveBalance.casual??0,      color:'#0d9488', bg:'rgba(13,148,136,0.08)'},
-                {label:'Sick',               value:leaveBalance.sick??0,        color:'#d97706', bg:'rgba(217,119,6,0.08)'},
+                {label:'Full Day',         value:leaveBalance.full_day??0,    color:'#2563eb', bg:'rgba(37,99,235,0.08)'},
+                {label:'Short / Half Day', value:leaveBalance.short_leave??0, color:'#7c3aed', bg:'rgba(124,58,237,0.08)'},
               ].map(({label,value,color,bg}) => (
                 <div key={label} className="bg-white rounded-xl border border-gray-100 shadow-sm p-4">
                   <p className="text-2xl font-black" style={{color}}>{value}</p>
