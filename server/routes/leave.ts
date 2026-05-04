@@ -279,8 +279,11 @@ router.post('/requests', async (req, res) => {
         RETURNING *
       `;
       const dateLabel = new Date(requestedDate + 'T12:00:00Z').toLocaleDateString('en-IN', { day: 'numeric', month: 'short' });
-      notifyManagerOfEmployee(employee_id, 'leave_applied', 'Optional Leave Request',
-        `${employee_name} applied for an optional leave on ${dateLabel}`);
+      const notifMsg = `${employee_name} applied for an optional leave on ${dateLabel}`;
+      // Notify manager (or HR/Admin fallback if no manager)
+      notifyManagerOfEmployee(employee_id, 'leave_applied', 'Optional Leave Request', notifMsg).catch(() => {});
+      // Always also notify HR/Admin directly — optional leave is quota-limited and needs immediate visibility
+      notifyAdminsAndHR('leave_applied', 'Optional Leave Request', notifMsg).catch(() => {});
       return res.status(201).json(rows[0]);
     }
 

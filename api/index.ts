@@ -608,11 +608,13 @@ app.post('/api/leave/requests', async (req, res) => {
       const id = `l_${Date.now()}`;
       const rows = await sql`INSERT INTO leave_requests (id,employee_id,employee_name,type,from_date,to_date,days,reason,status,manager_status) VALUES (${id},${employee_id},${employee_name},'optional',${reqDate},${reqDate},1,${reason??''},'pending','pending') RETURNING *`;
       const dateLabel = new Date(reqDate+'T12:00:00Z').toLocaleDateString('en-IN',{day:'numeric',month:'short'});
+      const notifMsg = `${employee_name} applied for an optional leave on ${dateLabel}`;
+      // Notify manager if one exists
       if (emp.reporting_manager_id) {
-        notifyEmployeeUser(emp.reporting_manager_id,'leave_applied','Optional Leave Request',`${employee_name} applied for an optional leave on ${dateLabel}`);
-      } else {
-        notifyAdminsAndHR('leave_applied','Optional Leave Request',`${employee_name} applied for an optional leave on ${dateLabel}`);
+        notifyEmployeeUser(emp.reporting_manager_id,'leave_applied','Optional Leave Request', notifMsg).catch(()=>{});
       }
+      // Always notify HR/Admin — optional leave is quota-limited and always needs HR visibility
+      notifyAdminsAndHR('leave_applied','Optional Leave Request', notifMsg).catch(()=>{});
       return res.status(201).json(rows[0]);
     }
 
