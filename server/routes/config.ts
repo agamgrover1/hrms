@@ -30,10 +30,13 @@ const router = Router();
         created_at TIMESTAMPTZ DEFAULT NOW()
       )
     `;
-    // Seed default departments
-    const defaultDepts = ['Engineering','Product','Design','HR','Sales','Finance','Marketing','Operations','Legal','Customer Support'];
-    for (const d of defaultDepts) {
-      await sql`INSERT INTO config_departments (id, name) VALUES (${d.toLowerCase().replace(/\s+/g,'-')}, ${d}) ON CONFLICT (id) DO NOTHING`;
+    // Seed default departments only if the table is empty — prevents deleted departments from reappearing on restart
+    const deptCount = await sql`SELECT COUNT(*) FROM config_departments`;
+    if (String((deptCount[0] as any).count) === '0') {
+      const defaultDepts = ['Engineering','Product','Design','HR','Sales','Finance','Marketing','Operations','Legal','Customer Support'];
+      for (const d of defaultDepts) {
+        await sql`INSERT INTO config_departments (id, name) VALUES (${d.toLowerCase().replace(/\s+/g,'-')}, ${d}) ON CONFLICT (id) DO NOTHING`;
+      }
     }
     // Seed default shifts — only if rows don't exist, never overrides HR-configured values
     await sql`INSERT INTO config_shifts (id, name, start_time, end_time, late_after) VALUES ('day','Day Shift','09:00','18:00','10:00') ON CONFLICT (id) DO NOTHING`;
