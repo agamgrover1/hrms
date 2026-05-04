@@ -14,18 +14,20 @@ const router = Router();
         employee_name     TEXT,
         client_name       TEXT NOT NULL,
         service_description TEXT NOT NULL,
-        deal_value        NUMERIC,                   -- total upsell deal size
-        requested_amount  NUMERIC NOT NULL,           -- commission/incentive asked
+        deal_value        NUMERIC,
+        requested_amount  NUMERIC,
         notes             TEXT,
-        status            TEXT NOT NULL DEFAULT 'pending', -- pending|approved|rejected|paid
+        status            TEXT NOT NULL DEFAULT 'pending',
         reviewed_by       TEXT,
         reviewed_at       TIMESTAMPTZ,
         rejection_reason  TEXT,
-        approved_amount   NUMERIC,                   -- HR may approve a different amount
+        approved_amount   NUMERIC,
         payment_note      TEXT,
         created_at        TIMESTAMPTZ DEFAULT NOW()
       )
     `;
+    // Drop NOT NULL from requested_amount on existing tables (employees no longer set this)
+    await sql`ALTER TABLE upsell_requests ALTER COLUMN requested_amount DROP NOT NULL`.catch(()=>{});
   } catch (e) { console.error('[upsell migration]', e); }
 })();
 
@@ -65,6 +67,16 @@ router.post('/', async (req, res) => {
 router.patch('/:id', async (req, res) => {
   try {
     const { status, reviewed_by, rejection_reason, approved_amount, payment_note } = req.body;
+    if (!['approved','rejected','paid'].includes(status))
+      return res.status(400).json({ error: 'Invalid status' });
+    if (status === 'approved' && (!approved_amount || Number(approved_amount) <= 0))
+      return res.status(400).json({ error: 'approved_amount is required and must be greater than 0' });
+    // Validate state transition
+    const current = await sql`SELECT status FROM upsell_requests WHERE id = ${req.params.id}`;
+    if (!current.length) return res.status(404).json({ error: 'Not found' });
+    const currentStatus = (current[0] as any).status;
+    if (currentStatus === 'paid') return res.status(400).json({ error: 'Paid requests cannot be changed' });
+    if (currentStatus === 'approved' && status === 'approved') return res.status(400).json({ error: 'Already approved' });
     const rows = await sql`
       UPDATE upsell_requests SET
         status            = ${status},
@@ -77,13 +89,10 @@ router.patch('/:id', async (req, res) => {
     `;
     if (!rows.length) return res.status(404).json({ error: 'Not found' });
     const req2 = rows[0] as any;
-
-    // Notify employee of the decision
     if (status === 'approved') {
-      const amt = approved_amount;
       notifyEmployeeUser(req2.employee_id, 'upsell_approved',
         'Incentive Request Approved 🎉',
-        `Your upsell incentive request for "${req2.client_name}" has been approved! Amount: ₹${Number(amt).toLocaleString('en-IN')}.`
+        `Your upsell request for "${req2.client_name}" has been approved! Incentive: ₹${Number(approved_amount).toLocaleString('en-IN')}.`
       ).catch(() => {});
     } else if (status === 'rejected') {
       notifyEmployeeUser(req2.employee_id, 'upsell_rejected',
@@ -93,7 +102,7 @@ router.patch('/:id', async (req, res) => {
     } else if (status === 'paid') {
       notifyEmployeeUser(req2.employee_id, 'upsell_paid',
         'Incentive Payment Processed 💰',
-        `Your incentive for "${req2.client_name}" has been paid.${payment_note ? ` Note: ${payment_note}` : ''}`
+        `Your incentive of ₹${Number(req2.approved_amount).toLocaleString('en-IN')} for "${req2.client_name}" has been paid.${payment_note ? ` Note: ${payment_note}` : ''}`
       ).catch(() => {});
     }
     res.json(req2);

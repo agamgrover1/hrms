@@ -45,9 +45,11 @@ router.get('/', async (req, res) => {
 router.post('/', async (req, res) => {
   try {
     const { employee_id, employee_name, category, description, amount, receipt_note, expense_date } = req.body;
-    if (!employee_id || !category || !description?.trim() || !amount) {
+    if (!employee_id || !category || !description?.trim() || !amount)
       return res.status(400).json({ error: 'category, description, amount are required' });
-    }
+    if (Number(amount) <= 0) return res.status(400).json({ error: 'Amount must be greater than 0' });
+    if (expense_date && expense_date > new Date().toISOString().slice(0, 10))
+      return res.status(400).json({ error: 'Expense date cannot be in the future' });
     const id = `exp_${Date.now()}`;
     const rows = await sql`
       INSERT INTO expense_requests
@@ -66,6 +68,17 @@ router.post('/', async (req, res) => {
 router.patch('/:id', async (req, res) => {
   try {
     const { status, reviewed_by, rejection_reason, approved_amount, payment_note } = req.body;
+    if (!['approved','rejected','paid'].includes(status))
+      return res.status(400).json({ error: 'Invalid status' });
+    if (approved_amount !== undefined && approved_amount !== null && Number(approved_amount) <= 0)
+      return res.status(400).json({ error: 'Approved amount must be greater than 0' });
+    // Validate state transition
+    const current = await sql`SELECT status, amount FROM expense_requests WHERE id = ${req.params.id}`;
+    if (!current.length) return res.status(404).json({ error: 'Not found' });
+    const cur = current[0] as any;
+    if (cur.status === 'paid') return res.status(400).json({ error: 'Paid expenses cannot be changed' });
+    if (cur.status === 'rejected' && status === 'paid') return res.status(400).json({ error: 'Cannot pay a rejected expense' });
+    if (cur.status === 'approved' && status === 'approved') return res.status(400).json({ error: 'Already approved' });
     const rows = await sql`
       UPDATE expense_requests SET
         status           = ${status},
@@ -78,10 +91,10 @@ router.patch('/:id', async (req, res) => {
     `;
     if (!rows.length) return res.status(404).json({ error: 'Not found' });
     const exp = rows[0] as any;
+    const displayAmt = approved_amount ?? exp.amount;
     if (status === 'approved') {
-      const amt = approved_amount ?? exp.amount;
       notifyEmployeeUser(exp.employee_id, 'expense_approved', 'Expense Approved ✅',
-        `Your ${exp.category} expense claim of ₹${Number(amt).toLocaleString('en-IN')} has been approved.`
+        `Your ${exp.category} expense of ₹${Number(displayAmt).toLocaleString('en-IN')} has been approved.`
       ).catch(() => {});
     } else if (status === 'rejected') {
       notifyEmployeeUser(exp.employee_id, 'expense_rejected', 'Expense Not Approved',
@@ -89,7 +102,7 @@ router.patch('/:id', async (req, res) => {
       ).catch(() => {});
     } else if (status === 'paid') {
       notifyEmployeeUser(exp.employee_id, 'expense_paid', 'Expense Reimbursed 💸',
-        `Your ${exp.category} expense reimbursement has been processed.${payment_note ? ` Note: ${payment_note}` : ''}`
+        `Your ${exp.category} expense of ₹${Number(exp.approved_amount ?? exp.amount).toLocaleString('en-IN')} has been reimbursed.${payment_note ? ` Note: ${payment_note}` : ''}`
       ).catch(() => {});
     }
     res.json(exp);

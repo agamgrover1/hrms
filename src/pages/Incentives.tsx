@@ -15,11 +15,12 @@ const STATUS_CFG: Record<string,{label:string;color:string;bg:string;border:stri
 const fmtAmt = (n: any) => n!=null && n!=='' ? `₹${Number(n).toLocaleString('en-IN')}` : '—';
 
 // ── Shared action modal ───────────────────────────────────────────────────────
-function ActionModal({ target, type, onClose, onConfirm, requireAmount }: {
+function ActionModal({ target, type, onClose, onConfirm, requireAmount, errorMsg }: {
   target: any; type: 'approve'|'reject'|'pay'; onClose: ()=>void;
-  onConfirm: (data: any)=>void; requireAmount?: boolean;
+  onConfirm: (data: any)=>void; requireAmount?: boolean; errorMsg?: string;
 }) {
-  const [amt, setAmt] = useState(String(target?.deal_value ?? target?.amount ?? ''));
+  // Always start empty for approvals — avoids HR accidentally approving deal_value as incentive
+  const [amt, setAmt] = useState('');
   const [reason, setReason] = useState('');
   const [note, setNote] = useState('');
   const [saving, setSaving] = useState(false);
@@ -77,9 +78,10 @@ function ActionModal({ target, type, onClose, onConfirm, requireAmount }: {
                 className="w-full text-sm border border-gray-200 rounded-lg px-3 py-2.5 focus:outline-none"/>
             </div>
           )}
+          {errorMsg && <p className="text-xs font-medium text-red-500 bg-red-50 border border-red-100 rounded-lg px-3 py-2">{errorMsg}</p>}
           <div className="flex gap-3 pt-1">
             <button onClick={onClose} className="flex-1 py-2.5 border border-gray-200 rounded-xl text-sm font-medium text-gray-600 hover:bg-gray-50">Cancel</button>
-            <button onClick={handleSave} disabled={saving||(type==='approve'&&requireAmount&&!amt)}
+            <button onClick={handleSave} disabled={saving||(type==='approve'&&requireAmount&&!(Number(amt)>0))}
               className="flex-1 py-2.5 text-white rounded-xl text-sm font-semibold disabled:opacity-60 flex items-center justify-center gap-2"
               style={{background:type==='reject'?'#dc2626':type==='pay'?'#7c3aed':'#15803d'}}>
               {saving?'Saving…':type==='approve'?<><Check size={14}/>Approve</>:type==='pay'?'Mark Paid':<><XCircle size={14}/>Reject</>}
@@ -92,7 +94,7 @@ function ActionModal({ target, type, onClose, onConfirm, requireAmount }: {
 }
 
 // ── Table component ───────────────────────────────────────────────────────────
-function RequestTable({ rows, onAction, isIncentive }: { rows: any[]; onAction:(r:any,t:'approve'|'reject'|'pay')=>void; isIncentive:boolean }) {
+function RequestTable({ rows, onAction, isIncentive }: { rows: any[]; onAction:(r:any,t:'approve'|'reject'|'pay',isInc:boolean)=>void; isIncentive:boolean }) {
   if (!rows.length) return (
     <div className="flex flex-col items-center py-16 gap-2">
       <p className="text-gray-400 font-medium">No requests</p>
@@ -131,10 +133,12 @@ function RequestTable({ rows, onAction, isIncentive }: { rows: any[]; onAction:(
                 <td className="px-4 py-3.5">
                   <div className="flex gap-1.5 flex-wrap">
                     {r.status==='pending'&&<>
-                      <button onClick={()=>onAction(r,'approve')} className="text-xs px-2.5 py-1 rounded-lg font-semibold text-white" style={{background:'#15803d'}}>Approve</button>
-                      <button onClick={()=>onAction(r,'reject')} className="text-xs px-2.5 py-1 rounded-lg font-semibold" style={{background:'#fee2e2',color:'#dc2626'}}>Reject</button>
+                      <button onClick={()=>onAction(r,'approve',isIncentive)} className="text-xs px-2.5 py-1 rounded-lg font-semibold text-white" style={{background:'#15803d'}}>Approve</button>
+                      <button onClick={()=>onAction(r,'reject',isIncentive)} className="text-xs px-2.5 py-1 rounded-lg font-semibold" style={{background:'#fee2e2',color:'#dc2626'}}>Reject</button>
                     </>}
-                    {r.status==='approved'&&<button onClick={()=>onAction(r,'pay')} className="text-xs px-2.5 py-1 rounded-lg font-semibold text-white" style={{background:'#7c3aed'}}>Mark Paid</button>}
+                    {r.status==='approved'&&<button onClick={()=>onAction(r,'pay',isIncentive)} className="text-xs px-2.5 py-1 rounded-lg font-semibold text-white" style={{background:'#7c3aed'}}>Mark Paid</button>}
+                    {r.status==='paid'&&<span className="text-xs text-gray-400 italic">Completed</span>}
+                    {r.status==='rejected'&&<span className="text-xs text-gray-400 italic">Closed</span>}
                   </div>
                 </td>
               </tr>
@@ -154,7 +158,7 @@ export default function FinancePage() {
   const [upsells, setUpsells] = useState<any[]>([]);
   const [expenses, setExpenses] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
-  const [action, setAction] = useState<{target:any;type:'approve'|'reject'|'pay'}|null>(null);
+  const [action, setAction] = useState<{target:any;type:'approve'|'reject'|'pay';isIncentive:boolean}|null>(null);
   const currentYear = new Date().getFullYear();
 
   useEffect(()=>{
@@ -179,14 +183,20 @@ export default function FinancePage() {
   const totalIncPaid = upsells.filter(r=>r.status==='paid').reduce((s,r)=>s+Number(r.approved_amount??0),0);
   const totalExpPaid = expenses.filter(r=>r.status==='paid').reduce((s,r)=>s+Number(r.approved_amount??r.amount??0),0);
 
+  const [actionError, setActionError] = useState('');
   const handleAction = async (data: any) => {
-    const isInc = action?.target?.client_name !== undefined;
-    const updated = isInc
-      ? await api.reviewUpsell(action!.target.id, {...data, reviewed_by: user?.name})
-      : await api.reviewExpense(action!.target.id, {...data, reviewed_by: user?.name});
-    if (isInc) setUpsells(prev=>prev.map(r=>r.id===updated.id?updated:r));
-    else setExpenses(prev=>prev.map(r=>r.id===updated.id?updated:r));
-    setAction(null);
+    setActionError('');
+    try {
+      const isInc = action!.isIncentive;
+      const updated = isInc
+        ? await api.reviewUpsell(action!.target.id, {...data, reviewed_by: user?.name})
+        : await api.reviewExpense(action!.target.id, {...data, reviewed_by: user?.name});
+      if (isInc) setUpsells(prev=>prev.map(r=>r.id===updated.id?updated:r));
+      else setExpenses(prev=>prev.map(r=>r.id===updated.id?updated:r));
+      setAction(null);
+    } catch (err: any) {
+      setActionError(err.message ?? 'Action failed');
+    }
   };
 
   return (
@@ -254,14 +264,15 @@ export default function FinancePage() {
         {loading ? (
           <div className="flex items-center justify-center py-16"><div className="w-6 h-6 border-4 border-primary-200 border-t-primary-500 rounded-full animate-spin"/></div>
         ) : (
-          <RequestTable rows={displayed} onAction={(r,t)=>setAction({target:r,type:t})} isIncentive={pageTab==='incentives'}/>
+          <RequestTable rows={displayed} onAction={(r,t,isInc)=>{setActionError('');setAction({target:r,type:t,isIncentive:isInc});}} isIncentive={pageTab==='incentives'}/>
         )}
       </div>
 
       {action && (
         <ActionModal target={action.target} type={action.type}
-          requireAmount={pageTab==='incentives' && action.type==='approve'}
-          onClose={()=>setAction(null)} onConfirm={handleAction}/>
+          requireAmount={action.isIncentive && action.type==='approve'}
+          onClose={()=>{setAction(null);setActionError('');}} onConfirm={handleAction}
+          errorMsg={actionError}/>
       )}
     </div>
   );

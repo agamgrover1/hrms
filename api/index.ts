@@ -1104,7 +1104,10 @@ app.delete('/api/config/shifts/:id', async (req, res) => {
 // ── Upsell Incentives ─────────────────────────────────────────────────────
 app.get('/api/upsell', async (req, res) => {
   try {
-    await sql`CREATE TABLE IF NOT EXISTS upsell_requests (id TEXT PRIMARY KEY, employee_id TEXT NOT NULL, employee_name TEXT, client_name TEXT NOT NULL, service_description TEXT NOT NULL, deal_value NUMERIC, requested_amount NUMERIC NOT NULL, notes TEXT, status TEXT NOT NULL DEFAULT 'pending', reviewed_by TEXT, reviewed_at TIMESTAMPTZ, rejection_reason TEXT, approved_amount NUMERIC, payment_note TEXT, created_at TIMESTAMPTZ DEFAULT NOW())`.catch(()=>{});
+    // Create table with nullable requested_amount (no longer used by employees)
+    await sql`CREATE TABLE IF NOT EXISTS upsell_requests (id TEXT PRIMARY KEY, employee_id TEXT NOT NULL, employee_name TEXT, client_name TEXT NOT NULL, service_description TEXT NOT NULL, deal_value NUMERIC, requested_amount NUMERIC, notes TEXT, status TEXT NOT NULL DEFAULT 'pending', reviewed_by TEXT, reviewed_at TIMESTAMPTZ, rejection_reason TEXT, approved_amount NUMERIC, payment_note TEXT, created_at TIMESTAMPTZ DEFAULT NOW())`.catch(()=>{});
+    // Make requested_amount nullable on existing tables (idempotent)
+    await sql`ALTER TABLE upsell_requests ALTER COLUMN requested_amount DROP NOT NULL`.catch(()=>{});
     const { employee_id } = req.query as any;
     const rows = employee_id
       ? await sql`SELECT * FROM upsell_requests WHERE employee_id=${employee_id} ORDER BY created_at DESC`
@@ -1114,31 +1117,46 @@ app.get('/api/upsell', async (req, res) => {
 });
 app.post('/api/upsell', async (req, res) => {
   try {
-    const { employee_id, employee_name, client_name, service_description, deal_value, requested_amount, notes } = req.body;
-    if (!employee_id || !client_name?.trim() || !service_description?.trim() || !requested_amount)
-      return res.status(400).json({ error: 'Missing required fields' });
+    const { employee_id, employee_name, client_name, service_description, deal_value, notes } = req.body;
+    if (!employee_id || !client_name?.trim() || !service_description?.trim())
+      return res.status(400).json({ error: 'employee_id, client_name, service_description are required' });
+    // Validate deal_value is positive if provided
+    if (deal_value !== undefined && deal_value !== null && Number(deal_value) <= 0)
+      return res.status(400).json({ error: 'Deal value must be greater than 0' });
     const id = `ups_${Date.now()}`;
-    const rows = await sql`INSERT INTO upsell_requests (id,employee_id,employee_name,client_name,service_description,deal_value,requested_amount,notes) VALUES (${id},${employee_id},${employee_name??null},${client_name.trim()},${service_description.trim()},${deal_value??null},${requested_amount},${notes?.trim()??null}) RETURNING *`;
+    const rows = await sql`INSERT INTO upsell_requests (id,employee_id,employee_name,client_name,service_description,deal_value,notes) VALUES (${id},${employee_id},${employee_name??null},${client_name.trim()},${service_description.trim()},${deal_value??null},${notes?.trim()??null}) RETURNING *`;
     notifyAdminsAndHR('upsell_submitted','Upsell Incentive Request',
-      `${employee_name??'An employee'} submitted an upsell incentive request for "${client_name.trim()}" — ₹${Number(requested_amount).toLocaleString('en-IN')}.`).catch(()=>{});
+      `${employee_name??'An employee'} reported an upsell for "${client_name.trim()}"${deal_value ? ` — Deal: ₹${Number(deal_value).toLocaleString('en-IN')}` : ''}. Set their incentive amount.`).catch(()=>{});
     res.status(201).json(rows[0]);
   } catch (e: any) { res.status(500).json({ error: e.message }); }
 });
 app.patch('/api/upsell/:id', async (req, res) => {
   try {
     const { status, reviewed_by, rejection_reason, approved_amount, payment_note } = req.body;
+    // Validate status is a known value
+    if (!['approved','rejected','paid'].includes(status))
+      return res.status(400).json({ error: 'Invalid status' });
+    // Incentive approval requires an amount > 0
+    if (status === 'approved' && (!approved_amount || Number(approved_amount) <= 0))
+      return res.status(400).json({ error: 'approved_amount is required and must be greater than 0' });
+    // Fetch current status to prevent invalid transitions
+    const current = await sql`SELECT status FROM upsell_requests WHERE id=${req.params.id}`;
+    if (!(current as any[]).length) return res.status(404).json({ error: 'Not found' });
+    const currentStatus = (current[0] as any).status;
+    if (currentStatus === 'paid') return res.status(400).json({ error: 'Paid requests cannot be changed' });
+    if (currentStatus === 'approved' && status === 'approved') return res.status(400).json({ error: 'Already approved' });
     const rows = await sql`UPDATE upsell_requests SET status=${status},reviewed_by=${reviewed_by??null},reviewed_at=NOW(),rejection_reason=${status==='rejected'?(rejection_reason??null):null},approved_amount=${approved_amount??null},payment_note=${payment_note??null} WHERE id=${req.params.id} RETURNING *`;
     if (!(rows as any[]).length) return res.status(404).json({ error: 'Not found' });
     const r = rows[0] as any;
     if (status === 'approved') {
-      notifyEmployeeUser(r.employee_id,'upsell_approved','Incentive Request Approved 🎉',`Your upsell request for "${r.client_name}" is approved! Amount: ₹${Number(approved_amount??r.requested_amount).toLocaleString('en-IN')}.`).catch(()=>{});
+      notifyEmployeeUser(r.employee_id,'upsell_approved','Incentive Request Approved 🎉',`Your upsell request for "${r.client_name}" is approved! Incentive: ₹${Number(approved_amount).toLocaleString('en-IN')}.`).catch(()=>{});
     } else if (status === 'rejected') {
       notifyEmployeeUser(r.employee_id,'upsell_rejected','Incentive Request Not Approved',`Your upsell request for "${r.client_name}" was not approved.${rejection_reason?` Reason: ${rejection_reason}`:''}`).catch(()=>{});
     } else if (status === 'paid') {
-      notifyEmployeeUser(r.employee_id,'upsell_paid','Incentive Payment Processed 💰',`Your incentive for "${r.client_name}" has been paid.${payment_note?` Note: ${payment_note}`:''}`).catch(()=>{});
+      notifyEmployeeUser(r.employee_id,'upsell_paid','Incentive Payment Processed 💰',`Your incentive of ₹${Number(r.approved_amount).toLocaleString('en-IN')} for "${r.client_name}" has been paid.${payment_note?` Note: ${payment_note}`:''}`).catch(()=>{});
     }
     res.json(r);
-  } catch { res.status(500).json({ error: 'Server error' }); }
+  } catch (e: any) { res.status(500).json({ error: e.message }); }
 });
 
 // ── Expenses ──────────────────────────────────────────────────────────────
@@ -1155,7 +1173,12 @@ app.get('/api/expenses', async (req, res) => {
 app.post('/api/expenses', async (req, res) => {
   try {
     const { employee_id, employee_name, category, description, amount, receipt_note, expense_date } = req.body;
-    if (!employee_id || !category || !description?.trim() || !amount) return res.status(400).json({ error: 'Missing required fields' });
+    if (!employee_id || !category || !description?.trim() || !amount)
+      return res.status(400).json({ error: 'category, description, amount are required' });
+    if (Number(amount) <= 0) return res.status(400).json({ error: 'Amount must be greater than 0' });
+    // Reject future expense dates
+    if (expense_date && expense_date > new Date().toISOString().slice(0, 10))
+      return res.status(400).json({ error: 'Expense date cannot be in the future' });
     const id = `exp_${Date.now()}`;
     const rows = await sql`INSERT INTO expense_requests (id,employee_id,employee_name,category,description,amount,receipt_note,expense_date) VALUES (${id},${employee_id},${employee_name??null},${category},${description.trim()},${amount},${receipt_note?.trim()??null},${expense_date??null}) RETURNING *`;
     notifyAdminsAndHR('expense_submitted','Expense Claim Submitted',`${employee_name??'An employee'} submitted a ${category} expense of ₹${Number(amount).toLocaleString('en-IN')}.`).catch(()=>{});
@@ -1165,18 +1188,27 @@ app.post('/api/expenses', async (req, res) => {
 app.patch('/api/expenses/:id', async (req, res) => {
   try {
     const { status, reviewed_by, rejection_reason, approved_amount, payment_note } = req.body;
+    if (!['approved','rejected','paid'].includes(status))
+      return res.status(400).json({ error: 'Invalid status' });
+    // Fetch current record to validate transition
+    const current = await sql`SELECT status, amount FROM expense_requests WHERE id=${req.params.id}`;
+    if (!(current as any[]).length) return res.status(404).json({ error: 'Not found' });
+    const cur = current[0] as any;
+    if (cur.status === 'paid') return res.status(400).json({ error: 'Paid expenses cannot be changed' });
+    if (cur.status === 'rejected' && status === 'paid') return res.status(400).json({ error: 'Cannot pay a rejected expense' });
+    if (cur.status === 'approved' && status === 'approved') return res.status(400).json({ error: 'Already approved' });
+    if (approved_amount !== undefined && approved_amount !== null && Number(approved_amount) <= 0)
+      return res.status(400).json({ error: 'Approved amount must be greater than 0' });
     const rows = await sql`UPDATE expense_requests SET status=${status},reviewed_by=${reviewed_by??null},reviewed_at=NOW(),rejection_reason=${status==='rejected'?(rejection_reason??null):null},approved_amount=${approved_amount??null},payment_note=${payment_note??null} WHERE id=${req.params.id} RETURNING *`;
     if (!(rows as any[]).length) return res.status(404).json({ error: 'Not found' });
     const e = rows[0] as any;
-    if (status==='approved') notifyEmployeeUser(e.employee_id,'expense_approved','Expense Approved ✅',`Your ${e.category} expense of ₹${Number(approved_amount??e.amount).toLocaleString('en-IN')} has been approved.`).catch(()=>{});
+    const displayAmt = approved_amount ?? e.amount;
+    if (status==='approved') notifyEmployeeUser(e.employee_id,'expense_approved','Expense Approved ✅',`Your ${e.category} expense of ₹${Number(displayAmt).toLocaleString('en-IN')} has been approved.`).catch(()=>{});
     else if (status==='rejected') notifyEmployeeUser(e.employee_id,'expense_rejected','Expense Not Approved',`Your ${e.category} expense was not approved.${rejection_reason?` Reason: ${rejection_reason}`:''}`).catch(()=>{});
-    else if (status==='paid') notifyEmployeeUser(e.employee_id,'expense_paid','Expense Reimbursed 💸',`Your ${e.category} expense reimbursement has been processed.${payment_note?` Note: ${payment_note}`:''}`).catch(()=>{});
+    else if (status==='paid') notifyEmployeeUser(e.employee_id,'expense_paid','Expense Reimbursed 💸',`Your ${e.category} expense of ₹${Number(e.approved_amount??e.amount).toLocaleString('en-IN')} has been reimbursed.${payment_note?` Note: ${payment_note}`:''}`).catch(()=>{});
     res.json(e);
-  } catch { res.status(500).json({ error: 'Server error' }); }
+  } catch (e: any) { res.status(500).json({ error: e.message }); }
 });
-
-// Also update upsell to not require requested_amount
-// (handled server-side; Vercel route already doesn't validate it strictly)
 
 // ── Warnings & PIP ────────────────────────────────────────────────────────
 async function ensureWarningsTables() {

@@ -203,6 +203,8 @@ export default function MyPortal() {
   const [expenseForm, setExpenseForm] = useState({ category: '', description: '', amount: '', receipt_note: '', expense_date: '' });
   const [submittingExp, setSubmittingExp] = useState(false);
   const [submittingUpsell, setSubmittingUpsell] = useState(false);
+  const [upsellError, setUpsellError] = useState('');
+  const [expenseError, setExpenseError] = useState('');
   const [myWarnings, setMyWarnings] = useState<any[]>([]);
   const [myPip, setMyPip] = useState<any | null>(null);
   const [wfhRequests, setWfhRequests] = useState<any[]>([]);
@@ -1067,12 +1069,14 @@ export default function MyPortal() {
                         rows={3} placeholder="Describe your contribution to the upsell…"
                         className="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm focus:outline-none resize-none" />
                     </div>
+                    {upsellError && <p className="text-xs font-medium text-red-500 bg-red-50 border border-red-100 rounded-lg px-3 py-2">{upsellError}</p>}
                     <div className="flex gap-3 pt-1">
-                      <button onClick={() => setShowUpsellForm(false)}
+                      <button onClick={() => { setShowUpsellForm(false); setUpsellError(''); }}
                         className="flex-1 py-2.5 border border-gray-200 rounded-lg text-sm font-medium text-gray-600 hover:bg-gray-50">Cancel</button>
                       <button
-                        disabled={submittingUpsell || !upsellForm.client_name.trim() || !upsellForm.service_description.trim() || !upsellForm.deal_value}
+                        disabled={submittingUpsell || !upsellForm.client_name.trim() || !upsellForm.service_description.trim() || !upsellForm.deal_value || Number(upsellForm.deal_value) <= 0}
                         onClick={async () => {
+                          setUpsellError('');
                           setSubmittingUpsell(true);
                           try {
                             const created = await api.submitUpsell({
@@ -1084,7 +1088,7 @@ export default function MyPortal() {
                             });
                             setMyIncentives(prev => [created, ...prev]);
                             setShowUpsellForm(false);
-                          } catch { /* ignore */ }
+                          } catch (err: any) { setUpsellError(err.message ?? 'Failed to submit. Please try again.'); }
                           finally { setSubmittingUpsell(false); }
                         }}
                         className="flex-1 py-2.5 text-white rounded-lg text-sm font-semibold disabled:opacity-50"
@@ -1183,7 +1187,7 @@ export default function MyPortal() {
                     <div className="grid grid-cols-2 gap-3">
                       <div>
                         <label className="text-xs font-medium text-gray-600 mb-1 block">Expense Date</label>
-                        <input type="date" value={expenseForm.expense_date} onChange={e => setExpenseForm(f => ({ ...f, expense_date: e.target.value }))}
+                        <input type="date" value={expenseForm.expense_date} max={todayLocal()} onChange={e => setExpenseForm(f => ({ ...f, expense_date: e.target.value }))}
                           className="w-full text-sm border border-gray-200 rounded-lg px-3 py-2.5 focus:outline-none" />
                       </div>
                       <div>
@@ -1193,12 +1197,18 @@ export default function MyPortal() {
                           className="w-full text-sm border border-gray-200 rounded-lg px-3 py-2.5 focus:outline-none" />
                       </div>
                     </div>
+                    {expenseError && <p className="text-xs font-medium text-red-500 bg-red-50 border border-red-100 rounded-lg px-3 py-2">{expenseError}</p>}
                     <div className="flex gap-3 pt-1">
-                      <button onClick={() => setShowExpenseForm(false)}
+                      <button onClick={() => { setShowExpenseForm(false); setExpenseError(''); }}
                         className="flex-1 py-2.5 border border-gray-200 rounded-lg text-sm font-medium text-gray-600 hover:bg-gray-50">Cancel</button>
                       <button
-                        disabled={submittingExp || !expenseForm.category || !expenseForm.description.trim() || !expenseForm.amount}
+                        disabled={submittingExp || !expenseForm.category || !expenseForm.description.trim() || !expenseForm.amount || Number(expenseForm.amount) <= 0}
                         onClick={async () => {
+                          setExpenseError('');
+                          if (expenseForm.expense_date && expenseForm.expense_date > todayLocal()) {
+                            setExpenseError('Expense date cannot be in the future');
+                            return;
+                          }
                           setSubmittingExp(true);
                           try {
                             const created = await api.submitExpense({
@@ -1211,7 +1221,7 @@ export default function MyPortal() {
                             });
                             setMyExpenses(prev => [created, ...prev]);
                             setShowExpenseForm(false);
-                          } catch { /* ignore */ }
+                          } catch (err: any) { setExpenseError(err.message ?? 'Failed to submit. Please try again.'); }
                           finally { setSubmittingExp(false); }
                         }}
                         className="flex-1 py-2.5 text-white rounded-lg text-sm font-semibold disabled:opacity-50"
