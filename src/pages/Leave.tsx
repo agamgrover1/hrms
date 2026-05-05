@@ -18,6 +18,7 @@ const leaveTypes = [
   { key: 'half_day',   label: 'Half Day',    color: 'bg-purple-100 text-purple-600' },
   { key: 'short_leave',label: 'Short Leave', color: 'bg-amber-100 text-amber-700' },
   { key: 'unpaid',     label: 'Unpaid',      color: 'bg-rose-100 text-rose-600' },
+  { key: 'optional',   label: 'Optional',    color: 'bg-teal-100 text-teal-700' },
   // legacy types kept for display of old records
   { key: 'casual',     label: 'Casual',      color: 'bg-blue-100 text-blue-700' },
   { key: 'sick',       label: 'Sick',        color: 'bg-red-100 text-red-600' },
@@ -63,7 +64,7 @@ function LeaveStatusBadge({ req }: { req: any }) {
   }
   return (
     <span className="inline-flex items-center gap-1 text-xs px-2.5 py-1 rounded-full border font-medium bg-amber-50 text-amber-600 border-amber-200">
-      <Clock size={11} /> Awaiting Manager
+      <Clock size={11} /> Pending Approval
     </span>
   );
 }
@@ -287,6 +288,7 @@ export default function Leave() {
   const [requests, setRequests] = useState<any[]>([]);
   const [balance, setBalance] = useState<any>(null);
   const [loading, setLoading] = useState(true);
+  const [actionError, setActionError] = useState('');
   // WFH
   const [wfhRequests, setWfhRequests] = useState<any[]>([]);
   const [wfhTab, setWfhTab] = useState<'all' | 'pending' | 'approved' | 'rejected'>('all');
@@ -297,17 +299,27 @@ export default function Leave() {
   const [selectedEmpId, setSelectedEmpId] = useState('');
   const [empBalance, setEmpBalance] = useState<any>(null);
   const [loadingEmpBal, setLoadingEmpBal] = useState(false);
+  // Current HR/admin user's own employee DB id (for applying their own leave)
+  const [myEmpDbId, setMyEmpDbId] = useState('');
 
   const loadRequests = (empId?: string) =>
     api.getLeaveRequests(empId ? { employee_id: empId } : undefined).then(setRequests);
 
   useEffect(() => {
     Promise.all([
-      api.getEmployees().then(emps => setEmployees(emps)),
+      api.getEmployees(),
       loadRequests(),
-      api.getLeaveBalance('e5').then(setBalance).catch(() => {}),
-      api.getWfhRequests().then(setWfhRequests).catch(() => {}),
-    ]).finally(() => setLoading(false));
+      api.getWfhRequests().catch(() => []),
+    ]).then(([emps, , wfh]) => {
+      setEmployees(emps);
+      setWfhRequests(Array.isArray(wfh) ? wfh : []);
+      // Find the logged-in user's own employee record for balance display
+      const myEmp = (emps as any[]).find(e => e.employee_id === user?.employee_id_ref);
+      if (myEmp?.id) {
+        setMyEmpDbId(myEmp.id);
+        api.getLeaveBalance(myEmp.id).then(setBalance).catch(() => {});
+      }
+    }).finally(() => setLoading(false));
   }, []);
 
   // When an employee is selected, reload leaves + balance for that employee
@@ -327,37 +339,54 @@ export default function Leave() {
   const displayed = tab === 'all' ? requests : requests.filter(r => r.status === tab);
 
   const handleApprove = async (id: string) => {
-    await api.updateLeaveStatus(id, 'approved', { actioner_name: user?.name });
-    setRequests(prev => prev.map(r => r.id === id ? {
-      ...r, status: 'approved', hr_actioner_name: user?.name, hr_actioned_at: new Date().toISOString()
-    } : r));
+    setActionError('');
+    try {
+      await api.updateLeaveStatus(id, 'approved', { actioner_name: user?.name });
+      setRequests(prev => prev.map(r => r.id === id ? {
+        ...r, status: 'approved', hr_actioner_name: user?.name, hr_actioned_at: new Date().toISOString(),
+      } : r));
+      // Refresh selected employee balance after approval (balance was deducted)
+      if (selectedEmpId) api.getLeaveBalance(selectedEmpId).then(setEmpBalance).catch(() => {});
+    } catch (e: any) { setActionError(e.message ?? 'Failed to approve leave'); }
   };
 
   const handleReject = async (id: string, rejection_reason: string) => {
-    await api.updateLeaveStatus(id, 'rejected', { actioner_name: user?.name, rejection_reason });
-    setRequests(prev => prev.map(r => r.id === id ? {
-      ...r, status: 'rejected', hr_actioner_name: user?.name, hr_actioned_at: new Date().toISOString(), rejection_reason
-    } : r));
+    setActionError('');
+    try {
+      await api.updateLeaveStatus(id, 'rejected', { actioner_name: user?.name, rejection_reason });
+      setRequests(prev => prev.map(r => r.id === id ? {
+        ...r, status: 'rejected', hr_actioner_name: user?.name,
+        hr_actioned_at: new Date().toISOString(), rejection_reason,
+      } : r));
+    } catch (e: any) { setActionError(e.message ?? 'Failed to reject leave'); }
   };
 
   const handleCancel = async (id: string, cancellation_reason: string) => {
-    await api.cancelLeave(id, user?.name ?? 'Admin', cancellation_reason);
-    setRequests(prev => prev.map(r => r.id === id ? {
-      ...r, status: 'cancelled', cancelled_by: user?.name, cancelled_at: new Date().toISOString(), cancellation_reason
-    } : r));
-    // Refresh the selected employee's balance if viewing one
-    if (selectedEmpId) {
-      api.getLeaveBalance(selectedEmpId).then(setEmpBalance).catch(() => {});
-    }
+    setActionError('');
+    try {
+      await api.cancelLeave(id, user?.name ?? 'Admin', cancellation_reason);
+      setRequests(prev => prev.map(r => r.id === id ? {
+        ...r, status: 'cancelled', cancelled_by: user?.name,
+        cancelled_at: new Date().toISOString(), cancellation_reason,
+      } : r));
+      // Refresh balance after cancellation (balance was restored)
+      if (selectedEmpId) api.getLeaveBalance(selectedEmpId).then(setEmpBalance).catch(() => {});
+    } catch (e: any) { setActionError(e.message ?? 'Failed to cancel leave'); }
   };
 
   const handleApply = async (data: any) => {
-    await api.applyLeave({
-      ...data,
-      employee_id: 'e5',
-      employee_name: user?.name ?? 'HR Manager',
-    });
+    // Apply leave for the selected employee if viewing one, otherwise for the HR user's own leave
+    const targetId = selectedEmpId || myEmpDbId;
+    const targetName = selectedEmpId ? (selectedEmp?.name ?? '') : (user?.name ?? 'HR');
+    if (!targetId) return;
+    await api.applyLeave({ ...data, employee_id: targetId, employee_name: targetName });
     await loadRequests(selectedEmpId || undefined);
+    // Refresh balance after applying leave
+    if (selectedEmpId) {
+      api.getLeaveBalance(selectedEmpId).then(setEmpBalance).catch(() => {});
+    } else if (myEmpDbId) {
+      api.getLeaveBalance(myEmpDbId).then(setBalance).catch(() => {});
+    }
   };
 
   const selectedEmp = employees.find(e => e.id === selectedEmpId);
@@ -451,28 +480,34 @@ export default function Leave() {
               </div>
             )}
           </div>
-          {/* Reject WFH modal */}
+          {/* Reject WFH modal — RejectReasonModal has its own overlay, no wrapper needed */}
           {rejectWfhTarget && (
-            <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 backdrop-blur-sm p-4">
-              <div className="bg-white rounded-2xl shadow-2xl w-full max-w-sm p-6">
-                <div className="flex items-center justify-between mb-4">
-                  <h3 className="text-base font-semibold">Reject WFH Request</h3>
-                  <button onClick={() => setRejectWfhTarget(null)}><X size={16} className="text-gray-400" /></button>
-                </div>
-                <RejectReasonModal title="Reason for rejection" onClose={() => setRejectWfhTarget(null)}
-                  onConfirm={async (reason) => {
-                    await api.hrApproveWfh(rejectWfhTarget, { status: 'rejected', actioner_name: user?.name, rejection_reason: reason });
-                    setWfhRequests(prev => prev.map(x => x.id === rejectWfhTarget ? { ...x, status: 'rejected' } : x));
-                    setRejectWfhTarget(null);
-                  }} />
-              </div>
-            </div>
+            <RejectReasonModal
+              title="Reason for WFH Rejection"
+              placeholder="Enter reason for rejecting this WFH request..."
+              confirmLabel="Confirm Reject"
+              onClose={() => setRejectWfhTarget(null)}
+              onConfirm={async (reason) => {
+                try {
+                  await api.hrApproveWfh(rejectWfhTarget, { status: 'rejected', actioner_name: user?.name, rejection_reason: reason });
+                  setWfhRequests(prev => prev.map(x => x.id === rejectWfhTarget ? { ...x, status: 'rejected' } : x));
+                } catch { /* ignore */ }
+                setRejectWfhTarget(null);
+              }}
+            />
           )}
         </div>
       )}
 
       {/* ── Leave management view ─────────────────────────────────────────────── */}
       {pageView === 'leaves' && <>
+      {actionError && (
+        <div className="bg-red-50 border border-red-100 text-red-600 text-sm font-medium px-4 py-2.5 rounded-xl flex items-center justify-between">
+          {actionError}
+          <button onClick={() => setActionError('')} className="text-red-400 hover:text-red-600 ml-4">✕</button>
+        </div>
+      )}
+
       {/* Leave Balance (own) */}
       <div className="grid grid-cols-3 gap-4">
         <div className="bg-gradient-to-br from-blue-500 to-blue-400 rounded-xl p-5 text-white">
@@ -627,12 +662,25 @@ export default function Leave() {
                       </td>
                       <td className="px-4 py-3">
                         <div className="flex gap-1.5 flex-wrap">
-                          {req.status === 'pending' && (
-                            <>
-                              <button onClick={() => handleApprove(req.id)} className="px-2.5 py-1 text-xs bg-green-50 text-green-600 rounded-md hover:bg-green-100 font-medium">Approve</button>
-                              <button onClick={() => setRejectTarget(req.id)} className="px-2.5 py-1 text-xs bg-red-50 text-red-500 rounded-md hover:bg-red-100 font-medium">Reject</button>
-                            </>
-                          )}
+                          {req.status === 'pending' && (() => {
+                            // HR can approve/reject when manager has approved OR
+                            // when the employee has no manager (manager_status stays pending but goes straight to HR)
+                            const readyForHR = req.manager_status === 'approved';
+                            const pendingManager = req.manager_status === 'pending';
+                            return (
+                              <>
+                                {readyForHR && (
+                                  <button onClick={() => handleApprove(req.id)} className="px-2.5 py-1 text-xs bg-green-50 text-green-600 rounded-md hover:bg-green-100 font-medium">Approve</button>
+                                )}
+                                {/* HR can always reject, even before manager acts */}
+                                <button onClick={() => setRejectTarget(req.id)} className="px-2.5 py-1 text-xs bg-red-50 text-red-500 rounded-md hover:bg-red-100 font-medium">Reject</button>
+                                {/* Override: allow HR to approve even if manager hasn't acted yet */}
+                                {pendingManager && (
+                                  <button onClick={() => handleApprove(req.id)} className="px-2.5 py-1 text-xs bg-blue-50 text-blue-600 rounded-md hover:bg-blue-100 font-medium" title="Override: approve directly without manager">Override ✓</button>
+                                )}
+                              </>
+                            );
+                          })()}
                           {req.status === 'approved' && (
                             <button onClick={() => setCancelTarget(req.id)} className="px-2.5 py-1 text-xs bg-gray-100 text-gray-600 rounded-md hover:bg-gray-200 font-medium">Cancel Leave</button>
                           )}

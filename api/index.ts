@@ -644,9 +644,9 @@ app.post('/api/leave/requests', async (req, res) => {
     const from = new Date(from_date).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' });
     const to   = new Date(to_date).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' });
     if (emp.reporting_manager_id) {
-      notifyEmployeeUser(emp.reporting_manager_id, 'leave_applied', 'New Leave Request', `${employee_name} applied for ${type.replace('_',' ')} leave (${from} – ${to})`);
+      notifyEmployeeUser(emp.reporting_manager_id, 'leave_applied', 'New Leave Request', `${employee_name} applied for ${type.replace('_',' ')} leave (${from} – ${to})`).catch(()=>{});
     } else {
-      notifyAdminsAndHR('leave_applied', 'New Leave Request', `${employee_name} applied for ${type.replace('_',' ')} leave (${from} – ${to})`);
+      notifyAdminsAndHR('leave_applied', 'New Leave Request', `${employee_name} applied for ${type.replace('_',' ')} leave (${from} – ${to})`).catch(()=>{});
     }
     res.status(201).json(rows[0]);
   } catch (err) { res.status(500).json({ error: 'Server error' }); }
