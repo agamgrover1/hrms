@@ -15,19 +15,30 @@ function getSql() {
 const sql = ((...a: any[]) => (getSql() as any)(...a)) as (...args: any[]) => Promise<any[]>;
 
 const app = express();
-// Allow vercel.app previews, localhost dev, and any custom domains set via CORS_ORIGIN env var
-const ALLOWED_ORIGINS = new Set(
-  process.env.CORS_ORIGIN ? process.env.CORS_ORIGIN.split(',').map(s => s.trim()) : []
-);
+// Build the set of allowed origins — hardcoded + any extras from CORS_ORIGIN env var
+const ALLOWED_ORIGINS = new Set([
+  'https://hr.digitalleapmarketing.com',
+  'https://hrms.digitalleapmarketing.com',
+  ...(process.env.CORS_ORIGIN
+    ? process.env.CORS_ORIGIN.split(',').map(s => s.trim().replace(/\/$/, ''))
+    : []),
+]);
+
+function isAllowedOrigin(origin: string | undefined): boolean {
+  if (!origin) return true; // same-origin / server-to-server
+  const o = origin.replace(/\/$/, ''); // strip trailing slash
+  return (
+    o.endsWith('.vercel.app') ||
+    o.startsWith('http://localhost') ||
+    o.startsWith('http://127.0.0.1') ||
+    o.includes('digitalleapmarketing.com') || // allow all subdomains of the company domain
+    ALLOWED_ORIGINS.has(o)
+  );
+}
+
 app.use(cors({
   origin: (origin, cb) => {
-    if (
-      !origin ||
-      origin.endsWith('.vercel.app') ||
-      origin.startsWith('http://localhost') ||
-      origin.startsWith('http://127.0.0.1') ||
-      ALLOWED_ORIGINS.has(origin)
-    ) {
+    if (isAllowedOrigin(origin)) {
       cb(null, true);
     } else {
       cb(new Error('Not allowed by CORS'));
