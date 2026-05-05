@@ -15,11 +15,10 @@ function getSql() {
 const sql = ((...a: any[]) => (getSql() as any)(...a)) as (...args: any[]) => Promise<any[]>;
 
 const app = express();
-// Allow vercel.app previews, localhost dev, and any explicitly listed custom domains via env var
-const ALLOWED_ORIGINS = new Set([
-  'https://hrms.digitalleapmarketing.com',
-  ...(process.env.CORS_ORIGIN ? process.env.CORS_ORIGIN.split(',').map(s => s.trim()) : []),
-]);
+// Allow vercel.app previews, localhost dev, and any custom domains set via CORS_ORIGIN env var
+const ALLOWED_ORIGINS = new Set(
+  process.env.CORS_ORIGIN ? process.env.CORS_ORIGIN.split(',').map(s => s.trim()) : []
+);
 app.use(cors({
   origin: (origin, cb) => {
     if (
