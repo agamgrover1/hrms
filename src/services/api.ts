@@ -5,6 +5,17 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
     headers: { 'Content-Type': 'application/json' },
     ...options,
   });
+  // Guard against non-JSON responses (e.g. Vercel HTML error pages when a
+  // serverless function crashes due to missing env vars or build errors)
+  const contentType = res.headers.get('content-type') ?? '';
+  if (!contentType.includes('application/json')) {
+    const text = await res.text().catch(() => '');
+    throw new Error(
+      res.status === 500 ? 'Server error — check Vercel environment variables (DATABASE_URL).' :
+      res.status === 404 ? 'API route not found.' :
+      `Unexpected response (${res.status}): server returned HTML instead of JSON.`
+    );
+  }
   const data = await res.json();
   if (!res.ok) throw new Error(data.error || 'Request failed');
   return data as T;
