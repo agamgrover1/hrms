@@ -553,8 +553,11 @@ function parseEtWorkTimeV(wt: string|null): number {
 }
 
 async function runBiometricSyncV(trigger: string, triggeredBy?: string, fromDate?: string, toDate?: string) {
-  const apiUrl = process.env.BIOMETRIC_API_URL ?? 'https://api.etimeoffice.com/api/DownloadInOutPunchData';
-  const apiKey = process.env.BIOMETRIC_API_KEY ?? 'ZGlnaXRhbF9sZWFwOmRpZ2l0YWxsZWFwOkQhZyF0YWxAMSo6dHJ1ZQ==';
+  const apiUrl = process.env.BIOMETRIC_API_URL;
+  const apiKey = process.env.BIOMETRIC_API_KEY;
+  if (!apiUrl || !apiKey) {
+    throw new Error('BIOMETRIC_API_URL and BIOMETRIC_API_KEY environment variables are not configured');
+  }
   const today = new Date().toISOString().split('T')[0];
   const from  = fromDate ?? today;
   const to    = toDate   ?? from;
@@ -714,10 +717,15 @@ async function creditMonthlyLeave(employeeId: string, joinDate: string | null) {
   const now = new Date();
   const cm = now.getMonth() + 1;
   const cy = now.getFullYear();
-  const balRows = await sql`SELECT * FROM leave_balances WHERE employee_id=${employeeId}`;
-  if (!balRows.length) return;
-  const bal = balRows[0] as any;
-  if (bal.last_credited_month === cm && bal.last_credited_year === cy) return;
+  let balRows = await sql`SELECT * FROM leave_balances WHERE employee_id=${employeeId}`;
+  // Auto-create a balance row if one doesn't exist (new employees added directly via UI)
+  if (!(balRows as any[]).length) {
+    await sql`INSERT INTO leave_balances (employee_id, full_day, short_leave, casual, sick, earned, last_credited_month, last_credited_year, probation_short_used) VALUES (${employeeId}, 0, 2, 10, 7, 15, ${cm}, ${cy}, 0) ON CONFLICT (employee_id) DO NOTHING`.catch(() => {});
+    return; // just created — no credit needed yet
+  }
+  const bal = (balRows as any[])[0];
+  // Guard: if last_credited fields are set correctly already, skip
+  if (Number(bal.last_credited_month) === cm && Number(bal.last_credited_year) === cy) return;
   if (isOnProbation(joinDate)) {
     await sql`UPDATE leave_balances SET last_credited_month=${cm}, last_credited_year=${cy} WHERE employee_id=${employeeId}`;
     return;
@@ -1375,6 +1383,11 @@ app.post('/api/optional-leave/dates', async (req, res) => {
     await ensureOptionalLeaveTables();
     const { date, label, year } = req.body;
     if (!date || !label?.trim() || !year) return res.status(400).json({ error: 'date, label, year are required' });
+    const currentYear = new Date().getFullYear();
+    if (Number(year) < currentYear || Number(year) > currentYear + 2)
+      return res.status(400).json({ error: `Year must be between ${currentYear} and ${currentYear + 2}` });
+    if (date.slice(0,4) !== String(year))
+      return res.status(400).json({ error: 'Date must be within the selected year' });
     const id = `old_${Date.now()}`;
     const rows = await sql`INSERT INTO optional_leave_dates (id,date,label,year) VALUES (${id},${date},${label.trim()},${Number(year)}) ON CONFLICT (date,year) DO UPDATE SET label=EXCLUDED.label RETURNING *`;
     res.status(201).json(rows[0]);

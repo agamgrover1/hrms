@@ -70,15 +70,24 @@ function SlipModal({ record, onClose }: { record: any; onClose: () => void }) {
   );
 }
 
+const MONTH_FULL = ['January','February','March','April','May','June','July','August','September','October','November','December'];
+
 export default function Payroll() {
+  const now = new Date();
   const [payroll, setPayroll] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
   const [selectedSlip, setSelectedSlip] = useState<any | null>(null);
+  const [selectedMonth, setSelectedMonth] = useState(MONTH_FULL[now.getMonth()]);
+  const [selectedYear, setSelectedYear] = useState(now.getFullYear());
 
   useEffect(() => {
-    api.getPayroll({ month: 'March', year: 2026 }).then(setPayroll).finally(() => setLoading(false));
-  }, []);
+    setLoading(true);
+    api.getPayroll({ month: selectedMonth, year: selectedYear })
+      .then(setPayroll)
+      .catch(() => setPayroll([]))
+      .finally(() => setLoading(false));
+  }, [selectedMonth, selectedYear]);
 
   const totalNetPay = payroll.reduce((s, r) => s + Number(r.net_pay), 0);
   const avgSalary = payroll.length ? Math.round(totalNetPay / payroll.length) : 0;
@@ -94,7 +103,7 @@ export default function Payroll() {
         <div className="bg-gradient-to-br from-primary-500 to-primary-600 rounded-xl p-5 text-white">
           <DollarSign size={18} className="text-primary-200 mb-2" />
           <p className="text-3xl font-bold">₹{(totalNetPay / 100000).toFixed(1)}L</p>
-          <p className="text-primary-100 text-sm mt-1">Total Net Payroll · March 2026</p>
+          <p className="text-primary-100 text-sm mt-1">Total Net Payroll · {selectedMonth} {selectedYear}</p>
         </div>
         <div className="bg-white rounded-xl p-5 border border-gray-100 shadow-sm">
           <p className="text-sm text-gray-500 font-medium">Average Salary</p>
@@ -107,7 +116,7 @@ export default function Payroll() {
             <p className="text-sm text-gray-500 font-medium">MoM Growth</p>
           </div>
           <p className="text-2xl font-bold text-gray-900 mt-1">+0.8%</p>
-          <p className="text-xs text-green-500 mt-0.5">vs February 2026</p>
+          <p className="text-xs text-green-500 mt-0.5">vs {MONTH_FULL[(now.getMonth()-1+12)%12]} {now.getMonth()===0?now.getFullYear()-1:now.getFullYear()}</p>
         </div>
       </div>
 
@@ -128,7 +137,17 @@ export default function Payroll() {
       {/* Table */}
       <div className="bg-white rounded-xl border border-gray-100 shadow-sm overflow-hidden">
         <div className="px-5 py-4 border-b border-gray-100 flex items-center justify-between">
-          <h3 className="font-semibold text-gray-800">Employee Payroll · March 2026</h3>
+          <div className="flex items-center gap-2 flex-wrap">
+            <h3 className="font-semibold text-gray-800">Employee Payroll</h3>
+            <select value={selectedMonth} onChange={e => setSelectedMonth(e.target.value)}
+              className="text-sm border border-gray-200 rounded-lg px-2 py-1 bg-white focus:outline-none focus:ring-2 focus:ring-primary-200">
+              {MONTH_FULL.map(m => <option key={m}>{m}</option>)}
+            </select>
+            <select value={selectedYear} onChange={e => setSelectedYear(Number(e.target.value))}
+              className="text-sm border border-gray-200 rounded-lg px-2 py-1 bg-white focus:outline-none focus:ring-2 focus:ring-primary-200">
+              {[now.getFullYear()-1, now.getFullYear(), now.getFullYear()+1].map(y => <option key={y}>{y}</option>)}
+            </select>
+          </div>
           <div className="relative">
             <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
             <input type="text" value={search} onChange={e => setSearch(e.target.value)} placeholder="Search..."
