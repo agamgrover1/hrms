@@ -37,9 +37,7 @@ export default function Login() {
 
         {/* Logo */}
         <div className="relative">
-          <div className="inline-block px-5 py-3 rounded-2xl shadow-lg" style={{ background: 'rgba(255,255,255,0.95)' }}>
-            <img src="/logo.png" alt="Digital Leap Marketing Solutions" className="h-12 object-contain" />
-          </div>
+          <img src="/logo.png" alt="Digital Leap Marketing Solutions" className="h-14 object-contain" />
         </div>
 
         {/* Centre content */}
@@ -83,7 +81,7 @@ export default function Login() {
         <div className="w-full max-w-md">
 
           {/* Mobile logo */}
-          <div className="lg:hidden mb-10">
+          <div className="lg:hidden mb-10 flex justify-center">
             <img src="/logo.png" alt="Digital Leap Marketing Solutions" className="h-10 object-contain" />
           </div>
 
