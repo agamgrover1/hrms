@@ -100,10 +100,18 @@ async function runStartupMigrations() {
   } catch { /* non-fatal — columns may already exist */ }
 }
 
-// ── Health ────────────────────────────────────────────────────────────────
+// ── Health / diagnostics ──────────────────────────────────────────────────
 app.get('/api/health', async (_, res) => {
-  await runStartupMigrations();
-  res.json({ status: 'ok' });
+  const dbSet = !!process.env.DATABASE_URL;
+  if (!dbSet) {
+    return res.status(500).json({ status: 'error', error: 'DATABASE_URL environment variable is not set' });
+  }
+  try {
+    await runStartupMigrations();
+    res.json({ status: 'ok', db: 'connected' });
+  } catch (e: any) {
+    res.status(500).json({ status: 'error', error: e.message });
+  }
 });
 
 // ── Auth ──────────────────────────────────────────────────────────────────
