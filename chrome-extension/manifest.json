@@ -1,0 +1,15 @@
+{
+  "manifest_version": 3,
+  "name": "Digital Leap HRMS",
+  "version": "1.0.0",
+  "description": "Clock in & out for Digital Leap employees — attendance tracked directly to HRMS.",
+  "permissions": ["storage", "alarms", "notifications"],
+  "host_permissions": ["https://hr.digitalleapmarketing.com/*"],
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "Digital Leap HRMS"
+  },
+  "background": {
+    "service_worker": "background.js"
+  }
+}

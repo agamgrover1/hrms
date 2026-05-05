@@ -31,7 +31,8 @@ function isAllowedOrigin(origin: string | undefined): boolean {
     o.endsWith('.vercel.app') ||
     o.startsWith('http://localhost') ||
     o.startsWith('http://127.0.0.1') ||
-    o.includes('digitalleapmarketing.com') || // allow all subdomains of the company domain
+    o.includes('digitalleapmarketing.com') ||
+    o.startsWith('chrome-extension://') || // Digital Leap HRMS Chrome extension
     ALLOWED_ORIGINS.has(o)
   );
 }
@@ -464,21 +465,82 @@ app.get('/api/attendance', async (req, res) => {
   } catch (err) { res.status(500).json({ error: 'Server error' }); }
 });
 
+// Helper: get IST date string (YYYY-MM-DD) and time string (HH:MM) from current UTC time
+function istNow() {
+  const d = new Date();
+  d.setMinutes(d.getMinutes() + 330); // +5:30 IST offset
+  return { date: d.toISOString().slice(0, 10), time: d.toISOString().slice(11, 16) };
+}
+
+// GET /api/attendance/today — used by the Chrome extension to get today's status
+app.get('/api/attendance/today', async (req, res) => {
+  try {
+    const { employee_id } = req.query as any;
+    if (!employee_id) return res.status(400).json({ error: 'employee_id required' });
+    const { date: today } = istNow();
+
+    const empRows = await sql`SELECT * FROM employees WHERE id=${employee_id}`;
+    if (!(empRows as any[]).length) return res.status(404).json({ error: 'Employee not found' });
+    const emp = (empRows[0] as any);
+
+    // Shift info
+    const shiftRows = await sql`SELECT * FROM config_shifts WHERE id=${emp.shift ?? 'day'}`.catch(() => []);
+    const shift = (shiftRows as any[])[0] ?? { start_time: '09:00', end_time: '18:00', late_after: '10:00' };
+
+    // Today's attendance
+    const attRows = await sql`SELECT * FROM attendance_records WHERE employee_id=${employee_id} AND date::date=${today}::date`;
+    const att = (attRows as any[])[0] ?? null;
+
+    // WFH approved today
+    const wfhRows = await sql`SELECT id FROM wfh_requests WHERE employee_id=${employee_id} AND date::date=${today}::date AND status='approved'`;
+    const wfhToday = !!(wfhRows as any[]).length;
+
+    const hasBiometric = att && att.source === 'biometric';
+    const isClockedIn  = att && att.check_in && !att.check_out;
+    const isClockedOut = att && att.check_in && att.check_out;
+
+    res.json({
+      date: today,
+      employee_name: emp.name,
+      employee_code: emp.employee_id,
+      shift: emp.shift ?? 'day',
+      shift_start: shift.start_time,
+      shift_end:   shift.end_time,
+      wfh_today:     wfhToday,
+      has_biometric: hasBiometric,
+      can_clock_in:  !hasBiometric && !isClockedIn && !isClockedOut,
+      is_clocked_in: !!isClockedIn,
+      is_clocked_out: !!isClockedOut,
+      check_in:    att?.check_in   ?? null,
+      check_out:   att?.check_out  ?? null,
+      total_hours: att?.total_hours ?? null,
+      status:      att?.status      ?? null,
+    });
+  } catch (e: any) { res.status(500).json({ error: e.message }); }
+});
+
 app.post('/api/attendance/clock-in', async (req, res) => {
   try {
-    const { employee_id } = req.body;
-    const now = new Date();
-    const today = now.toISOString().split('T')[0];
+    const { employee_id, source } = req.body;
+    const { date: today, time } = istNow();
     if (isWeekendV(today)) return res.status(400).json({ error: 'Weekends are non-working days' });
-    const time = now.toTimeString().slice(0, 5);
+
+    // Do not override a biometric record
+    const existing = await sql`SELECT source FROM attendance_records WHERE employee_id=${employee_id} AND date::date=${today}::date`;
+    if ((existing as any[]).length && (existing[0] as any).source === 'biometric') {
+      return res.status(409).json({ error: 'Biometric attendance already recorded for today. Extension clock-in is not needed.' });
+    }
+
     const empRow = await sql`SELECT shift FROM employees WHERE id=${employee_id}` as any[];
     const empShift = empRow[0]?.shift ?? 'day';
     const lateAfter = await getShiftLateAfterV(empShift);
     const status = isLateByTime(time, lateAfter) ? 'late' : 'present';
+    const clockSource = source ?? 'manual';
     const rows = await sql`
-      INSERT INTO attendance_records (employee_id, date, check_in, status, total_hours)
-      VALUES (${employee_id}, ${today}, ${time}, ${status}, 0)
-      ON CONFLICT (employee_id, date) DO UPDATE SET check_in=${time}, status=${status}
+      INSERT INTO attendance_records (employee_id, date, check_in, status, total_hours, source)
+      VALUES (${employee_id}, ${today}, ${time}, ${status}, 0, ${clockSource})
+      ON CONFLICT (employee_id, date) DO UPDATE
+        SET check_in=${time}, status=${status}, source=${clockSource}
       RETURNING *`;
     res.json(rows[0]);
   } catch (err) { res.status(500).json({ error: 'Server error' }); }
@@ -511,12 +573,14 @@ app.post('/api/attendance/mark', async (req, res) => {
 app.post('/api/attendance/clock-out', async (req, res) => {
   try {
     const { employee_id } = req.body;
-    const today = new Date().toISOString().split('T')[0];
-    const time = new Date().toTimeString().slice(0, 5);
+    const { date: today, time } = istNow();
+    const existing = await sql`SELECT check_in, source FROM attendance_records WHERE employee_id=${employee_id} AND date::date=${today}::date`;
+    if (!(existing as any[]).length) return res.status(400).json({ error: 'No clock-in record found for today' });
     const rows = await sql`
       UPDATE attendance_records SET check_out=${time},
-        total_hours=ROUND(EXTRACT(EPOCH FROM (${time}::time - check_in::time))/3600, 1)
-      WHERE employee_id=${employee_id} AND date=${today} RETURNING *`;
+        total_hours=ROUND(EXTRACT(EPOCH FROM (${time}::time - check_in::time))/3600, 2)
+      WHERE employee_id=${employee_id} AND date::date=${today}::date RETURNING *`;
+    if (!(rows as any[]).length) return res.status(400).json({ error: 'Could not clock out' });
     res.json(rows[0]);
   } catch (err) { res.status(500).json({ error: 'Server error' }); }
 });
