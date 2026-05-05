@@ -1583,4 +1583,14 @@ app.delete('/api/users/:id', async (req, res) => {
   } catch (err) { res.status(500).json({ error: 'Server error' }); }
 });
 
+// ── Global error handler — always return JSON, never Express HTML page ────
+// This catches any error that slips past individual route try-catch blocks
+// (e.g. CORS rejections, async errors in Express 5, middleware failures)
+// and returns the actual error message so it's visible instead of opaque HTML.
+app.use((err: any, _req: any, res: any, _next: any) => {
+  console.error('[Unhandled Express error]', err?.message ?? err);
+  const status = err?.status || err?.statusCode || 500;
+  res.status(status).json({ error: err?.message || 'Internal server error' });
+});
+
 export default app;
