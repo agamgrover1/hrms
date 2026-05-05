@@ -86,9 +86,174 @@ let _migrated = false;
 async function runStartupMigrations() {
   if (_migrated) return;
   _migrated = true;
+
+  // ── Core tables (CREATE IF NOT EXISTS — works on a fresh database) ──────
+  await sql`
+    CREATE TABLE IF NOT EXISTS employees (
+      id TEXT PRIMARY KEY, name TEXT NOT NULL, email TEXT UNIQUE,
+      phone TEXT, department TEXT, designation TEXT, employee_id TEXT UNIQUE,
+      join_date DATE, location TEXT, manager TEXT, reporting_manager_id TEXT,
+      status TEXT DEFAULT 'active', avatar TEXT, salary NUMERIC DEFAULT 0,
+      ctc NUMERIC DEFAULT 0, biometric_id TEXT, shift TEXT DEFAULT 'day',
+      next_appraisal_month INTEGER, next_appraisal_year INTEGER,
+      probation_end_date DATE, date_of_birth DATE, created_at TIMESTAMPTZ DEFAULT NOW()
+    )`;
+  await sql`
+    CREATE TABLE IF NOT EXISTS app_users (
+      id TEXT PRIMARY KEY, employee_id_ref TEXT, name TEXT NOT NULL,
+      email TEXT UNIQUE NOT NULL, password TEXT NOT NULL,
+      role TEXT NOT NULL DEFAULT 'employee',
+      department TEXT, designation TEXT, avatar TEXT,
+      active BOOLEAN DEFAULT TRUE, created_at TIMESTAMPTZ DEFAULT NOW()
+    )`;
+  await sql`
+    CREATE TABLE IF NOT EXISTS attendance_records (
+      id SERIAL PRIMARY KEY, employee_id TEXT NOT NULL, date DATE NOT NULL,
+      status TEXT NOT NULL, check_in TEXT, check_out TEXT,
+      total_hours NUMERIC DEFAULT 0, source TEXT DEFAULT 'manual',
+      biometric_sync_id TEXT,
+      UNIQUE(employee_id, date)
+    )`;
+  await sql`
+    CREATE TABLE IF NOT EXISTS leave_balances (
+      employee_id TEXT PRIMARY KEY, full_day INTEGER NOT NULL DEFAULT 0,
+      short_leave INTEGER NOT NULL DEFAULT 2, casual INTEGER DEFAULT 10,
+      sick INTEGER DEFAULT 7, earned INTEGER DEFAULT 15,
+      last_credited_month INTEGER, last_credited_year INTEGER,
+      probation_short_used INTEGER NOT NULL DEFAULT 0
+    )`;
+  await sql`
+    CREATE TABLE IF NOT EXISTS leave_requests (
+      id TEXT PRIMARY KEY, employee_id TEXT NOT NULL, employee_name TEXT,
+      type TEXT NOT NULL, from_date DATE NOT NULL, to_date DATE NOT NULL,
+      days INTEGER DEFAULT 1, reason TEXT, status TEXT DEFAULT 'pending',
+      manager_status TEXT DEFAULT 'pending', manager_id TEXT, manager_name TEXT,
+      manager_rejection_reason TEXT, manager_approved_at TIMESTAMPTZ,
+      hr_actioner_name TEXT, hr_actioned_at TIMESTAMPTZ, rejection_reason TEXT,
+      cancelled_by TEXT, cancelled_at TIMESTAMPTZ, cancellation_reason TEXT,
+      applied_on TIMESTAMPTZ DEFAULT NOW()
+    )`;
+  await sql`
+    CREATE TABLE IF NOT EXISTS notifications (
+      id SERIAL PRIMARY KEY, user_id TEXT NOT NULL, type TEXT NOT NULL,
+      title TEXT NOT NULL, body TEXT, is_read BOOLEAN DEFAULT FALSE,
+      created_at TIMESTAMPTZ DEFAULT NOW()
+    )`;
+  await sql`
+    CREATE TABLE IF NOT EXISTS payroll_records (
+      id SERIAL PRIMARY KEY, employee_id TEXT NOT NULL, month TEXT, year INTEGER,
+      basic_salary NUMERIC DEFAULT 0, hra NUMERIC DEFAULT 0,
+      allowances NUMERIC DEFAULT 0, gross_salary NUMERIC DEFAULT 0,
+      pf NUMERIC DEFAULT 0, professional_tax NUMERIC DEFAULT 0,
+      tds NUMERIC DEFAULT 0, total_deductions NUMERIC DEFAULT 0,
+      net_pay NUMERIC DEFAULT 0
+    )`;
+  await sql`
+    CREATE TABLE IF NOT EXISTS monthly_performance (
+      id SERIAL PRIMARY KEY, employee_id TEXT NOT NULL, reviewer_id TEXT,
+      reviewer_name TEXT, month INTEGER NOT NULL, year INTEGER NOT NULL,
+      productivity NUMERIC DEFAULT 0, quality NUMERIC DEFAULT 0,
+      teamwork NUMERIC DEFAULT 0, attendance_score NUMERIC DEFAULT 0,
+      initiative NUMERIC DEFAULT 0, client_satisfaction NUMERIC DEFAULT 0,
+      ai_usage NUMERIC DEFAULT 0, overall_score NUMERIC DEFAULT 0,
+      comments TEXT, parameter_notes JSONB, is_locked BOOLEAN DEFAULT FALSE,
+      locked_by TEXT, locked_at TIMESTAMPTZ, created_at TIMESTAMPTZ DEFAULT NOW(),
+      UNIQUE(employee_id, month, year)
+    )`;
+  await sql`
+    CREATE TABLE IF NOT EXISTS performance_goals (
+      id TEXT PRIMARY KEY, employee_id TEXT NOT NULL, title TEXT NOT NULL,
+      description TEXT, target_date DATE, progress INTEGER DEFAULT 0,
+      status TEXT DEFAULT 'in_progress', created_at TIMESTAMPTZ DEFAULT NOW()
+    )`;
+  await sql`
+    CREATE TABLE IF NOT EXISTS performance_notes (
+      id TEXT PRIMARY KEY, employee_id TEXT NOT NULL, note_date DATE,
+      note_text TEXT NOT NULL, note_type TEXT DEFAULT 'general',
+      created_by_id TEXT, created_by_name TEXT, created_at TIMESTAMPTZ DEFAULT NOW()
+    )`;
+  await sql`
+    CREATE TABLE IF NOT EXISTS appraisal_goals (
+      id SERIAL PRIMARY KEY, employee_id TEXT NOT NULL,
+      year INTEGER NOT NULL, month INTEGER NOT NULL,
+      goals JSONB DEFAULT '[]', submitted BOOLEAN DEFAULT FALSE,
+      submitted_at TIMESTAMPTZ, updated_at TIMESTAMPTZ DEFAULT NOW(),
+      UNIQUE(employee_id, month, year)
+    )`;
+  await sql`
+    CREATE TABLE IF NOT EXISTS wfh_requests (
+      id TEXT PRIMARY KEY, employee_id TEXT NOT NULL, employee_name TEXT,
+      date DATE NOT NULL, type TEXT DEFAULT 'full_day', reason TEXT,
+      status TEXT DEFAULT 'pending', manager_status TEXT DEFAULT 'pending',
+      manager_id TEXT, manager_name TEXT, manager_approved_at TIMESTAMPTZ,
+      manager_rejection_reason TEXT, hr_actioner_name TEXT, hr_actioned_at TIMESTAMPTZ,
+      rejection_reason TEXT, cancelled_by TEXT, cancelled_at TIMESTAMPTZ,
+      cancellation_reason TEXT, applied_on TIMESTAMPTZ DEFAULT NOW(),
+      created_at TIMESTAMPTZ DEFAULT NOW()
+    )`;
+  await sql`
+    CREATE TABLE IF NOT EXISTS employee_warnings (
+      id TEXT PRIMARY KEY, employee_id TEXT NOT NULL, employee_name TEXT,
+      reason TEXT NOT NULL, severity TEXT DEFAULT 'warning',
+      issued_by TEXT, issued_by_role TEXT, created_at TIMESTAMPTZ DEFAULT NOW()
+    )`;
+  await sql`
+    CREATE TABLE IF NOT EXISTS employee_pips (
+      id TEXT PRIMARY KEY, employee_id TEXT NOT NULL, employee_name TEXT,
+      start_date DATE NOT NULL, end_date DATE NOT NULL, reason TEXT,
+      goals TEXT, status TEXT DEFAULT 'active', created_at TIMESTAMPTZ DEFAULT NOW()
+    )`;
+  await sql`
+    CREATE TABLE IF NOT EXISTS upsell_requests (
+      id TEXT PRIMARY KEY, employee_id TEXT NOT NULL, employee_name TEXT,
+      client_name TEXT NOT NULL, service_description TEXT NOT NULL,
+      deal_value NUMERIC, requested_amount NUMERIC, notes TEXT,
+      status TEXT DEFAULT 'pending', reviewed_by TEXT, reviewed_at TIMESTAMPTZ,
+      rejection_reason TEXT, approved_amount NUMERIC, payment_note TEXT,
+      created_at TIMESTAMPTZ DEFAULT NOW()
+    )`;
+  await sql`
+    CREATE TABLE IF NOT EXISTS expense_requests (
+      id TEXT PRIMARY KEY, employee_id TEXT NOT NULL, employee_name TEXT,
+      category TEXT NOT NULL, description TEXT NOT NULL, amount NUMERIC NOT NULL,
+      receipt_note TEXT, expense_date DATE, status TEXT DEFAULT 'pending',
+      reviewed_by TEXT, reviewed_at TIMESTAMPTZ, rejection_reason TEXT,
+      approved_amount NUMERIC, payment_note TEXT, created_at TIMESTAMPTZ DEFAULT NOW()
+    )`;
+  await sql`
+    CREATE TABLE IF NOT EXISTS config_departments (
+      id TEXT PRIMARY KEY, name TEXT NOT NULL UNIQUE, created_at TIMESTAMPTZ DEFAULT NOW()
+    )`;
+  await sql`
+    CREATE TABLE IF NOT EXISTS config_designations (
+      id TEXT PRIMARY KEY, name TEXT NOT NULL UNIQUE, created_at TIMESTAMPTZ DEFAULT NOW()
+    )`;
+  await sql`
+    CREATE TABLE IF NOT EXISTS config_shifts (
+      id TEXT PRIMARY KEY, name TEXT NOT NULL UNIQUE,
+      start_time TEXT NOT NULL, end_time TEXT NOT NULL,
+      late_after TEXT NOT NULL, created_at TIMESTAMPTZ DEFAULT NOW()
+    )`;
+  await sql`
+    CREATE TABLE IF NOT EXISTS optional_leave_dates (
+      id TEXT PRIMARY KEY, date DATE NOT NULL, label TEXT NOT NULL,
+      year INTEGER NOT NULL, created_at TIMESTAMPTZ DEFAULT NOW(),
+      UNIQUE(date, year)
+    )`;
+  await sql`
+    CREATE TABLE IF NOT EXISTS attendance_sync_log (
+      id SERIAL PRIMARY KEY, sync_id TEXT UNIQUE, triggered TEXT,
+      triggered_by TEXT, synced_at TIMESTAMPTZ DEFAULT NOW(), date_range TEXT,
+      records_updated INTEGER DEFAULT 0, records_created INTEGER DEFAULT 0,
+      status TEXT DEFAULT 'success', error_msg TEXT,
+      is_rolled_back BOOLEAN DEFAULT FALSE, rolled_back_at TIMESTAMPTZ
+    )`;
+
+  // ── Add missing columns to existing tables (idempotent) ─────────────────
   try {
     await sql`ALTER TABLE employees ADD COLUMN IF NOT EXISTS probation_end_date DATE`;
     await sql`ALTER TABLE employees ADD COLUMN IF NOT EXISTS biometric_id TEXT`;
+    await sql`ALTER TABLE employees ADD COLUMN IF NOT EXISTS date_of_birth DATE`;
     await sql`ALTER TABLE attendance_records ADD COLUMN IF NOT EXISTS source TEXT DEFAULT 'manual'`;
     await sql`ALTER TABLE attendance_records ADD COLUMN IF NOT EXISTS biometric_sync_id TEXT`;
     await sql`ALTER TABLE leave_balances ADD COLUMN IF NOT EXISTS full_day INTEGER NOT NULL DEFAULT 0`;
@@ -104,11 +269,35 @@ async function runStartupMigrations() {
     await sql`ALTER TABLE leave_requests ADD COLUMN IF NOT EXISTS cancelled_by VARCHAR(200)`;
     await sql`ALTER TABLE leave_requests ADD COLUMN IF NOT EXISTS cancelled_at TIMESTAMPTZ`;
     await sql`ALTER TABLE leave_requests ADD COLUMN IF NOT EXISTS cancellation_reason TEXT`;
-    // Remove weekend records created by old syncs
-    await sql`DELETE FROM attendance_records WHERE EXTRACT(DOW FROM date) IN (0, 6)`;
-    // Remove future-date absent records created by biometric sync
-    await sql`DELETE FROM attendance_records WHERE date > CURRENT_DATE AND source = 'biometric'`;
-  } catch { /* non-fatal — columns may already exist */ }
+    await sql`ALTER TABLE upsell_requests ALTER COLUMN requested_amount DROP NOT NULL`.catch(()=>{});
+  } catch { /* columns may already exist — non-fatal */ }
+
+  // ── Seed default config data ─────────────────────────────────────────────
+  try {
+    // Default shifts
+    await sql`INSERT INTO config_shifts (id,name,start_time,end_time,late_after) VALUES ('day','Day Shift','09:00','18:00','10:00') ON CONFLICT (id) DO NOTHING`;
+    await sql`INSERT INTO config_shifts (id,name,start_time,end_time,late_after) VALUES ('night','Night Shift','18:30','03:30','19:30') ON CONFLICT (id) DO NOTHING`;
+    // Default departments (only if table is empty)
+    const deptCount = await sql`SELECT COUNT(*) FROM config_departments`;
+    if (String((deptCount[0] as any).count) === '0') {
+      for (const d of ['Engineering','Product','Design','HR','Sales','Finance','Marketing','Operations','Legal','Customer Support']) {
+        await sql`INSERT INTO config_departments (id,name) VALUES (${d.toLowerCase().replace(/\s+/g,'-')},${d}) ON CONFLICT (id) DO NOTHING`;
+      }
+    }
+  } catch { /* non-fatal */ }
+
+  // ── Create default admin user if none exists ─────────────────────────────
+  try {
+    const admins = await sql`SELECT id FROM app_users WHERE role = 'admin' LIMIT 1`;
+    if (!(admins as any[]).length) {
+      const hashedPw = await bcrypt.hash('Admin@1234', 10);
+      await sql`
+        INSERT INTO app_users (id, name, email, password, role, active)
+        VALUES ('admin_default', 'Admin', 'admin@digitalleapmarketing.com', ${hashedPw}, 'admin', true)
+        ON CONFLICT (id) DO NOTHING
+      `;
+    }
+  } catch { /* non-fatal */ }
 }
 
 // ── Health / diagnostics ──────────────────────────────────────────────────
