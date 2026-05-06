@@ -257,6 +257,14 @@ async function runStartupMigrations() {
     await sql`ALTER TABLE employees ADD COLUMN IF NOT EXISTS date_of_birth DATE`;
     await sql`ALTER TABLE attendance_records ADD COLUMN IF NOT EXISTS source TEXT DEFAULT 'manual'`;
     await sql`ALTER TABLE attendance_records ADD COLUMN IF NOT EXISTS biometric_sync_id TEXT`;
+    await sql`ALTER TABLE attendance_records ADD COLUMN IF NOT EXISTS extension_hours NUMERIC DEFAULT 0`;
+    await sql`
+      CREATE TABLE IF NOT EXISTS attendance_sessions (
+        id TEXT PRIMARY KEY, employee_id TEXT NOT NULL, date DATE NOT NULL,
+        clock_in TEXT NOT NULL, clock_out TEXT, duration_minutes NUMERIC DEFAULT 0,
+        source TEXT DEFAULT 'manual', created_at TIMESTAMPTZ DEFAULT NOW()
+      )
+    `.catch(()=>{});
     await sql`ALTER TABLE leave_balances ADD COLUMN IF NOT EXISTS full_day INTEGER NOT NULL DEFAULT 0`;
     await sql`ALTER TABLE leave_balances ADD COLUMN IF NOT EXISTS short_leave INTEGER NOT NULL DEFAULT 0`;
     await sql`ALTER TABLE leave_balances ADD COLUMN IF NOT EXISTS last_credited_month INTEGER`;

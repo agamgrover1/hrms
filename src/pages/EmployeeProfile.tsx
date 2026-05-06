@@ -711,7 +711,7 @@ export default function EmployeeProfile() {
                 <table className="w-full text-sm">
                   <thead>
                     <tr style={{background:'#f8f9fc'}}>
-                      {['Date','Day','Status','Check In','Check Out','Hours'].map(h => (
+                      {['Date','Day','Status','Check In','Check Out','Hours','Source'].map(h => (
                         <th key={h} className="text-left px-4 py-3 text-xs font-semibold text-gray-400 uppercase tracking-wide whitespace-nowrap">{h}</th>
                       ))}
                     </tr>
@@ -725,6 +725,21 @@ export default function EmployeeProfile() {
                         <td className="px-4 py-3 text-gray-600">{fmtTime(r.check_in)}</td>
                         <td className="px-4 py-3 text-gray-600">{fmtTime(r.check_out)}</td>
                         <td className="px-4 py-3 text-gray-600">{fmtHours(r.total_hours)}</td>
+                        <td className="px-4 py-3">
+                          {(r.source === 'wfh_extension' || Number(r.extension_hours) > 0) ? (
+                            <span className="inline-flex items-center gap-1 text-[10px] font-bold px-2 py-0.5 rounded-full border"
+                              style={{ background: 'rgba(238,39,112,0.08)', color: '#EE2770', borderColor: 'rgba(238,39,112,0.25)' }}>
+                              💻 Extension
+                            </span>
+                          ) : r.source === 'biometric' ? (
+                            <span className="inline-flex items-center gap-1 text-[10px] font-bold px-2 py-0.5 rounded-full border"
+                              style={{ background: 'rgba(22,163,74,0.08)', color: '#15803d', borderColor: 'rgba(22,163,74,0.25)' }}>
+                              🔵 Biometric
+                            </span>
+                          ) : r.check_in ? (
+                            <span className="text-[10px] text-gray-400">Manual</span>
+                          ) : null}
+                        </td>
                       </tr>
                     ))}
                   </tbody>
