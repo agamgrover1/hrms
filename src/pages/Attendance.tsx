@@ -625,8 +625,17 @@ export default function Attendance() {
                         {parseLocalDate(r.date).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' })}
                       </span>
                     </div>
-                    <div className="text-xs text-gray-400">
-                      {r.check_in ? <span>{r.check_in} – {r.check_out ?? '—'} <span className="text-gray-500 font-medium">{fmtHours(r.total_hours)}</span></span> : '—'}
+                    <div className="text-xs text-gray-400 flex items-center gap-2 flex-wrap">
+                      {r.check_in ? (
+                        <>
+                          <span>{r.check_in} – {r.check_out ?? '—'} <span className="text-gray-500 font-medium">{fmtHours(r.total_hours)}</span></span>
+                          {Number(r.extension_hours) > 0 && (
+                            <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded-full" style={{ background: 'rgba(238,39,112,0.1)', color: '#EE2770' }}>
+                              {fmtHours(r.extension_hours)} ext.
+                            </span>
+                          )}
+                        </>
+                      ) : '—'}
                     </div>
                   </div>
                 );

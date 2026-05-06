@@ -1,264 +1,285 @@
 'use strict';
 
 const API = 'https://hr.digitalleapmarketing.com/api';
-let timerInterval = null;
+let timerInterval  = null;
+let totalInterval  = null;
+let currentData    = null; // last /today response
 
-// ── DOM refs ──────────────────────────────────────────────────────────────────
 const $ = id => document.getElementById(id);
 
 // ── Init ──────────────────────────────────────────────────────────────────────
 async function init() {
   show('loadingView');
   const stored = await chrome.storage.local.get(['user', 'employee']);
-  if (!stored.user || !stored.employee) {
-    showLogin();
-    return;
-  }
-  await loadDashboard(stored.user, stored.employee);
+  if (!stored.user || !stored.employee) { showLogin(); return; }
+  await loadDashboard(stored.employee);
 }
 
-// ── Show / hide helpers ───────────────────────────────────────────────────────
-function show(viewId) {
-  ['loadingView','loginView','mainView'].forEach(id => $(id).classList.add('hidden'));
-  $(viewId).classList.remove('hidden');
+// ── View helpers ──────────────────────────────────────────────────────────────
+function show(id) {
+  ['loadingView','loginView','mainView'].forEach(v => $(v).classList.add('hidden'));
+  $(id).classList.remove('hidden');
 }
-function showSub(viewId) {
-  ['notClockedView','clockedInView','clockedOutView'].forEach(id => $(id).classList.add('hidden'));
-  $(viewId).classList.remove('hidden');
+function showSub(id) {
+  ['notClockedView','clockedInView','onBreakView'].forEach(v => $(v).classList.add('hidden'));
+  $(id).classList.remove('hidden');
 }
-function setError(id, msg) {
+function setErr(id, msg) {
   $(id).classList.toggle('hidden', !msg);
-  if (msg) $(id.replace('Error','ErrorMsg')).textContent = msg;
+  $(id).textContent = msg || '';
 }
 
 // ── Login ─────────────────────────────────────────────────────────────────────
 function showLogin() {
-  show('loginView');
-  $('logoutBtn').classList.add('hidden');
-  setError('loginError', '');
+  show('loginView'); $('logoutBtn').classList.add('hidden'); setErr('loginError','');
 }
 
 $('loginBtn').addEventListener('click', async () => {
-  const email    = $('emailInput').value.trim();
-  const password = $('passwordInput').value;
-  if (!email || !password) { setError('loginError', 'Enter your email and password.'); return; }
-
-  $('loginBtn').textContent = 'Signing in…';
-  $('loginBtn').disabled = true;
-  setError('loginError', '');
-
+  const email = $('emailInput').value.trim();
+  const pwd   = $('passwordInput').value;
+  if (!email || !pwd) { setErr('loginError', 'Enter your email and password.'); return; }
+  $('loginBtn').textContent = 'Signing in…'; $('loginBtn').disabled = true; setErr('loginError','');
   try {
-    // 1. Authenticate
-    const authRes  = await fetch(`${API}/auth/login`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ email, password }),
-    });
-    const authData = await authRes.json();
-    if (!authRes.ok) throw new Error(authData.error || 'Invalid credentials');
-    const user = authData.user;
+    const authRes = await fetch(`${API}/auth/login`, { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ email, password: pwd }) });
+    const auth    = await authRes.json();
+    if (!authRes.ok) throw new Error(auth.error || 'Invalid credentials');
 
-    // 2. Employees list → find this user's employee record
-    const empsRes  = await fetch(`${API}/employees`);
-    const emps     = await empsRes.json();
-    const employee = emps.find(e => e.employee_id === user.employee_id_ref);
+    const empsRes = await fetch(`${API}/employees`);
+    const emps    = await empsRes.json();
+    const employee = emps.find(e => e.employee_id === auth.user.employee_id_ref);
     if (!employee) throw new Error('No employee record linked to this account. Contact HR.');
 
-    // 3. Persist + setup alarm
-    await chrome.storage.local.set({ user, employee });
-    chrome.runtime.sendMessage({ type: 'SETUP_ALARM', shiftStart: null, employeeId: employee.id });
-
-    await loadDashboard(user, employee);
-  } catch (err) {
-    setError('loginError', err.message);
-  } finally {
-    $('loginBtn').textContent = 'Sign In →';
-    $('loginBtn').disabled = false;
-  }
+    await chrome.storage.local.set({ user: auth.user, employee });
+    await loadDashboard(employee);
+  } catch (e) { setErr('loginError', e.message); }
+  finally { $('loginBtn').textContent = 'Sign In →'; $('loginBtn').disabled = false; }
 });
-
-// Enter key on password triggers login
-$('passwordInput').addEventListener('keydown', e => { if (e.key === 'Enter') $('loginBtn').click(); });
-$('emailInput').addEventListener('keydown',    e => { if (e.key === 'Enter') $('passwordInput').focus(); });
+$('passwordInput').addEventListener('keydown', e => { if (e.key==='Enter') $('loginBtn').click(); });
+$('emailInput').addEventListener('keydown',    e => { if (e.key==='Enter') $('passwordInput').focus(); });
 
 // ── Dashboard ─────────────────────────────────────────────────────────────────
-async function loadDashboard(user, employee) {
-  show('mainView');
-  $('logoutBtn').classList.remove('hidden');
-  setError('mainError', '');
-
-  // Employee chip
+async function loadDashboard(employee) {
+  show('mainView'); $('logoutBtn').classList.remove('hidden'); setErr('mainError','');
   $('empName').textContent = employee.name;
   $('empCode').textContent = employee.employee_id;
-
   try {
     const res  = await fetch(`${API}/attendance/today?employee_id=${employee.id}`);
     const data = await res.json();
-    if (!res.ok) throw new Error(data.error || 'Failed to load today\'s data');
-
-    renderDashboard(data, employee);
-
-    // Set up background alarm with the shift start time
-    chrome.runtime.sendMessage({ type: 'SETUP_ALARM', shiftStart: data.shift_start, employeeId: employee.id });
-
-  } catch (err) {
-    setError('mainError', err.message);
-    showSub('notClockedView'); // fallback to clock-in UI
-  }
+    if (!res.ok) throw new Error(data.error || 'Failed to load status');
+    currentData = data;
+    render(data, employee);
+    chrome.runtime.sendMessage({ type:'SETUP_ALARM', shiftStart: data.shift_start, employeeId: employee.id });
+  } catch (e) { setErr('mainError', e.message); showSub('notClockedView'); }
 }
 
-function renderDashboard(data, employee) {
-  // Day type badge
+function render(data, employee) {
+  stopTimers();
+  const sessions = data.sessions || [];
+  const active   = data.active_session;
+
+  // Badge
   const badge = $('dayBadge');
-  if (data.wfh_today) {
-    badge.textContent = '🏠 WFH';
-    badge.className   = 'badge badge-wfh';
-  } else {
-    badge.textContent = '🏢 Office';
-    badge.className   = 'badge badge-office';
-  }
+  badge.textContent = data.wfh_today ? '🏠 WFH' : '🏢 Office';
+  badge.className   = 'badge ' + (data.wfh_today ? 'badge-wfh' : 'badge-office');
 
-  // WFH mandatory notice
-  $('wfhNotice').classList.toggle('hidden', !data.wfh_today || data.is_clocked_in || data.is_clocked_out || data.has_biometric);
-
-  // Biometric notice
+  // Notices
+  $('wfhNotice').classList.toggle('hidden', !data.wfh_today || sessions.length > 0 || data.has_biometric);
   $('bioNotice').classList.toggle('hidden', !data.has_biometric);
-
-  // Shift info
-  const shiftName = data.shift === 'night' ? '🌙 Night Shift' : '☀️ Day Shift';
-  $('shiftText').textContent = `${shiftName} · ${fmt12(data.shift_start)} – ${fmt12(data.shift_end)}`;
+  $('shiftInfo').textContent = (data.shift === 'night' ? '🌙 Night Shift' : '☀️ Day Shift') + ` · ${fmt12(data.shift_start)} – ${fmt12(data.shift_end)}`;
   $('shiftInfo').classList.toggle('hidden', data.has_biometric);
 
-  // ── View states ──
+  // Total hours bar
+  const hasSessions = sessions.length > 0 || active;
+  $('totalBar').classList.toggle('hidden', !hasSessions && !data.has_biometric);
+  if (hasSessions || data.has_biometric) {
+    renderTotalBar(data, active);
+  }
+
+  // Overtime detection: total > shift duration
+  if (hasSessions) {
+    const [sh, sm] = (data.shift_start||'09:00').split(':').map(Number);
+    const [eh, em] = (data.shift_end  ||'18:00').split(':').map(Number);
+    const shiftMin = (eh*60+em) - (sh*60+sm);
+    const totalMin = data.total_minutes + (active ? runningMinutes(active.clock_in) : 0);
+    $('otNotice').classList.toggle('hidden', totalMin < shiftMin);
+  } else {
+    $('otNotice').classList.add('hidden');
+  }
+
+  // Session list
+  renderSessionList(sessions, active);
+
+  // Sub-view
   if (data.has_biometric) {
-    // Biometric already punched — show notice only
-    showSub('clockedOutView');
-    $('summaryIn').textContent  = data.check_in ? fmt12(data.check_in) : '—';
-    $('summaryOut').textContent = data.check_out ? fmt12(data.check_out) : '—';
-    $('summaryHours').textContent = data.total_hours != null ? `${parseFloat(data.total_hours).toFixed(1)}h` : '—';
+    $('sessionsWrap').classList.add('hidden');
+    showSub('notClockedView'); // hide buttons, show nothing useful
+    $('notClockedView').classList.add('hidden'); // actually hide all
     return;
   }
-
-  if (data.is_clocked_out) {
-    showSub('clockedOutView');
-    $('summaryIn').textContent    = fmt12(data.check_in);
-    $('summaryOut').textContent   = fmt12(data.check_out);
-    $('summaryHours').textContent = data.total_hours != null ? `${parseFloat(data.total_hours).toFixed(1)}h` : '—';
-    return;
+  if (active) {
+    showSub('clockedInView');
+    $('sessionStartTime').textContent = fmt12(active.clock_in);
+    startSessionTimer(active.clock_in, data.shift_start, data.shift_end, data.total_minutes);
+    startTotalTimer(data.total_minutes, active.clock_in, data.shift_start, data.shift_end, data);
+  } else if (sessions.length > 0) {
+    showSub('onBreakView');
+  } else {
+    showSub('notClockedView');
+    $('clockInBtn').textContent = '⏱ Start Work';
   }
-
-  if (data.is_clocked_in) {
-    showClockedIn(data.check_in);
-    return;
-  }
-
-  // Not clocked in yet
-  showSub('notClockedView');
 }
 
-function showClockedIn(checkInTime) {
-  showSub('clockedInView');
-  $('clockInTime').textContent = fmt12(checkInTime);
-  startTimer(checkInTime);
+function renderTotalBar(data, active) {
+  const updateTotal = () => {
+    const runMin = active ? runningMinutes(active.clock_in) : 0;
+    const total  = data.total_minutes + runMin;
+    $('totalVal').textContent = fmtMinutes(total);
+    // Extension tag
+    const extMin = data.extension_minutes + (active && active.source==='wfh_extension' ? runMin : 0);
+    if (extMin > 0) {
+      $('extTag').classList.remove('hidden');
+      $('extTag').textContent = `${fmtMinutes(extMin)} ext.`;
+    } else {
+      $('extTag').classList.add('hidden');
+    }
+  };
+  updateTotal();
 }
 
-// ── Clock In / Out ────────────────────────────────────────────────────────────
-$('clockInBtn').addEventListener('click', async () => {
+function renderSessionList(sessions, active) {
+  const wrap = $('sessionsWrap');
+  const list = $('sessionsList');
+  const all  = [...sessions, ...(active ? [active] : [])];
+  if (!all.length) { wrap.classList.add('hidden'); return; }
+  wrap.classList.remove('hidden');
+  list.innerHTML = '';
+  all.forEach((s, i) => {
+    const isActive = !s.clock_out;
+    const dur = isActive ? `${fmtMinutes(runningMinutes(s.clock_in))} ●` : fmtMinutes(Number(s.duration_minutes));
+    const srcLabel = s.source === 'wfh_extension' ? 'ext' : s.source === 'biometric' ? 'bio' : '';
+    const row = document.createElement('div');
+    row.className = 'session-row' + (isActive ? ' session-active' : '');
+    row.innerHTML = `
+      <div>
+        <div class="session-times">${fmt12(s.clock_in)} – ${s.clock_out ? fmt12(s.clock_out) : '—'}</div>
+      </div>
+      <div style="display:flex;align-items:center;gap:7px">
+        <span class="session-dur">${dur}</span>
+        ${srcLabel ? `<span class="session-src ${srcLabel}">${srcLabel}</span>` : ''}
+      </div>`;
+    list.appendChild(row);
+  });
+}
+
+// ── Clock In ─────────────────────────────────────────────────────────────────
+async function doClockin(btnEl, resuming) {
   const stored = await chrome.storage.local.get(['employee']);
   if (!stored.employee) return;
-
-  $('clockInBtn').disabled    = true;
-  $('clockInBtn').textContent = 'Clocking in…';
-  setError('mainError', '');
-
+  btnEl.disabled = true; btnEl.textContent = resuming ? 'Resuming…' : 'Starting…';
+  setErr('mainError','');
   try {
     const res  = await fetch(`${API}/attendance/clock-in`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      method:'POST', headers:{'Content-Type':'application/json'},
       body: JSON.stringify({ employee_id: stored.employee.id, source: 'wfh_extension' }),
     });
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || 'Failed to clock in');
-    showClockedIn(data.check_in);
-  } catch (err) {
-    setError('mainError', err.message);
-  } finally {
-    $('clockInBtn').disabled    = false;
-    $('clockInBtn').textContent = '⏱ Clock In';
-  }
-});
+    await loadDashboard(stored.employee);
+  } catch (e) { setErr('mainError', e.message); }
+  finally { btnEl.disabled = false; btnEl.textContent = resuming ? '▶ Resume Work / Clock In' : '⏱ Start Work'; }
+}
 
+$('clockInBtn').addEventListener('click', e => doClockin($('clockInBtn'), false));
+$('resumeBtn').addEventListener('click',  e => doClockin($('resumeBtn'), true));
+
+// ── Clock Out ─────────────────────────────────────────────────────────────────
 $('clockOutBtn').addEventListener('click', async () => {
   const stored = await chrome.storage.local.get(['employee']);
   if (!stored.employee) return;
-
-  $('clockOutBtn').disabled    = true;
-  $('clockOutBtn').textContent = 'Clocking out…';
-  setError('mainError', '');
-
+  $('clockOutBtn').disabled = true; $('clockOutBtn').textContent = 'Clocking out…';
+  setErr('mainError','');
   try {
     const res  = await fetch(`${API}/attendance/clock-out`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      method:'POST', headers:{'Content-Type':'application/json'},
       body: JSON.stringify({ employee_id: stored.employee.id }),
     });
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || 'Failed to clock out');
-
-    stopTimer();
-    showSub('clockedOutView');
-    $('summaryIn').textContent    = fmt12(data.check_in);
-    $('summaryOut').textContent   = fmt12(data.check_out);
-    $('summaryHours').textContent = data.total_hours != null ? `${parseFloat(data.total_hours).toFixed(1)}h` : '—';
-    $('wfhNotice').classList.add('hidden');
-  } catch (err) {
-    setError('mainError', err.message);
-  } finally {
-    $('clockOutBtn').disabled    = false;
-    $('clockOutBtn').textContent = '⏹ Clock Out';
-  }
+    await loadDashboard(stored.employee);
+  } catch (e) { setErr('mainError', e.message); }
+  finally { $('clockOutBtn').disabled = false; $('clockOutBtn').textContent = '⏸ Clock Out / Take Break'; }
 });
 
-// ── Logout ────────────────────────────────────────────────────────────────────
-$('logoutBtn').addEventListener('click', async () => {
-  stopTimer();
-  await chrome.storage.local.clear();
-  chrome.runtime.sendMessage({ type: 'CLEAR_ALARM' });
-  showLogin();
-});
-
-// ── Timer ─────────────────────────────────────────────────────────────────────
-function startTimer(checkInTime) {
-  stopTimer();
+// ── Timers ────────────────────────────────────────────────────────────────────
+function startSessionTimer(clockIn, shiftStart, shiftEnd, completedMinutes) {
   function tick() {
-    const now   = new Date();
-    // Parse check_in "HH:MM" or "HH:MM:SS" in today's date (IST-aware)
-    const [h, m, s] = (checkInTime || '00:00').split(':').map(Number);
-    const inMs  = ((h * 3600) + (m * 60) + (s || 0)) * 1000;
-    // Current time in seconds since midnight IST
-    const nowIST  = new Date(now.getTime() + 330 * 60 * 1000); // +5:30
-    const nowMs   = ((nowIST.getUTCHours() * 3600) + (nowIST.getUTCMinutes() * 60) + nowIST.getUTCSeconds()) * 1000;
-    const elapsedMs = Math.max(0, nowMs - inMs);
-    const hh  = Math.floor(elapsedMs / 3600000);
-    const mm  = Math.floor((elapsedMs % 3600000) / 60000);
-    const ss  = Math.floor((elapsedMs % 60000) / 1000);
-    $('timerDisplay').textContent = `${hh}:${String(mm).padStart(2,'0')}:${String(ss).padStart(2,'0')}`;
+    const mins = runningMinutes(clockIn);
+    const h = Math.floor(mins / 60), m = mins % 60;
+    const s = Math.floor((runningSeconds(clockIn)) % 60);
+    $('timerDisplay').textContent = `${h}:${pad(m)}:${pad(s)}`;
+
+    // Colour red if current session alone exceeds remaining shift time
+    const [eh, em] = (shiftEnd||'18:00').split(':').map(Number);
+    const [sh, sm] = (shiftStart||'09:00').split(':').map(Number);
+    const shiftMin = (eh*60+em) - (sh*60+sm);
+    $('timerDisplay').classList.toggle('timer-ot', completedMinutes + mins > shiftMin);
   }
   tick();
   timerInterval = setInterval(tick, 1000);
 }
 
-function stopTimer() {
-  if (timerInterval) { clearInterval(timerInterval); timerInterval = null; }
+function startTotalTimer(completedMin, clockIn, shiftStart, shiftEnd, data) {
+  function tick() {
+    const runMin = runningMinutes(clockIn);
+    const total  = completedMin + runMin;
+    $('totalVal').textContent = fmtMinutes(total);
+
+    const extMin = data.extension_minutes + (clockIn && data.active_session?.source === 'wfh_extension' ? runMin : 0);
+    if (extMin > 0) { $('extTag').classList.remove('hidden'); $('extTag').textContent = `${fmtMinutes(extMin)} ext.`; }
+
+    // Overtime detection
+    const [sh, sm] = (shiftStart||'09:00').split(':').map(Number);
+    const [eh, em] = (shiftEnd  ||'18:00').split(':').map(Number);
+    const shiftMin = (eh*60+em) - (sh*60+sm);
+    $('otNotice').classList.toggle('hidden', total < shiftMin);
+    const badge = $('dayBadge');
+    if (total >= shiftMin && !data.wfh_today) { badge.textContent = '⏰ Overtime'; badge.className = 'badge badge-ot'; }
+  }
+  tick();
+  totalInterval = setInterval(tick, 10000); // update every 10s
 }
+
+function stopTimers() {
+  if (timerInterval) { clearInterval(timerInterval); timerInterval = null; }
+  if (totalInterval) { clearInterval(totalInterval); totalInterval = null; }
+}
+
+// ── Logout ────────────────────────────────────────────────────────────────────
+$('logoutBtn').addEventListener('click', async () => {
+  stopTimers();
+  await chrome.storage.local.clear();
+  chrome.runtime.sendMessage({ type:'CLEAR_ALARM' });
+  showLogin();
+});
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
-function fmt12(time) {
-  if (!time) return '—';
-  const [h, m] = time.split(':').map(Number);
-  const ampm = h >= 12 ? 'PM' : 'AM';
-  return `${h % 12 || 12}:${String(m).padStart(2,'0')} ${ampm}`;
+function runningSeconds(clockIn) {
+  if (!clockIn) return 0;
+  const [h, m] = clockIn.split(':').map(Number);
+  const nowIST = new Date(Date.now() + 330*60*1000);
+  const nowMin = nowIST.getUTCHours()*3600 + nowIST.getUTCMinutes()*60 + nowIST.getUTCSeconds();
+  return Math.max(0, nowMin - (h*3600 + m*60));
 }
+function runningMinutes(clockIn) { return Math.floor(runningSeconds(clockIn) / 60); }
+function fmtMinutes(min) {
+  const h = Math.floor(min/60), m = min%60;
+  return h > 0 ? `${h}h ${pad(m)}m` : `${m}m`;
+}
+function fmt12(t) {
+  if (!t) return '—';
+  const [h, m] = t.split(':').map(Number);
+  return `${h%12||12}:${pad(m)} ${h>=12?'PM':'AM'}`;
+}
+function pad(n) { return String(n).padStart(2,'0'); }
 
-// ── Boot ──────────────────────────────────────────────────────────────────────
 init();

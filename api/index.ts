@@ -472,9 +472,47 @@ function istNow() {
   return { date: d.toISOString().slice(0, 10), time: d.toISOString().slice(11, 16) };
 }
 
-// GET /api/attendance/today — used by the Chrome extension to get today's status
+// ── Session helpers ───────────────────────────────────────────────────────────
+// Recalculate attendance_records totals from all sessions for a given employee+date
+async function recalcAttendanceTotals(employeeId: string, date: string) {
+  const sessions = await sql`
+    SELECT clock_in, clock_out, duration_minutes, source
+    FROM attendance_sessions
+    WHERE employee_id=${employeeId} AND date::date=${date}::date
+    ORDER BY clock_in ASC
+  `;
+  const rows = sessions as any[];
+  const totalMin = rows.reduce((s, r) => s + Number(r.duration_minutes || 0), 0);
+  const extMin   = rows.filter(r => r.source === 'wfh_extension').reduce((s, r) => s + Number(r.duration_minutes || 0), 0);
+  const firstIn  = rows[0]?.clock_in ?? null;
+  const lastOut  = [...rows].reverse().find(r => r.clock_out)?.clock_out ?? null;
+  await sql`
+    UPDATE attendance_records
+    SET total_hours=${Math.round(totalMin / 6) / 10},
+        extension_hours=${Math.round(extMin / 6) / 10},
+        check_in=COALESCE(${firstIn}, check_in),
+        check_out=${lastOut}
+    WHERE employee_id=${employeeId} AND date::date=${date}::date
+  `.catch(() => {});
+}
+
+// GET /api/attendance/today — used by the Chrome extension
 app.get('/api/attendance/today', async (req, res) => {
   try {
+    await sql`
+      CREATE TABLE IF NOT EXISTS attendance_sessions (
+        id TEXT PRIMARY KEY,
+        employee_id TEXT NOT NULL,
+        date DATE NOT NULL,
+        clock_in TEXT NOT NULL,
+        clock_out TEXT,
+        duration_minutes NUMERIC DEFAULT 0,
+        source TEXT DEFAULT 'manual',
+        created_at TIMESTAMPTZ DEFAULT NOW()
+      )
+    `.catch(() => {});
+    await sql`ALTER TABLE attendance_records ADD COLUMN IF NOT EXISTS extension_hours NUMERIC DEFAULT 0`.catch(() => {});
+
     const { employee_id } = req.query as any;
     if (!employee_id) return res.status(400).json({ error: 'employee_id required' });
     const { date: today } = istNow();
@@ -483,67 +521,103 @@ app.get('/api/attendance/today', async (req, res) => {
     if (!(empRows as any[]).length) return res.status(404).json({ error: 'Employee not found' });
     const emp = (empRows[0] as any);
 
-    // Shift info
     const shiftRows = await sql`SELECT * FROM config_shifts WHERE id=${emp.shift ?? 'day'}`.catch(() => []);
     const shift = (shiftRows as any[])[0] ?? { start_time: '09:00', end_time: '18:00', late_after: '10:00' };
 
-    // Today's attendance
     const attRows = await sql`SELECT * FROM attendance_records WHERE employee_id=${employee_id} AND date::date=${today}::date`;
     const att = (attRows as any[])[0] ?? null;
 
-    // WFH approved today
+    // All sessions for today
+    const sessions = await sql`
+      SELECT * FROM attendance_sessions
+      WHERE employee_id=${employee_id} AND date::date=${today}::date
+      ORDER BY clock_in ASC
+    `.catch(() => []);
+    const sessionList = sessions as any[];
+    const activeSession = sessionList.find(s => !s.clock_out) ?? null;
+
     const wfhRows = await sql`SELECT id FROM wfh_requests WHERE employee_id=${employee_id} AND date::date=${today}::date AND status='approved'`;
     const wfhToday = !!(wfhRows as any[]).length;
 
     const hasBiometric = att && att.source === 'biometric';
-    const isClockedIn  = att && att.check_in && !att.check_out;
-    const isClockedOut = att && att.check_in && att.check_out;
+    const totalMin     = sessionList.reduce((s, r) => s + Number(r.duration_minutes || 0), 0);
+    const extMin       = sessionList.filter(r => r.source === 'wfh_extension').reduce((s, r) => s + Number(r.duration_minutes || 0), 0);
 
     res.json({
       date: today,
       employee_name: emp.name,
       employee_code: emp.employee_id,
       shift: emp.shift ?? 'day',
-      shift_start: shift.start_time,
-      shift_end:   shift.end_time,
+      shift_start:   shift.start_time,
+      shift_end:     shift.end_time,
       wfh_today:     wfhToday,
-      has_biometric: hasBiometric,
-      can_clock_in:  !hasBiometric && !isClockedIn && !isClockedOut,
-      is_clocked_in: !!isClockedIn,
-      is_clocked_out: !!isClockedOut,
-      check_in:    att?.check_in   ?? null,
-      check_out:   att?.check_out  ?? null,
-      total_hours: att?.total_hours ?? null,
-      status:      att?.status      ?? null,
+      has_biometric: !!hasBiometric,
+      has_active_session: !!activeSession,
+      active_session:     activeSession,
+      sessions:      sessionList,
+      total_minutes: totalMin,
+      extension_minutes: extMin,
+      total_hours:   att?.total_hours ?? 0,
+      extension_hours: att?.extension_hours ?? 0,
+      check_in:  att?.check_in  ?? null,
+      check_out: att?.check_out ?? null,
+      status:    att?.status    ?? null,
     });
   } catch (e: any) { res.status(500).json({ error: e.message }); }
 });
 
 app.post('/api/attendance/clock-in', async (req, res) => {
   try {
+    await sql`ALTER TABLE attendance_records ADD COLUMN IF NOT EXISTS extension_hours NUMERIC DEFAULT 0`.catch(() => {});
+    await sql`
+      CREATE TABLE IF NOT EXISTS attendance_sessions (
+        id TEXT PRIMARY KEY, employee_id TEXT NOT NULL, date DATE NOT NULL,
+        clock_in TEXT NOT NULL, clock_out TEXT, duration_minutes NUMERIC DEFAULT 0,
+        source TEXT DEFAULT 'manual', created_at TIMESTAMPTZ DEFAULT NOW()
+      )
+    `.catch(() => {});
+
     const { employee_id, source } = req.body;
     const { date: today, time } = istNow();
     if (isWeekendV(today)) return res.status(400).json({ error: 'Weekends are non-working days' });
 
-    // Do not override a biometric record
-    const existing = await sql`SELECT source FROM attendance_records WHERE employee_id=${employee_id} AND date::date=${today}::date`;
-    if ((existing as any[]).length && (existing[0] as any).source === 'biometric') {
-      return res.status(409).json({ error: 'Biometric attendance already recorded for today. Extension clock-in is not needed.' });
+    // Block if biometric already recorded
+    const existingRec = await sql`SELECT source FROM attendance_records WHERE employee_id=${employee_id} AND date::date=${today}::date`;
+    if ((existingRec as any[]).length && (existingRec[0] as any).source === 'biometric') {
+      return res.status(409).json({ error: 'Biometric attendance already recorded for today.' });
+    }
+
+    // Block if there is already an open session
+    const openSession = await sql`SELECT id FROM attendance_sessions WHERE employee_id=${employee_id} AND date::date=${today}::date AND clock_out IS NULL`;
+    if ((openSession as any[]).length) {
+      return res.status(409).json({ error: 'You are already clocked in. Clock out before starting a new session.' });
     }
 
     const empRow = await sql`SELECT shift FROM employees WHERE id=${employee_id}` as any[];
     const empShift = empRow[0]?.shift ?? 'day';
     const lateAfter = await getShiftLateAfterV(empShift);
-    const status = isLateByTime(time, lateAfter) ? 'late' : 'present';
+    const status      = isLateByTime(time, lateAfter) ? 'late' : 'present';
     const clockSource = source ?? 'manual';
-    const rows = await sql`
-      INSERT INTO attendance_records (employee_id, date, check_in, status, total_hours, source)
-      VALUES (${employee_id}, ${today}, ${time}, ${status}, 0, ${clockSource})
-      ON CONFLICT (employee_id, date) DO UPDATE
-        SET check_in=${time}, status=${status}, source=${clockSource}
-      RETURNING *`;
-    res.json(rows[0]);
-  } catch (err) { res.status(500).json({ error: 'Server error' }); }
+
+    // Create session
+    const sessionId = `sess_${Date.now()}`;
+    const session = await sql`
+      INSERT INTO attendance_sessions (id, employee_id, date, clock_in, source)
+      VALUES (${sessionId}, ${employee_id}, ${today}, ${time}, ${clockSource})
+      RETURNING *
+    `;
+
+    // Create or update attendance_records (check_in = first punch, status set once)
+    const hasRecord = await sql`SELECT id FROM attendance_records WHERE employee_id=${employee_id} AND date::date=${today}::date`;
+    if (!(hasRecord as any[]).length) {
+      await sql`
+        INSERT INTO attendance_records (employee_id, date, check_in, status, total_hours, extension_hours, source)
+        VALUES (${employee_id}, ${today}, ${time}, ${status}, 0, 0, ${clockSource})
+      `.catch(() => {});
+    }
+
+    res.json({ session: (session as any[])[0], time, status });
+  } catch (err: any) { res.status(500).json({ error: err.message || 'Server error' }); }
 });
 
 app.post('/api/attendance/mark', async (req, res) => {
@@ -574,15 +648,34 @@ app.post('/api/attendance/clock-out', async (req, res) => {
   try {
     const { employee_id } = req.body;
     const { date: today, time } = istNow();
-    const existing = await sql`SELECT check_in, source FROM attendance_records WHERE employee_id=${employee_id} AND date::date=${today}::date`;
-    if (!(existing as any[]).length) return res.status(400).json({ error: 'No clock-in record found for today' });
-    const rows = await sql`
-      UPDATE attendance_records SET check_out=${time},
-        total_hours=ROUND(EXTRACT(EPOCH FROM (${time}::time - check_in::time))/3600, 2)
-      WHERE employee_id=${employee_id} AND date::date=${today}::date RETURNING *`;
-    if (!(rows as any[]).length) return res.status(400).json({ error: 'Could not clock out' });
-    res.json(rows[0]);
-  } catch (err) { res.status(500).json({ error: 'Server error' }); }
+
+    // Find the open session
+    const openRows = await sql`
+      SELECT * FROM attendance_sessions
+      WHERE employee_id=${employee_id} AND date::date=${today}::date AND clock_out IS NULL
+    `;
+    if (!(openRows as any[]).length) return res.status(400).json({ error: 'You are not clocked in.' });
+    const open = (openRows[0] as any);
+
+    // Calculate session duration in minutes
+    const [ih, im] = open.clock_in.split(':').map(Number);
+    const [oh, om] = time.split(':').map(Number);
+    const durationMin = Math.max(0, (oh * 60 + om) - (ih * 60 + im));
+
+    // Close the session
+    const closedSession = await sql`
+      UPDATE attendance_sessions
+      SET clock_out=${time}, duration_minutes=${durationMin}
+      WHERE id=${open.id} RETURNING *
+    `;
+
+    // Recalculate and update attendance_records totals from all sessions
+    await recalcAttendanceTotals(employee_id, today);
+
+    // Return the updated attendance record
+    const attRows = await sql`SELECT * FROM attendance_records WHERE employee_id=${employee_id} AND date::date=${today}::date`;
+    res.json({ session: (closedSession as any[])[0], attendance: (attRows as any[])[0] ?? null });
+  } catch (err: any) { res.status(500).json({ error: err.message || 'Server error' }); }
 });
 
 // ── Biometric sync — eTimeOffice (Vercel mirror) ──────────────────────────

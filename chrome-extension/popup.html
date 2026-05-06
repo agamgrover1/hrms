@@ -6,152 +6,97 @@
   <title>Digital Leap HRMS</title>
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-
     body {
-      width: 360px;
-      min-height: 200px;
-      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-      background: #f4f5f9;
-      color: #192250;
+      width: 360px; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      background: #f4f5f9; color: #192250;
     }
-
-    /* ── Header ── */
     .header {
       background: linear-gradient(135deg, #192250 0%, #111737 100%);
-      padding: 14px 16px;
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
+      padding: 13px 15px; display: flex; align-items: center; justify-content: space-between;
     }
-    .header-brand { display: flex; align-items: center; gap: 10px; }
-    .header-dot {
-      width: 8px; height: 8px; border-radius: 50%;
-      background: #EE2770; flex-shrink: 0;
-    }
-    .header-title { color: #fff; font-size: 14px; font-weight: 700; letter-spacing: 0.3px; }
-    .header-sub { color: rgba(255,255,255,0.45); font-size: 11px; margin-top: 1px; }
-    .logout-btn {
-      background: rgba(255,255,255,0.1); border: none; cursor: pointer;
-      color: rgba(255,255,255,0.5); font-size: 11px; padding: 4px 10px;
-      border-radius: 6px; transition: all 0.15s;
-    }
-    .logout-btn:hover { background: rgba(255,255,255,0.18); color: #fff; }
+    .header-left { display: flex; align-items: center; gap: 9px; }
+    .header-icon { width: 28px; height: 28px; border-radius: 8px; object-fit: contain; }
+    .header-title { color: #fff; font-size: 13px; font-weight: 700; }
+    .header-sub { color: rgba(255,255,255,0.4); font-size: 10px; margin-top: 1px; }
+    .logout-btn { background: rgba(255,255,255,0.1); border: none; cursor: pointer; color: rgba(255,255,255,0.5); font-size: 11px; padding: 4px 10px; border-radius: 6px; }
+    .logout-btn:hover { background: rgba(255,255,255,0.2); color: #fff; }
 
-    /* ── Content ── */
-    .content { padding: 16px; }
+    .content { padding: 14px; }
 
-    /* ── Login form ── */
-    .login-wrap { padding: 20px 16px 16px; }
-    .login-title { font-size: 16px; font-weight: 700; color: #192250; margin-bottom: 4px; }
-    .login-sub { font-size: 12px; color: #9ca3af; margin-bottom: 18px; }
-    .field { margin-bottom: 12px; }
-    .field label { display: block; font-size: 11px; font-weight: 600; color: #192250; margin-bottom: 5px; text-transform: uppercase; letter-spacing: 0.5px; }
-    .field input {
-      width: 100%; padding: 10px 12px; border: 1.5px solid #e2e4ed;
-      border-radius: 10px; font-size: 13px; outline: none;
-      background: #fff; transition: border-color 0.15s, box-shadow 0.15s;
-      color: #192250;
-    }
+    /* Login */
+    .login-wrap { padding: 18px 15px 15px; }
+    .login-title { font-size: 15px; font-weight: 700; margin-bottom: 3px; }
+    .login-sub { font-size: 11px; color: #9ca3af; margin-bottom: 16px; }
+    .field { margin-bottom: 11px; }
+    .field label { display: block; font-size: 10px; font-weight: 700; color: #192250; margin-bottom: 4px; text-transform: uppercase; letter-spacing: 0.5px; }
+    .field input { width: 100%; padding: 9px 11px; border: 1.5px solid #e2e4ed; border-radius: 9px; font-size: 13px; outline: none; background: #fff; color: #192250; transition: border-color 0.15s; }
     .field input:focus { border-color: #192250; box-shadow: 0 0 0 3px rgba(25,34,80,0.08); }
 
-    /* ── Buttons ── */
-    .btn {
-      width: 100%; padding: 11px; border: none; cursor: pointer;
-      border-radius: 10px; font-size: 13px; font-weight: 700;
-      letter-spacing: 0.3px; transition: opacity 0.15s, transform 0.1s;
-      display: flex; align-items: center; justify-content: center; gap: 8px;
-    }
-    .btn:disabled { opacity: 0.55; cursor: not-allowed; }
+    /* Buttons */
+    .btn { width: 100%; padding: 11px; border: none; cursor: pointer; border-radius: 10px; font-size: 13px; font-weight: 700; display: flex; align-items: center; justify-content: center; gap: 7px; transition: opacity 0.15s, transform 0.1s; }
+    .btn:disabled { opacity: 0.5; cursor: not-allowed; }
     .btn:active:not(:disabled) { transform: scale(0.98); }
-    .btn-primary {
-      background: linear-gradient(135deg, #EE2770 0%, #d11f62 100%);
-      color: #fff;
-      box-shadow: 0 4px 14px rgba(238,39,112,0.3);
-    }
-    .btn-secondary {
-      background: #192250; color: #fff;
-      box-shadow: 0 4px 14px rgba(25,34,80,0.2);
-    }
-    .btn-outline {
-      background: #fff; color: #192250;
-      border: 1.5px solid #e2e4ed;
-    }
-    .btn-outline:hover { border-color: #192250; }
+    .btn-primary   { background: linear-gradient(135deg, #EE2770, #d11f62); color: #fff; box-shadow: 0 4px 12px rgba(238,39,112,0.3); }
+    .btn-secondary { background: #192250; color: #fff; box-shadow: 0 4px 12px rgba(25,34,80,0.2); }
+    .btn-break     { background: #f3f4f6; color: #374151; border: 1.5px solid #e5e7eb; }
+    .btn-break:hover { background: #e5e7eb; }
 
-    /* ── Status card ── */
-    .status-card {
-      background: #fff; border-radius: 14px; padding: 16px;
-      border: 1px solid #e9eaf0; margin-bottom: 14px;
-    }
-    .status-row { display: flex; align-items: center; justify-content: space-between; }
-    .emp-name { font-size: 15px; font-weight: 700; color: #192250; }
+    /* Employee card */
+    .emp-card { background: #fff; border-radius: 12px; padding: 12px 14px; border: 1px solid #e9eaf0; margin-bottom: 12px; display: flex; align-items: center; justify-content: space-between; }
+    .emp-name { font-size: 14px; font-weight: 700; color: #192250; }
     .emp-code { font-size: 11px; color: #9ca3af; margin-top: 2px; }
-    .badge {
-      font-size: 10px; font-weight: 700; padding: 3px 10px;
-      border-radius: 20px; text-transform: uppercase; letter-spacing: 0.5px;
-    }
-    .badge-wfh   { background: rgba(25,34,80,0.08); color: #192250; }
-    .badge-office{ background: rgba(22,163,74,0.1); color: #15803d; }
-    .badge-ok    { background: rgba(22,163,74,0.1); color: #15803d; }
-    .badge-warn  { background: rgba(238,39,112,0.1); color: #EE2770; }
+    .badge { font-size: 10px; font-weight: 700; padding: 3px 9px; border-radius: 20px; text-transform: uppercase; letter-spacing: 0.4px; }
+    .badge-wfh    { background: rgba(25,34,80,0.08); color: #192250; }
+    .badge-office { background: rgba(22,163,74,0.1); color: #15803d; }
+    .badge-ot     { background: rgba(238,39,112,0.1); color: #EE2770; }
 
-    /* ── Timer ── */
-    .timer-block { text-align: center; padding: 14px 0 10px; }
-    .timer-label { font-size: 11px; color: #9ca3af; font-weight: 600; text-transform: uppercase; letter-spacing: 0.6px; margin-bottom: 6px; }
-    .timer-value { font-size: 36px; font-weight: 800; color: #192250; letter-spacing: -1px; font-variant-numeric: tabular-nums; }
+    /* Timer */
+    .timer-block { text-align: center; padding: 12px 0 8px; }
+    .timer-label { font-size: 10px; color: #9ca3af; font-weight: 700; text-transform: uppercase; letter-spacing: 0.7px; margin-bottom: 4px; }
+    .timer-value { font-size: 38px; font-weight: 800; color: #192250; letter-spacing: -2px; font-variant-numeric: tabular-nums; line-height: 1; }
     .timer-since { font-size: 11px; color: #9ca3af; margin-top: 4px; }
+    .timer-ot    { color: #EE2770 !important; }
 
-    /* ── Info row ── */
-    .info-row {
-      display: flex; align-items: center; gap: 8px;
-      padding: 10px 12px; border-radius: 10px; margin-bottom: 10px;
-      font-size: 12px; font-weight: 500;
-    }
-    .info-row.wfh-req  { background: rgba(238,39,112,0.06); color: #d11f62; border: 1px solid rgba(238,39,112,0.15); }
-    .info-row.bio      { background: rgba(22,163,74,0.06); color: #15803d; border: 1px solid rgba(22,163,74,0.15); }
-    .info-row.shift    { background: rgba(25,34,80,0.04); color: #192250; border: 1px solid rgba(25,34,80,0.08); }
+    /* Total bar */
+    .total-bar { display: flex; align-items: center; justify-content: space-between; background: #fff; border-radius: 10px; padding: 10px 12px; border: 1px solid #e9eaf0; margin: 10px 0; }
+    .total-lbl { font-size: 11px; color: #9ca3af; }
+    .total-val { font-size: 14px; font-weight: 800; color: #192250; }
+    .ext-tag   { font-size: 10px; font-weight: 700; padding: 2px 8px; border-radius: 20px; background: rgba(238,39,112,0.1); color: #EE2770; margin-left: 6px; }
 
-    /* ── Summary row ── */
-    .summary-row {
-      display: flex; gap: 10px; margin-bottom: 14px;
-    }
-    .summary-item {
-      flex: 1; background: #fff; border: 1px solid #e9eaf0;
-      border-radius: 12px; padding: 12px; text-align: center;
-    }
-    .summary-val { font-size: 18px; font-weight: 800; color: #192250; }
-    .summary-lbl { font-size: 10px; color: #9ca3af; margin-top: 3px; text-transform: uppercase; letter-spacing: 0.4px; }
+    /* Session list */
+    .sessions-wrap { margin-bottom: 12px; }
+    .sessions-title { font-size: 10px; font-weight: 700; color: #9ca3af; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 7px; }
+    .session-row { display: flex; align-items: center; justify-content: space-between; padding: 8px 11px; background: #fff; border-radius: 9px; border: 1px solid #e9eaf0; margin-bottom: 5px; }
+    .session-times { font-size: 12px; font-weight: 600; color: #192250; }
+    .session-dur   { font-size: 11px; color: #9ca3af; }
+    .session-src   { font-size: 9px; font-weight: 700; padding: 2px 7px; border-radius: 10px; }
+    .session-src.ext { background: rgba(238,39,112,0.1); color: #EE2770; }
+    .session-src.bio { background: rgba(22,163,74,0.1); color: #15803d; }
+    .session-active { border-color: #EE2770; background: rgba(238,39,112,0.03); }
 
-    /* ── Error ── */
-    .error-box {
-      background: #fef2f2; border: 1px solid #fecaca;
-      border-radius: 10px; padding: 10px 12px;
-      font-size: 12px; color: #dc2626; margin-bottom: 12px;
-      display: flex; align-items: flex-start; gap: 7px;
-    }
-    .divider { height: 1px; background: #f0f1f5; margin: 14px 0; }
+    /* Info rows */
+    .info-row { display: flex; align-items: center; gap: 8px; padding: 9px 11px; border-radius: 9px; margin-bottom: 10px; font-size: 11px; font-weight: 500; }
+    .info-wfh  { background: rgba(238,39,112,0.06); color: #d11f62; border: 1px solid rgba(238,39,112,0.15); }
+    .info-bio  { background: rgba(22,163,74,0.06); color: #15803d;  border: 1px solid rgba(22,163,74,0.15); }
+    .info-ot   { background: rgba(238,39,112,0.06); color: #EE2770;  border: 1px solid rgba(238,39,112,0.15); }
+    .info-shift{ background: rgba(25,34,80,0.04);  color: #192250;  border: 1px solid rgba(25,34,80,0.08); }
 
-    /* ── Loading ── */
-    .loader-wrap { display: flex; align-items: center; justify-content: center; padding: 32px; }
-    .spinner {
-      width: 26px; height: 26px; border: 3px solid rgba(25,34,80,0.1);
-      border-top-color: #192250; border-radius: 50%;
-      animation: spin 0.7s linear infinite;
-    }
+    .divider { height: 1px; background: #f0f1f5; margin: 10px 0; }
+    .error-box { background: #fef2f2; border: 1px solid #fecaca; border-radius: 9px; padding: 9px 11px; font-size: 11px; color: #dc2626; margin-bottom: 10px; }
+    .loader-wrap { display: flex; align-items: center; justify-content: center; padding: 30px; }
+    .spinner { width: 24px; height: 24px; border: 3px solid rgba(25,34,80,0.1); border-top-color: #192250; border-radius: 50%; animation: spin 0.7s linear infinite; }
     @keyframes spin { to { transform: rotate(360deg); } }
-
     .hidden { display: none !important; }
   </style>
 </head>
 <body>
 
-  <!-- Header -->
   <div class="header">
-    <div class="header-brand">
-      <div class="header-dot"></div>
+    <div class="header-left">
+      <img src="icons/icon48.png" class="header-icon" alt="DL"/>
       <div>
         <div class="header-title">Digital Leap HRMS</div>
-        <div class="header-sub">Employee Portal</div>
+        <div class="header-sub">Attendance Tracker</div>
       </div>
     </div>
     <button class="logout-btn hidden" id="logoutBtn">Sign Out</button>
@@ -166,92 +111,64 @@
   <div id="loginView" class="login-wrap hidden">
     <div class="login-title">Sign in</div>
     <div class="login-sub">Use your Digital Leap credentials</div>
-    <div id="loginError" class="error-box hidden">
-      <span>⚠</span><span id="loginErrorMsg"></span>
-    </div>
-    <div class="field">
-      <label>Email</label>
-      <input type="email" id="emailInput" placeholder="you@digitalleapmarketing.com" autocomplete="email"/>
-    </div>
-    <div class="field">
-      <label>Password</label>
-      <input type="password" id="passwordInput" placeholder="••••••••" autocomplete="current-password"/>
-    </div>
+    <div id="loginError" class="error-box hidden"></div>
+    <div class="field"><label>Email</label><input type="email" id="emailInput" placeholder="you@digitalleapmarketing.com"/></div>
+    <div class="field"><label>Password</label><input type="password" id="passwordInput" placeholder="••••••••"/></div>
     <button class="btn btn-primary" id="loginBtn">Sign In →</button>
   </div>
 
-  <!-- Main dashboard -->
+  <!-- Main -->
   <div id="mainView" class="content hidden">
+    <div class="emp-card">
+      <div><div class="emp-name" id="empName">—</div><div class="emp-code" id="empCode">—</div></div>
+      <span class="badge" id="dayBadge">—</span>
+    </div>
+    <div id="mainError" class="error-box hidden"></div>
 
-    <!-- Employee card -->
-    <div class="status-card">
-      <div class="status-row">
-        <div>
-          <div class="emp-name" id="empName">—</div>
-          <div class="emp-code" id="empCode">—</div>
-        </div>
-        <span class="badge" id="dayBadge">—</span>
-      </div>
+    <!-- Notices -->
+    <div id="wfhNotice" class="info-row info-wfh hidden">🏠 WFH today — clock-in required</div>
+    <div id="bioNotice" class="info-row info-bio hidden">✓ Biometric attendance recorded</div>
+    <div id="shiftInfo" class="info-row info-shift hidden" id="shiftInfo"></div>
+    <div id="otNotice"  class="info-row info-ot  hidden">🔥 Overtime — great work!</div>
+
+    <!-- Total hours bar (always visible when any session exists) -->
+    <div id="totalBar" class="total-bar hidden">
+      <span class="total-lbl">Total today</span>
+      <span>
+        <span class="total-val" id="totalVal">0:00</span>
+        <span class="ext-tag hidden" id="extTag"></span>
+      </span>
     </div>
 
-    <!-- Error -->
-    <div id="mainError" class="error-box hidden">
-      <span>⚠</span><span id="mainErrorMsg"></span>
+    <!-- Session list -->
+    <div id="sessionsWrap" class="sessions-wrap hidden">
+      <div class="sessions-title">Work sessions</div>
+      <div id="sessionsList"></div>
     </div>
 
-    <!-- WFH mandatory notice -->
-    <div id="wfhNotice" class="info-row wfh-req hidden">
-      🏠 WFH today — clock-in required
-    </div>
-
-    <!-- Biometric recorded notice -->
-    <div id="bioNotice" class="info-row bio hidden">
-      ✓ Biometric attendance recorded — all good!
-    </div>
-
-    <!-- Shift info -->
-    <div id="shiftInfo" class="info-row shift hidden">
-      <span id="shiftText">—</span>
-    </div>
-
-    <!-- NOT clocked in yet -->
+    <!-- Not clocked in -->
     <div id="notClockedView" class="hidden">
-      <button class="btn btn-primary" id="clockInBtn">
-        <span>⏱</span> Clock In
-      </button>
+      <button class="btn btn-primary" id="clockInBtn">⏱ Start Work</button>
     </div>
 
-    <!-- Clocked IN — timer -->
+    <!-- Clocked IN -->
     <div id="clockedInView" class="hidden">
       <div class="timer-block">
-        <div class="timer-label">Working hours today</div>
+        <div class="timer-label">Session time</div>
         <div class="timer-value" id="timerDisplay">0:00:00</div>
-        <div class="timer-since">Clocked in at <span id="clockInTime">—</span></div>
+        <div class="timer-since">Started at <span id="sessionStartTime">—</span></div>
       </div>
-      <button class="btn btn-secondary" id="clockOutBtn">
-        ⏹ Clock Out
-      </button>
+      <button class="btn btn-break" id="clockOutBtn" style="margin-bottom:8px">⏸ Clock Out / Take Break</button>
     </div>
 
-    <!-- Clocked OUT — summary -->
-    <div id="clockedOutView" class="hidden">
-      <div class="summary-row">
-        <div class="summary-item">
-          <div class="summary-val" id="summaryIn">—</div>
-          <div class="summary-lbl">Clock In</div>
-        </div>
-        <div class="summary-item">
-          <div class="summary-val" id="summaryOut">—</div>
-          <div class="summary-lbl">Clock Out</div>
-        </div>
-        <div class="summary-item">
-          <div class="summary-val" id="summaryHours">—</div>
-          <div class="summary-lbl">Hours</div>
-        </div>
+    <!-- On break (sessions exist but none active) -->
+    <div id="onBreakView" class="hidden">
+      <div style="text-align:center;padding:10px 0 8px">
+        <div class="timer-label" style="color:#d97706">On Break</div>
+        <div style="font-size:13px;color:#374151;margin-top:4px">Clock in when you're back</div>
       </div>
-      <div class="info-row bio">✓ Attendance recorded successfully</div>
+      <button class="btn btn-primary" id="resumeBtn">▶ Resume Work / Clock In</button>
     </div>
-
   </div>
 
   <script src="popup.js"></script>
