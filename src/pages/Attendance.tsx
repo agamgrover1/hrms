@@ -602,44 +602,82 @@ export default function Attendance() {
                 const cfg = statusConfig[r.status as keyof typeof statusConfig];
                 const leave = getLeaveForDay(r.date);
                 const leaveTag = leave ? LEAVE_TAG[leave.type] : null;
+
+                // Break time = (presence window span) − (productive session hours)
+                // Only meaningful when check_in + check_out + total_hours all exist
+                const parseHHMM = (t: string | null | undefined) => {
+                  if (!t) return null;
+                  const [h, m] = t.split(':').map(Number);
+                  return h * 60 + m;
+                };
+                const inMin  = parseHHMM(r.check_in);
+                const outMin = parseHHMM(r.check_out);
+                const spanMin = (inMin !== null && outMin !== null && outMin > inMin)
+                  ? outMin - inMin : null;
+                const productiveMin = Number(r.total_hours || 0) * 60;
+                const breakMin = (spanMin !== null && productiveMin > 0 && spanMin > productiveMin)
+                  ? Math.round(spanMin - productiveMin) : 0;
+                const fmtBreak = breakMin >= 1
+                  ? breakMin >= 60
+                    ? `${Math.floor(breakMin / 60)}h ${breakMin % 60 > 0 ? (breakMin % 60) + 'm' : ''}`.trim()
+                    : `${breakMin}m`
+                  : null;
+
                 const isShortDay = (r.status === 'present' || r.status === 'late')
-                  && r.check_out && Number(r.total_hours) > 0 && Number(r.total_hours) < 9;
+                  && r.check_out && productiveMin > 0 && productiveMin < 8 * 60;
+                const isExtension = r.source === 'wfh_extension' || Number(r.extension_hours) > 0;
+
                 return (
-                  <div key={r.date} className="flex items-center justify-between py-2 border-b border-gray-50 last:border-0">
-                    <div className="flex items-center gap-2 flex-wrap">
-                      <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${cfg?.color}`}>{cfg?.label}</span>
+                  <div key={r.date} className="flex items-start justify-between py-2.5 border-b border-gray-50 last:border-0 gap-3">
+                    {/* Left: status + date */}
+                    <div className="flex items-center gap-2 flex-wrap min-w-0">
+                      <span className={`text-xs px-2 py-0.5 rounded-full font-medium flex-shrink-0 ${cfg?.color}`}>{cfg?.label}</span>
                       {isShortDay && (
-                        <span className="text-xs px-2 py-0.5 rounded-full font-semibold border"
-                          style={{ background: '#fffbeb', color: '#b45309', borderColor: '#fde68a' }}>
-                          Short Day
-                        </span>
+                        <span className="text-xs px-2 py-0.5 rounded-full font-semibold border flex-shrink-0"
+                          style={{ background: '#fffbeb', color: '#b45309', borderColor: '#fde68a' }}>Short Day</span>
                       )}
                       {leaveTag && (
-                        <span className="text-xs px-2 py-0.5 rounded-full font-semibold border"
+                        <span className="text-xs px-2 py-0.5 rounded-full font-semibold border flex-shrink-0"
                           style={{ background: leaveTag.bg, color: leaveTag.color, borderColor: leaveTag.color + '40' }}>
                           {leaveTag.label}
-                          {leave.status === 'pending' && <span className="ml-1 opacity-60">(pending)</span>}
+                          {leave?.status === 'pending' && <span className="ml-1 opacity-60">(pending)</span>}
                         </span>
                       )}
-                      <span className="text-sm text-gray-700">
+                      <span className="text-sm text-gray-700 flex-shrink-0">
                         {parseLocalDate(r.date).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' })}
                       </span>
                     </div>
-                    <div className="text-xs text-gray-400 flex items-center gap-2 flex-wrap justify-end">
-                      {r.check_in ? (
-                        <>
-                          <span>{r.check_in} – {r.check_out ?? '—'} <span className="text-gray-500 font-medium">{fmtHours(r.total_hours)}</span></span>
-                          {/* Chrome extension tracking tag — visible whenever any hours came from the extension */}
-                          {(r.source === 'wfh_extension' || Number(r.extension_hours) > 0) && (
-                            <span className="inline-flex items-center gap-1 text-[10px] font-bold px-2 py-0.5 rounded-full border"
-                              style={{ background: 'rgba(238,39,112,0.08)', color: '#EE2770', borderColor: 'rgba(238,39,112,0.25)' }}
-                              title="Hours tracked via Chrome Extension">
-                              💻 {Number(r.extension_hours) > 0 ? fmtHours(r.extension_hours) : fmtHours(r.total_hours)} · Extension
-                            </span>
-                          )}
-                        </>
-                      ) : '—'}
-                    </div>
+
+                    {/* Right: time breakdown */}
+                    {r.check_in ? (
+                      <div className="flex flex-col items-end gap-0.5 flex-shrink-0">
+                        {/* Presence window — secondary grey */}
+                        <span className="text-[11px] text-gray-400">
+                          {r.check_in} → {r.check_out ?? 'Active'}
+                        </span>
+
+                        {/* Productive hours — primary bold green */}
+                        <span className="text-xs font-bold" style={{ color: '#15803d' }}>
+                          {fmtHours(r.total_hours)} worked
+                        </span>
+
+                        {/* Break time — only when sessions had breaks */}
+                        {fmtBreak && (
+                          <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded-full"
+                            style={{ background: '#fffbeb', color: '#b45309' }}>
+                            {fmtBreak} break
+                          </span>
+                        )}
+
+                        {/* Extension tag */}
+                        {isExtension && (
+                          <span className="inline-flex items-center gap-1 text-[10px] font-bold px-1.5 py-0.5 rounded-full border"
+                            style={{ background: 'rgba(238,39,112,0.08)', color: '#EE2770', borderColor: 'rgba(238,39,112,0.25)' }}>
+                            💻 Extension{Number(r.extension_hours) > 0 ? ` · ${fmtHours(r.extension_hours)}` : ''}
+                          </span>
+                        )}
+                      </div>
+                    ) : <span className="text-xs text-gray-300">—</span>}
                   </div>
                 );
               })}

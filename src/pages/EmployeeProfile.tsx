@@ -711,20 +711,39 @@ export default function EmployeeProfile() {
                 <table className="w-full text-sm">
                   <thead>
                     <tr style={{background:'#f8f9fc'}}>
-                      {['Date','Day','Status','Check In','Check Out','Hours','Source'].map(h => (
+                      {['Date','Day','Status','In → Out','Productive','Break','Source'].map(h => (
                         <th key={h} className="text-left px-4 py-3 text-xs font-semibold text-gray-400 uppercase tracking-wide whitespace-nowrap">{h}</th>
                       ))}
                     </tr>
                   </thead>
                   <tbody>
-                    {[...normAtt].sort((a,b) => a.dateStr.localeCompare(b.dateStr)).map(r => (
+                    {[...normAtt].sort((a,b) => a.dateStr.localeCompare(b.dateStr)).map(r => {
+                      // Break = presence window − productive session hours
+                      const parseHHMM = (t: any) => { if (!t) return null; const s = String(t); const [h,m] = s.split(':').map(Number); return h*60+m; };
+                      const inMin  = parseHHMM(r.check_in);
+                      const outMin = parseHHMM(r.check_out);
+                      const spanMin = (inMin !== null && outMin !== null && outMin > inMin) ? outMin - inMin : null;
+                      const prodMin = Number(r.total_hours || 0) * 60;
+                      const breakMin = (spanMin !== null && prodMin > 0 && spanMin > prodMin) ? Math.round(spanMin - prodMin) : 0;
+                      const fmtBreakMin = (m: number) => m >= 60 ? `${Math.floor(m/60)}h${m%60>0?' '+(m%60)+'m':''}` : `${m}m`;
+                      return (
                       <tr key={r.id ?? r.dateStr} className="border-t border-gray-50 hover:bg-gray-50/40">
                         <td className="px-4 py-3 font-medium text-gray-800">{fmtDate(r.date,{day:'numeric',month:'short'})}</td>
                         <td className="px-4 py-3 text-gray-500">{['Sun','Mon','Tue','Wed','Thu','Fri','Sat'][new Date(r.dateStr+'T12:00:00Z').getUTCDay()]}</td>
                         <td className="px-4 py-3">{statusBadge(r.status)}</td>
-                        <td className="px-4 py-3 text-gray-600">{fmtTime(r.check_in)}</td>
-                        <td className="px-4 py-3 text-gray-600">{fmtTime(r.check_out)}</td>
-                        <td className="px-4 py-3 text-gray-600">{fmtHours(r.total_hours)}</td>
+                        <td className="px-4 py-3 text-gray-600 whitespace-nowrap">
+                          {r.check_in ? `${fmtTime(r.check_in)} → ${fmtTime(r.check_out)}` : '—'}
+                        </td>
+                        <td className="px-4 py-3 font-semibold whitespace-nowrap" style={{color:'#15803d'}}>
+                          {r.check_in ? fmtHours(r.total_hours) : '—'}
+                        </td>
+                        <td className="px-4 py-3">
+                          {breakMin >= 1 ? (
+                            <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded-full" style={{background:'#fffbeb',color:'#b45309'}}>
+                              {fmtBreakMin(breakMin)}
+                            </span>
+                          ) : <span className="text-xs text-gray-300">—</span>}
+                        </td>
                         <td className="px-4 py-3">
                           {(r.source === 'wfh_extension' || Number(r.extension_hours) > 0) ? (
                             <span className="inline-flex items-center gap-1 text-[10px] font-bold px-2 py-0.5 rounded-full border"
@@ -741,7 +760,8 @@ export default function EmployeeProfile() {
                           ) : null}
                         </td>
                       </tr>
-                    ))}
+                    );
+                    })}
                   </tbody>
                 </table>
               </div>
