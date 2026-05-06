@@ -3,9 +3,17 @@
 const API = 'https://hr.digitalleapmarketing.com/api';
 let timerInterval  = null;
 let totalInterval  = null;
-let currentData    = null; // last /today response
+let currentData    = null;
 
 const $ = id => document.getElementById(id);
+
+// Fetch with 10-second timeout — prevents popup from hanging on slow/down server
+function apiFetch(url, opts = {}) {
+  const ctrl  = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), 10000);
+  return fetch(url, { ...opts, signal: ctrl.signal })
+    .finally(() => clearTimeout(timer));
+}
 
 // ── Init ──────────────────────────────────────────────────────────────────────
 async function init() {
@@ -35,23 +43,25 @@ function showLogin() {
 }
 
 $('loginBtn').addEventListener('click', async () => {
-  const email = $('emailInput').value.trim();
+  const email = $('emailInput').value.trim().toLowerCase(); // normalise — backend uses LOWER(email)
   const pwd   = $('passwordInput').value;
   if (!email || !pwd) { setErr('loginError', 'Enter your email and password.'); return; }
   $('loginBtn').textContent = 'Signing in…'; $('loginBtn').disabled = true; setErr('loginError','');
   try {
-    const authRes = await fetch(`${API}/auth/login`, { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ email, password: pwd }) });
+    const authRes = await apiFetch(`${API}/auth/login`, { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ email, password: pwd }) });
     const auth    = await authRes.json();
     if (!authRes.ok) throw new Error(auth.error || 'Invalid credentials');
 
-    const empsRes = await fetch(`${API}/employees`);
+    const empsRes = await apiFetch(`${API}/employees`);
     const emps    = await empsRes.json();
     const employee = emps.find(e => e.employee_id === auth.user.employee_id_ref);
     if (!employee) throw new Error('No employee record linked to this account. Contact HR.');
 
     await chrome.storage.local.set({ user: auth.user, employee });
     await loadDashboard(employee);
-  } catch (e) { setErr('loginError', e.message); }
+  } catch (e) {
+    setErr('loginError', e.name === 'AbortError' ? 'Request timed out. Check your connection.' : e.message);
+  }
   finally { $('loginBtn').textContent = 'Sign In →'; $('loginBtn').disabled = false; }
 });
 $('passwordInput').addEventListener('keydown', e => { if (e.key==='Enter') $('loginBtn').click(); });
@@ -63,13 +73,19 @@ async function loadDashboard(employee) {
   $('empName').textContent = employee.name;
   $('empCode').textContent = employee.employee_id;
   try {
-    const res  = await fetch(`${API}/attendance/today?employee_id=${employee.id}`);
+    const res  = await apiFetch(`${API}/attendance/today?employee_id=${employee.id}`);
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || 'Failed to load status');
     currentData = data;
     render(data, employee);
-    chrome.runtime.sendMessage({ type:'SETUP_ALARM', shiftStart: data.shift_start, employeeId: employee.id });
-  } catch (e) { setErr('mainError', e.message); showSub('notClockedView'); }
+    // Set up shift-start reminder (separate from activity alarm which starts on clock-in)
+    chrome.runtime.sendMessage({ type:'SETUP_ALARM', shiftStart: data.shift_start });
+  } catch (e) {
+    const msg = e.name === 'AbortError' ? 'Request timed out. Check your connection.' : e.message;
+    setErr('mainError', msg);
+    showSub('notClockedView');
+    // Logout button remains visible so user can sign out if there's an auth issue
+  }
 }
 
 function render(data, employee) {
@@ -196,14 +212,18 @@ async function doClockin(btnEl, resuming) {
   btnEl.disabled = true; btnEl.textContent = resuming ? 'Resuming…' : 'Starting…';
   setErr('mainError','');
   try {
-    const res  = await fetch(`${API}/attendance/clock-in`, {
+    const res  = await apiFetch(`${API}/attendance/clock-in`, {
       method:'POST', headers:{'Content-Type':'application/json'},
       body: JSON.stringify({ employee_id: stored.employee.id, source: 'wfh_extension' }),
     });
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || 'Failed to clock in');
+    // Notify background to start activity polling now that we're clocked in
+    chrome.runtime.sendMessage({ type: 'CLOCKED_IN', shiftStart: currentData?.shift_start });
     await loadDashboard(stored.employee);
-  } catch (e) { setErr('mainError', e.message); }
+  } catch (e) {
+    setErr('mainError', e.name === 'AbortError' ? 'Request timed out. Try again.' : e.message);
+  }
   finally { btnEl.disabled = false; btnEl.textContent = resuming ? '▶ Resume Work / Clock In' : '⏱ Start Work'; }
 }
 
@@ -217,14 +237,18 @@ $('clockOutBtn').addEventListener('click', async () => {
   $('clockOutBtn').disabled = true; $('clockOutBtn').textContent = 'Clocking out…';
   setErr('mainError','');
   try {
-    const res  = await fetch(`${API}/attendance/clock-out`, {
+    const res  = await apiFetch(`${API}/attendance/clock-out`, {
       method:'POST', headers:{'Content-Type':'application/json'},
       body: JSON.stringify({ employee_id: stored.employee.id }),
     });
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || 'Failed to clock out');
+    // Notify background to stop activity polling — session is closed
+    chrome.runtime.sendMessage({ type: 'CLOCKED_OUT' });
     await loadDashboard(stored.employee);
-  } catch (e) { setErr('mainError', e.message); }
+  } catch (e) {
+    setErr('mainError', e.name === 'AbortError' ? 'Request timed out. Try again.' : e.message);
+  }
   finally { $('clockOutBtn').disabled = false; $('clockOutBtn').textContent = '⏸ Clock Out / Take Break'; }
 });
 

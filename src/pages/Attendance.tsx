@@ -223,7 +223,7 @@ export default function Attendance() {
   const [syncSuccess, setSyncSuccess] = useState('');
   const [showSyncHistory, setShowSyncHistory] = useState(false);
   // Session detail modal
-  const [sessionModal, setSessionModal] = useState<{ record: any; sessions: any[]; loading: boolean } | null>(null);
+  const [sessionModal, setSessionModal] = useState<{ record: any; sessions: any[]; loading: boolean; error?: string } | null>(null);
 
   const calendarDays = generateCalendarDays(viewYear, viewMonth);
   const monthName = new Date(viewYear, viewMonth, 1).toLocaleString('default', { month: 'long' });
@@ -329,8 +329,8 @@ export default function Attendance() {
     try {
       const sessions = await api.getAttendanceSessions(selectedEmpId, dateStr);
       setSessionModal({ record, sessions, loading: false });
-    } catch {
-      setSessionModal({ record, sessions: [], loading: false });
+    } catch (e: any) {
+      setSessionModal({ record, sessions: [], loading: false, error: e.message ?? 'Failed to load session data' });
     }
   };
 
@@ -618,7 +618,8 @@ export default function Attendance() {
                 const leave = getLeaveForDay(r.date);
                 const leaveTag = leave ? LEAVE_TAG[leave.type] : null;
 
-                const isExtension = r.source === 'wfh_extension' || Number(r.extension_hours) > 0;
+                // Use source as the authoritative signal — extension_hours could be >0 from partial data
+                const isExtension = r.source === 'wfh_extension';
 
                 // Break time only meaningful for extension records that have multiple sessions.
                 // Biometric and manual records have a single continuous check_in→check_out — no breaks.
@@ -697,7 +698,7 @@ export default function Attendance() {
                             💻 Extension{Number(r.extension_hours) > 0 ? ` · ${fmtHours(r.extension_hours)}` : ''}
                           </span>
                         )}
-                        {/* Activity score badge — only for extension-tracked records */}
+                        {/* Activity score badge — only for extension-tracked records with score data */}
                         {isExtension && r.activity_score != null && (() => {
                           const score = Number(r.activity_score);
                           const color = score >= 70 ? '#15803d' : score >= 40 ? '#d97706' : '#dc2626';
@@ -757,6 +758,11 @@ export default function Attendance() {
               {sessionModal.loading ? (
                 <div className="flex items-center justify-center py-10">
                   <div className="w-6 h-6 border-4 border-primary-200 border-t-primary-500 rounded-full animate-spin" />
+                </div>
+              ) : sessionModal.error ? (
+                <div className="text-center py-8">
+                  <p className="text-sm text-red-500 bg-red-50 border border-red-100 rounded-xl px-4 py-3">{sessionModal.error}</p>
+                  <button onClick={() => handleOpenSessions(sessionModal.record)} className="mt-3 text-xs text-primary-600 hover:underline">Retry</button>
                 </div>
               ) : sessionModal.sessions.length === 0 ? (
                 <div className="text-center py-8">

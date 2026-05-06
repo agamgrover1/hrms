@@ -569,10 +569,12 @@ app.get('/api/attendance/today', async (req, res) => {
         clock_in TEXT NOT NULL,
         clock_out TEXT,
         duration_minutes NUMERIC DEFAULT 0,
+        active_minutes NUMERIC DEFAULT 0,
         source TEXT DEFAULT 'manual',
         created_at TIMESTAMPTZ DEFAULT NOW()
       )
     `.catch(() => {});
+    await sql`ALTER TABLE attendance_sessions ADD COLUMN IF NOT EXISTS active_minutes NUMERIC DEFAULT 0`.catch(() => {});
     await sql`ALTER TABLE attendance_records ADD COLUMN IF NOT EXISTS extension_hours NUMERIC DEFAULT 0`.catch(() => {});
 
     const { employee_id } = req.query as any;
@@ -637,9 +639,11 @@ app.post('/api/attendance/clock-in', async (req, res) => {
       CREATE TABLE IF NOT EXISTS attendance_sessions (
         id TEXT PRIMARY KEY, employee_id TEXT NOT NULL, date DATE NOT NULL,
         clock_in TEXT NOT NULL, clock_out TEXT, duration_minutes NUMERIC DEFAULT 0,
+        active_minutes NUMERIC DEFAULT 0,
         source TEXT DEFAULT 'manual', created_at TIMESTAMPTZ DEFAULT NOW()
       )
     `.catch(() => {});
+    await sql`ALTER TABLE attendance_sessions ADD COLUMN IF NOT EXISTS active_minutes NUMERIC DEFAULT 0`.catch(() => {});
 
     const { employee_id, source } = req.body;
     const { date: today, time } = istNow();
@@ -658,6 +662,7 @@ app.post('/api/attendance/clock-in', async (req, res) => {
     }
 
     const empRow = await sql`SELECT shift FROM employees WHERE id=${employee_id}` as any[];
+    if (!(empRow as any[]).length) return res.status(404).json({ error: 'Employee not found' });
     const empShift = empRow[0]?.shift ?? 'day';
     const lateAfter = await getShiftLateAfterV(empShift);
     const status      = isLateByTime(time, lateAfter) ? 'late' : 'present';
@@ -671,14 +676,13 @@ app.post('/api/attendance/clock-in', async (req, res) => {
       RETURNING *
     `;
 
-    // Create or update attendance_records (check_in = first punch, status set once)
-    const hasRecord = await sql`SELECT id FROM attendance_records WHERE employee_id=${employee_id} AND date::date=${today}::date`;
-    if (!(hasRecord as any[]).length) {
-      await sql`
-        INSERT INTO attendance_records (employee_id, date, check_in, status, total_hours, extension_hours, source)
-        VALUES (${employee_id}, ${today}, ${time}, ${status}, 0, 0, ${clockSource})
-      `.catch(() => {});
-    }
+    // Create attendance_records for today if not already present.
+    // ON CONFLICT DO NOTHING avoids race condition from concurrent clock-in requests.
+    await sql`
+      INSERT INTO attendance_records (employee_id, date, check_in, status, total_hours, extension_hours, source)
+      VALUES (${employee_id}, ${today}, ${time}, ${status}, 0, 0, ${clockSource})
+      ON CONFLICT (employee_id, date) DO NOTHING
+    `.catch(() => {});
 
     res.json({ session: (session as any[])[0], time, status });
   } catch (err: any) { res.status(500).json({ error: err.message || 'Server error' }); }
