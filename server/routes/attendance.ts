@@ -406,4 +406,25 @@ router.post('/biometric-sync', async (req, res) => {
   }
 });
 
+// GET /sessions?employee_id=...&date=... — session breakdown for a day (admin detail modal)
+router.get('/sessions', async (req, res) => {
+  try {
+    const { employee_id, date } = req.query as any;
+    if (!employee_id || !date) return res.status(400).json({ error: 'employee_id and date are required' });
+    await sql`
+      CREATE TABLE IF NOT EXISTS attendance_sessions (
+        id TEXT PRIMARY KEY, employee_id TEXT NOT NULL, date DATE NOT NULL,
+        clock_in TEXT NOT NULL, clock_out TEXT, duration_minutes NUMERIC DEFAULT 0,
+        source TEXT DEFAULT 'manual', created_at TIMESTAMPTZ DEFAULT NOW()
+      )
+    `.catch(() => {});
+    const sessions = await sql`
+      SELECT * FROM attendance_sessions
+      WHERE employee_id = ${employee_id} AND date::date = ${date}::date
+      ORDER BY clock_in ASC
+    `.catch(() => []);
+    res.json(sessions);
+  } catch (e: any) { res.status(500).json({ error: e.message }); }
+});
+
 export default router;

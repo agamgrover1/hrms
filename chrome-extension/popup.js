@@ -99,7 +99,10 @@ function render(data, employee) {
   if (hasSessions) {
     const [sh, sm] = (data.shift_start||'09:00').split(':').map(Number);
     const [eh, em] = (data.shift_end  ||'18:00').split(':').map(Number);
-    const shiftMin = (eh*60+em) - (sh*60+sm);
+    // Handle night shift crossing midnight (e.g. 18:30 → 03:30)
+    const shiftMin = (eh*60+em) >= (sh*60+sm)
+      ? (eh*60+em) - (sh*60+sm)
+      : (24*60 - (sh*60+sm)) + (eh*60+em);
     const totalMin = data.total_minutes + (active ? runningMinutes(active.clock_in) : 0);
     $('otNotice').classList.toggle('hidden', totalMin < shiftMin);
   } else {
@@ -218,10 +221,12 @@ function startSessionTimer(clockIn, shiftStart, shiftEnd, completedMinutes) {
     const s = Math.floor((runningSeconds(clockIn)) % 60);
     $('timerDisplay').textContent = `${h}:${pad(m)}:${pad(s)}`;
 
-    // Colour red if current session alone exceeds remaining shift time
-    const [eh, em] = (shiftEnd||'18:00').split(':').map(Number);
+    // Colour red when total time exceeds shift duration (handles night shift crossing midnight)
+    const [eh, em] = (shiftEnd  ||'18:00').split(':').map(Number);
     const [sh, sm] = (shiftStart||'09:00').split(':').map(Number);
-    const shiftMin = (eh*60+em) - (sh*60+sm);
+    const shiftMin = (eh*60+em) >= (sh*60+sm)
+      ? (eh*60+em) - (sh*60+sm)
+      : (24*60 - (sh*60+sm)) + (eh*60+em);
     $('timerDisplay').classList.toggle('timer-ot', completedMinutes + mins > shiftMin);
   }
   tick();
@@ -237,10 +242,12 @@ function startTotalTimer(completedMin, clockIn, shiftStart, shiftEnd, data) {
     const extMin = data.extension_minutes + (clockIn && data.active_session?.source === 'wfh_extension' ? runMin : 0);
     if (extMin > 0) { $('extTag').classList.remove('hidden'); $('extTag').textContent = `${fmtMinutes(extMin)} ext.`; }
 
-    // Overtime detection
+    // Overtime detection — handle night shift crossing midnight
     const [sh, sm] = (shiftStart||'09:00').split(':').map(Number);
     const [eh, em] = (shiftEnd  ||'18:00').split(':').map(Number);
-    const shiftMin = (eh*60+em) - (sh*60+sm);
+    const shiftMin = (eh*60+em) >= (sh*60+sm)
+      ? (eh*60+em) - (sh*60+sm)
+      : (24*60 - (sh*60+sm)) + (eh*60+em);
     $('otNotice').classList.toggle('hidden', total < shiftMin);
     const badge = $('dayBadge');
     if (total >= shiftMin && !data.wfh_today) { badge.textContent = '⏰ Overtime'; badge.className = 'badge badge-ot'; }
@@ -266,9 +273,12 @@ $('logoutBtn').addEventListener('click', async () => {
 function runningSeconds(clockIn) {
   if (!clockIn) return 0;
   const [h, m] = clockIn.split(':').map(Number);
-  const nowIST = new Date(Date.now() + 330*60*1000);
-  const nowMin = nowIST.getUTCHours()*3600 + nowIST.getUTCMinutes()*60 + nowIST.getUTCSeconds();
-  return Math.max(0, nowMin - (h*3600 + m*60));
+  const nowIST  = new Date(Date.now() + 330*60*1000); // UTC → IST
+  const nowSecs = nowIST.getUTCHours()*3600 + nowIST.getUTCMinutes()*60 + nowIST.getUTCSeconds();
+  const inSecs  = h*3600 + m*60;
+  // Handle midnight crossover: night shift session started before midnight,
+  // employee opens extension after midnight — nowSecs < inSecs
+  return nowSecs >= inSecs ? nowSecs - inSecs : (24*3600 - inSecs) + nowSecs;
 }
 function runningMinutes(clockIn) { return Math.floor(runningSeconds(clockIn) / 60); }
 function fmtMinutes(min) {

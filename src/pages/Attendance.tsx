@@ -618,20 +618,25 @@ export default function Attendance() {
                 const leave = getLeaveForDay(r.date);
                 const leaveTag = leave ? LEAVE_TAG[leave.type] : null;
 
-                // Break time = (presence window span) − (productive session hours)
-                // Only meaningful when check_in + check_out + total_hours all exist
+                const isExtension = r.source === 'wfh_extension' || Number(r.extension_hours) > 0;
+
+                // Break time only meaningful for extension records that have multiple sessions.
+                // Biometric and manual records have a single continuous check_in→check_out — no breaks.
                 const parseHHMM = (t: string | null | undefined) => {
                   if (!t) return null;
-                  const [h, m] = t.split(':').map(Number);
-                  return h * 60 + m;
+                  const parts = t.split(':').map(Number);
+                  return (parts[0] || 0) * 60 + (parts[1] || 0); // handles HH:MM and HH:MM:SS
                 };
-                const inMin  = parseHHMM(r.check_in);
-                const outMin = parseHHMM(r.check_out);
-                const spanMin = (inMin !== null && outMin !== null && outMin > inMin)
-                  ? outMin - inMin : null;
                 const productiveMin = Number(r.total_hours || 0) * 60;
-                const breakMin = (spanMin !== null && productiveMin > 0 && spanMin > productiveMin)
-                  ? Math.round(spanMin - productiveMin) : 0;
+                const breakMin = (() => {
+                  if (!isExtension || !r.check_in || !r.check_out) return 0;
+                  const inMin  = parseHHMM(r.check_in);
+                  const outMin = parseHHMM(r.check_out);
+                  if (inMin === null || outMin === null) return 0;
+                  // Handle midnight crossover for night shift
+                  const spanMin = outMin >= inMin ? outMin - inMin : (24 * 60 - inMin) + outMin;
+                  return productiveMin > 0 && spanMin > productiveMin ? Math.round(spanMin - productiveMin) : 0;
+                })();
                 const fmtBreak = breakMin >= 1
                   ? breakMin >= 60
                     ? `${Math.floor(breakMin / 60)}h ${breakMin % 60 > 0 ? (breakMin % 60) + 'm' : ''}`.trim()
@@ -640,7 +645,6 @@ export default function Attendance() {
 
                 const isShortDay = (r.status === 'present' || r.status === 'late')
                   && r.check_out && productiveMin > 0 && productiveMin < 8 * 60;
-                const isExtension = r.source === 'wfh_extension' || Number(r.extension_hours) > 0;
 
                 return (
                   <div key={r.date}
@@ -756,12 +760,12 @@ export default function Attendance() {
                 // Build timeline: sessions interleaved with break blocks
                 const sessions = sessionModal.sessions;
                 const parseHM = (t: string) => { const [h,m] = t.split(':').map(Number); return h*60+m; };
-                const fmt12 = (t: string | null) => {
+                const fmt12 = (t: string | null | undefined) => {
                   if (!t) return 'Active';
                   const [h,m] = t.split(':').map(Number);
                   return `${h%12||12}:${String(m).padStart(2,'0')} ${h>=12?'PM':'AM'}`;
                 };
-                const fmtMins = (m: number) => m >= 60 ? `${Math.floor(m/60)}h ${m%60>0?m%60+'m':''}`.trim() : `${m}m`;
+                const fmtMins = (m: number) => m === 0 ? '—' : m >= 60 ? `${Math.floor(m/60)}h ${m%60>0?m%60+'m':''}`.trim() : `${m}m`;
 
                 const blocks: { type: 'work'|'break'; from: string; to: string; minutes: number; source: string }[] = [];
                 sessions.forEach((s, i) => {

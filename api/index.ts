@@ -692,10 +692,15 @@ app.post('/api/attendance/clock-out', async (req, res) => {
     if (!(openRows as any[]).length) return res.status(400).json({ error: 'You are not clocked in.' });
     const open = (openRows[0] as any);
 
-    // Calculate session duration in minutes
+    // Calculate session duration in minutes — handle midnight crossover for night shifts
     const [ih, im] = open.clock_in.split(':').map(Number);
     const [oh, om] = time.split(':').map(Number);
-    const durationMin = Math.max(0, (oh * 60 + om) - (ih * 60 + im));
+    const inTotalMin  = ih * 60 + im;
+    const outTotalMin = oh * 60 + om;
+    // If clock-out time is earlier than clock-in, the session crossed midnight (night shift)
+    const durationMin = outTotalMin >= inTotalMin
+      ? outTotalMin - inTotalMin
+      : (24 * 60 - inTotalMin) + outTotalMin;
 
     // Close the session
     const closedSession = await sql`
