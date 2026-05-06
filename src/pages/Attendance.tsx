@@ -222,6 +222,8 @@ export default function Attendance() {
   const [syncError, setSyncError] = useState('');
   const [syncSuccess, setSyncSuccess] = useState('');
   const [showSyncHistory, setShowSyncHistory] = useState(false);
+  // Session detail modal
+  const [sessionModal, setSessionModal] = useState<{ record: any; sessions: any[]; loading: boolean } | null>(null);
 
   const calendarDays = generateCalendarDays(viewYear, viewMonth);
   const monthName = new Date(viewYear, viewMonth, 1).toLocaleString('default', { month: 'long' });
@@ -318,6 +320,19 @@ export default function Attendance() {
   const absentCount = records.filter(r => r.status === 'absent').length;
   const lateCount = records.filter(r => r.status === 'late').length;
   const totalHours = records.reduce((s, r) => s + Number(r.total_hours || 0), 0);
+
+  const handleOpenSessions = async (record: any) => {
+    const dateStr = typeof record.date === 'string' && record.date.includes('T')
+      ? (() => { const d = new Date(record.date); d.setMinutes(d.getMinutes() + 330); return d.toISOString().slice(0, 10); })()
+      : String(record.date).slice(0, 10);
+    setSessionModal({ record, sessions: [], loading: true });
+    try {
+      const sessions = await api.getAttendanceSessions(selectedEmpId, dateStr);
+      setSessionModal({ record, sessions, loading: false });
+    } catch {
+      setSessionModal({ record, sessions: [], loading: false });
+    }
+  };
 
   const handleClock = async () => {
     if (clocked || !selectedEmpId) return;
@@ -628,7 +643,9 @@ export default function Attendance() {
                 const isExtension = r.source === 'wfh_extension' || Number(r.extension_hours) > 0;
 
                 return (
-                  <div key={r.date} className="flex items-start justify-between py-2.5 border-b border-gray-50 last:border-0 gap-3">
+                  <div key={r.date}
+                    onClick={() => r.check_in && handleOpenSessions(r)}
+                    className={`flex items-start justify-between py-2.5 border-b border-gray-50 last:border-0 gap-3 ${r.check_in ? 'cursor-pointer hover:bg-gray-50/60 rounded-lg px-1 -mx-1 transition-colors' : ''}`}>
                     {/* Left: status + date */}
                     <div className="flex items-center gap-2 flex-wrap min-w-0">
                       <span className={`text-xs px-2 py-0.5 rounded-full font-medium flex-shrink-0 ${cfg?.color}`}>{cfg?.label}</span>
@@ -698,6 +715,120 @@ export default function Attendance() {
             fetchRecords();
           }}
         />
+      )}
+
+      {/* ── Session Detail Modal ────────────────────────────────────────────── */}
+      {sessionModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 backdrop-blur-sm p-4">
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md overflow-hidden">
+            {/* Header */}
+            <div className="flex items-center justify-between px-6 py-4 border-b border-gray-100"
+              style={{ background: 'linear-gradient(135deg,#192250 0%,#111737 100%)' }}>
+              <div>
+                <p className="text-white font-bold text-sm">
+                  {parseLocalDate(sessionModal.record.date).toLocaleDateString('en-IN', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' })}
+                </p>
+                <p className="text-white/50 text-xs mt-0.5">Session breakdown</p>
+              </div>
+              <button onClick={() => setSessionModal(null)} className="p-1.5 hover:bg-white/10 rounded-lg transition-colors">
+                <X size={16} className="text-white/60" />
+              </button>
+            </div>
+
+            <div className="p-5">
+              {sessionModal.loading ? (
+                <div className="flex items-center justify-center py-10">
+                  <div className="w-6 h-6 border-4 border-primary-200 border-t-primary-500 rounded-full animate-spin" />
+                </div>
+              ) : sessionModal.sessions.length === 0 ? (
+                <div className="text-center py-8">
+                  <p className="text-sm text-gray-400">No session data — single clock-in/out record</p>
+                  {sessionModal.record.check_in && (
+                    <div className="mt-4 p-3 bg-gray-50 rounded-xl text-sm">
+                      <span className="font-semibold text-gray-700">{sessionModal.record.check_in}</span>
+                      <span className="text-gray-400 mx-2">→</span>
+                      <span className="font-semibold text-gray-700">{sessionModal.record.check_out ?? 'Active'}</span>
+                      <span className="ml-3 font-bold" style={{ color: '#15803d' }}>{fmtHours(sessionModal.record.total_hours)}</span>
+                    </div>
+                  )}
+                </div>
+              ) : (() => {
+                // Build timeline: sessions interleaved with break blocks
+                const sessions = sessionModal.sessions;
+                const parseHM = (t: string) => { const [h,m] = t.split(':').map(Number); return h*60+m; };
+                const fmt12 = (t: string | null) => {
+                  if (!t) return 'Active';
+                  const [h,m] = t.split(':').map(Number);
+                  return `${h%12||12}:${String(m).padStart(2,'0')} ${h>=12?'PM':'AM'}`;
+                };
+                const fmtMins = (m: number) => m >= 60 ? `${Math.floor(m/60)}h ${m%60>0?m%60+'m':''}`.trim() : `${m}m`;
+
+                const blocks: { type: 'work'|'break'; from: string; to: string; minutes: number; source: string }[] = [];
+                sessions.forEach((s, i) => {
+                  blocks.push({ type: 'work', from: s.clock_in, to: s.clock_out ?? '', minutes: Number(s.duration_minutes || 0), source: s.source ?? 'manual' });
+                  if (i < sessions.length - 1 && s.clock_out && sessions[i+1].clock_in) {
+                    const breakMin = parseHM(sessions[i+1].clock_in) - parseHM(s.clock_out);
+                    if (breakMin > 0) blocks.push({ type: 'break', from: s.clock_out, to: sessions[i+1].clock_in, minutes: breakMin, source: '' });
+                  }
+                });
+
+                const totalWorked = sessions.reduce((s, r) => s + Number(r.duration_minutes || 0), 0);
+                const totalBreak  = blocks.filter(b => b.type === 'break').reduce((s, b) => s + b.minutes, 0);
+
+                return (
+                  <div className="space-y-2">
+                    {blocks.map((b, i) => (
+                      <div key={i} className={`flex items-center gap-3 p-3 rounded-xl ${b.type === 'work' ? 'border' : ''}`}
+                        style={b.type === 'work'
+                          ? { background: 'rgba(22,163,74,0.04)', borderColor: 'rgba(22,163,74,0.15)' }
+                          : { background: '#fffbeb' }}>
+                        <div className={`w-2 h-full min-h-[32px] rounded-full flex-shrink-0 self-stretch`}
+                          style={{ background: b.type === 'work' ? '#15803d' : '#d97706', width: '3px' }}/>
+                        <div className="flex-1 min-w-0">
+                          <div className="flex items-center gap-2">
+                            <span className="text-xs font-bold" style={{ color: b.type === 'work' ? '#15803d' : '#b45309' }}>
+                              {b.type === 'work' ? `Work Session ${blocks.filter((x,j) => x.type==='work'&&j<=i).length}` : 'Break'}
+                            </span>
+                            {b.type === 'work' && b.source === 'wfh_extension' && (
+                              <span className="text-[9px] font-bold px-1.5 py-0.5 rounded-full" style={{ background: 'rgba(238,39,112,0.1)', color: '#EE2770' }}>💻 ext</span>
+                            )}
+                            {b.type === 'work' && b.source === 'biometric' && (
+                              <span className="text-[9px] font-bold px-1.5 py-0.5 rounded-full" style={{ background: 'rgba(22,163,74,0.1)', color: '#15803d' }}>🔵 bio</span>
+                            )}
+                          </div>
+                          <p className="text-xs text-gray-500 mt-0.5">
+                            {fmt12(b.from)} <span className="mx-1">→</span> {fmt12(b.to)}
+                          </p>
+                        </div>
+                        <span className="text-sm font-black flex-shrink-0" style={{ color: b.type === 'work' ? '#192250' : '#b45309' }}>
+                          {fmtMins(b.minutes)}
+                        </span>
+                      </div>
+                    ))}
+
+                    {/* Summary row */}
+                    <div className="mt-3 pt-3 border-t border-gray-100 flex items-center justify-between">
+                      <div className="text-center flex-1">
+                        <p className="text-xs text-gray-400">Worked</p>
+                        <p className="text-lg font-black" style={{ color: '#15803d' }}>{fmtMins(totalWorked)}</p>
+                      </div>
+                      <div className="w-px h-10 bg-gray-100" />
+                      <div className="text-center flex-1">
+                        <p className="text-xs text-gray-400">On Break</p>
+                        <p className="text-lg font-black" style={{ color: totalBreak > 0 ? '#b45309' : '#d1d5db' }}>{totalBreak > 0 ? fmtMins(totalBreak) : '—'}</p>
+                      </div>
+                      <div className="w-px h-10 bg-gray-100" />
+                      <div className="text-center flex-1">
+                        <p className="text-xs text-gray-400">Present</p>
+                        <p className="text-lg font-black text-gray-700">{fmtMins(totalWorked + totalBreak)}</p>
+                      </div>
+                    </div>
+                  </div>
+                );
+              })()}
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );

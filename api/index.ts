@@ -481,7 +481,6 @@ function istNow() {
 }
 
 // ── Session helpers ───────────────────────────────────────────────────────────
-// Recalculate attendance_records totals from all sessions for a given employee+date
 async function recalcAttendanceTotals(employeeId: string, date: string) {
   const sessions = await sql`
     SELECT clock_in, clock_out, duration_minutes, source
@@ -494,15 +493,43 @@ async function recalcAttendanceTotals(employeeId: string, date: string) {
   const extMin   = rows.filter(r => r.source === 'wfh_extension').reduce((s, r) => s + Number(r.duration_minutes || 0), 0);
   const firstIn  = rows[0]?.clock_in ?? null;
   const lastOut  = [...rows].reverse().find(r => r.clock_out)?.clock_out ?? null;
+  const totalHrs = Math.round(totalMin * 10 / 60) / 10;
+  const extHrs   = Math.round(extMin   * 10 / 60) / 10;
+
+  // Update total_hours first — this MUST succeed for the admin view to show correct hours.
+  // Separate from extension_hours so that a missing column on extension_hours
+  // does NOT silently swallow the total_hours update.
   await sql`
     UPDATE attendance_records
-    SET total_hours=${Math.round(totalMin / 6) / 10},
-        extension_hours=${Math.round(extMin / 6) / 10},
+    SET total_hours=${totalHrs},
         check_in=COALESCE(${firstIn}, check_in),
         check_out=${lastOut}
     WHERE employee_id=${employeeId} AND date::date=${date}::date
+  `;
+  // extension_hours is a newer column — update separately so schema issues don't block total_hours
+  await sql`
+    ALTER TABLE attendance_records ADD COLUMN IF NOT EXISTS extension_hours NUMERIC DEFAULT 0
+  `.catch(() => {});
+  await sql`
+    UPDATE attendance_records
+    SET extension_hours=${extHrs}
+    WHERE employee_id=${employeeId} AND date::date=${date}::date
   `.catch(() => {});
 }
+
+// GET /api/attendance/sessions — session-level breakdown for a specific day
+app.get('/api/attendance/sessions', async (req, res) => {
+  try {
+    const { employee_id, date } = req.query as any;
+    if (!employee_id || !date) return res.status(400).json({ error: 'employee_id and date are required' });
+    const sessions = await sql`
+      SELECT * FROM attendance_sessions
+      WHERE employee_id=${employee_id} AND date::date=${date}::date
+      ORDER BY clock_in ASC
+    `.catch(() => []);
+    res.json(sessions);
+  } catch (e: any) { res.status(500).json({ error: e.message }); }
+});
 
 // GET /api/attendance/today — used by the Chrome extension
 app.get('/api/attendance/today', async (req, res) => {
