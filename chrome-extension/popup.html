@@ -58,10 +58,18 @@
     .timer-ot    { color: #EE2770 !important; }
 
     /* Total bar */
-    .total-bar { display: flex; align-items: center; justify-content: space-between; background: #fff; border-radius: 10px; padding: 10px 12px; border: 1px solid #e9eaf0; margin: 10px 0; }
+    .total-bar { background: #fff; border-radius: 10px; padding: 10px 12px; border: 1px solid #e9eaf0; margin: 10px 0; }
+    .total-row { display: flex; align-items: center; justify-content: space-between; }
     .total-lbl { font-size: 11px; color: #9ca3af; }
     .total-val { font-size: 14px; font-weight: 800; color: #192250; }
     .ext-tag   { font-size: 10px; font-weight: 700; padding: 2px 8px; border-radius: 20px; background: rgba(238,39,112,0.1); color: #EE2770; margin-left: 6px; }
+    /* Activity bar */
+    .activity-wrap { margin-top: 8px; }
+    .activity-label-row { display: flex; justify-content: space-between; margin-bottom: 4px; }
+    .activity-lbl { font-size: 10px; color: #9ca3af; font-weight: 600; text-transform: uppercase; letter-spacing: 0.4px; }
+    .activity-pct { font-size: 11px; font-weight: 800; }
+    .activity-bar-bg { height: 6px; border-radius: 3px; background: #f0f1f5; overflow: hidden; }
+    .activity-bar-fill { height: 100%; border-radius: 3px; transition: width 0.5s ease; }
 
     /* Session list */
     .sessions-wrap { margin-bottom: 12px; }
@@ -131,13 +139,25 @@
     <div id="shiftInfo" class="info-row info-shift hidden" id="shiftInfo"></div>
     <div id="otNotice"  class="info-row info-ot  hidden">🔥 Overtime — great work!</div>
 
-    <!-- Total hours bar (always visible when any session exists) -->
+    <!-- Total hours + activity bar -->
     <div id="totalBar" class="total-bar hidden">
-      <span class="total-lbl">Total today</span>
-      <span>
-        <span class="total-val" id="totalVal">0:00</span>
-        <span class="ext-tag hidden" id="extTag"></span>
-      </span>
+      <div class="total-row">
+        <span class="total-lbl">Total today</span>
+        <span>
+          <span class="total-val" id="totalVal">0:00</span>
+          <span class="ext-tag hidden" id="extTag"></span>
+        </span>
+      </div>
+      <!-- Activity bar — only shown when clocked in via extension -->
+      <div id="activityWrap" class="activity-wrap hidden">
+        <div class="activity-label-row">
+          <span class="activity-lbl">Activity</span>
+          <span class="activity-pct" id="activityPct">—</span>
+        </div>
+        <div class="activity-bar-bg">
+          <div class="activity-bar-fill" id="activityBarFill" style="width:0%"></div>
+        </div>
+      </div>
     </div>
 
     <!-- Session list -->

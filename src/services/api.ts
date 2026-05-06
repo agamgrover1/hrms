@@ -49,6 +49,8 @@ export const api = {
     request<any>('/attendance/mark', { method: 'POST', body: JSON.stringify(data) }),
   getAttendanceSessions: (employeeId: string, date: string) =>
     request<any[]>(`/attendance/sessions?employee_id=${employeeId}&date=${date}`),
+  pingActivity: (employeeId: string, active: boolean) =>
+    request<any>('/attendance/activity', { method: 'POST', body: JSON.stringify({ employee_id: employeeId, active }) }),
 
   syncBiometric: (triggeredBy: string, fromDate?: string, toDate?: string) =>
     request<any>('/attendance/biometric-sync', { method: 'POST', body: JSON.stringify({ triggered_by: triggeredBy, from_date: fromDate, to_date: toDate }) }),

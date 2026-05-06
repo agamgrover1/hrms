@@ -258,13 +258,17 @@ async function runStartupMigrations() {
     await sql`ALTER TABLE attendance_records ADD COLUMN IF NOT EXISTS source TEXT DEFAULT 'manual'`;
     await sql`ALTER TABLE attendance_records ADD COLUMN IF NOT EXISTS biometric_sync_id TEXT`;
     await sql`ALTER TABLE attendance_records ADD COLUMN IF NOT EXISTS extension_hours NUMERIC DEFAULT 0`;
+    await sql`ALTER TABLE attendance_records ADD COLUMN IF NOT EXISTS activity_score NUMERIC`;
     await sql`
       CREATE TABLE IF NOT EXISTS attendance_sessions (
         id TEXT PRIMARY KEY, employee_id TEXT NOT NULL, date DATE NOT NULL,
         clock_in TEXT NOT NULL, clock_out TEXT, duration_minutes NUMERIC DEFAULT 0,
-        source TEXT DEFAULT 'manual', created_at TIMESTAMPTZ DEFAULT NOW()
+        source TEXT DEFAULT 'manual',
+        active_minutes NUMERIC DEFAULT 0,
+        created_at TIMESTAMPTZ DEFAULT NOW()
       )
     `.catch(()=>{});
+    await sql`ALTER TABLE attendance_sessions ADD COLUMN IF NOT EXISTS active_minutes NUMERIC DEFAULT 0`.catch(()=>{});
     await sql`ALTER TABLE leave_balances ADD COLUMN IF NOT EXISTS full_day INTEGER NOT NULL DEFAULT 0`;
     await sql`ALTER TABLE leave_balances ADD COLUMN IF NOT EXISTS short_leave INTEGER NOT NULL DEFAULT 0`;
     await sql`ALTER TABLE leave_balances ADD COLUMN IF NOT EXISTS last_credited_month INTEGER`;
@@ -495,6 +499,9 @@ async function recalcAttendanceTotals(employeeId: string, date: string) {
   const lastOut  = [...rows].reverse().find(r => r.clock_out)?.clock_out ?? null;
   const totalHrs = Math.round(totalMin * 10 / 60) / 10;
   const extHrs   = Math.round(extMin   * 10 / 60) / 10;
+  // Activity score = total active minutes across all sessions / total worked minutes × 100
+  const totalActiveMin = rows.reduce((s, r) => s + Number(r.active_minutes || 0), 0);
+  const activityScore  = totalMin > 0 ? Math.min(100, Math.round((totalActiveMin / totalMin) * 100)) : null;
 
   // Update total_hours first — this MUST succeed for the admin view to show correct hours.
   // Separate from extension_hours so that a missing column on extension_hours
@@ -506,13 +513,13 @@ async function recalcAttendanceTotals(employeeId: string, date: string) {
         check_out=${lastOut}
     WHERE employee_id=${employeeId} AND date::date=${date}::date
   `;
-  // extension_hours is a newer column — update separately so schema issues don't block total_hours
-  await sql`
-    ALTER TABLE attendance_records ADD COLUMN IF NOT EXISTS extension_hours NUMERIC DEFAULT 0
-  `.catch(() => {});
+  // extension_hours + activity_score — newer columns, update separately
+  await sql`ALTER TABLE attendance_records ADD COLUMN IF NOT EXISTS extension_hours NUMERIC DEFAULT 0`.catch(()=>{});
+  await sql`ALTER TABLE attendance_records ADD COLUMN IF NOT EXISTS activity_score NUMERIC`.catch(()=>{});
   await sql`
     UPDATE attendance_records
-    SET extension_hours=${extHrs}
+    SET extension_hours=${extHrs},
+        activity_score=${activityScore}
     WHERE employee_id=${employeeId} AND date::date=${date}::date
   `.catch(() => {});
 }
@@ -528,6 +535,26 @@ app.get('/api/attendance/sessions', async (req, res) => {
       ORDER BY clock_in ASC
     `.catch(() => []);
     res.json(sessions);
+  } catch (e: any) { res.status(500).json({ error: e.message }); }
+});
+
+// POST /api/attendance/activity — called every minute by the Chrome extension
+// to report whether the employee was active during that minute.
+// active=true increments active_minutes on the open session; active=false does nothing
+// (idle minutes are inferred as: duration_minutes - active_minutes)
+app.post('/api/attendance/activity', async (req, res) => {
+  try {
+    const { employee_id, active } = req.body;
+    if (!employee_id) return res.status(400).json({ error: 'employee_id required' });
+    if (!active) return res.json({ ok: true }); // idle minute — no update needed
+    const { date: today } = istNow();
+    // Find the open session for this employee today
+    await sql`
+      UPDATE attendance_sessions
+      SET active_minutes = COALESCE(active_minutes, 0) + 1
+      WHERE employee_id=${employee_id} AND date::date=${today}::date AND clock_out IS NULL
+    `.catch(() => {});
+    res.json({ ok: true });
   } catch (e: any) { res.status(500).json({ error: e.message }); }
 });
 
@@ -592,6 +619,8 @@ app.get('/api/attendance/today', async (req, res) => {
       sessions:      sessionList,
       total_minutes: totalMin,
       extension_minutes: extMin,
+      active_minutes: sessionList.reduce((s, r) => s + Number(r.active_minutes || 0), 0),
+      activity_score: att?.activity_score ?? null,
       total_hours:   att?.total_hours ?? 0,
       extension_hours: att?.extension_hours ?? 0,
       check_in:  att?.check_in  ?? null,

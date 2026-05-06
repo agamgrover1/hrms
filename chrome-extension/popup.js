@@ -145,6 +145,21 @@ function renderTotalBar(data, active) {
     } else {
       $('extTag').classList.add('hidden');
     }
+    // Activity bar — show when any session has activity data
+    const activeMin   = data.active_minutes || 0;
+    const totalWorked = data.total_minutes + runMin;
+    const score = totalWorked > 0
+      ? Math.min(100, Math.round(((activeMin + (active ? runningMinutes(active.clock_in) : 0)) / totalWorked) * 100))
+      : 0;
+    const hasActivityData = activeMin > 0 || totalWorked >= 2; // show after 2+ minutes of session data
+    $('activityWrap').classList.toggle('hidden', !hasActivityData);
+    if (hasActivityData) {
+      const color = score >= 70 ? '#15803d' : score >= 40 ? '#d97706' : '#dc2626';
+      $('activityPct').textContent = `${score}% active`;
+      $('activityPct').style.color = color;
+      $('activityBarFill').style.width = `${score}%`;
+      $('activityBarFill').style.background = color;
+    }
   };
   updateTotal();
 }

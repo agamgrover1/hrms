@@ -746,10 +746,23 @@ export default function EmployeeProfile() {
                         </td>
                         <td className="px-4 py-3">
                           {(r.source === 'wfh_extension' || Number(r.extension_hours) > 0) ? (
-                            <span className="inline-flex items-center gap-1 text-[10px] font-bold px-2 py-0.5 rounded-full border"
-                              style={{ background: 'rgba(238,39,112,0.08)', color: '#EE2770', borderColor: 'rgba(238,39,112,0.25)' }}>
-                              💻 Extension
-                            </span>
+                            <div className="space-y-1">
+                              <span className="inline-flex items-center gap-1 text-[10px] font-bold px-2 py-0.5 rounded-full border"
+                                style={{ background: 'rgba(238,39,112,0.08)', color: '#EE2770', borderColor: 'rgba(238,39,112,0.25)' }}>
+                                💻 Extension
+                              </span>
+                              {r.activity_score != null && (() => {
+                                const score = Number(r.activity_score);
+                                const color = score >= 70 ? '#15803d' : score >= 40 ? '#d97706' : '#dc2626';
+                                const label = score >= 70 ? '🟢' : score >= 40 ? '🟡' : '🔴';
+                                return (
+                                  <span className="inline-flex items-center gap-1 text-[10px] font-bold px-2 py-0.5 rounded-full border"
+                                    style={{ background: color + '15', color, borderColor: color + '40' }}>
+                                    {label} {score}% active
+                                  </span>
+                                );
+                              })()}
+                            </div>
                           ) : r.source === 'biometric' ? (
                             <span className="inline-flex items-center gap-1 text-[10px] font-bold px-2 py-0.5 rounded-full border"
                               style={{ background: 'rgba(22,163,74,0.08)', color: '#15803d', borderColor: 'rgba(22,163,74,0.25)' }}>

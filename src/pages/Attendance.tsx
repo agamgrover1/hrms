@@ -697,6 +697,20 @@ export default function Attendance() {
                             💻 Extension{Number(r.extension_hours) > 0 ? ` · ${fmtHours(r.extension_hours)}` : ''}
                           </span>
                         )}
+                        {/* Activity score badge — only for extension-tracked records */}
+                        {isExtension && r.activity_score != null && (() => {
+                          const score = Number(r.activity_score);
+                          const color = score >= 70 ? '#15803d' : score >= 40 ? '#d97706' : '#dc2626';
+                          const bg    = score >= 70 ? 'rgba(22,163,74,0.08)' : score >= 40 ? 'rgba(217,119,6,0.08)' : 'rgba(220,38,38,0.08)';
+                          const label = score >= 70 ? '🟢' : score >= 40 ? '🟡' : '🔴';
+                          return (
+                            <span className="inline-flex items-center gap-1 text-[10px] font-bold px-1.5 py-0.5 rounded-full border"
+                              style={{ background: bg, color, borderColor: color + '40' }}
+                              title="Activity score: % of clocked-in time with mouse/keyboard interaction">
+                              {label} {score}% active
+                            </span>
+                          );
+                        })()}
                       </div>
                     ) : <span className="text-xs text-gray-300">—</span>}
                   </div>
@@ -818,13 +832,18 @@ export default function Attendance() {
                       </div>
                       <div className="w-px h-10 bg-gray-100" />
                       <div className="text-center flex-1">
-                        <p className="text-xs text-gray-400">On Break</p>
+                        <p className="text-xs text-gray-400">Break</p>
                         <p className="text-lg font-black" style={{ color: totalBreak > 0 ? '#b45309' : '#d1d5db' }}>{totalBreak > 0 ? fmtMins(totalBreak) : '—'}</p>
                       </div>
                       <div className="w-px h-10 bg-gray-100" />
                       <div className="text-center flex-1">
-                        <p className="text-xs text-gray-400">Present</p>
-                        <p className="text-lg font-black text-gray-700">{fmtMins(totalWorked + totalBreak)}</p>
+                        <p className="text-xs text-gray-400">Active</p>
+                        {(() => {
+                          const totalActiveM = sessions.reduce((s, r) => s + Number(r.active_minutes || 0), 0);
+                          const score = totalWorked > 0 ? Math.min(100, Math.round(totalActiveM / totalWorked * 100)) : null;
+                          const color = score === null ? '#d1d5db' : score >= 70 ? '#15803d' : score >= 40 ? '#d97706' : '#dc2626';
+                          return <p className="text-lg font-black" style={{ color }}>{score !== null ? `${score}%` : '—'}</p>;
+                        })()}
                       </div>
                     </div>
                   </div>
