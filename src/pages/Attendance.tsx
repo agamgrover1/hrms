@@ -37,6 +37,7 @@ const statusConfig = {
   holiday:      { label: 'Holiday',      color: 'bg-purple-50 text-purple-500', dot: 'bg-purple-400' },
   wfh:          { label: 'Work From Home',    color: 'bg-[#192250]/10 text-[#192250]',  dot: 'bg-[#192250]' },
   wfh_half:     { label: 'Half Day WFH',      color: 'bg-[#EE2770]/10 text-[#EE2770]', dot: 'bg-[#EE2770]' },
+  no_record:    { label: 'No Record',         color: 'bg-gray-100 text-gray-500',     dot: 'bg-gray-300' },
 };
 
 function generateCalendarDays(year: number, month: number) {
@@ -271,8 +272,9 @@ export default function Attendance() {
     api.getBiometricSyncHistory().then(setSyncHistory).catch(() => {});
   }, []);
 
-  useEffect(() => { fetchRecords(); }, [fetchRecords]);
-  useEffect(() => { fetchLeaves(); }, [fetchLeaves]);
+  // Only fetch per-employee records/leaves while the employee view is active
+  useEffect(() => { if (viewMode === 'employee') fetchRecords(); }, [fetchRecords, viewMode]);
+  useEffect(() => { if (viewMode === 'employee') fetchLeaves(); }, [fetchLeaves, viewMode]);
   useEffect(() => { if (isHROrAdmin) fetchSyncHistory(); }, [fetchSyncHistory, isHROrAdmin]);
 
   // Fetch all employees' records for the selected date when in Status view
@@ -284,8 +286,9 @@ export default function Attendance() {
     api.getAttendance({ month: m, year: y })
       .then(rows => {
         const filtered = (rows as any[]).filter(r => {
-          if (!r.date) return false;
-          return parseLocalDate(r.date).toLocaleDateString('en-CA') === statusDate;
+          if (!r.date || (typeof r.date === 'string' && !r.date.trim())) return false;
+          const dateStr = parseLocalDate(r.date).toLocaleDateString('en-CA');
+          return dateStr && dateStr !== 'Invalid Date' && dateStr === statusDate;
         });
         setStatusDayRecords(filtered);
       })
@@ -542,7 +545,7 @@ export default function Attendance() {
             className={`px-4 py-1.5 text-sm font-semibold rounded-md transition-all ${viewMode === 'employee' ? 'bg-white shadow-sm text-gray-900' : 'text-gray-500 hover:text-gray-700'}`}>
             By Employee
           </button>
-          <button onClick={() => setViewMode('status')}
+          <button onClick={() => { setViewMode('status'); setStatusFilter('all'); }}
             className={`px-4 py-1.5 text-sm font-semibold rounded-md transition-all ${viewMode === 'status' ? 'bg-white shadow-sm text-gray-900' : 'text-gray-500 hover:text-gray-700'}`}>
             By Status
           </button>
@@ -596,7 +599,7 @@ export default function Attendance() {
               setStatusFilter(filter);
             }}
             disabled={!filter}
-            className={`bg-white rounded-xl p-4 border border-gray-100 shadow-sm text-left transition-all ${filter ? 'cursor-pointer hover:border-primary-200 hover:shadow-md' : 'cursor-default'}`}>
+            className={`bg-white rounded-xl p-4 border border-gray-100 shadow-sm text-left transition-all ${filter ? 'cursor-pointer hover:border-primary-200 hover:shadow-md' : 'cursor-default opacity-90'}`}>
             <Icon size={18} className={color} />
             <p className="text-2xl font-bold text-gray-900 mt-2">{value}</p>
             <p className="text-xs text-gray-400 mt-0.5">{label}{filter ? ' →' : ''}</p>
@@ -787,11 +790,17 @@ export default function Attendance() {
 
       {/* ── Status View — all employees grouped/filtered by attendance status ─ */}
       {viewMode === 'status' && (() => {
-        // Build employee × status matrix for the selected date
+        // Detect weekend so HR knows why everything shows "No Record"
+        const dow = parseLocalDate(statusDate).getDay();
+        const isWeekend = dow === 0 || dow === 6;
+
+        // Build a single lookup map (O(n)) instead of .find for every employee (O(n*m))
+        const recordMap = new Map<string, any>();
+        for (const r of statusDayRecords) recordMap.set(r.employee_id, r);
+
         const activeEmps = employees.filter(e => e.status === 'active');
         const employeeStatuses = activeEmps.map(emp => {
-          const record = statusDayRecords.find(r => r.employee_id === emp.id);
-          // No record on a working day = treat as absent for filtering purposes
+          const record = recordMap.get(emp.id);
           const status = record?.status ?? 'no_record';
           return { employee: emp, record, status };
         });
@@ -820,11 +829,20 @@ export default function Attendance() {
           { key: 'absent',   label: 'Absent',      color: '#dc2626' },
           { key: 'on_leave', label: 'On Leave',    color: '#7c3aed' },
           { key: 'wfh',      label: 'WFH',         color: '#0d9488' },
-          { key: 'no_record',label: 'No Record',   color: '#9ca3af' },
+          { key: 'no_record',label: 'No Record',   color: '#4b5563' },
         ];
 
         return (
           <div className="space-y-4">
+            {/* Weekend banner — explains why the day shows all No Record */}
+            {isWeekend && (
+              <div className="px-4 py-3 rounded-xl text-sm font-medium flex items-start gap-2.5 border"
+                style={{ background: '#fffbeb', color: '#92400e', borderColor: '#fde68a' }}>
+                <span>🏖️</span>
+                <span>This is a weekend — most employees won't have attendance records. Showing data anyway in case anyone worked.</span>
+              </div>
+            )}
+
             {/* Status tabs with counts */}
             <div className="bg-white rounded-2xl border border-gray-100 shadow-sm p-2 overflow-x-auto">
               <div className="flex gap-1 min-w-max">
@@ -875,12 +893,12 @@ export default function Attendance() {
                       <div key={employee.id} className="flex items-center gap-3 px-5 py-3 hover:bg-gray-50/40 transition-colors">
                         {/* Avatar */}
                         <div className="w-9 h-9 rounded-full bg-primary-100 text-primary-600 flex items-center justify-center text-xs font-bold flex-shrink-0">
-                          {employee.avatar || employee.name.split(' ').map((p: string) => p[0]).join('').slice(0,2)}
+                          {employee.avatar || (employee.name ? employee.name.split(' ').map((p: string) => p[0]).filter(Boolean).join('').slice(0,2) : '?')}
                         </div>
                         {/* Name + meta */}
                         <div className="flex-1 min-w-0">
-                          <p className="text-sm font-semibold text-gray-800 truncate">{employee.name}</p>
-                          <p className="text-xs text-gray-400 truncate">{employee.employee_id} · {employee.designation}</p>
+                          <p className="text-sm font-semibold text-gray-800 truncate">{employee.name ?? '—'}</p>
+                          <p className="text-xs text-gray-400 truncate">{employee.employee_id ?? '—'}{employee.designation ? ` · ${employee.designation}` : ''}</p>
                         </div>
                         {/* Times + hours */}
                         <div className="hidden sm:flex flex-col items-end gap-0.5 flex-shrink-0 min-w-[120px]">
