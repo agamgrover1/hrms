@@ -225,6 +225,14 @@ export default function Attendance() {
   // Session detail modal
   const [sessionModal, setSessionModal] = useState<{ record: any; sessions: any[]; loading: boolean; error?: string } | null>(null);
 
+  // Status view (alternate view: all employees grouped by attendance status)
+  const todayStr = `${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}-${String(now.getDate()).padStart(2,'0')}`;
+  const [viewMode, setViewMode] = useState<'employee' | 'status'>('employee');
+  const [statusDate, setStatusDate] = useState(todayStr);
+  const [statusFilter, setStatusFilter] = useState<string>('all');
+  const [statusDayRecords, setStatusDayRecords] = useState<any[]>([]);
+  const [statusLoading, setStatusLoading] = useState(false);
+
   const calendarDays = generateCalendarDays(viewYear, viewMonth);
   const monthName = new Date(viewYear, viewMonth, 1).toLocaleString('default', { month: 'long' });
 
@@ -266,6 +274,25 @@ export default function Attendance() {
   useEffect(() => { fetchRecords(); }, [fetchRecords]);
   useEffect(() => { fetchLeaves(); }, [fetchLeaves]);
   useEffect(() => { if (isHROrAdmin) fetchSyncHistory(); }, [fetchSyncHistory, isHROrAdmin]);
+
+  // Fetch all employees' records for the selected date when in Status view
+  const fetchStatusDayRecords = useCallback(() => {
+    if (viewMode !== 'status') return;
+    const [y, m] = statusDate.split('-').map(Number);
+    if (!y || !m) return;
+    setStatusLoading(true);
+    api.getAttendance({ month: m, year: y })
+      .then(rows => {
+        const filtered = (rows as any[]).filter(r => {
+          if (!r.date) return false;
+          return parseLocalDate(r.date).toLocaleDateString('en-CA') === statusDate;
+        });
+        setStatusDayRecords(filtered);
+      })
+      .catch(() => setStatusDayRecords([]))
+      .finally(() => setStatusLoading(false));
+  }, [viewMode, statusDate]);
+  useEffect(() => { fetchStatusDayRecords(); }, [fetchStatusDayRecords]);
 
   const handleSyncNow = async (fullMonth = false) => {
     setSyncing(true);
@@ -508,40 +535,72 @@ export default function Attendance() {
         );
       })()}
 
+      {/* ── View Toggle ─────────────────────────────────────────────────── */}
       <div className="flex flex-wrap items-center gap-3">
-        <select value={selectedEmpId} onChange={e => setSelectedEmpId(e.target.value)}
-          className="text-sm border border-gray-200 rounded-lg px-3 py-2.5 bg-white focus:outline-none focus:ring-2 focus:ring-primary-200 text-gray-700">
-          {employees.map(e => <option key={e.id} value={e.id}>{e.name}</option>)}
-        </select>
-        <span className="text-sm text-gray-400">{monthName} {viewYear}</span>
-        {(() => {
-          const emp = employees.find(e => e.id === selectedEmpId);
-          if (!emp) return null;
-          const isNight = emp.shift === 'night';
-          return (
-            <span className="inline-flex items-center gap-1.5 text-xs font-semibold px-3 py-1.5 rounded-full"
-              style={isNight
-                ? { background: '#1e1b4b', color: '#a5b4fc' }
-                : { background: '#fef3c7', color: '#92400e' }}>
-              {isNight ? '🌙' : '☀️'} {isNight ? 'Night Shift · 6:30 PM – 3:30 AM' : 'Day Shift · 9:00 AM – 6:00 PM'}
+        <div className="inline-flex bg-gray-100 p-1 rounded-lg">
+          <button onClick={() => setViewMode('employee')}
+            className={`px-4 py-1.5 text-sm font-semibold rounded-md transition-all ${viewMode === 'employee' ? 'bg-white shadow-sm text-gray-900' : 'text-gray-500 hover:text-gray-700'}`}>
+            By Employee
+          </button>
+          <button onClick={() => setViewMode('status')}
+            className={`px-4 py-1.5 text-sm font-semibold rounded-md transition-all ${viewMode === 'status' ? 'bg-white shadow-sm text-gray-900' : 'text-gray-500 hover:text-gray-700'}`}>
+            By Status
+          </button>
+        </div>
+
+        {viewMode === 'employee' ? (
+          <>
+            <select value={selectedEmpId} onChange={e => setSelectedEmpId(e.target.value)}
+              className="text-sm border border-gray-200 rounded-lg px-3 py-2.5 bg-white focus:outline-none focus:ring-2 focus:ring-primary-200 text-gray-700">
+              {employees.map(e => <option key={e.id} value={e.id}>{e.name}</option>)}
+            </select>
+            <span className="text-sm text-gray-400">{monthName} {viewYear}</span>
+            {(() => {
+              const emp = employees.find(e => e.id === selectedEmpId);
+              if (!emp) return null;
+              const isNight = emp.shift === 'night';
+              return (
+                <span className="inline-flex items-center gap-1.5 text-xs font-semibold px-3 py-1.5 rounded-full"
+                  style={isNight ? { background: '#1e1b4b', color: '#a5b4fc' } : { background: '#fef3c7', color: '#92400e' }}>
+                  {isNight ? '🌙' : '☀️'} {isNight ? 'Night Shift · 6:30 PM – 3:30 AM' : 'Day Shift · 9:00 AM – 6:00 PM'}
+                </span>
+              );
+            })()}
+          </>
+        ) : (
+          <>
+            <input type="date" value={statusDate} max={todayStr}
+              onChange={e => setStatusDate(e.target.value)}
+              className="text-sm border border-gray-200 rounded-lg px-3 py-2 bg-white focus:outline-none focus:ring-2 focus:ring-primary-200 text-gray-700"/>
+            <span className="text-sm text-gray-400">
+              {parseLocalDate(statusDate).toLocaleDateString('en-IN', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' })}
             </span>
-          );
-        })()}
+          </>
+        )}
       </div>
 
-      {/* Summary Cards */}
+      {viewMode === 'employee' && (<>
+      {/* Summary Cards — clicking jumps into Status view filtered to today */}
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
         {[
-          { label: 'Present', value: presentCount, icon: CheckCircle, color: 'text-green-500' },
-          { label: 'Absent', value: absentCount, icon: XCircle, color: 'text-red-500' },
-          { label: 'Late', value: lateCount, icon: AlertCircle, color: 'text-amber-500' },
-          { label: 'Avg Hours/Day', value: fmtHours(totalHours / Math.max(presentCount + lateCount, 1)), icon: Clock, color: 'text-primary-500' },
-        ].map(({ label, value, icon: Icon, color }) => (
-          <div key={label} className="bg-white rounded-xl p-4 border border-gray-100 shadow-sm">
+          { label: 'Present', value: presentCount, icon: CheckCircle, color: 'text-green-500', filter: 'present' },
+          { label: 'Absent',  value: absentCount,  icon: XCircle,     color: 'text-red-500',   filter: 'absent'  },
+          { label: 'Late',    value: lateCount,    icon: AlertCircle, color: 'text-amber-500', filter: 'late'    },
+          { label: 'Avg Hours/Day', value: fmtHours(totalHours / Math.max(presentCount + lateCount, 1)), icon: Clock, color: 'text-primary-500', filter: null },
+        ].map(({ label, value, icon: Icon, color, filter }) => (
+          <button key={label}
+            onClick={() => {
+              if (!filter) return;
+              setViewMode('status');
+              setStatusDate(todayStr);
+              setStatusFilter(filter);
+            }}
+            disabled={!filter}
+            className={`bg-white rounded-xl p-4 border border-gray-100 shadow-sm text-left transition-all ${filter ? 'cursor-pointer hover:border-primary-200 hover:shadow-md' : 'cursor-default'}`}>
             <Icon size={18} className={color} />
             <p className="text-2xl font-bold text-gray-900 mt-2">{value}</p>
-            <p className="text-xs text-gray-400 mt-0.5">{label}</p>
-          </div>
+            <p className="text-xs text-gray-400 mt-0.5">{label}{filter ? ' →' : ''}</p>
+          </button>
         ))}
       </div>
 
@@ -724,6 +783,138 @@ export default function Attendance() {
           )}
         </div>
       </div>
+      </>)}
+
+      {/* ── Status View — all employees grouped/filtered by attendance status ─ */}
+      {viewMode === 'status' && (() => {
+        // Build employee × status matrix for the selected date
+        const activeEmps = employees.filter(e => e.status === 'active');
+        const employeeStatuses = activeEmps.map(emp => {
+          const record = statusDayRecords.find(r => r.employee_id === emp.id);
+          // No record on a working day = treat as absent for filtering purposes
+          const status = record?.status ?? 'no_record';
+          return { employee: emp, record, status };
+        });
+
+        const counts: Record<string, number> = {
+          all:     employeeStatuses.length,
+          present: employeeStatuses.filter(es => es.status === 'present').length,
+          late:    employeeStatuses.filter(es => es.status === 'late').length,
+          absent:  employeeStatuses.filter(es => es.status === 'absent').length,
+          on_leave:employeeStatuses.filter(es => ['on_leave','short_leave','half-day','unpaid_leave'].includes(es.status)).length,
+          wfh:     employeeStatuses.filter(es => ['wfh','wfh_half'].includes(es.status)).length,
+          no_record: employeeStatuses.filter(es => es.status === 'no_record').length,
+        };
+
+        const filtered = employeeStatuses.filter(es => {
+          if (statusFilter === 'all')      return true;
+          if (statusFilter === 'on_leave') return ['on_leave','short_leave','half-day','unpaid_leave'].includes(es.status);
+          if (statusFilter === 'wfh')      return ['wfh','wfh_half'].includes(es.status);
+          return es.status === statusFilter;
+        });
+
+        const TABS: { key: string; label: string; color: string }[] = [
+          { key: 'all',      label: 'All',         color: '#6b7280' },
+          { key: 'present',  label: 'Present',     color: '#16a34a' },
+          { key: 'late',     label: 'Late',        color: '#d97706' },
+          { key: 'absent',   label: 'Absent',      color: '#dc2626' },
+          { key: 'on_leave', label: 'On Leave',    color: '#7c3aed' },
+          { key: 'wfh',      label: 'WFH',         color: '#0d9488' },
+          { key: 'no_record',label: 'No Record',   color: '#9ca3af' },
+        ];
+
+        return (
+          <div className="space-y-4">
+            {/* Status tabs with counts */}
+            <div className="bg-white rounded-2xl border border-gray-100 shadow-sm p-2 overflow-x-auto">
+              <div className="flex gap-1 min-w-max">
+                {TABS.map(t => {
+                  const active = statusFilter === t.key;
+                  return (
+                    <button key={t.key} onClick={() => setStatusFilter(t.key)}
+                      className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-semibold whitespace-nowrap transition-all ${active ? 'text-white shadow-sm' : 'text-gray-600 hover:bg-gray-50'}`}
+                      style={active ? { background: t.color } : {}}>
+                      {t.label}
+                      <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded-full ${active ? 'bg-white/25' : 'bg-gray-100 text-gray-500'}`}>
+                        {counts[t.key] ?? 0}
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+
+            {/* Employee list */}
+            <div className="bg-white rounded-2xl border border-gray-100 shadow-sm overflow-hidden">
+              <div className="px-5 py-4 border-b border-gray-100 flex items-center justify-between">
+                <div>
+                  <h3 className="font-semibold text-sm text-gray-800">
+                    {TABS.find(t => t.key === statusFilter)?.label} ({filtered.length})
+                  </h3>
+                  <p className="text-xs text-gray-400 mt-0.5">
+                    {parseLocalDate(statusDate).toLocaleDateString('en-IN', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' })}
+                  </p>
+                </div>
+              </div>
+
+              {statusLoading ? (
+                <div className="flex items-center justify-center py-12">
+                  <div className="w-6 h-6 border-4 border-primary-200 border-t-primary-500 rounded-full animate-spin" />
+                </div>
+              ) : filtered.length === 0 ? (
+                <p className="text-center text-sm text-gray-400 py-12">
+                  No employees in this category on this date
+                </p>
+              ) : (
+                <div className="divide-y divide-gray-50">
+                  {filtered.map(({ employee, record, status }) => {
+                    const cfg = statusConfig[status as keyof typeof statusConfig];
+                    const isExt = record?.source === 'wfh_extension';
+                    const isBio = record?.source === 'biometric';
+                    return (
+                      <div key={employee.id} className="flex items-center gap-3 px-5 py-3 hover:bg-gray-50/40 transition-colors">
+                        {/* Avatar */}
+                        <div className="w-9 h-9 rounded-full bg-primary-100 text-primary-600 flex items-center justify-center text-xs font-bold flex-shrink-0">
+                          {employee.avatar || employee.name.split(' ').map((p: string) => p[0]).join('').slice(0,2)}
+                        </div>
+                        {/* Name + meta */}
+                        <div className="flex-1 min-w-0">
+                          <p className="text-sm font-semibold text-gray-800 truncate">{employee.name}</p>
+                          <p className="text-xs text-gray-400 truncate">{employee.employee_id} · {employee.designation}</p>
+                        </div>
+                        {/* Times + hours */}
+                        <div className="hidden sm:flex flex-col items-end gap-0.5 flex-shrink-0 min-w-[120px]">
+                          {record?.check_in ? (
+                            <>
+                              <span className="text-[11px] text-gray-400">{record.check_in} → {record.check_out ?? 'Active'}</span>
+                              <span className="text-xs font-bold" style={{ color: '#15803d' }}>{fmtHours(record.total_hours)} worked</span>
+                            </>
+                          ) : (
+                            <span className="text-xs text-gray-300">—</span>
+                          )}
+                        </div>
+                        {/* Source tag */}
+                        <div className="hidden md:block flex-shrink-0">
+                          {isExt && (
+                            <span className="text-[10px] font-bold px-1.5 py-0.5 rounded-full" style={{ background: 'rgba(238,39,112,0.08)', color: '#EE2770' }}>💻 Ext</span>
+                          )}
+                          {isBio && (
+                            <span className="text-[10px] font-bold px-1.5 py-0.5 rounded-full" style={{ background: 'rgba(22,163,74,0.08)', color: '#15803d' }}>🔵 Bio</span>
+                          )}
+                        </div>
+                        {/* Status badge */}
+                        <span className={`text-xs px-2.5 py-1 rounded-full font-medium flex-shrink-0 ${cfg?.color ?? 'bg-gray-100 text-gray-500'}`}>
+                          {status === 'no_record' ? 'No Record' : (cfg?.label ?? status)}
+                        </span>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          </div>
+        );
+      })()}
 
       {showMark && (
         <MarkAttendanceModal
