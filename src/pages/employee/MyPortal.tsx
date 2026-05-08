@@ -711,7 +711,18 @@ export default function MyPortal() {
                 <div className="bg-blue-50 border border-blue-100 rounded-xl p-4 text-center">
                   <p className="text-2xl font-bold text-blue-600">{balance.full_day ?? 0}</p>
                   <p className="text-xs text-blue-700 font-medium mt-1">Full Day</p>
-                  <p className="text-xs text-gray-400">carries forward</p>
+                  {(Number(balance.prev_month_carry_full_day) > 0 || Number(balance.current_month_credit_full_day) > 0) ? (
+                    <div className="mt-1.5 pt-1.5 border-t border-blue-100 space-y-0.5">
+                      {Number(balance.current_month_credit_full_day) > 0 && (
+                        <p className="text-[10px] text-blue-700">+{balance.current_month_credit_full_day} credited in {balance.current_month_label?.split(' ')[0] ?? 'this month'}</p>
+                      )}
+                      {Number(balance.prev_month_carry_full_day) > 0 && (
+                        <p className="text-[10px] text-blue-600">+{balance.prev_month_carry_full_day} carried from {balance.prev_month_label?.split(' ')[0] ?? 'last month'}</p>
+                      )}
+                    </div>
+                  ) : (
+                    <p className="text-xs text-gray-400">carries forward</p>
+                  )}
                 </div>
                 <div className="bg-purple-50 border border-purple-100 rounded-xl p-4 text-center">
                   <p className="text-2xl font-bold text-purple-600">{balance.short_leave ?? 0}</p>

@@ -273,6 +273,9 @@ async function runStartupMigrations() {
     await sql`ALTER TABLE leave_balances ADD COLUMN IF NOT EXISTS short_leave INTEGER NOT NULL DEFAULT 0`;
     await sql`ALTER TABLE leave_balances ADD COLUMN IF NOT EXISTS last_credited_month INTEGER`;
     await sql`ALTER TABLE leave_balances ADD COLUMN IF NOT EXISTS last_credited_year INTEGER`;
+    // Breakdown columns so employees can see "X carried + Y credited this month"
+    await sql`ALTER TABLE leave_balances ADD COLUMN IF NOT EXISTS prev_month_carry_full_day INTEGER DEFAULT 0`;
+    await sql`ALTER TABLE leave_balances ADD COLUMN IF NOT EXISTS current_month_credit_full_day INTEGER DEFAULT 0`;
     await sql`ALTER TABLE leave_balances ADD COLUMN IF NOT EXISTS probation_short_used INTEGER NOT NULL DEFAULT 0`;
     await sql`ALTER TABLE leave_requests ADD COLUMN IF NOT EXISTS manager_name VARCHAR(200)`;
     await sql`ALTER TABLE leave_requests ADD COLUMN IF NOT EXISTS manager_rejection_reason TEXT`;
@@ -950,20 +953,30 @@ async function creditMonthlyLeave(employeeId: string, joinDate: string | null) {
   let balRows = await sql`SELECT * FROM leave_balances WHERE employee_id=${employeeId}`;
   // Auto-create a balance row if one doesn't exist (new employees added directly via UI)
   if (!(balRows as any[]).length) {
-    await sql`INSERT INTO leave_balances (employee_id, full_day, short_leave, casual, sick, earned, last_credited_month, last_credited_year, probation_short_used) VALUES (${employeeId}, 0, 2, 10, 7, 15, ${cm}, ${cy}, 0) ON CONFLICT (employee_id) DO NOTHING`.catch(() => {});
+    await sql`INSERT INTO leave_balances (employee_id, full_day, short_leave, casual, sick, earned, last_credited_month, last_credited_year, probation_short_used, prev_month_carry_full_day, current_month_credit_full_day) VALUES (${employeeId}, 0, 2, 10, 7, 15, ${cm}, ${cy}, 0, 0, 0) ON CONFLICT (employee_id) DO NOTHING`.catch(() => {});
     return; // just created — no credit needed yet
   }
   const bal = (balRows as any[])[0];
   // Guard: if last_credited fields are set correctly already, skip
   if (Number(bal.last_credited_month) === cm && Number(bal.last_credited_year) === cy) return;
   if (isOnProbation(joinDate)) {
-    await sql`UPDATE leave_balances SET last_credited_month=${cm}, last_credited_year=${cy} WHERE employee_id=${employeeId}`;
+    // No new credit during probation, but we still want short_leave reset to 0 (probation employees use probation_short_used quota separately)
+    await sql`UPDATE leave_balances SET last_credited_month=${cm}, last_credited_year=${cy}, prev_month_carry_full_day=COALESCE(full_day, 0), current_month_credit_full_day=0 WHERE employee_id=${employeeId}`;
     return;
   }
   const lastM = bal.last_credited_month ?? cm;
   const lastY = bal.last_credited_year ?? cy;
   const months = Math.max(1, (cy - lastY) * 12 + (cm - lastM));
-  await sql`UPDATE leave_balances SET full_day=COALESCE(full_day,0)+${months}, short_leave=2, last_credited_month=${cm}, last_credited_year=${cy} WHERE employee_id=${employeeId}`;
+  // Snapshot what's carrying in BEFORE we add new credit — so employees see the breakdown
+  const carryIn = Number(bal.full_day) || 0;
+  await sql`UPDATE leave_balances
+    SET full_day = ${carryIn} + ${months},
+        short_leave = 2,
+        last_credited_month = ${cm},
+        last_credited_year = ${cy},
+        prev_month_carry_full_day = ${carryIn},
+        current_month_credit_full_day = ${months}
+    WHERE employee_id=${employeeId}`;
 }
 
 async function deductLeaveBalance(employeeId: string, type: string, days: number) {
@@ -1237,6 +1250,17 @@ app.get('/api/leave/balances/:employee_id', async (req, res) => {
     bal.on_probation = isOnProbation(joinDate, probationEndDate);
     bal.probation_end_date = probationEndDate ? neonDateToStrV(probationEndDate instanceof Date ? probationEndDate.toISOString() : String(probationEndDate)) : null;
     bal.probation_short_remaining = Math.max(0, 2 - (bal.probation_short_used ?? 0));
+    // Add a friendly label for the previous month so the UI can show "carried from April" instead of just a number
+    const MONTH_NAMES = ['January','February','March','April','May','June','July','August','September','October','November','December'];
+    if (bal.last_credited_month) {
+      const lcm = Number(bal.last_credited_month);
+      const lcy = Number(bal.last_credited_year);
+      // The carry came from the month *before* the last credited month
+      const prevM = lcm === 1 ? 12 : lcm - 1;
+      const prevY = lcm === 1 ? lcy - 1 : lcy;
+      bal.prev_month_label = `${MONTH_NAMES[prevM - 1]} ${prevY}`;
+      bal.current_month_label = `${MONTH_NAMES[lcm - 1]} ${lcy}`;
+    }
     res.json(normDateV(bal));
   } catch (err) { res.status(500).json({ error: 'Server error' }); }
 });

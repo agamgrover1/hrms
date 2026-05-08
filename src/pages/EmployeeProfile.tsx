@@ -788,19 +788,34 @@ export default function EmployeeProfile() {
         <div className="space-y-5">
           <TabError t="Leave"/>
           {leaveBalance && (
-            <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
-              {[
-                {label:'Full Day',         value:leaveBalance.full_day??0,    color:'#2563eb', bg:'rgba(37,99,235,0.08)'},
-                {label:'Short / Half Day', value:leaveBalance.short_leave??0, color:'#7c3aed', bg:'rgba(124,58,237,0.08)'},
-              ].map(({label,value,color,bg}) => (
-                <div key={label} className="bg-white rounded-xl border border-gray-100 shadow-sm p-4">
-                  <p className="text-2xl font-black" style={{color}}>{value}</p>
-                  <p className="text-xs text-gray-400 mt-0.5">{label} remaining</p>
-                  <div className="h-1 rounded-full mt-2" style={{background:bg}}>
-                    <div className="h-1 rounded-full" style={{background:color,width:`${Math.min(100,Number(value)*10)}%`}}/>
-                  </div>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              {/* Full day card with breakdown */}
+              <div className="bg-white rounded-xl border border-gray-100 shadow-sm p-4">
+                <p className="text-2xl font-black" style={{color:'#2563eb'}}>{leaveBalance.full_day ?? 0}</p>
+                <p className="text-xs text-gray-400 mt-0.5">Full Day remaining</p>
+                <div className="h-1 rounded-full mt-2" style={{background:'rgba(37,99,235,0.08)'}}>
+                  <div className="h-1 rounded-full" style={{background:'#2563eb',width:`${Math.min(100,Number(leaveBalance.full_day??0)*10)}%`}}/>
                 </div>
-              ))}
+                {(Number(leaveBalance.prev_month_carry_full_day) > 0 || Number(leaveBalance.current_month_credit_full_day) > 0) && (
+                  <div className="mt-2 pt-2 border-t border-gray-100 space-y-0.5">
+                    {Number(leaveBalance.current_month_credit_full_day) > 0 && (
+                      <p className="text-[11px] text-blue-700 font-medium">+{leaveBalance.current_month_credit_full_day} credited in {leaveBalance.current_month_label?.split(' ')[0] ?? 'this month'}</p>
+                    )}
+                    {Number(leaveBalance.prev_month_carry_full_day) > 0 && (
+                      <p className="text-[11px] text-gray-500">+{leaveBalance.prev_month_carry_full_day} carried from {leaveBalance.prev_month_label?.split(' ')[0] ?? 'last month'}</p>
+                    )}
+                  </div>
+                )}
+              </div>
+              {/* Short leave card */}
+              <div className="bg-white rounded-xl border border-gray-100 shadow-sm p-4">
+                <p className="text-2xl font-black" style={{color:'#7c3aed'}}>{leaveBalance.short_leave ?? 0}</p>
+                <p className="text-xs text-gray-400 mt-0.5">Short / Half Day remaining</p>
+                <div className="h-1 rounded-full mt-2" style={{background:'rgba(124,58,237,0.08)'}}>
+                  <div className="h-1 rounded-full" style={{background:'#7c3aed',width:`${Math.min(100,Number(leaveBalance.short_leave??0)*50)}%`}}/>
+                </div>
+                <p className="text-[11px] text-gray-500 mt-2 pt-2 border-t border-gray-100">Resets to 2 every month</p>
+              </div>
             </div>
           )}
 

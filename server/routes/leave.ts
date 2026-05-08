@@ -27,8 +27,9 @@ async function creditMonthlyLeave(employeeId: string, joinDate: string | null) {
 
   const onProbation = isOnProbation(joinDate);
   if (onProbation) {
-    // No monthly credit during probation — just update credit date
-    await sql`UPDATE leave_balances SET last_credited_month=${cm}, last_credited_year=${cy} WHERE employee_id=${employeeId}`;
+    await sql`ALTER TABLE leave_balances ADD COLUMN IF NOT EXISTS prev_month_carry_full_day INTEGER DEFAULT 0`.catch(() => {});
+    await sql`ALTER TABLE leave_balances ADD COLUMN IF NOT EXISTS current_month_credit_full_day INTEGER DEFAULT 0`.catch(() => {});
+    await sql`UPDATE leave_balances SET last_credited_month=${cm}, last_credited_year=${cy}, prev_month_carry_full_day=COALESCE(full_day, 0), current_month_credit_full_day=0 WHERE employee_id=${employeeId}`;
     return;
   }
 
@@ -36,13 +37,19 @@ async function creditMonthlyLeave(employeeId: string, joinDate: string | null) {
   const lastM = bal.last_credited_month ?? cm;
   const lastY = bal.last_credited_year ?? cy;
   const monthsElapsed = Math.max(1, (cy - lastY) * 12 + (cm - lastM));
+  // Snapshot what's carrying in BEFORE we add new credit
+  const carryIn = Number(bal.full_day) || 0;
 
+  await sql`ALTER TABLE leave_balances ADD COLUMN IF NOT EXISTS prev_month_carry_full_day INTEGER DEFAULT 0`.catch(() => {});
+  await sql`ALTER TABLE leave_balances ADD COLUMN IF NOT EXISTS current_month_credit_full_day INTEGER DEFAULT 0`.catch(() => {});
   await sql`
     UPDATE leave_balances
-    SET full_day = COALESCE(full_day, 0) + ${monthsElapsed},
+    SET full_day = ${carryIn} + ${monthsElapsed},
         short_leave = 2,
         last_credited_month = ${cm},
-        last_credited_year  = ${cy}
+        last_credited_year  = ${cy},
+        prev_month_carry_full_day = ${carryIn},
+        current_month_credit_full_day = ${monthsElapsed}
     WHERE employee_id = ${employeeId}
   `;
 }
@@ -496,6 +503,15 @@ router.get('/balances/:employee_id', async (req, res) => {
     bal.on_probation = isOnProbation(joinDate, probationEndDate);
     bal.probation_end_date = probationEndDate ? neonDateToStr(probationEndDate instanceof Date ? probationEndDate.toISOString() : String(probationEndDate)) : null;
     bal.probation_short_remaining = Math.max(0, 2 - (bal.probation_short_used ?? 0));
+    const MONTH_NAMES = ['January','February','March','April','May','June','July','August','September','October','November','December'];
+    if (bal.last_credited_month) {
+      const lcm = Number(bal.last_credited_month);
+      const lcy = Number(bal.last_credited_year);
+      const prevM = lcm === 1 ? 12 : lcm - 1;
+      const prevY = lcm === 1 ? lcy - 1 : lcy;
+      bal.prev_month_label = `${MONTH_NAMES[prevM - 1]} ${prevY}`;
+      bal.current_month_label = `${MONTH_NAMES[lcm - 1]} ${lcy}`;
+    }
     res.json(normDate(bal));
   } catch (err) {
     res.status(500).json({ error: 'Server error' });
