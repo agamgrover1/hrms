@@ -810,8 +810,21 @@ async function runBiometricSyncV(trigger: string, triggeredBy?: string, fromDate
   const empMap   = new Map<string, string>();
   const shiftMap = new Map<string, string>();
   for (const e of empRows) {
-    const key = e.biometric_id ? String(e.biometric_id).trim() : String(e.employee_id).trim();
-    empMap.set(key, e.id);
+    // Register all reasonable lookup keys so the sync works even if HR forgot
+    // to set biometric_id. eTimeOffice typically sends '90' for DL0090, but
+    // could also send '090' or '0090' — register all variants.
+    const addKey = (k: string | null | undefined) => {
+      if (!k) return;
+      const s = String(k).trim();
+      if (s) empMap.set(s, e.id);
+    };
+    const empId = String(e.employee_id ?? '').trim();           // "DL0090"
+    const noPrefix = empId.replace(/^[A-Za-z]+/, '');            // "0090"
+    const noLeading = noPrefix.replace(/^0+/, '') || '0';        // "90"
+    addKey(e.biometric_id);   // primary if set
+    addKey(empId);            // "DL0090"
+    addKey(noPrefix);         // "0090"
+    addKey(noLeading);        // "90"
     shiftMap.set(e.id, e.shift ?? 'day');
   }
   // Load late_after per shift from DB — reflects HR config changes
@@ -824,7 +837,9 @@ async function runBiometricSyncV(trigger: string, triggeredBy?: string, fromDate
   for (const rec of records) {
     const empCode = String(rec.Empcode ?? '').trim();
     if (!empCode) continue;
-    const iid = empMap.get(empCode);
+    // Try exact match first, then strip leading zeros as a final fallback
+    const iid = empMap.get(empCode)
+              ?? empMap.get(empCode.replace(/^0+/, '') || '0');
     if (!iid) continue;
     // Parse DateString DD/MM/YYYY → YYYY-MM-DD
     const rawDs = String(rec.DateString ?? '').trim();

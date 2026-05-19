@@ -183,8 +183,21 @@ export async function runBiometricSync(
   const empMap   = new Map<string, string>();   // bioKey → internal id
   const shiftMap = new Map<string, string>();   // internal id → shift
   for (const e of empRows) {
-    const key = e.biometric_id ? String(e.biometric_id).trim() : String(e.employee_id).trim();
-    empMap.set(key, e.id);
+    // Register all reasonable lookup keys: biometric_id, employee_id ("DL0090"),
+    // numeric-only ("0090"), and stripped of leading zeros ("90"). eTimeOffice
+    // sends just "90" but may pad with zeros depending on config.
+    const addKey = (k: string | null | undefined) => {
+      if (!k) return;
+      const s = String(k).trim();
+      if (s) empMap.set(s, e.id);
+    };
+    const empId    = String(e.employee_id ?? '').trim();
+    const noPrefix = empId.replace(/^[A-Za-z]+/, '');
+    const noLeading = noPrefix.replace(/^0+/, '') || '0';
+    addKey(e.biometric_id);
+    addKey(empId);
+    addKey(noPrefix);
+    addKey(noLeading);
     shiftMap.set(e.id, e.shift ?? 'day');
   }
 
@@ -196,7 +209,9 @@ export async function runBiometricSync(
     const empCode = String(rec.Empcode ?? '').trim();
     if (!empCode) continue;
 
-    const internalId = empMap.get(empCode);
+    // Try exact match, then strip leading zeros as fallback
+    const internalId = empMap.get(empCode)
+                    ?? empMap.get(empCode.replace(/^0+/, '') || '0');
     if (!internalId) continue;
 
     // Parse record's date from DateString (DD/MM/YYYY) → YYYY-MM-DD
