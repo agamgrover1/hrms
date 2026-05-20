@@ -28,3 +28,8 @@ dist-ssr
 *.sln
 *.sw?
 .vercel
+
+
+# Binary artefacts — don't commit
+*.zip
+*.tar.gz
