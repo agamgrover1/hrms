@@ -221,6 +221,42 @@ async function runStartupMigrations() {
       reviewed_by TEXT, reviewed_at TIMESTAMPTZ, rejection_reason TEXT,
       approved_amount NUMERIC, payment_note TEXT, created_at TIMESTAMPTZ DEFAULT NOW()
     )`;
+  // ── IT vendor + assets + repair tickets ──────────────────────────────────
+  await sql`
+    CREATE TABLE IF NOT EXISTS vendors (
+      id TEXT PRIMARY KEY, name TEXT NOT NULL, contact_person TEXT, phone TEXT,
+      email TEXT, gst_no TEXT, address TEXT, notes TEXT,
+      active BOOLEAN DEFAULT TRUE, created_at TIMESTAMPTZ DEFAULT NOW()
+    )`;
+  await sql`
+    CREATE TABLE IF NOT EXISTS assets (
+      id TEXT PRIMARY KEY, asset_tag TEXT UNIQUE NOT NULL, model TEXT,
+      serial_no TEXT, purchase_date DATE,
+      assigned_to_id TEXT, assigned_to_name TEXT,
+      status TEXT DEFAULT 'active',  -- active | in_repair | retired
+      notes TEXT, created_at TIMESTAMPTZ DEFAULT NOW()
+    )`;
+  await sql`
+    CREATE TABLE IF NOT EXISTS repair_tickets (
+      id TEXT PRIMARY KEY,
+      asset_id TEXT, laptop_info TEXT,
+      employee_id TEXT, employee_name TEXT,
+      vendor_id TEXT, issue TEXT NOT NULL,
+      status TEXT DEFAULT 'reported',
+        -- reported | picked_up | returned | awaiting_approval | paid | cancelled
+      quoted_cost NUMERIC, final_cost NUMERIC,
+      requires_approval BOOLEAN DEFAULT FALSE,
+      approved_by TEXT, approved_at TIMESTAMPTZ,
+      rejected_by TEXT, rejected_at TIMESTAMPTZ, rejection_reason TEXT,
+      payment_status TEXT DEFAULT 'unpaid',   -- unpaid | paid
+      payment_mode TEXT,                       -- UPI | Bank | Cash | Cheque
+      payment_date DATE,
+      notes TEXT,
+      reported_at TIMESTAMPTZ DEFAULT NOW(),
+      picked_up_at TIMESTAMPTZ, returned_at TIMESTAMPTZ,
+      paid_at TIMESTAMPTZ, cancelled_at TIMESTAMPTZ,
+      created_by TEXT, updated_at TIMESTAMPTZ DEFAULT NOW()
+    )`;
   await sql`
     CREATE TABLE IF NOT EXISTS config_departments (
       id TEXT PRIMARY KEY, name TEXT NOT NULL UNIQUE, created_at TIMESTAMPTZ DEFAULT NOW()
@@ -1810,6 +1846,251 @@ app.patch('/api/expenses/:id', async (req, res) => {
     else if (status==='rejected') notifyEmployeeUser(e.employee_id,'expense_rejected','Expense Not Approved',`Your ${e.category} expense was not approved.${rejection_reason?` Reason: ${rejection_reason}`:''}`).catch(()=>{});
     else if (status==='paid') notifyEmployeeUser(e.employee_id,'expense_paid','Expense Reimbursed 💸',`Your ${e.category} expense of ₹${Number(e.approved_amount??e.amount).toLocaleString('en-IN')} has been reimbursed.${payment_note?` Note: ${payment_note}`:''}`).catch(()=>{});
     res.json(e);
+  } catch (e: any) { res.status(500).json({ error: e.message }); }
+});
+
+// ── IT Asset & Repairs ────────────────────────────────────────────────────
+// Approval threshold: repairs costing more than this require admin approval before being marked paid
+const REPAIR_APPROVAL_THRESHOLD = 10000;
+
+async function ensureRepairTables() {
+  await sql`CREATE TABLE IF NOT EXISTS vendors (id TEXT PRIMARY KEY, name TEXT NOT NULL, contact_person TEXT, phone TEXT, email TEXT, gst_no TEXT, address TEXT, notes TEXT, active BOOLEAN DEFAULT TRUE, created_at TIMESTAMPTZ DEFAULT NOW())`.catch(()=>{});
+  await sql`CREATE TABLE IF NOT EXISTS assets (id TEXT PRIMARY KEY, asset_tag TEXT UNIQUE NOT NULL, model TEXT, serial_no TEXT, purchase_date DATE, assigned_to_id TEXT, assigned_to_name TEXT, status TEXT DEFAULT 'active', notes TEXT, created_at TIMESTAMPTZ DEFAULT NOW())`.catch(()=>{});
+  await sql`CREATE TABLE IF NOT EXISTS repair_tickets (id TEXT PRIMARY KEY, asset_id TEXT, laptop_info TEXT, employee_id TEXT, employee_name TEXT, vendor_id TEXT, issue TEXT NOT NULL, status TEXT DEFAULT 'reported', quoted_cost NUMERIC, final_cost NUMERIC, requires_approval BOOLEAN DEFAULT FALSE, approved_by TEXT, approved_at TIMESTAMPTZ, rejected_by TEXT, rejected_at TIMESTAMPTZ, rejection_reason TEXT, payment_status TEXT DEFAULT 'unpaid', payment_mode TEXT, payment_date DATE, notes TEXT, reported_at TIMESTAMPTZ DEFAULT NOW(), picked_up_at TIMESTAMPTZ, returned_at TIMESTAMPTZ, paid_at TIMESTAMPTZ, cancelled_at TIMESTAMPTZ, created_by TEXT, updated_at TIMESTAMPTZ DEFAULT NOW())`.catch(()=>{});
+}
+
+// ── Vendors ───────────────────────────────────────────────────────────────
+app.get('/api/vendors', async (_req, res) => {
+  try {
+    await ensureRepairTables();
+    res.json(await sql`SELECT * FROM vendors ORDER BY created_at DESC`);
+  } catch (e: any) { res.status(500).json({ error: e.message }); }
+});
+
+app.post('/api/vendors', async (req, res) => {
+  try {
+    await ensureRepairTables();
+    const { name, contact_person, phone, email, gst_no, address, notes } = req.body;
+    if (!name?.trim()) return res.status(400).json({ error: 'Vendor name is required' });
+    const id = `vend_${Date.now()}`;
+    const rows = await sql`INSERT INTO vendors (id, name, contact_person, phone, email, gst_no, address, notes) VALUES (${id}, ${name.trim()}, ${contact_person ?? null}, ${phone ?? null}, ${email ?? null}, ${gst_no ?? null}, ${address ?? null}, ${notes ?? null}) RETURNING *`;
+    res.status(201).json((rows as any[])[0]);
+  } catch (e: any) { res.status(500).json({ error: e.message }); }
+});
+
+app.put('/api/vendors/:id', async (req, res) => {
+  try {
+    const { name, contact_person, phone, email, gst_no, address, notes, active } = req.body;
+    const rows = await sql`UPDATE vendors SET name=${name}, contact_person=${contact_person ?? null}, phone=${phone ?? null}, email=${email ?? null}, gst_no=${gst_no ?? null}, address=${address ?? null}, notes=${notes ?? null}, active=${active ?? true} WHERE id=${req.params.id} RETURNING *`;
+    if (!(rows as any[]).length) return res.status(404).json({ error: 'Vendor not found' });
+    res.json((rows as any[])[0]);
+  } catch (e: any) { res.status(500).json({ error: e.message }); }
+});
+
+app.delete('/api/vendors/:id', async (req, res) => {
+  try {
+    await sql`DELETE FROM vendors WHERE id=${req.params.id}`;
+    res.json({ success: true });
+  } catch (e: any) { res.status(500).json({ error: e.message }); }
+});
+
+// ── Assets ────────────────────────────────────────────────────────────────
+app.get('/api/assets', async (req, res) => {
+  try {
+    await ensureRepairTables();
+    const { assigned_to_id } = req.query as any;
+    if (assigned_to_id) {
+      res.json(await sql`SELECT * FROM assets WHERE assigned_to_id=${assigned_to_id} ORDER BY asset_tag ASC`);
+    } else {
+      res.json(await sql`SELECT * FROM assets ORDER BY asset_tag ASC`);
+    }
+  } catch (e: any) { res.status(500).json({ error: e.message }); }
+});
+
+app.post('/api/assets', async (req, res) => {
+  try {
+    await ensureRepairTables();
+    const { asset_tag, model, serial_no, purchase_date, assigned_to_id, assigned_to_name, status, notes } = req.body;
+    if (!asset_tag?.trim()) return res.status(400).json({ error: 'Asset tag is required' });
+    const id = `asset_${Date.now()}`;
+    const rows = await sql`INSERT INTO assets (id, asset_tag, model, serial_no, purchase_date, assigned_to_id, assigned_to_name, status, notes) VALUES (${id}, ${asset_tag.trim()}, ${model ?? null}, ${serial_no ?? null}, ${purchase_date ?? null}, ${assigned_to_id ?? null}, ${assigned_to_name ?? null}, ${status ?? 'active'}, ${notes ?? null}) RETURNING *`;
+    res.status(201).json((rows as any[])[0]);
+  } catch (e: any) {
+    if (e.message?.includes('unique')) return res.status(409).json({ error: 'Asset tag already exists' });
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.put('/api/assets/:id', async (req, res) => {
+  try {
+    const { asset_tag, model, serial_no, purchase_date, assigned_to_id, assigned_to_name, status, notes } = req.body;
+    const rows = await sql`UPDATE assets SET asset_tag=${asset_tag}, model=${model ?? null}, serial_no=${serial_no ?? null}, purchase_date=${purchase_date ?? null}, assigned_to_id=${assigned_to_id ?? null}, assigned_to_name=${assigned_to_name ?? null}, status=${status ?? 'active'}, notes=${notes ?? null} WHERE id=${req.params.id} RETURNING *`;
+    if (!(rows as any[]).length) return res.status(404).json({ error: 'Asset not found' });
+    res.json((rows as any[])[0]);
+  } catch (e: any) { res.status(500).json({ error: e.message }); }
+});
+
+app.delete('/api/assets/:id', async (req, res) => {
+  try {
+    await sql`DELETE FROM assets WHERE id=${req.params.id}`;
+    res.json({ success: true });
+  } catch (e: any) { res.status(500).json({ error: e.message }); }
+});
+
+// ── Repair tickets ────────────────────────────────────────────────────────
+app.get('/api/repair-tickets', async (req, res) => {
+  try {
+    await ensureRepairTables();
+    const { employee_id } = req.query as any;
+    if (employee_id) {
+      res.json(await sql`SELECT * FROM repair_tickets WHERE employee_id=${employee_id} ORDER BY reported_at DESC`);
+    } else {
+      res.json(await sql`SELECT * FROM repair_tickets ORDER BY reported_at DESC`);
+    }
+  } catch (e: any) { res.status(500).json({ error: e.message }); }
+});
+
+app.post('/api/repair-tickets', async (req, res) => {
+  try {
+    await ensureRepairTables();
+    const { asset_id, laptop_info, employee_id, employee_name, vendor_id, issue, quoted_cost, notes, created_by } = req.body;
+    if (!issue?.trim()) return res.status(400).json({ error: 'Issue description is required' });
+    if (!employee_id) return res.status(400).json({ error: 'Employee is required' });
+    const id = `rep_${Date.now()}`;
+    const rows = await sql`INSERT INTO repair_tickets (id, asset_id, laptop_info, employee_id, employee_name, vendor_id, issue, quoted_cost, notes, created_by) VALUES (${id}, ${asset_id ?? null}, ${laptop_info ?? null}, ${employee_id}, ${employee_name ?? null}, ${vendor_id ?? null}, ${issue.trim()}, ${quoted_cost ?? null}, ${notes ?? null}, ${created_by ?? null}) RETURNING *`;
+    // Mark asset as in_repair if linked
+    if (asset_id) await sql`UPDATE assets SET status='in_repair' WHERE id=${asset_id}`.catch(()=>{});
+    const ticket = (rows as any[])[0];
+    // Notifications
+    notifyAdminsAndHR('repair_ticket_created', 'New Repair Ticket', `${employee_name ?? 'An employee'}'s laptop reported for repair: ${issue.trim().slice(0, 60)}${issue.length > 60 ? '…' : ''}`).catch(()=>{});
+    if (employee_id) notifyEmployeeUser(employee_id, 'repair_ticket_created', 'Repair Ticket Logged', `Your laptop has been logged for repair. Issue: ${issue.trim().slice(0, 60)}${issue.length > 60 ? '…' : ''}`).catch(()=>{});
+    res.status(201).json(ticket);
+  } catch (e: any) { res.status(500).json({ error: e.message }); }
+});
+
+// Status transition + edits
+app.patch('/api/repair-tickets/:id', async (req, res) => {
+  try {
+    const { status, asset_id, laptop_info, vendor_id, issue, quoted_cost, final_cost, payment_mode, payment_date, notes, updated_by_role } = req.body;
+    const current = await sql`SELECT * FROM repair_tickets WHERE id=${req.params.id}` as any[];
+    if (!current.length) return res.status(404).json({ error: 'Ticket not found' });
+    const t = current[0];
+
+    // Build the update incrementally — only fields provided in the body
+    const updates: any = {
+      asset_id:    asset_id    !== undefined ? asset_id    : t.asset_id,
+      laptop_info: laptop_info !== undefined ? laptop_info : t.laptop_info,
+      vendor_id:   vendor_id   !== undefined ? vendor_id   : t.vendor_id,
+      issue:       issue       !== undefined ? issue       : t.issue,
+      quoted_cost: quoted_cost !== undefined ? quoted_cost : t.quoted_cost,
+      final_cost:  final_cost  !== undefined ? final_cost  : t.final_cost,
+      payment_mode: payment_mode !== undefined ? payment_mode : t.payment_mode,
+      payment_date: payment_date !== undefined ? payment_date : t.payment_date,
+      notes:       notes       !== undefined ? notes       : t.notes,
+    };
+
+    // Status transitions — track timestamp on each move
+    let newStatus = status ?? t.status;
+    let pickedUpAt = t.picked_up_at, returnedAt = t.returned_at, paidAt = t.paid_at, cancelledAt = t.cancelled_at;
+    let requiresApproval = t.requires_approval;
+
+    if (status && status !== t.status) {
+      const now = new Date().toISOString();
+      if (status === 'picked_up')        pickedUpAt = now;
+      else if (status === 'returned')    returnedAt = now;
+      else if (status === 'cancelled')   cancelledAt = now;
+      else if (status === 'paid') {
+        // Approval check — admin can pay anything; HR needs admin approval above threshold
+        const cost = Number(updates.final_cost ?? updates.quoted_cost ?? 0);
+        if (cost > REPAIR_APPROVAL_THRESHOLD && updated_by_role !== 'admin' && !t.approved_at) {
+          newStatus = 'awaiting_approval';
+          requiresApproval = true;
+          notifyAdminsAndHR('repair_approval_needed', 'Repair Payment Needs Approval',
+            `${t.employee_name}'s laptop repair of ₹${Number(cost).toLocaleString('en-IN')} exceeds the ₹${REPAIR_APPROVAL_THRESHOLD.toLocaleString('en-IN')} threshold and needs admin approval.`).catch(()=>{});
+        } else {
+          paidAt = now;
+        }
+      }
+    }
+
+    const upd = await sql`
+      UPDATE repair_tickets SET
+        status=${newStatus},
+        asset_id=${updates.asset_id}, laptop_info=${updates.laptop_info},
+        vendor_id=${updates.vendor_id}, issue=${updates.issue},
+        quoted_cost=${updates.quoted_cost}, final_cost=${updates.final_cost},
+        payment_mode=${updates.payment_mode}, payment_date=${updates.payment_date},
+        notes=${updates.notes},
+        requires_approval=${requiresApproval},
+        payment_status=${newStatus === 'paid' ? 'paid' : t.payment_status},
+        picked_up_at=${pickedUpAt}, returned_at=${returnedAt},
+        paid_at=${paidAt}, cancelled_at=${cancelledAt},
+        updated_at=NOW()
+      WHERE id=${req.params.id} RETURNING *
+    ` as any[];
+
+    const updated = upd[0];
+
+    // Mark asset status accordingly
+    if (updated.asset_id) {
+      if (newStatus === 'returned' || newStatus === 'paid')
+        await sql`UPDATE assets SET status='active' WHERE id=${updated.asset_id}`.catch(()=>{});
+      else if (newStatus === 'picked_up')
+        await sql`UPDATE assets SET status='in_repair' WHERE id=${updated.asset_id}`.catch(()=>{});
+      else if (newStatus === 'cancelled')
+        await sql`UPDATE assets SET status='active' WHERE id=${updated.asset_id}`.catch(()=>{});
+    }
+
+    // Notifications on status change
+    if (status && status !== t.status && updated.employee_id) {
+      const msgs: Record<string, string> = {
+        picked_up: 'Your laptop has been picked up by the vendor for repair.',
+        returned:  'Your laptop has been returned. Please verify it.',
+        paid:      'Your laptop repair has been marked as paid. All done!',
+        cancelled: 'Your repair ticket has been cancelled.',
+        awaiting_approval: 'Your repair payment is awaiting admin approval due to high cost.',
+      };
+      if (msgs[newStatus]) {
+        notifyEmployeeUser(updated.employee_id, `repair_${newStatus}`, 'Laptop Repair Update', msgs[newStatus]).catch(()=>{});
+      }
+    }
+
+    res.json(updated);
+  } catch (e: any) { res.status(500).json({ error: e.message }); }
+});
+
+// Admin approve — moves awaiting_approval → paid
+app.patch('/api/repair-tickets/:id/approve', async (req, res) => {
+  try {
+    const { approved_by } = req.body;
+    const rows = await sql`UPDATE repair_tickets SET status='paid', payment_status='paid', approved_by=${approved_by ?? null}, approved_at=NOW(), paid_at=NOW(), updated_at=NOW() WHERE id=${req.params.id} RETURNING *` as any[];
+    if (!rows.length) return res.status(404).json({ error: 'Ticket not found' });
+    const t = rows[0];
+    if (t.asset_id) await sql`UPDATE assets SET status='active' WHERE id=${t.asset_id}`.catch(()=>{});
+    if (t.employee_id) notifyEmployeeUser(t.employee_id, 'repair_paid', 'Laptop Repair Update', `Your laptop repair payment has been approved and marked as paid.`).catch(()=>{});
+    notifyAdminsAndHR('repair_paid', 'Repair Payment Approved', `${t.employee_name}'s repair (₹${Number(t.final_cost ?? 0).toLocaleString('en-IN')}) approved & paid.`).catch(()=>{});
+    res.json(t);
+  } catch (e: any) { res.status(500).json({ error: e.message }); }
+});
+
+// Admin reject — moves awaiting_approval → returned (HR can retry with revised cost)
+app.patch('/api/repair-tickets/:id/reject', async (req, res) => {
+  try {
+    const { rejected_by, rejection_reason } = req.body;
+    const rows = await sql`UPDATE repair_tickets SET status='returned', rejected_by=${rejected_by ?? null}, rejected_at=NOW(), rejection_reason=${rejection_reason ?? null}, requires_approval=FALSE, updated_at=NOW() WHERE id=${req.params.id} RETURNING *` as any[];
+    if (!rows.length) return res.status(404).json({ error: 'Ticket not found' });
+    const t = rows[0];
+    notifyAdminsAndHR('repair_rejected', 'Repair Payment Rejected', `${t.employee_name}'s repair payment was rejected by ${rejected_by}.${rejection_reason ? ' Reason: ' + rejection_reason : ''}`).catch(()=>{});
+    res.json(t);
+  } catch (e: any) { res.status(500).json({ error: e.message }); }
+});
+
+app.delete('/api/repair-tickets/:id', async (req, res) => {
+  try {
+    const rows = await sql`SELECT asset_id FROM repair_tickets WHERE id=${req.params.id}` as any[];
+    await sql`DELETE FROM repair_tickets WHERE id=${req.params.id}`;
+    if (rows[0]?.asset_id) await sql`UPDATE assets SET status='active' WHERE id=${rows[0].asset_id}`.catch(()=>{});
+    res.json({ success: true });
   } catch (e: any) { res.status(500).json({ error: e.message }); }
 });
 

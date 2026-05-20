@@ -30,6 +30,7 @@ export default function Dashboard() {
   const [leaveRequests, setLeaveRequests] = useState<any[]>([]);
   const [payroll, setPayroll] = useState<any[]>([]);
   const [attendance, setAttendance] = useState<any[]>([]);
+  const [repairTickets, setRepairTickets] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [approvingLeave, setApprovingLeave] = useState<Record<string, boolean>>({});
 
@@ -45,11 +46,13 @@ export default function Dashboard() {
       api.getLeaveRequests(),
       api.getPayroll({ month: currentMonthName, year: currentYear }),
       api.getAttendance({ month: currentMonth, year: currentYear }),
-    ]).then(([emps, leaves, pay, att]) => {
+      api.getRepairTickets().catch(() => []),
+    ]).then(([emps, leaves, pay, att, tickets]) => {
       setEmployees(emps);
       setLeaveRequests(leaves);
       setPayroll(pay);
       setAttendance(att);
+      setRepairTickets(tickets);
     }).finally(() => setLoading(false));
   }, []);
 
@@ -163,6 +166,34 @@ export default function Dashboard() {
           </div>
         ))}
       </div>
+
+      {/* IT Repairs alert — only shown when there's activity */}
+      {(() => {
+        const inRepair = repairTickets.filter(t => ['picked_up', 'returned'].includes(t.status)).length;
+        const awaitingApproval = repairTickets.filter(t => t.status === 'awaiting_approval').length;
+        const unpaid = repairTickets.filter(t => t.status !== 'paid' && t.status !== 'cancelled')
+          .reduce((s, t) => s + Number(t.final_cost ?? t.quoted_cost ?? 0), 0);
+        if (inRepair === 0 && awaitingApproval === 0 && unpaid === 0) return null;
+        return (
+          <a href="/asset-repairs" className="flex items-center gap-3 px-4 py-3 rounded-xl border border-amber-100 bg-amber-50 hover:bg-amber-100/50 transition-colors group">
+            <div className="w-10 h-10 rounded-xl bg-amber-100 flex items-center justify-center flex-shrink-0">
+              <span className="text-lg">🔧</span>
+            </div>
+            <div className="flex-1 min-w-0 flex flex-wrap items-center gap-x-4 gap-y-1">
+              {inRepair > 0 && (
+                <span className="text-sm text-amber-900"><strong className="font-bold">{inRepair}</strong> {inRepair === 1 ? 'laptop' : 'laptops'} in repair</span>
+              )}
+              {awaitingApproval > 0 && (
+                <span className="text-sm text-red-700"><strong className="font-bold">{awaitingApproval}</strong> awaiting approval</span>
+              )}
+              {unpaid > 0 && (
+                <span className="text-sm text-amber-900"><strong className="font-bold">₹{unpaid.toLocaleString('en-IN')}</strong> unpaid</span>
+              )}
+            </div>
+            <span className="text-xs font-semibold text-amber-700 group-hover:underline">View →</span>
+          </a>
+        );
+      })()}
 
       {/* Attendance trend + Dept distribution */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">

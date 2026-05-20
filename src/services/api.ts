@@ -155,6 +155,28 @@ export const api = {
   reviewExpense: (id: string, data: { status: string; reviewed_by?: string; rejection_reason?: string; approved_amount?: number; payment_note?: string }) =>
     request<any>(`/expenses/${id}`, { method: 'PATCH', body: JSON.stringify(data) }),
 
+  // ── IT Assets & Repairs ─────────────────────────────────────────────────
+  getVendors: () => request<any[]>('/vendors'),
+  createVendor: (data: any) => request<any>('/vendors', { method: 'POST', body: JSON.stringify(data) }),
+  updateVendor: (id: string, data: any) => request<any>(`/vendors/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
+  deleteVendor: (id: string) => request<any>(`/vendors/${id}`, { method: 'DELETE' }),
+
+  getAssets: (assignedToId?: string) =>
+    request<any[]>(`/assets${assignedToId ? `?assigned_to_id=${assignedToId}` : ''}`),
+  createAsset: (data: any) => request<any>('/assets', { method: 'POST', body: JSON.stringify(data) }),
+  updateAsset: (id: string, data: any) => request<any>(`/assets/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
+  deleteAsset: (id: string) => request<any>(`/assets/${id}`, { method: 'DELETE' }),
+
+  getRepairTickets: (employeeId?: string) =>
+    request<any[]>(`/repair-tickets${employeeId ? `?employee_id=${employeeId}` : ''}`),
+  createRepairTicket: (data: any) => request<any>('/repair-tickets', { method: 'POST', body: JSON.stringify(data) }),
+  updateRepairTicket: (id: string, data: any) => request<any>(`/repair-tickets/${id}`, { method: 'PATCH', body: JSON.stringify(data) }),
+  approveRepairTicket: (id: string, approved_by?: string) =>
+    request<any>(`/repair-tickets/${id}/approve`, { method: 'PATCH', body: JSON.stringify({ approved_by }) }),
+  rejectRepairTicket: (id: string, rejected_by?: string, rejection_reason?: string) =>
+    request<any>(`/repair-tickets/${id}/reject`, { method: 'PATCH', body: JSON.stringify({ rejected_by, rejection_reason }) }),
+  deleteRepairTicket: (id: string) => request<any>(`/repair-tickets/${id}`, { method: 'DELETE' }),
+
   // Warnings & PIP
   getWarnings: (employeeId?: string) =>
     request<any[]>(`/warnings${employeeId ? `?employee_id=${employeeId}` : ''}`),

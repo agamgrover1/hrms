@@ -1,4 +1,4 @@
-import { Bell, ChevronDown, LogOut, CheckCircle, Calendar, TrendingUp, FileText, Target, XCircle, Award, Check, Trash2, AlertTriangle, ShieldAlert, KeyRound, Eye, EyeOff } from 'lucide-react';
+import { Bell, ChevronDown, LogOut, CheckCircle, Calendar, TrendingUp, FileText, Target, XCircle, Award, Check, Trash2, AlertTriangle, ShieldAlert, KeyRound, Eye, EyeOff, Wrench } from 'lucide-react';
 import { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../../context/AuthContext';
@@ -84,6 +84,18 @@ function getNotifRoute(type: string, role: string): string {
     case 'expense_paid':
       return '/my?tab=expenses';
 
+    // ── IT Repairs ─────────────────────────────────────────────────────────────
+    case 'repair_ticket_created':
+    case 'repair_approval_needed':
+    case 'repair_rejected':
+      return isHR ? '/asset-repairs' : '/my?tab=device';
+    case 'repair_picked_up':
+    case 'repair_returned':
+    case 'repair_paid':
+    case 'repair_cancelled':
+    case 'repair_awaiting_approval':
+      return isHR ? '/asset-repairs' : '/my?tab=device';
+
     // ── General ────────────────────────────────────────────────────────────────
     case 'info':
       return isHR ? '/' : '/my';
@@ -122,6 +134,15 @@ const TYPE_CONFIG: Record<string, { icon: any; color: string; bg: string }> = {
   upsell_paid:             { icon: Award,          color: '#d97706', bg: '#fffbeb' },
   expense_submitted:       { icon: FileText,       color: '#2563eb', bg: '#eff6ff' },
   expense_approved:        { icon: CheckCircle,    color: '#15803d', bg: '#f0fdf4' },
+  // IT Repairs
+  repair_ticket_created:   { icon: Wrench,         color: '#b45309', bg: '#fffbeb' },
+  repair_picked_up:        { icon: Wrench,         color: '#2563eb', bg: '#eff6ff' },
+  repair_returned:         { icon: CheckCircle,    color: '#15803d', bg: '#f0fdf4' },
+  repair_awaiting_approval:{ icon: AlertTriangle,  color: '#dc2626', bg: '#fef2f2' },
+  repair_approval_needed:  { icon: AlertTriangle,  color: '#dc2626', bg: '#fef2f2' },
+  repair_paid:             { icon: Award,          color: '#7c3aed', bg: '#f5f3ff' },
+  repair_rejected:         { icon: XCircle,        color: '#dc2626', bg: '#fef2f2' },
+  repair_cancelled:        { icon: XCircle,        color: '#6b7280', bg: '#f3f4f6' },
   expense_rejected:        { icon: XCircle,        color: '#dc2626', bg: '#fef2f2' },
   expense_paid:            { icon: Award,          color: '#7c3aed', bg: '#f5f3ff' },
   // General
