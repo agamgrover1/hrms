@@ -1881,7 +1881,8 @@ app.post('/api/vendors', async (req, res) => {
 app.put('/api/vendors/:id', async (req, res) => {
   try {
     const { name, contact_person, phone, email, gst_no, address, notes, active } = req.body;
-    const rows = await sql`UPDATE vendors SET name=${name}, contact_person=${contact_person ?? null}, phone=${phone ?? null}, email=${email ?? null}, gst_no=${gst_no ?? null}, address=${address ?? null}, notes=${notes ?? null}, active=${active ?? true} WHERE id=${req.params.id} RETURNING *`;
+    if (!name?.trim()) return res.status(400).json({ error: 'Vendor name is required' });
+    const rows = await sql`UPDATE vendors SET name=${name.trim()}, contact_person=${contact_person ?? null}, phone=${phone ?? null}, email=${email ?? null}, gst_no=${gst_no ?? null}, address=${address ?? null}, notes=${notes ?? null}, active=${active ?? true} WHERE id=${req.params.id} RETURNING *`;
     if (!(rows as any[]).length) return res.status(404).json({ error: 'Vendor not found' });
     res.json((rows as any[])[0]);
   } catch (e: any) { res.status(500).json({ error: e.message }); }
@@ -1924,10 +1925,16 @@ app.post('/api/assets', async (req, res) => {
 app.put('/api/assets/:id', async (req, res) => {
   try {
     const { asset_tag, model, serial_no, purchase_date, assigned_to_id, assigned_to_name, status, notes } = req.body;
-    const rows = await sql`UPDATE assets SET asset_tag=${asset_tag}, model=${model ?? null}, serial_no=${serial_no ?? null}, purchase_date=${purchase_date ?? null}, assigned_to_id=${assigned_to_id ?? null}, assigned_to_name=${assigned_to_name ?? null}, status=${status ?? 'active'}, notes=${notes ?? null} WHERE id=${req.params.id} RETURNING *`;
+    if (!asset_tag?.trim()) return res.status(400).json({ error: 'Asset tag is required' });
+    const rows = await sql`UPDATE assets SET asset_tag=${asset_tag.trim()}, model=${model ?? null}, serial_no=${serial_no ?? null}, purchase_date=${purchase_date ?? null}, assigned_to_id=${assigned_to_id ?? null}, assigned_to_name=${assigned_to_name ?? null}, status=${status ?? 'active'}, notes=${notes ?? null} WHERE id=${req.params.id} RETURNING *`;
     if (!(rows as any[]).length) return res.status(404).json({ error: 'Asset not found' });
     res.json((rows as any[])[0]);
-  } catch (e: any) { res.status(500).json({ error: e.message }); }
+  } catch (e: any) {
+    if (e.message?.includes('unique') || e.message?.includes('duplicate')) {
+      return res.status(409).json({ error: 'Asset tag already exists' });
+    }
+    res.status(500).json({ error: e.message });
+  }
 });
 
 app.delete('/api/assets/:id', async (req, res) => {
@@ -1956,6 +1963,16 @@ app.post('/api/repair-tickets', async (req, res) => {
     const { asset_id, laptop_info, employee_id, employee_name, vendor_id, issue, quoted_cost, notes, created_by } = req.body;
     if (!issue?.trim()) return res.status(400).json({ error: 'Issue description is required' });
     if (!employee_id) return res.status(400).json({ error: 'Employee is required' });
+    if (quoted_cost != null && quoted_cost !== '' && Number(quoted_cost) < 0) {
+      return res.status(400).json({ error: 'Cost cannot be negative' });
+    }
+    // Prevent multiple open tickets for the same asset — keeps asset.status consistent
+    if (asset_id) {
+      const openRows = await sql`SELECT id FROM repair_tickets WHERE asset_id=${asset_id} AND status NOT IN ('paid','cancelled')`;
+      if ((openRows as any[]).length > 0) {
+        return res.status(409).json({ error: 'This asset already has an open repair ticket. Close or cancel the existing one first.' });
+      }
+    }
     const id = `rep_${Date.now()}`;
     const rows = await sql`INSERT INTO repair_tickets (id, asset_id, laptop_info, employee_id, employee_name, vendor_id, issue, quoted_cost, notes, created_by) VALUES (${id}, ${asset_id ?? null}, ${laptop_info ?? null}, ${employee_id}, ${employee_name ?? null}, ${vendor_id ?? null}, ${issue.trim()}, ${quoted_cost ?? null}, ${notes ?? null}, ${created_by ?? null}) RETURNING *`;
     // Mark asset as in_repair if linked
@@ -1972,6 +1989,12 @@ app.post('/api/repair-tickets', async (req, res) => {
 app.patch('/api/repair-tickets/:id', async (req, res) => {
   try {
     const { status, asset_id, laptop_info, vendor_id, issue, quoted_cost, final_cost, payment_mode, payment_date, notes, updated_by_role } = req.body;
+    if (quoted_cost != null && quoted_cost !== '' && Number(quoted_cost) < 0) {
+      return res.status(400).json({ error: 'Quoted cost cannot be negative' });
+    }
+    if (final_cost != null && final_cost !== '' && Number(final_cost) < 0) {
+      return res.status(400).json({ error: 'Final cost cannot be negative' });
+    }
     const current = await sql`SELECT * FROM repair_tickets WHERE id=${req.params.id}` as any[];
     if (!current.length) return res.status(404).json({ error: 'Ticket not found' });
     const t = current[0];

@@ -3,6 +3,7 @@ import {
   AreaChart, Area, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, PieChart, Pie, Cell
 } from 'recharts';
 import { Users, Calendar, DollarSign, TrendingUp, AlertCircle, CheckCircle2, UserCheck } from 'lucide-react';
+import { Link } from 'react-router-dom';
 import { api } from '../services/api';
 import { useAuth } from '../context/AuthContext';
 
@@ -167,31 +168,35 @@ export default function Dashboard() {
         ))}
       </div>
 
-      {/* IT Repairs alert — only shown when there's activity */}
+      {/* IT Repairs alert — shown when there's any open ticket activity */}
       {(() => {
-        const inRepair = repairTickets.filter(t => ['picked_up', 'returned'].includes(t.status)).length;
-        const awaitingApproval = repairTickets.filter(t => t.status === 'awaiting_approval').length;
-        const unpaid = repairTickets.filter(t => t.status !== 'paid' && t.status !== 'cancelled')
-          .reduce((s, t) => s + Number(t.final_cost ?? t.quoted_cost ?? 0), 0);
-        if (inRepair === 0 && awaitingApproval === 0 && unpaid === 0) return null;
+        const openTickets       = repairTickets.filter(t => !['paid', 'cancelled'].includes(t.status));
+        const inRepair          = openTickets.filter(t => ['picked_up', 'returned'].includes(t.status)).length;
+        const reported          = openTickets.filter(t => t.status === 'reported').length;
+        const awaitingApproval  = openTickets.filter(t => t.status === 'awaiting_approval').length;
+        const unpaid = openTickets.reduce((s, t) => s + Number(t.final_cost ?? t.quoted_cost ?? 0), 0);
+        if (openTickets.length === 0) return null;
         return (
-          <a href="/asset-repairs" className="flex items-center gap-3 px-4 py-3 rounded-xl border border-amber-100 bg-amber-50 hover:bg-amber-100/50 transition-colors group">
+          <Link to="/asset-repairs" className="flex items-center gap-3 px-4 py-3 rounded-xl border border-amber-100 bg-amber-50 hover:bg-amber-100/50 transition-colors group">
             <div className="w-10 h-10 rounded-xl bg-amber-100 flex items-center justify-center flex-shrink-0">
               <span className="text-lg">🔧</span>
             </div>
             <div className="flex-1 min-w-0 flex flex-wrap items-center gap-x-4 gap-y-1">
+              {reported > 0 && (
+                <span className="text-sm text-amber-900"><strong className="font-bold">{reported}</strong> new</span>
+              )}
               {inRepair > 0 && (
-                <span className="text-sm text-amber-900"><strong className="font-bold">{inRepair}</strong> {inRepair === 1 ? 'laptop' : 'laptops'} in repair</span>
+                <span className="text-sm text-amber-900"><strong className="font-bold">{inRepair}</strong> in repair</span>
               )}
               {awaitingApproval > 0 && (
-                <span className="text-sm text-red-700"><strong className="font-bold">{awaitingApproval}</strong> awaiting approval</span>
+                <span className="text-sm text-red-700"><strong className="font-bold">{awaitingApproval}</strong> need approval</span>
               )}
               {unpaid > 0 && (
                 <span className="text-sm text-amber-900"><strong className="font-bold">₹{unpaid.toLocaleString('en-IN')}</strong> unpaid</span>
               )}
             </div>
             <span className="text-xs font-semibold text-amber-700 group-hover:underline">View →</span>
-          </a>
+          </Link>
         );
       })()}
 

@@ -684,6 +684,8 @@ function TicketFormModal({ initial, employees, vendors, assets, currentUser, onC
   const handleSave = async () => {
     if (!form.employee_id) { setError('Select an employee'); return; }
     if (!form.issue.trim()) { setError('Issue description is required'); return; }
+    if (form.quoted_cost && Number(form.quoted_cost) < 0) { setError('Quoted cost cannot be negative'); return; }
+    if (form.final_cost && Number(form.final_cost) < 0)   { setError('Final cost cannot be negative');   return; }
     setSaving(true); setError('');
     try {
       const emp = employees.find((e: any) => e.id === form.employee_id);
@@ -758,9 +760,14 @@ function TicketFormModal({ initial, employees, vendors, assets, currentUser, onC
           <select value={form.vendor_id} onChange={e => setForm({ ...form, vendor_id: e.target.value })}
             className="w-full text-sm border border-gray-200 rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-primary-200 bg-white">
             <option value="">— No vendor assigned yet —</option>
-            {vendors.filter((v: any) => v.active).map((v: any) => (
-              <option key={v.id} value={v.id}>{v.name}</option>
-            ))}
+            {/* Include inactive vendors so existing tickets referencing them can still be edited */}
+            {vendors
+              .filter((v: any) => v.active || v.id === form.vendor_id)
+              .map((v: any) => (
+                <option key={v.id} value={v.id}>
+                  {v.name}{!v.active ? ' (inactive)' : ''}
+                </option>
+              ))}
           </select>
         </div>
 
@@ -774,12 +781,12 @@ function TicketFormModal({ initial, employees, vendors, assets, currentUser, onC
         <div className="grid grid-cols-2 gap-3">
           <div>
             <label className="text-xs font-semibold text-gray-500 block mb-1">Quoted Cost (₹)</label>
-            <input type="number" value={form.quoted_cost} onChange={e => setForm({ ...form, quoted_cost: e.target.value })} placeholder="Initial estimate"
+            <input type="number" min="0" value={form.quoted_cost} onChange={e => setForm({ ...form, quoted_cost: e.target.value })} placeholder="Initial estimate"
               className="w-full text-sm border border-gray-200 rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-primary-200"/>
           </div>
           <div>
             <label className="text-xs font-semibold text-gray-500 block mb-1">Final Cost (₹)</label>
-            <input type="number" value={form.final_cost} onChange={e => setForm({ ...form, final_cost: e.target.value })} placeholder="After repair"
+            <input type="number" min="0" value={form.final_cost} onChange={e => setForm({ ...form, final_cost: e.target.value })} placeholder="After repair"
               className="w-full text-sm border border-gray-200 rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-primary-200"/>
           </div>
         </div>
