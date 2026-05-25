@@ -1,4 +1,4 @@
-@import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=Inter:wght@400;500;600;700;800&family=IBM+Plex+Mono:wght@400;500;600;700&display=swap');
 
 @tailwind base;
 @tailwind components;
@@ -209,7 +209,7 @@ input, select, textarea, button { transition: none; }
 
 /* Tabular numerals utility — bigger stats look better with monospace digits */
 .num-mono {
-  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  font-family: 'IBM Plex Mono', ui-monospace, monospace;
   font-variant-numeric: tabular-nums;
   letter-spacing: -0.02em;
 }

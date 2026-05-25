@@ -408,8 +408,8 @@ export default function Dashboard() {
             <ResponsiveContainer width="100%" height={140}>
               <BarChart data={headcountMonths} barSize={22}>
                 <CartesianGrid strokeDasharray="3 3" stroke={CHART_GRID} vertical={false} />
-                <XAxis dataKey="month" tick={{ fontSize: 11, fill: CHART_AXIS, fontFamily: 'JetBrains Mono' }} axisLine={false} tickLine={false} />
-                <YAxis tick={{ fontSize: 11, fill: CHART_AXIS, fontFamily: 'JetBrains Mono' }} axisLine={false} tickLine={false} domain={[0, yMax]} allowDecimals={false} />
+                <XAxis dataKey="month" tick={{ fontSize: 11, fill: CHART_AXIS, fontFamily: 'IBM Plex Mono' }} axisLine={false} tickLine={false} />
+                <YAxis tick={{ fontSize: 11, fill: CHART_AXIS, fontFamily: 'IBM Plex Mono' }} axisLine={false} tickLine={false} domain={[0, yMax]} allowDecimals={false} />
                 <Tooltip cursor={{ fill: CHART_GRID }} contentStyle={CHART_TOOLTIP_STYLE} itemStyle={{ color: CHART_TOOLTIP_TEXT }} labelStyle={{ color: CHART_TOOLTIP_TEXT }} />
                 <defs>
                   <linearGradient id="barGrad" x1="0" y1="0" x2="0" y2="1">
