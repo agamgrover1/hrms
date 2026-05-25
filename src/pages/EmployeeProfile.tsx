@@ -57,9 +57,9 @@ function addDays(dateVal: any, days: number): string {
 const MONTH_FULL  = ['January','February','March','April','May','June','July','August','September','October','November','December'];
 const MONTH_SHORT = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
 const STATUS_DOT: Record<string,string> = {
-  present:'bg-green-500', late:'bg-amber-500', absent:'bg-red-500',
+  present:'bg-success', late:'bg-warning', absent:'bg-danger',
   on_leave:'bg-violet-400', wfh:'bg-blue-400', wfh_half:'bg-pink-400',
-  holiday:'bg-purple-400', weekend:'bg-gray-300', short_leave:'bg-orange-400',
+  holiday:'bg-purple-400', weekend:'bg-on-surface-subtle', short_leave:'bg-orange-400',
   unpaid_leave:'bg-rose-400', 'half-day':'bg-sky-400',
 };
 const STATUS_LABEL: Record<string,string> = {
@@ -102,44 +102,47 @@ function ActionModal({ title, info, type, isIncentive, onClose, onConfirm }: {
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 backdrop-blur-sm p-4">
-      <div className="bg-white rounded-2xl shadow-2xl w-full max-w-sm p-6">
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-bg/55 backdrop-blur-sm p-4">
+      <div className="bg-surface rounded-2xl shadow-elev-4 border border-outline w-full max-w-sm p-6">
         <div className="flex items-center justify-between mb-4">
-          <h3 className="font-bold text-sm" style={{color:'#192250'}}>{title}</h3>
-          <button onClick={onClose}><X size={15} className="text-gray-400"/></button>
+          <h3 className="font-display text-sm font-bold tracking-tight text-on-surface">{title}</h3>
+          <button onClick={onClose}><X size={15} className="text-on-surface-subtle"/></button>
         </div>
-        <p className="text-xs text-gray-500 mb-4 bg-gray-50 rounded-lg px-3 py-2">{info}</p>
+        <p className="text-xs text-on-surface-muted mb-4 bg-surface-2 rounded-lg px-3 py-2">{info}</p>
         {type === 'approve' && (
           <div className="mb-3">
-            <label className="text-xs font-semibold text-gray-500 block mb-1">
+            <label className="text-xs font-semibold text-on-surface-muted block mb-1">
               {isIncentive ? 'Incentive Amount (₹) *' : 'Approved Amount (₹)'}
             </label>
             <input type="number" min="1" value={amt} onChange={e=>setAmt(e.target.value)}
               placeholder="Enter amount"
-              className="w-full text-sm border border-gray-200 rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-primary-200"/>
+              className="w-full text-sm bg-surface border border-outline rounded-lg px-3 py-2 focus:outline-none focus:border-accent focus:ring-2 focus:ring-accent/20"/>
           </div>
         )}
         {type === 'reject' && (
           <div className="mb-3">
-            <label className="text-xs font-semibold text-gray-500 block mb-1">Reason (optional)</label>
+            <label className="text-xs font-semibold text-on-surface-muted block mb-1">Reason (optional)</label>
             <textarea value={reason} onChange={e=>setReason(e.target.value)} rows={2}
               placeholder="Reason for rejection…"
-              className="w-full text-sm border border-gray-200 rounded-lg px-3 py-2 resize-none focus:outline-none"/>
+              className="w-full text-sm bg-surface border border-outline rounded-lg px-3 py-2 resize-none focus:outline-none focus:border-accent focus:ring-2 focus:ring-accent/20"/>
           </div>
         )}
         {type === 'pay' && (
           <div className="mb-3">
-            <label className="text-xs font-semibold text-gray-500 block mb-1">Payment Note (optional)</label>
+            <label className="text-xs font-semibold text-on-surface-muted block mb-1">Payment Note (optional)</label>
             <input value={note} onChange={e=>setNote(e.target.value)} placeholder="e.g. Paid via May payroll"
-              className="w-full text-sm border border-gray-200 rounded-lg px-3 py-2 focus:outline-none"/>
+              className="w-full text-sm bg-surface border border-outline rounded-lg px-3 py-2 focus:outline-none focus:border-accent focus:ring-2 focus:ring-accent/20"/>
           </div>
         )}
-        {err && <p className="text-xs text-red-500 font-medium bg-red-50 border border-red-100 rounded-lg px-3 py-2 mb-3">{err}</p>}
+        {err && <p className="text-xs text-danger font-medium bg-danger-container border border-danger/20 rounded-lg px-3 py-2 mb-3">{err}</p>}
         <div className="flex gap-2">
-          <button onClick={onClose} className="flex-1 py-2 border border-gray-200 rounded-xl text-sm font-medium text-gray-600 hover:bg-gray-50">Cancel</button>
+          <button onClick={onClose} className="flex-1 py-2 border border-outline rounded-xl text-sm font-medium text-on-surface-muted hover:bg-surface-2 transition-colors">Cancel</button>
           <button onClick={handle} disabled={saving}
-            className="flex-1 py-2 text-white rounded-xl text-sm font-semibold disabled:opacity-60"
-            style={{background: type==='reject'?'#dc2626':type==='pay'?'#7c3aed':'#15803d'}}>
+            className={`flex-1 py-2 rounded-xl text-sm font-semibold disabled:opacity-60 transition-all shadow-elev-1 hover:opacity-90 ${
+              type==='reject' ? 'bg-danger text-white'
+              : type==='pay' ? 'bg-accent text-on-accent'
+              : 'bg-success text-white'
+            }`}>
             {saving ? '…' : type==='approve'?'Approve':type==='pay'?'Mark Paid':'Reject'}
           </button>
         </div>
@@ -380,7 +383,7 @@ export default function EmployeeProfile() {
 
   if (loading) return (
     <div className="flex items-center justify-center h-64">
-      <div className="w-8 h-8 border-4 border-primary-200 border-t-primary-500 rounded-full animate-spin"/>
+      <div className="w-8 h-8 border-4 border-outline border-t-accent rounded-full animate-spin"/>
     </div>
   );
   if (!emp) return null;
@@ -466,18 +469,18 @@ export default function EmployeeProfile() {
     } finally { setPipUpdating(false); }
   };
 
-  const inputCls = 'w-full text-sm border border-gray-200 rounded-lg px-3 py-2.5 focus:outline-none focus:ring-2 focus:ring-primary-200 bg-white';
-  const labelCls = 'block text-xs font-medium text-gray-500 mb-1';
+  const inputCls = 'w-full text-sm bg-surface border border-outline rounded-lg px-3 py-2.5 focus:outline-none focus:border-accent focus:ring-2 focus:ring-accent/20';
+  const labelCls = 'block text-xs font-medium text-on-surface-muted mb-1';
 
   const statusBadge = (status: string) => (
-    <span className="inline-flex items-center gap-1.5 text-xs font-medium text-gray-600">
-      <span className={`w-2 h-2 rounded-full ${STATUS_DOT[status] ?? 'bg-gray-400'}`}/>
+    <span className="inline-flex items-center gap-1.5 text-xs font-medium text-on-surface-muted">
+      <span className={`w-2 h-2 rounded-full ${STATUS_DOT[status] ?? 'bg-on-surface-subtle'}`}/>
       {STATUS_LABEL[status] ?? status}
     </span>
   );
 
   const TabError = ({ t }: { t: Tab }) => tabError[t] ? (
-    <div className="flex items-center justify-between px-4 py-3 bg-red-50 border border-red-100 rounded-xl text-xs text-red-600 font-medium">
+    <div className="flex items-center justify-between px-4 py-3 bg-danger-container border border-danger/20 rounded-xl-2 text-xs text-danger font-medium">
       {tabError[t]}
       <button onClick={() => refreshTab(t)} className="flex items-center gap-1 underline underline-offset-2">
         <RefreshCw size={11}/> Retry
@@ -486,72 +489,70 @@ export default function EmployeeProfile() {
   ) : null;
 
   return (
-    <div className="space-y-5">
+    <div className="space-y-6">
       {/* ── Header ─────────────────────────────────────────────────────────── */}
       <div>
         <button onClick={() => navigate('/employees')}
-          className="flex items-center gap-1.5 text-sm text-gray-500 hover:text-gray-800 mb-4 transition-colors">
+          className="flex items-center gap-1.5 text-sm text-on-surface-muted hover:text-on-surface mb-4 transition-colors">
           <ArrowLeft size={15}/> Back to Employees
         </button>
 
-        <div className="bg-white rounded-2xl border border-gray-100 shadow-sm overflow-hidden">
-          <div className="h-24 relative" style={{background:'linear-gradient(135deg,#192250 0%,#EE2770 100%)'}}>
-            <div className="absolute top-3 right-3 flex gap-2">
-              <button onClick={() => setShowEdit(true)}
-                className="flex items-center gap-1.5 px-3 py-1.5 bg-white/20 hover:bg-white/30 rounded-lg text-white text-xs font-medium transition-colors">
-                <Pencil size={12}/> Edit
-              </button>
-              <button onClick={() => setShowDelete(true)}
-                className="flex items-center gap-1.5 px-3 py-1.5 bg-red-500/70 hover:bg-red-500/90 rounded-lg text-white text-xs font-medium transition-colors">
-                <Trash2 size={12}/> Delete
-              </button>
-            </div>
+        <section className="relative aurora-bg grain-overlay rounded-xl-3 overflow-hidden text-white animate-fade-in">
+          <div className="absolute top-4 right-4 z-10 flex gap-2">
+            <button onClick={() => setShowEdit(true)}
+              className="flex items-center gap-1.5 px-3 py-1.5 bg-white/15 hover:bg-white/25 border border-white/15 backdrop-blur-sm rounded-lg text-white text-xs font-semibold transition-colors">
+              <Pencil size={12}/> Edit
+            </button>
+            <button onClick={() => setShowDelete(true)}
+              className="flex items-center gap-1.5 px-3 py-1.5 bg-danger/70 hover:bg-danger/90 rounded-lg text-white text-xs font-semibold transition-colors">
+              <Trash2 size={12}/> Delete
+            </button>
           </div>
 
-          <div className="px-6 pb-5">
-            {/* Avatar overlaps banner; name is in its own block below so it's never hidden */}
-            <div className="-mt-8 mb-3">
-              <div className="w-16 h-16 rounded-2xl bg-primary-100 text-primary-600 flex items-center justify-center text-xl font-bold border-4 border-white shadow-md">
+          <div className="relative px-6 sm:px-8 pt-8 pb-6">
+            <div className="flex items-start gap-5">
+              <div className="w-20 h-20 rounded-2xl bg-white/15 backdrop-blur-sm border border-white/20 text-white flex items-center justify-center text-2xl font-bold shadow-elev-2 flex-shrink-0">
                 {emp.avatar}
               </div>
+              <div className="min-w-0 flex-1">
+                <p className="text-[11px] font-semibold text-white/70 uppercase tracking-[0.22em]">{emp.employee_id}</p>
+                <h1 className="font-display text-3xl sm:text-4xl font-semibold leading-[1.05] tracking-tight mt-1.5">{emp.name}</h1>
+                <p className="text-sm text-white/80 font-medium mt-2">{emp.designation}</p>
+              </div>
             </div>
-            <div className="mb-4">
-              <h1 className="text-xl font-bold text-gray-900">{emp.name}</h1>
-              <p className="text-sm text-primary-600 font-medium">{emp.designation}</p>
-            </div>
-            <div className="flex flex-wrap gap-2">
+            <div className="flex flex-wrap gap-2 mt-5">
               {[
-                { icon: User,     text: emp.employee_id },
                 { icon: MapPin,   text: emp.department },
                 { icon: Calendar, text: `Joined ${fmtDate(emp.join_date, {day:'numeric',month:'short',year:'numeric'})}` },
                 { icon: Clock,    text: emp.shift === 'night' ? 'Night Shift' : 'Day Shift' },
               ].map(({ icon: Icon, text }) => (
-                <span key={text} className="inline-flex items-center gap-1.5 text-xs text-gray-500 bg-gray-50 border border-gray-100 rounded-full px-3 py-1">
-                  <Icon size={11} className="text-gray-400"/>{text}
+                <span key={text} className="inline-flex items-center gap-1.5 text-xs text-white/85 bg-white/10 border border-white/15 backdrop-blur-sm rounded-full px-3 py-1">
+                  <Icon size={11} className="text-white/65"/>{text}
                 </span>
               ))}
-              <span className={`inline-flex items-center gap-1.5 text-xs font-semibold rounded-full px-3 py-1 ${emp.status === 'active' ? 'bg-green-50 text-green-600 border border-green-100' : 'bg-red-50 text-red-500 border border-red-100'}`}>
+              <span className={`inline-flex items-center gap-1.5 text-xs font-semibold rounded-full px-3 py-1 backdrop-blur-sm ${emp.status === 'active' ? 'bg-success/25 text-white border border-success/40' : 'bg-danger/25 text-white border border-danger/40'}`}>
                 {emp.status === 'active' ? '● Active' : '● Inactive'}
               </span>
               {onProbation && (
-                <span className="inline-flex items-center gap-1 text-xs font-semibold rounded-full px-3 py-1 bg-amber-50 text-amber-700 border border-amber-100">
+                <span className="inline-flex items-center gap-1 text-xs font-semibold rounded-full px-3 py-1 bg-warning/25 text-white border border-warning/40 backdrop-blur-sm">
                   ⏳ On Probation
                 </span>
               )}
             </div>
           </div>
+        </section>
 
-          {/* Tab nav */}
-          <div className="border-t border-gray-100 px-4 overflow-x-auto">
-            <div className="flex gap-1 py-1">
-              {TABS.map(t => (
-                <button key={t} onClick={() => setTab(t)}
-                  className={`px-4 py-2.5 text-sm font-medium rounded-lg whitespace-nowrap transition-all ${tab===t?'text-white':'text-gray-500 hover:text-gray-800 hover:bg-gray-50'}`}
-                  style={tab===t?{background:'linear-gradient(135deg,#192250,#141c43)'}:{}}>
-                  {t}
-                </button>
-              ))}
-            </div>
+        {/* Tab nav (pill style) */}
+        <div className="bg-surface rounded-xl-2 border border-outline shadow-elev-1 mt-4 px-3 overflow-x-auto">
+          <div className="flex gap-1 py-2">
+            {TABS.map(t => (
+              <button key={t} onClick={() => setTab(t)}
+                className={`px-4 py-2 text-sm font-semibold rounded-full whitespace-nowrap transition-all ${tab===t
+                  ? 'bg-accent text-on-accent shadow-elev-1'
+                  : 'text-on-surface-muted hover:text-on-surface hover:bg-surface-2'}`}>
+                {t}
+              </button>
+            ))}
           </div>
         </div>
       </div>
@@ -560,106 +561,118 @@ export default function EmployeeProfile() {
       {tab === 'Overview' && (
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
           {/* Personal info */}
-          <div className="bg-white rounded-2xl border border-gray-100 shadow-sm p-6">
-            <p className="text-xs font-bold text-gray-400 uppercase tracking-wider mb-4">Personal Information</p>
-            <div className="space-y-4">
-              {[
-                { icon: Mail,  label: 'Email',    value: emp.email },
-                { icon: Phone, label: 'Phone',    value: emp.phone || '—' },
-                { icon: MapPin,label: 'Location', value: emp.location || '—' },
-                { icon: User,  label: 'Reporting Manager', value: emp.manager || '—' },
-                { icon: Clock, label: 'Shift', value: emp.shift === 'night' ? '🌙 Night Shift (6:30 PM – 3:30 AM)' : '☀️ Day Shift (9:00 AM – 6:00 PM)' },
-              ].map(({ icon: Icon, label, value }) => (
-                <div key={label} className="flex items-start gap-3">
-                  <div className="w-8 h-8 rounded-lg bg-gray-50 flex items-center justify-center flex-shrink-0">
-                    <Icon size={14} className="text-gray-400"/>
+          <div className="group relative bg-surface rounded-xl-2 border border-outline shadow-elev-1 p-6 overflow-hidden animate-fade-up stagger-1">
+            <div className="absolute -top-8 -right-8 w-28 h-28 rounded-full bg-brand/15 blur-2xl opacity-50" />
+            <div className="relative">
+              <h3 className="font-display text-xl font-bold tracking-tight text-on-surface mb-4">Personal Information</h3>
+              <div className="space-y-4">
+                {[
+                  { icon: Mail,  label: 'Email',    value: emp.email },
+                  { icon: Phone, label: 'Phone',    value: emp.phone || '—' },
+                  { icon: MapPin,label: 'Location', value: emp.location || '—' },
+                  { icon: User,  label: 'Reporting Manager', value: emp.manager || '—' },
+                  { icon: Clock, label: 'Shift', value: emp.shift === 'night' ? '🌙 Night Shift (6:30 PM – 3:30 AM)' : '☀️ Day Shift (9:00 AM – 6:00 PM)' },
+                ].map(({ icon: Icon, label, value }) => (
+                  <div key={label} className="flex items-start gap-3">
+                    <div className="w-8 h-8 rounded-lg bg-surface-2 border border-outline flex items-center justify-center flex-shrink-0">
+                      <Icon size={14} className="text-on-surface-subtle"/>
+                    </div>
+                    <div>
+                      <p className="text-xs text-on-surface-subtle">{label}</p>
+                      <p className="text-sm font-medium text-on-surface mt-0.5">{value}</p>
+                    </div>
                   </div>
-                  <div>
-                    <p className="text-xs text-gray-400">{label}</p>
-                    <p className="text-sm font-medium text-gray-800 mt-0.5">{value}</p>
-                  </div>
-                </div>
-              ))}
+                ))}
+              </div>
             </div>
           </div>
 
           <div className="space-y-5">
             {/* Compensation */}
-            <div className="bg-white rounded-2xl border border-gray-100 shadow-sm p-6">
-              <p className="text-xs font-bold text-gray-400 uppercase tracking-wider mb-4">Compensation</p>
-              <div className="grid grid-cols-2 gap-4">
-                <div className="bg-primary-50 rounded-xl p-4 text-center">
-                  <p className="text-xs text-primary-600 font-medium">Monthly Gross</p>
-                  <p className="text-xl font-bold text-primary-700 mt-1">₹{Number(emp.salary || 0).toLocaleString('en-IN')}</p>
-                </div>
-                <div className="bg-gray-50 rounded-xl p-4 text-center">
-                  <p className="text-xs text-gray-500 font-medium">Annual CTC</p>
-                  <p className="text-xl font-bold text-gray-800 mt-1">₹{(Number(emp.ctc || 0)/100000).toFixed(1)}L</p>
+            <div className="group relative bg-surface rounded-xl-2 border border-outline shadow-elev-1 p-6 overflow-hidden animate-fade-up stagger-2">
+              <div className="absolute -top-8 -right-8 w-28 h-28 rounded-full bg-accent/15 blur-2xl opacity-50" />
+              <div className="relative">
+                <h3 className="font-display text-xl font-bold tracking-tight text-on-surface mb-4">Compensation</h3>
+                <div className="grid grid-cols-2 gap-4">
+                  <div className="bg-brand-container rounded-xl-2 p-4 text-center">
+                    <p className="text-xs text-on-brand-container font-medium">Monthly Gross</p>
+                    <p className="num-mono text-xl font-bold text-on-brand-container mt-1">₹{Number(emp.salary || 0).toLocaleString('en-IN')}</p>
+                  </div>
+                  <div className="bg-surface-2 border border-outline rounded-xl-2 p-4 text-center">
+                    <p className="text-xs text-on-surface-muted font-medium">Annual CTC</p>
+                    <p className="num-mono text-xl font-bold text-on-surface mt-1">₹{(Number(emp.ctc || 0)/100000).toFixed(1)}L</p>
+                  </div>
                 </div>
               </div>
             </div>
 
             {/* Probation */}
-            <div className="bg-white rounded-2xl border border-gray-100 shadow-sm p-6">
-              <div className="flex items-center justify-between mb-4">
-                <p className="text-xs font-bold text-gray-400 uppercase tracking-wider">Probation / Confirmation</p>
-                <span className={`text-xs font-semibold px-2.5 py-0.5 rounded-full ${onProbation?'bg-amber-100 text-amber-700':'bg-green-100 text-green-700'}`}>
-                  {onProbation ? 'On Probation' : 'Confirmed'}
-                </span>
+            <div className="group relative bg-surface rounded-xl-2 border border-outline shadow-elev-1 p-6 overflow-hidden animate-fade-up stagger-3">
+              <div className="absolute -top-8 -right-8 w-28 h-28 rounded-full bg-warning/15 blur-2xl opacity-50" />
+              <div className="relative">
+                <div className="flex items-center justify-between mb-4">
+                  <h3 className="font-display text-xl font-bold tracking-tight text-on-surface">Probation / Confirmation</h3>
+                  <span className={`text-xs font-semibold px-2.5 py-0.5 rounded-full ${onProbation?'bg-warning-container text-warning':'bg-success-container text-success'}`}>
+                    {onProbation ? 'On Probation' : 'Confirmed'}
+                  </span>
+                </div>
+                <label className={labelCls}>{onProbation?'Probation End Date':'Confirmation Date'}</label>
+                <div className="flex gap-2">
+                  <input type="date" value={probationEnd}
+                    onChange={e => { setProbationEnd(e.target.value); setProbSaved(false); setProbError(''); }}
+                    className={inputCls}/>
+                  <button onClick={async () => {
+                    setSavingProb(true); setProbSaved(false); setProbError('');
+                    try {
+                      await api.updateEmployeeProbation(emp.id, probationEnd || null);
+                      setProbSaved(true); setTimeout(() => setProbSaved(false), 2500);
+                    } catch (e: any) { setProbError(e.message || 'Failed to save probation date'); }
+                    finally { setSavingProb(false); }}
+                  } disabled={savingProb}
+                    className="px-4 py-2 text-xs font-semibold bg-accent text-on-accent rounded-lg shadow-elev-1 hover:opacity-90 disabled:opacity-60 whitespace-nowrap transition-all">
+                    {savingProb ? '…' : probSaved ? '✓ Saved' : 'Save'}
+                  </button>
+                </div>
+                {probError && <p className="text-xs text-danger mt-2">{probError}</p>}
               </div>
-              <label className={labelCls}>{onProbation?'Probation End Date':'Confirmation Date'}</label>
-              <div className="flex gap-2">
-                <input type="date" value={probationEnd}
-                  onChange={e => { setProbationEnd(e.target.value); setProbSaved(false); setProbError(''); }}
-                  className={inputCls}/>
-                <button onClick={async () => {
-                  setSavingProb(true); setProbSaved(false); setProbError('');
-                  try {
-                    await api.updateEmployeeProbation(emp.id, probationEnd || null);
-                    setProbSaved(true); setTimeout(() => setProbSaved(false), 2500);
-                  } catch (e: any) { setProbError(e.message || 'Failed to save probation date'); }
-                  finally { setSavingProb(false); }}
-                } disabled={savingProb}
-                  className="px-4 py-2 text-xs font-semibold text-white bg-primary-500 rounded-lg disabled:opacity-60 whitespace-nowrap">
-                  {savingProb ? '…' : probSaved ? '✓ Saved' : 'Save'}
-                </button>
-              </div>
-              {probError && <p className="text-xs text-red-500 mt-2">{probError}</p>}
             </div>
 
             {/* Leave balance */}
-            <div className="bg-white rounded-2xl border border-gray-100 shadow-sm p-6">
-              <p className="text-xs font-bold text-gray-400 uppercase tracking-wider mb-4">Leave Balance Adjustment</p>
-              {!balLoaded ? <p className="text-xs text-gray-400">Loading…</p> : (
-                <div className="space-y-3">
-                  <div className="grid grid-cols-2 gap-3">
-                    <div>
-                      <label className={labelCls}>Full Day</label>
-                      <input type="number" min="0" value={balAdj.full_day}
-                        onChange={e => { setBalAdj(b => ({ ...b, full_day: Number(e.target.value) })); setBalSaved(false); setBalError(''); }}
-                        className={inputCls}/>
+            <div className="group relative bg-surface rounded-xl-2 border border-outline shadow-elev-1 p-6 overflow-hidden animate-fade-up stagger-4">
+              <div className="absolute -top-8 -right-8 w-28 h-28 rounded-full bg-brand/15 blur-2xl opacity-50" />
+              <div className="relative">
+                <h3 className="font-display text-xl font-bold tracking-tight text-on-surface mb-4">Leave Balance Adjustment</h3>
+                {!balLoaded ? <p className="text-xs text-on-surface-subtle">Loading…</p> : (
+                  <div className="space-y-3">
+                    <div className="grid grid-cols-2 gap-3">
+                      <div>
+                        <label className={labelCls}>Full Day</label>
+                        <input type="number" min="0" value={balAdj.full_day}
+                          onChange={e => { setBalAdj(b => ({ ...b, full_day: Number(e.target.value) })); setBalSaved(false); setBalError(''); }}
+                          className={inputCls}/>
+                      </div>
+                      <div>
+                        <label className={labelCls}>Short Leave / Half Day credits</label>
+                        <input type="number" min="0" value={balAdj.short_leave}
+                          onChange={e => { setBalAdj(b => ({ ...b, short_leave: Number(e.target.value) })); setBalSaved(false); setBalError(''); }}
+                          className={inputCls}/>
+                      </div>
                     </div>
-                    <div>
-                      <label className={labelCls}>Short Leave / Half Day credits</label>
-                      <input type="number" min="0" value={balAdj.short_leave}
-                        onChange={e => { setBalAdj(b => ({ ...b, short_leave: Number(e.target.value) })); setBalSaved(false); setBalError(''); }}
-                        className={inputCls}/>
-                    </div>
+                    <button onClick={async () => {
+                      setSavingBal(true); setBalSaved(false); setBalError('');
+                      try {
+                        await api.adjustLeaveBalance(emp.id, balAdj);
+                        setBalSaved(true); setTimeout(() => setBalSaved(false), 2500);
+                      } catch (e: any) { setBalError(e.message || 'Failed to save balance'); }
+                      finally { setSavingBal(false); }}
+                    } disabled={savingBal}
+                      className="w-full py-2 text-xs font-semibold bg-accent text-on-accent rounded-lg shadow-elev-1 hover:opacity-90 disabled:opacity-60 transition-all">
+                      {savingBal ? 'Saving…' : balSaved ? '✓ Balance Updated' : 'Save Balance'}
+                    </button>
+                    {balError && <p className="text-xs text-danger">{balError}</p>}
                   </div>
-                  <button onClick={async () => {
-                    setSavingBal(true); setBalSaved(false); setBalError('');
-                    try {
-                      await api.adjustLeaveBalance(emp.id, balAdj);
-                      setBalSaved(true); setTimeout(() => setBalSaved(false), 2500);
-                    } catch (e: any) { setBalError(e.message || 'Failed to save balance'); }
-                    finally { setSavingBal(false); }}
-                  } disabled={savingBal}
-                    className="w-full py-2 text-xs font-semibold text-white bg-primary-500 rounded-lg disabled:opacity-60">
-                    {savingBal ? 'Saving…' : balSaved ? '✓ Balance Updated' : 'Save Balance'}
-                  </button>
-                  {balError && <p className="text-xs text-red-500">{balError}</p>}
-                </div>
-              )}
+                )}
+              </div>
             </div>
           </div>
         </div>
@@ -669,50 +682,53 @@ export default function EmployeeProfile() {
       {tab === 'Attendance' && (
         <div className="space-y-5">
           <TabError t="Attendance"/>
-          <div className="bg-white rounded-2xl border border-gray-100 shadow-sm p-4 flex flex-wrap items-center gap-3">
-            <p className="text-sm font-semibold text-gray-700">Viewing:</p>
+          <div className="bg-surface rounded-xl-2 border border-outline shadow-elev-1 p-4 flex flex-wrap items-center gap-3">
+            <p className="text-sm font-semibold text-on-surface-muted">Viewing:</p>
             <select value={attMonth} onChange={e => setAttMonth(Number(e.target.value))}
-              className="text-sm border border-gray-200 rounded-lg px-3 py-2 bg-white focus:outline-none">
+              className="text-sm bg-surface border border-outline rounded-lg px-3 py-2 focus:outline-none focus:border-accent focus:ring-2 focus:ring-accent/20">
               {MONTH_FULL.map((m,i) => <option key={i+1} value={i+1}>{m}</option>)}
             </select>
             <select value={attYear} onChange={e => setAttYear(Number(e.target.value))}
-              className="text-sm border border-gray-200 rounded-lg px-3 py-2 bg-white focus:outline-none">
+              className="text-sm bg-surface border border-outline rounded-lg px-3 py-2 focus:outline-none focus:border-accent focus:ring-2 focus:ring-accent/20">
               {[now.getFullYear()-1, now.getFullYear()].map(y => <option key={y}>{y}</option>)}
             </select>
-            <button onClick={loadAttendance} className="flex items-center gap-1.5 text-xs font-medium text-gray-500 hover:text-gray-800 ml-auto">
+            <button onClick={loadAttendance} className="flex items-center gap-1.5 text-xs font-medium text-on-surface-muted hover:text-on-surface ml-auto transition-colors">
               <RefreshCw size={13}/> Refresh
             </button>
           </div>
 
           <div className="grid grid-cols-2 sm:grid-cols-5 gap-3">
             {[
-              {label:'Present',  count:presentCnt, color:'#16a34a', bg:'rgba(22,163,74,0.08)'},
-              {label:'Late',     count:lateCnt,    color:'#d97706', bg:'rgba(217,119,6,0.08)'},
-              {label:'Absent',   count:absentCnt,  color:'#dc2626', bg:'rgba(220,38,38,0.08)'},
-              {label:'On Leave', count:leaveCnt,   color:'#7c3aed', bg:'rgba(124,58,237,0.08)'},
-              {label:'WFH',      count:wfhCnt,     color:'#0d9488', bg:'rgba(13,148,136,0.08)'},
-            ].map(({label,count,color,bg}) => (
-              <div key={label} className="bg-white rounded-xl border border-gray-100 shadow-sm p-4 text-center">
-                <p className="text-2xl font-black" style={{color}}>{count}</p>
-                <p className="text-xs text-gray-400 mt-0.5">{label}</p>
+              {label:'Present',  count:presentCnt, color:'#16a34a', stagger:'stagger-1'},
+              {label:'Late',     count:lateCnt,    color:'#d97706', stagger:'stagger-2'},
+              {label:'Absent',   count:absentCnt,  color:'#dc2626', stagger:'stagger-3'},
+              {label:'On Leave', count:leaveCnt,   color:'#7c3aed', stagger:'stagger-4'},
+              {label:'WFH',      count:wfhCnt,     color:'#0d9488', stagger:'stagger-5'},
+            ].map(({label,count,color,stagger}) => (
+              <div key={label} className={`group relative bg-surface rounded-xl-2 border border-outline shadow-elev-1 p-4 text-center overflow-hidden animate-fade-up ${stagger}`}>
+                <div className="absolute -top-8 -right-8 w-28 h-28 rounded-full bg-brand/15 blur-2xl opacity-50" />
+                <div className="relative">
+                  <p className="num-mono text-2xl font-black" style={{color}}>{count}</p>
+                  <p className="text-xs text-on-surface-subtle mt-0.5">{label}</p>
+                </div>
               </div>
             ))}
           </div>
 
-          <div className="bg-white rounded-2xl border border-gray-100 shadow-sm overflow-hidden">
+          <div className="bg-surface rounded-xl-2 border border-outline shadow-elev-1 overflow-hidden">
             {attLoading ? (
               <div className="flex items-center justify-center py-12">
-                <div className="w-6 h-6 border-4 border-primary-200 border-t-primary-500 rounded-full animate-spin"/>
+                <div className="w-6 h-6 border-4 border-outline border-t-accent rounded-full animate-spin"/>
               </div>
             ) : normAtt.length === 0 ? (
-              <p className="text-center text-sm text-gray-400 py-12">No attendance records for {MONTH_FULL[attMonth-1]} {attYear}</p>
+              <p className="text-center text-sm text-on-surface-subtle py-12">No attendance records for {MONTH_FULL[attMonth-1]} {attYear}</p>
             ) : (
               <div className="overflow-x-auto">
                 <table className="w-full text-sm">
                   <thead>
-                    <tr style={{background:'#f8f9fc'}}>
+                    <tr className="bg-surface-2">
                       {['Date','Day','Status','In → Out','Productive','Break','Source'].map(h => (
-                        <th key={h} className="text-left px-4 py-3 text-xs font-semibold text-gray-400 uppercase tracking-wide whitespace-nowrap">{h}</th>
+                        <th key={h} className="text-left px-4 py-3 text-xs font-semibold text-on-surface-subtle uppercase tracking-wide whitespace-nowrap">{h}</th>
                       ))}
                     </tr>
                   </thead>
@@ -727,28 +743,27 @@ export default function EmployeeProfile() {
                       const breakMin = (spanMin !== null && prodMin > 0 && spanMin > prodMin) ? Math.round(spanMin - prodMin) : 0;
                       const fmtBreakMin = (m: number) => m >= 60 ? `${Math.floor(m/60)}h${m%60>0?' '+(m%60)+'m':''}` : `${m}m`;
                       return (
-                      <tr key={r.id ?? r.dateStr} className="border-t border-gray-50 hover:bg-gray-50/40">
-                        <td className="px-4 py-3 font-medium text-gray-800">{fmtDate(r.date,{day:'numeric',month:'short'})}</td>
-                        <td className="px-4 py-3 text-gray-500">{['Sun','Mon','Tue','Wed','Thu','Fri','Sat'][new Date(r.dateStr+'T12:00:00Z').getUTCDay()]}</td>
+                      <tr key={r.id ?? r.dateStr} className="border-t border-outline hover:bg-surface-2/60 transition-colors">
+                        <td className="px-4 py-3 font-medium text-on-surface">{fmtDate(r.date,{day:'numeric',month:'short'})}</td>
+                        <td className="px-4 py-3 text-on-surface-muted">{['Sun','Mon','Tue','Wed','Thu','Fri','Sat'][new Date(r.dateStr+'T12:00:00Z').getUTCDay()]}</td>
                         <td className="px-4 py-3">{statusBadge(r.status)}</td>
-                        <td className="px-4 py-3 text-gray-600 whitespace-nowrap">
+                        <td className="px-4 py-3 text-on-surface-muted whitespace-nowrap num-mono">
                           {r.check_in ? `${fmtTime(r.check_in)} → ${fmtTime(r.check_out)}` : '—'}
                         </td>
-                        <td className="px-4 py-3 font-semibold whitespace-nowrap" style={{color:'#15803d'}}>
+                        <td className="px-4 py-3 font-semibold text-success whitespace-nowrap num-mono">
                           {r.check_in ? fmtHours(r.total_hours) : '—'}
                         </td>
                         <td className="px-4 py-3">
                           {breakMin >= 1 ? (
-                            <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded-full" style={{background:'#fffbeb',color:'#b45309'}}>
+                            <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded-full bg-warning-container text-warning">
                               {fmtBreakMin(breakMin)}
                             </span>
-                          ) : <span className="text-xs text-gray-300">—</span>}
+                          ) : <span className="text-xs text-on-surface-subtle">—</span>}
                         </td>
                         <td className="px-4 py-3">
                           {(r.source === 'wfh_extension' || Number(r.extension_hours) > 0) ? (
                             <div className="space-y-1">
-                              <span className="inline-flex items-center gap-1 text-[10px] font-bold px-2 py-0.5 rounded-full border"
-                                style={{ background: 'rgba(238,39,112,0.08)', color: '#EE2770', borderColor: 'rgba(238,39,112,0.25)' }}>
+                              <span className="inline-flex items-center gap-1 text-[10px] font-bold px-2 py-0.5 rounded-full border border-accent/25 bg-accent/10 text-accent">
                                 💻 Extension
                               </span>
                               {r.activity_score != null && (() => {
@@ -764,12 +779,11 @@ export default function EmployeeProfile() {
                               })()}
                             </div>
                           ) : r.source === 'biometric' ? (
-                            <span className="inline-flex items-center gap-1 text-[10px] font-bold px-2 py-0.5 rounded-full border"
-                              style={{ background: 'rgba(22,163,74,0.08)', color: '#15803d', borderColor: 'rgba(22,163,74,0.25)' }}>
+                            <span className="inline-flex items-center gap-1 text-[10px] font-bold px-2 py-0.5 rounded-full border border-success/25 bg-success-container text-success">
                               🔵 Biometric
                             </span>
                           ) : r.check_in ? (
-                            <span className="text-[10px] text-gray-400">Manual</span>
+                            <span className="text-[10px] text-on-surface-subtle">Manual</span>
                           ) : null}
                         </td>
                       </tr>
@@ -790,76 +804,82 @@ export default function EmployeeProfile() {
           {leaveBalance && (
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
               {/* Full day card with breakdown */}
-              <div className="bg-white rounded-xl border border-gray-100 shadow-sm p-4">
-                <p className="text-2xl font-black" style={{color:'#2563eb'}}>{leaveBalance.full_day ?? 0}</p>
-                <p className="text-xs text-gray-400 mt-0.5">Full Day remaining</p>
-                <div className="h-1 rounded-full mt-2" style={{background:'rgba(37,99,235,0.08)'}}>
-                  <div className="h-1 rounded-full" style={{background:'#2563eb',width:`${Math.min(100,Number(leaveBalance.full_day??0)*10)}%`}}/>
-                </div>
-                {(Number(leaveBalance.prev_month_carry_full_day) > 0 || Number(leaveBalance.current_month_credit_full_day) > 0) && (
-                  <div className="mt-2 pt-2 border-t border-gray-100 space-y-0.5">
-                    {Number(leaveBalance.current_month_credit_full_day) > 0 && (
-                      <p className="text-[11px] text-blue-700 font-medium">+{leaveBalance.current_month_credit_full_day} credited in {leaveBalance.current_month_label?.split(' ')[0] ?? 'this month'}</p>
-                    )}
-                    {Number(leaveBalance.prev_month_carry_full_day) > 0 && (
-                      <p className="text-[11px] text-gray-500">+{leaveBalance.prev_month_carry_full_day} carried from {leaveBalance.prev_month_label?.split(' ')[0] ?? 'last month'}</p>
-                    )}
+              <div className="group relative bg-surface rounded-xl-2 border border-outline shadow-elev-1 p-4 overflow-hidden animate-fade-up stagger-1">
+                <div className="absolute -top-8 -right-8 w-28 h-28 rounded-full bg-brand/15 blur-2xl opacity-50" />
+                <div className="relative">
+                  <p className="num-mono text-2xl font-black text-on-brand-container">{leaveBalance.full_day ?? 0}</p>
+                  <p className="text-xs text-on-surface-subtle mt-0.5">Full Day remaining</p>
+                  <div className="h-1 rounded-full mt-2 bg-brand/10">
+                    <div className="h-1 rounded-full bg-brand" style={{width:`${Math.min(100,Number(leaveBalance.full_day??0)*10)}%`}}/>
                   </div>
-                )}
+                  {(Number(leaveBalance.prev_month_carry_full_day) > 0 || Number(leaveBalance.current_month_credit_full_day) > 0) && (
+                    <div className="mt-2 pt-2 border-t border-outline space-y-0.5">
+                      {Number(leaveBalance.current_month_credit_full_day) > 0 && (
+                        <p className="text-[11px] text-on-brand-container font-medium">+{leaveBalance.current_month_credit_full_day} credited in {leaveBalance.current_month_label?.split(' ')[0] ?? 'this month'}</p>
+                      )}
+                      {Number(leaveBalance.prev_month_carry_full_day) > 0 && (
+                        <p className="text-[11px] text-on-surface-muted">+{leaveBalance.prev_month_carry_full_day} carried from {leaveBalance.prev_month_label?.split(' ')[0] ?? 'last month'}</p>
+                      )}
+                    </div>
+                  )}
+                </div>
               </div>
               {/* Short leave card */}
-              <div className="bg-white rounded-xl border border-gray-100 shadow-sm p-4">
-                <p className="text-2xl font-black" style={{color:'#7c3aed'}}>{leaveBalance.short_leave ?? 0}</p>
-                <p className="text-xs text-gray-400 mt-0.5">Short / Half Day remaining</p>
-                <div className="h-1 rounded-full mt-2" style={{background:'rgba(124,58,237,0.08)'}}>
-                  <div className="h-1 rounded-full" style={{background:'#7c3aed',width:`${Math.min(100,Number(leaveBalance.short_leave??0)*50)}%`}}/>
+              <div className="group relative bg-surface rounded-xl-2 border border-outline shadow-elev-1 p-4 overflow-hidden animate-fade-up stagger-2">
+                <div className="absolute -top-8 -right-8 w-28 h-28 rounded-full bg-accent/15 blur-2xl opacity-50" />
+                <div className="relative">
+                  <p className="num-mono text-2xl font-black" style={{color:'#7c3aed'}}>{leaveBalance.short_leave ?? 0}</p>
+                  <p className="text-xs text-on-surface-subtle mt-0.5">Short / Half Day remaining</p>
+                  <div className="h-1 rounded-full mt-2" style={{background:'rgba(124,58,237,0.10)'}}>
+                    <div className="h-1 rounded-full" style={{background:'#7c3aed',width:`${Math.min(100,Number(leaveBalance.short_leave??0)*50)}%`}}/>
+                  </div>
+                  <p className="text-[11px] text-on-surface-muted mt-2 pt-2 border-t border-outline">Resets to 2 every month</p>
                 </div>
-                <p className="text-[11px] text-gray-500 mt-2 pt-2 border-t border-gray-100">Resets to 2 every month</p>
               </div>
             </div>
           )}
 
-          <div className="bg-white rounded-2xl border border-gray-100 shadow-sm overflow-hidden">
-            <div className="px-5 py-4 border-b border-gray-50 flex items-center justify-between">
-              <p className="font-semibold text-sm text-gray-800">Leave Requests</p>
-              <button onClick={() => refreshTab('Leave')} className="flex items-center gap-1 text-xs text-gray-400 hover:text-gray-600">
+          <div className="bg-surface rounded-xl-2 border border-outline shadow-elev-1 overflow-hidden">
+            <div className="px-5 py-4 border-b border-outline flex items-center justify-between">
+              <h3 className="font-display text-xl font-bold tracking-tight text-on-surface">Leave Requests</h3>
+              <button onClick={() => refreshTab('Leave')} className="flex items-center gap-1 text-xs text-on-surface-subtle hover:text-on-surface-muted transition-colors">
                 <RefreshCw size={12}/> Refresh
               </button>
             </div>
             {leaveLoading ? (
               <div className="flex items-center justify-center py-12">
-                <div className="w-6 h-6 border-4 border-primary-200 border-t-primary-500 rounded-full animate-spin"/>
+                <div className="w-6 h-6 border-4 border-outline border-t-accent rounded-full animate-spin"/>
               </div>
             ) : leaves.length === 0 ? (
-              <p className="text-center text-sm text-gray-400 py-12">No leave requests</p>
+              <p className="text-center text-sm text-on-surface-subtle py-12">No leave requests</p>
             ) : (
               <div className="overflow-x-auto">
                 <table className="w-full text-sm">
                   <thead>
-                    <tr style={{background:'#f8f9fc'}}>
+                    <tr className="bg-surface-2">
                       {['Type','From','To','Days','Reason','Applied','Status'].map(h => (
-                        <th key={h} className="text-left px-4 py-3 text-xs font-semibold text-gray-400 uppercase tracking-wide whitespace-nowrap">{h}</th>
+                        <th key={h} className="text-left px-4 py-3 text-xs font-semibold text-on-surface-subtle uppercase tracking-wide whitespace-nowrap">{h}</th>
                       ))}
                     </tr>
                   </thead>
                   <tbody>
                     {[...leaves].sort((a,b) => new Date(b.applied_on??b.created_at??0).getTime() - new Date(a.applied_on??a.created_at??0).getTime()).map(l => {
                       const colors: Record<string,string> = {
-                        pending:'bg-amber-50 text-amber-600 border-amber-200',
-                        approved:'bg-green-50 text-green-600 border-green-200',
-                        rejected:'bg-red-50 text-red-500 border-red-200',
-                        cancelled:'bg-gray-100 text-gray-500 border-gray-200',
+                        pending:'bg-warning-container text-warning border-warning/25',
+                        approved:'bg-success-container text-success border-success/25',
+                        rejected:'bg-danger-container text-danger border-danger/25',
+                        cancelled:'bg-surface-2 text-on-surface-muted border-outline',
                       };
                       return (
-                        <tr key={l.id} className="border-t border-gray-50 hover:bg-gray-50/40">
-                          <td className="px-4 py-3 font-medium text-gray-800 capitalize whitespace-nowrap">{(l.type??'').replace(/_/g,' ')}</td>
-                          <td className="px-4 py-3 text-gray-600 whitespace-nowrap">{fmtDate(l.from_date,{day:'numeric',month:'short'})}</td>
-                          <td className="px-4 py-3 text-gray-600 whitespace-nowrap">{fmtDate(l.to_date,{day:'numeric',month:'short'})}</td>
-                          <td className="px-4 py-3 text-gray-600">{l.days}</td>
-                          <td className="px-4 py-3 text-gray-500 max-w-[140px] truncate">{l.reason}</td>
-                          <td className="px-4 py-3 text-xs text-gray-400 whitespace-nowrap">{fmtDate(l.applied_on??l.created_at)}</td>
+                        <tr key={l.id} className="border-t border-outline hover:bg-surface-2/60 transition-colors">
+                          <td className="px-4 py-3 font-medium text-on-surface capitalize whitespace-nowrap">{(l.type??'').replace(/_/g,' ')}</td>
+                          <td className="px-4 py-3 text-on-surface-muted whitespace-nowrap">{fmtDate(l.from_date,{day:'numeric',month:'short'})}</td>
+                          <td className="px-4 py-3 text-on-surface-muted whitespace-nowrap">{fmtDate(l.to_date,{day:'numeric',month:'short'})}</td>
+                          <td className="px-4 py-3 text-on-surface-muted num-mono">{l.days}</td>
+                          <td className="px-4 py-3 text-on-surface-muted max-w-[140px] truncate">{l.reason}</td>
+                          <td className="px-4 py-3 text-xs text-on-surface-subtle font-mono whitespace-nowrap">{fmtDate(l.applied_on??l.created_at)}</td>
                           <td className="px-4 py-3">
-                            <span className={`text-xs px-2.5 py-0.5 rounded-full border font-medium capitalize ${colors[l.status]??'bg-gray-50 text-gray-500 border-gray-200'}`}>
+                            <span className={`text-xs px-2.5 py-0.5 rounded-full border font-medium capitalize ${colors[l.status]??'bg-surface-2 text-on-surface-muted border-outline'}`}>
                               {l.status}
                             </span>
                           </td>
@@ -878,61 +898,64 @@ export default function EmployeeProfile() {
       {tab === 'Performance' && (
         <div className="space-y-5">
           <TabError t="Performance"/>
-          <div className="bg-white rounded-2xl border border-gray-100 shadow-sm p-4 flex flex-wrap items-center gap-3">
-            <p className="text-sm font-semibold text-gray-700">Year:</p>
+          <div className="bg-surface rounded-xl-2 border border-outline shadow-elev-1 p-4 flex flex-wrap items-center gap-3">
+            <p className="text-sm font-semibold text-on-surface-muted">Year:</p>
             <select value={perfYear} onChange={e => setPerfYear(Number(e.target.value))}
-              className="text-sm border border-gray-200 rounded-lg px-3 py-2 bg-white focus:outline-none">
+              className="text-sm bg-surface border border-outline rounded-lg px-3 py-2 focus:outline-none focus:border-accent focus:ring-2 focus:ring-accent/20">
               {[now.getFullYear()-1, now.getFullYear()].map(y => <option key={y}>{y}</option>)}
             </select>
-            <button onClick={() => refreshTab('Performance')} className="flex items-center gap-1.5 text-xs font-medium text-gray-500 hover:text-gray-800 ml-auto">
+            <button onClick={() => refreshTab('Performance')} className="flex items-center gap-1.5 text-xs font-medium text-on-surface-muted hover:text-on-surface ml-auto transition-colors">
               <RefreshCw size={13}/> Refresh
             </button>
           </div>
 
           {perfLoading ? (
             <div className="flex items-center justify-center py-12">
-              <div className="w-6 h-6 border-4 border-primary-200 border-t-primary-500 rounded-full animate-spin"/>
+              <div className="w-6 h-6 border-4 border-outline border-t-accent rounded-full animate-spin"/>
             </div>
           ) : perf.length === 0 ? (
-            <div className="bg-white rounded-2xl border border-gray-100 shadow-sm p-12 text-center">
-              <Star size={36} className="text-gray-200 mx-auto mb-3"/>
-              <p className="text-sm text-gray-400">No performance reviews for {perfYear} yet</p>
+            <div className="bg-surface rounded-xl-2 border border-outline shadow-elev-1 p-12 text-center">
+              <Star size={36} className="text-on-surface-subtle mx-auto mb-3"/>
+              <p className="text-sm text-on-surface-subtle">No performance reviews for {perfYear} yet</p>
             </div>
           ) : (
             <>
-              <div className="bg-white rounded-2xl border border-gray-100 shadow-sm p-5">
-                <p className="font-semibold text-sm text-gray-800 mb-1">Overall Score — {perfYear}</p>
-                <p className="text-xs text-gray-400 mb-4">Monthly performance rating (out of 100)</p>
-                <ResponsiveContainer width="100%" height={180}>
-                  <BarChart data={chartData} barSize={24}>
-                    <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" vertical={false}/>
-                    <XAxis dataKey="month" tick={{fontSize:11,fill:'#9ca3af'}} axisLine={false} tickLine={false}/>
-                    <YAxis domain={[0,100]} tick={{fontSize:11,fill:'#9ca3af'}} axisLine={false} tickLine={false}/>
-                    <Tooltip contentStyle={{borderRadius:8,border:'none',boxShadow:'0 4px 20px rgba(0,0,0,0.1)'}} formatter={(v:any)=>[`${v}`,'Score']}/>
-                    <Bar dataKey="score" radius={[4,4,0,0]} name="Score">
-                      {chartData.map((d,i) => <Cell key={i} fill={d.score ? perfColor(d.score) : '#e5e7eb'}/>)}
-                    </Bar>
-                  </BarChart>
-                </ResponsiveContainer>
+              <div className="group relative bg-surface rounded-xl-3 border border-outline shadow-elev-2 p-5 overflow-hidden animate-fade-up stagger-1">
+                <div className="absolute -top-8 -right-8 w-28 h-28 rounded-full bg-brand/15 blur-2xl opacity-50" />
+                <div className="relative">
+                  <h3 className="font-display text-xl font-bold tracking-tight text-on-surface mb-1">Overall Score — <span className="num-mono">{perfYear}</span></h3>
+                  <p className="text-xs text-on-surface-muted mb-4">Monthly performance rating (out of 100)</p>
+                  <ResponsiveContainer width="100%" height={180}>
+                    <BarChart data={chartData} barSize={24}>
+                      <CartesianGrid strokeDasharray="3 3" stroke="rgba(148,163,184,0.18)" vertical={false}/>
+                      <XAxis dataKey="month" tick={{fontSize:11,fill:'#94a3b8'}} axisLine={false} tickLine={false}/>
+                      <YAxis domain={[0,100]} tick={{fontSize:11,fill:'#94a3b8'}} axisLine={false} tickLine={false}/>
+                      <Tooltip contentStyle={{borderRadius:12,border:'1px solid rgb(var(--outline))',background:'rgb(var(--surface-3))',color:'rgb(var(--on-surface))',boxShadow:'var(--elev-3)',fontSize:12}} formatter={(v:any)=>[`${v}`,'Score']}/>
+                      <Bar dataKey="score" radius={[4,4,0,0]} name="Score">
+                        {chartData.map((d,i) => <Cell key={i} fill={d.score ? perfColor(d.score) : 'rgb(var(--outline))'}/>)}
+                      </Bar>
+                    </BarChart>
+                  </ResponsiveContainer>
+                </div>
               </div>
-              <div className="bg-white rounded-2xl border border-gray-100 shadow-sm overflow-hidden">
+              <div className="bg-surface rounded-xl-2 border border-outline shadow-elev-1 overflow-hidden">
                 <div className="overflow-x-auto">
                   <table className="w-full text-sm">
                     <thead>
-                      <tr style={{background:'#f8f9fc'}}>
-                        <th className="text-left px-4 py-3 text-xs font-semibold text-gray-400 uppercase tracking-wide whitespace-nowrap">Month</th>
-                        {PERF_LABELS.map(l => <th key={l} className="text-left px-3 py-3 text-xs font-semibold text-gray-400 uppercase tracking-wide whitespace-nowrap">{l}</th>)}
-                        <th className="text-left px-4 py-3 text-xs font-semibold text-gray-400 uppercase tracking-wide">Overall</th>
+                      <tr className="bg-surface-2">
+                        <th className="text-left px-4 py-3 text-xs font-semibold text-on-surface-subtle uppercase tracking-wide whitespace-nowrap">Month</th>
+                        {PERF_LABELS.map(l => <th key={l} className="text-left px-3 py-3 text-xs font-semibold text-on-surface-subtle uppercase tracking-wide whitespace-nowrap">{l}</th>)}
+                        <th className="text-left px-4 py-3 text-xs font-semibold text-on-surface-subtle uppercase tracking-wide">Overall</th>
                       </tr>
                     </thead>
                     <tbody>
                       {perf.map(r => (
-                        <tr key={r.id} className="border-t border-gray-50 hover:bg-gray-50/40">
-                          <td className="px-4 py-3 font-semibold text-gray-700 whitespace-nowrap">{MONTH_SHORT[(r.month??1)-1]} {r.year}</td>
-                          {PERF_KEYS.map(k => <td key={k} className="px-3 py-3 text-gray-600">{r[k]??'—'}</td>)}
+                        <tr key={r.id} className="border-t border-outline hover:bg-surface-2/60 transition-colors">
+                          <td className="px-4 py-3 font-semibold text-on-surface whitespace-nowrap">{MONTH_SHORT[(r.month??1)-1]} <span className="num-mono">{r.year}</span></td>
+                          {PERF_KEYS.map(k => <td key={k} className="px-3 py-3 text-on-surface-muted num-mono">{r[k]??'—'}</td>)}
                           <td className="px-4 py-3">
-                            <span className="text-sm font-bold" style={{color:perfColor(Number(r.overall_score))}}>{Number(r.overall_score).toFixed(0)}</span>
-                            <span className="text-xs text-gray-400">/100</span>
+                            <span className="num-mono text-sm font-bold" style={{color:perfColor(Number(r.overall_score))}}>{Number(r.overall_score).toFixed(0)}</span>
+                            <span className="num-mono text-xs text-on-surface-subtle">/100</span>
                           </td>
                         </tr>
                       ))}
@@ -947,58 +970,59 @@ export default function EmployeeProfile() {
 
       {/* ── Incentives ─────────────────────────────────────────────────────── */}
       {tab === 'Incentives' && (
-        <div className="bg-white rounded-2xl border border-gray-100 shadow-sm overflow-hidden">
-          <div className="px-5 py-4 border-b border-gray-50 flex items-center justify-between">
-            <p className="font-semibold text-sm text-gray-800">Upsell Incentive Requests</p>
-            <button onClick={() => refreshTab('Incentives')} className="flex items-center gap-1 text-xs text-gray-400 hover:text-gray-600">
+        <div className="bg-surface rounded-xl-2 border border-outline shadow-elev-1 overflow-hidden">
+          <div className="px-5 py-4 border-b border-outline flex items-center justify-between">
+            <h3 className="font-display text-xl font-bold tracking-tight text-on-surface">Upsell Incentive Requests</h3>
+            <button onClick={() => refreshTab('Incentives')} className="flex items-center gap-1 text-xs text-on-surface-subtle hover:text-on-surface-muted transition-colors">
               <RefreshCw size={12}/> Refresh
             </button>
           </div>
           <TabError t="Incentives"/>
           {incLoading ? (
             <div className="flex items-center justify-center py-12">
-              <div className="w-6 h-6 border-4 border-primary-200 border-t-primary-500 rounded-full animate-spin"/>
+              <div className="w-6 h-6 border-4 border-outline border-t-accent rounded-full animate-spin"/>
             </div>
           ) : incentives.length === 0 ? (
             <div className="text-center py-12">
-              <TrendingUp size={32} className="text-gray-200 mx-auto mb-2"/>
-              <p className="text-sm text-gray-400">No incentive requests from this employee</p>
+              <TrendingUp size={32} className="text-on-surface-subtle mx-auto mb-2"/>
+              <p className="text-sm text-on-surface-subtle">No incentive requests from this employee</p>
             </div>
           ) : (
             <div className="overflow-x-auto">
               <table className="w-full text-sm">
                 <thead>
-                  <tr style={{background:'#f8f9fc'}}>
+                  <tr className="bg-surface-2">
                     {['Client','Service','Deal Value','Incentive','Date','Status','Action'].map(h => (
-                      <th key={h} className="text-left px-4 py-3 text-xs font-semibold text-gray-400 uppercase tracking-wide whitespace-nowrap">{h}</th>
+                      <th key={h} className="text-left px-4 py-3 text-xs font-semibold text-on-surface-subtle uppercase tracking-wide whitespace-nowrap">{h}</th>
                     ))}
                   </tr>
                 </thead>
                 <tbody>
                   {incentives.map(r => {
-                    const cfg: Record<string,{bg:string;color:string}> = {
-                      pending:{bg:'#fffbeb',color:'#d97706'}, approved:{bg:'#f0fdf4',color:'#15803d'},
-                      rejected:{bg:'#fef2f2',color:'#dc2626'}, paid:{bg:'#f5f3ff',color:'#7c3aed'},
+                    const statusCls: Record<string,string> = {
+                      pending: 'bg-warning-container text-warning',
+                      approved: 'bg-success-container text-success',
+                      rejected: 'bg-danger-container text-danger',
+                      paid: 'bg-accent/15 text-accent',
                     };
-                    const c = cfg[r.status]??cfg.pending;
                     return (
-                      <tr key={r.id} className="border-t border-gray-50 hover:bg-gray-50/40">
-                        <td className="px-4 py-3 font-medium text-gray-800">{r.client_name}</td>
-                        <td className="px-4 py-3 text-gray-500 max-w-[140px] truncate">{r.service_description}</td>
-                        <td className="px-4 py-3 text-gray-600">{fmtAmt(r.deal_value)}</td>
-                        <td className="px-4 py-3 font-semibold" style={{color:r.approved_amount?'#15803d':'#9ca3af'}}>{fmtAmt(r.approved_amount)}</td>
-                        <td className="px-4 py-3 text-xs text-gray-400 whitespace-nowrap">{fmtDate(r.created_at)}</td>
+                      <tr key={r.id} className="border-t border-outline hover:bg-surface-2/60 transition-colors">
+                        <td className="px-4 py-3 font-medium text-on-surface">{r.client_name}</td>
+                        <td className="px-4 py-3 text-on-surface-muted max-w-[140px] truncate">{r.service_description}</td>
+                        <td className="px-4 py-3 text-on-surface-muted num-mono">{fmtAmt(r.deal_value)}</td>
+                        <td className={`px-4 py-3 font-semibold num-mono ${r.approved_amount ? 'text-success' : 'text-on-surface-subtle'}`}>{fmtAmt(r.approved_amount)}</td>
+                        <td className="px-4 py-3 text-xs text-on-surface-subtle font-mono whitespace-nowrap">{fmtDate(r.created_at)}</td>
                         <td className="px-4 py-3">
-                          <span className="text-xs px-2.5 py-1 rounded-full font-semibold capitalize" style={{background:c.bg,color:c.color}}>{r.status}</span>
+                          <span className={`text-xs px-2.5 py-1 rounded-full font-semibold capitalize ${statusCls[r.status] ?? statusCls.pending}`}>{r.status}</span>
                         </td>
                         <td className="px-4 py-3">
                           <div className="flex gap-1.5">
                             {r.status==='pending'&&<>
-                              <button onClick={()=>setIncAction({row:r,type:'approve'})} className="text-xs px-2 py-1 rounded-lg font-semibold text-white" style={{background:'#15803d'}}>Approve</button>
-                              <button onClick={()=>setIncAction({row:r,type:'reject'})} className="text-xs px-2 py-1 rounded-lg font-semibold bg-red-50 text-red-600">Reject</button>
+                              <button onClick={()=>setIncAction({row:r,type:'approve'})} className="text-xs px-2 py-1 rounded-lg font-semibold bg-success text-white hover:opacity-90 shadow-elev-1 transition-all">Approve</button>
+                              <button onClick={()=>setIncAction({row:r,type:'reject'})} className="text-xs px-2 py-1 rounded-lg font-semibold bg-danger-container text-danger hover:opacity-90 transition-all">Reject</button>
                             </>}
-                            {r.status==='approved'&&<button onClick={()=>setIncAction({row:r,type:'pay'})} className="text-xs px-2 py-1 rounded-lg font-semibold text-white" style={{background:'#7c3aed'}}>Mark Paid</button>}
-                            {(r.status==='rejected'||r.status==='paid')&&<span className="text-xs text-gray-300 italic">Closed</span>}
+                            {r.status==='approved'&&<button onClick={()=>setIncAction({row:r,type:'pay'})} className="text-xs px-2 py-1 rounded-lg font-semibold bg-accent text-on-accent hover:opacity-90 shadow-elev-1 transition-all">Mark Paid</button>}
+                            {(r.status==='rejected'||r.status==='paid')&&<span className="text-xs text-on-surface-subtle italic">Closed</span>}
                           </div>
                         </td>
                       </tr>
@@ -1013,59 +1037,60 @@ export default function EmployeeProfile() {
 
       {/* ── Expenses ───────────────────────────────────────────────────────── */}
       {tab === 'Expenses' && (
-        <div className="bg-white rounded-2xl border border-gray-100 shadow-sm overflow-hidden">
-          <div className="px-5 py-4 border-b border-gray-50 flex items-center justify-between">
-            <p className="font-semibold text-sm text-gray-800">Expense Claims</p>
-            <button onClick={() => refreshTab('Expenses')} className="flex items-center gap-1 text-xs text-gray-400 hover:text-gray-600">
+        <div className="bg-surface rounded-xl-2 border border-outline shadow-elev-1 overflow-hidden">
+          <div className="px-5 py-4 border-b border-outline flex items-center justify-between">
+            <h3 className="font-display text-xl font-bold tracking-tight text-on-surface">Expense Claims</h3>
+            <button onClick={() => refreshTab('Expenses')} className="flex items-center gap-1 text-xs text-on-surface-subtle hover:text-on-surface-muted transition-colors">
               <RefreshCw size={12}/> Refresh
             </button>
           </div>
           <TabError t="Expenses"/>
           {expLoading ? (
             <div className="flex items-center justify-center py-12">
-              <div className="w-6 h-6 border-4 border-primary-200 border-t-primary-500 rounded-full animate-spin"/>
+              <div className="w-6 h-6 border-4 border-outline border-t-accent rounded-full animate-spin"/>
             </div>
           ) : expenses.length === 0 ? (
             <div className="text-center py-12">
-              <FileText size={32} className="text-gray-200 mx-auto mb-2"/>
-              <p className="text-sm text-gray-400">No expense claims from this employee</p>
+              <FileText size={32} className="text-on-surface-subtle mx-auto mb-2"/>
+              <p className="text-sm text-on-surface-subtle">No expense claims from this employee</p>
             </div>
           ) : (
             <div className="overflow-x-auto">
               <table className="w-full text-sm">
                 <thead>
-                  <tr style={{background:'#f8f9fc'}}>
+                  <tr className="bg-surface-2">
                     {['Category','Description','Claimed','Approved','Expense Date','Submitted','Status','Action'].map(h => (
-                      <th key={h} className="text-left px-4 py-3 text-xs font-semibold text-gray-400 uppercase tracking-wide whitespace-nowrap">{h}</th>
+                      <th key={h} className="text-left px-4 py-3 text-xs font-semibold text-on-surface-subtle uppercase tracking-wide whitespace-nowrap">{h}</th>
                     ))}
                   </tr>
                 </thead>
                 <tbody>
                   {expenses.map(r => {
-                    const cfg: Record<string,{bg:string;color:string}> = {
-                      pending:{bg:'#fffbeb',color:'#d97706'}, approved:{bg:'#f0fdf4',color:'#15803d'},
-                      rejected:{bg:'#fef2f2',color:'#dc2626'}, paid:{bg:'#f5f3ff',color:'#7c3aed'},
+                    const statusCls: Record<string,string> = {
+                      pending: 'bg-warning-container text-warning',
+                      approved: 'bg-success-container text-success',
+                      rejected: 'bg-danger-container text-danger',
+                      paid: 'bg-accent/15 text-accent',
                     };
-                    const c = cfg[r.status]??cfg.pending;
                     return (
-                      <tr key={r.id} className="border-t border-gray-50 hover:bg-gray-50/40">
-                        <td className="px-4 py-3 font-medium text-gray-800">{r.category}</td>
-                        <td className="px-4 py-3 text-gray-500 max-w-[140px] truncate">{r.description}</td>
-                        <td className="px-4 py-3 text-gray-600">{fmtAmt(r.amount)}</td>
-                        <td className="px-4 py-3 font-semibold" style={{color:r.approved_amount?'#15803d':'#9ca3af'}}>{fmtAmt(r.approved_amount)}</td>
-                        <td className="px-4 py-3 text-xs text-gray-400 whitespace-nowrap">{fmtDate(r.expense_date)}</td>
-                        <td className="px-4 py-3 text-xs text-gray-400 whitespace-nowrap">{fmtDate(r.created_at)}</td>
+                      <tr key={r.id} className="border-t border-outline hover:bg-surface-2/60 transition-colors">
+                        <td className="px-4 py-3 font-medium text-on-surface">{r.category}</td>
+                        <td className="px-4 py-3 text-on-surface-muted max-w-[140px] truncate">{r.description}</td>
+                        <td className="px-4 py-3 text-on-surface-muted num-mono">{fmtAmt(r.amount)}</td>
+                        <td className={`px-4 py-3 font-semibold num-mono ${r.approved_amount ? 'text-success' : 'text-on-surface-subtle'}`}>{fmtAmt(r.approved_amount)}</td>
+                        <td className="px-4 py-3 text-xs text-on-surface-subtle font-mono whitespace-nowrap">{fmtDate(r.expense_date)}</td>
+                        <td className="px-4 py-3 text-xs text-on-surface-subtle font-mono whitespace-nowrap">{fmtDate(r.created_at)}</td>
                         <td className="px-4 py-3">
-                          <span className="text-xs px-2.5 py-1 rounded-full font-semibold capitalize" style={{background:c.bg,color:c.color}}>{r.status}</span>
+                          <span className={`text-xs px-2.5 py-1 rounded-full font-semibold capitalize ${statusCls[r.status] ?? statusCls.pending}`}>{r.status}</span>
                         </td>
                         <td className="px-4 py-3">
                           <div className="flex gap-1.5">
                             {r.status==='pending'&&<>
-                              <button onClick={()=>setExpAction({row:r,type:'approve'})} className="text-xs px-2 py-1 rounded-lg font-semibold text-white" style={{background:'#15803d'}}>Approve</button>
-                              <button onClick={()=>setExpAction({row:r,type:'reject'})} className="text-xs px-2 py-1 rounded-lg font-semibold bg-red-50 text-red-600">Reject</button>
+                              <button onClick={()=>setExpAction({row:r,type:'approve'})} className="text-xs px-2 py-1 rounded-lg font-semibold bg-success text-white hover:opacity-90 shadow-elev-1 transition-all">Approve</button>
+                              <button onClick={()=>setExpAction({row:r,type:'reject'})} className="text-xs px-2 py-1 rounded-lg font-semibold bg-danger-container text-danger hover:opacity-90 transition-all">Reject</button>
                             </>}
-                            {r.status==='approved'&&<button onClick={()=>setExpAction({row:r,type:'pay'})} className="text-xs px-2 py-1 rounded-lg font-semibold text-white" style={{background:'#7c3aed'}}>Mark Paid</button>}
-                            {(r.status==='rejected'||r.status==='paid')&&<span className="text-xs text-gray-300 italic">Closed</span>}
+                            {r.status==='approved'&&<button onClick={()=>setExpAction({row:r,type:'pay'})} className="text-xs px-2 py-1 rounded-lg font-semibold bg-accent text-on-accent hover:opacity-90 shadow-elev-1 transition-all">Mark Paid</button>}
+                            {(r.status==='rejected'||r.status==='paid')&&<span className="text-xs text-on-surface-subtle italic">Closed</span>}
                           </div>
                         </td>
                       </tr>
@@ -1083,16 +1108,16 @@ export default function EmployeeProfile() {
         <div className="space-y-5">
           <TabError t="Warnings"/>
           {pip && (
-            <div className="bg-red-50 border border-red-200 rounded-2xl p-5 flex items-start gap-3">
-              <Shield size={18} className="text-red-500 mt-0.5 flex-shrink-0"/>
+            <div className="bg-danger-container border border-danger/20 rounded-xl-2 p-5 flex items-start gap-3">
+              <Shield size={18} className="text-danger mt-0.5 flex-shrink-0"/>
               <div className="flex-1">
-                <p className="font-bold text-red-700 text-sm">On Performance Improvement Plan (PIP)</p>
-                <p className="text-xs text-red-600 mt-1">{fmtDate(pip.start_date)} → {fmtDate(pip.end_date)}</p>
-                {pip.goals && <p className="text-xs text-red-500 mt-1 italic">"{pip.goals}"</p>}
+                <p className="font-bold text-danger text-sm">On Performance Improvement Plan (PIP)</p>
+                <p className="text-xs text-danger/85 mt-1 font-mono">{fmtDate(pip.start_date)} → {fmtDate(pip.end_date)}</p>
+                {pip.goals && <p className="text-xs text-danger/75 mt-1 italic">"{pip.goals}"</p>}
               </div>
               <select value={pip.status} disabled={pipUpdating}
                 onChange={e => handlePipUpdate(e.target.value)}
-                className="text-xs border border-red-200 rounded-lg px-2 py-1.5 bg-white text-red-600 focus:outline-none disabled:opacity-60">
+                className="text-xs bg-surface border border-danger/20 rounded-lg px-2 py-1.5 text-danger focus:outline-none focus:ring-2 focus:ring-danger/20 disabled:opacity-60">
                 <option value="active">Active</option>
                 <option value="completed">Completed</option>
                 <option value="dismissed">Dismissed</option>
@@ -1100,22 +1125,22 @@ export default function EmployeeProfile() {
             </div>
           )}
 
-          <div className="bg-white rounded-2xl border border-gray-100 shadow-sm p-5">
+          <div className="bg-surface rounded-xl-2 border border-outline shadow-elev-1 p-5">
             <div className="flex items-center justify-between mb-4">
               <div className="flex items-center gap-2">
-                <p className="font-semibold text-sm text-gray-800">Warnings</p>
+                <h3 className="font-display text-xl font-bold tracking-tight text-on-surface">Warnings</h3>
                 {warnings.length > 0 && (
-                  <span className={`text-xs font-bold px-2 py-0.5 rounded-full ${warnings.length>=3?'bg-red-100 text-red-700':warnings.length===2?'bg-orange-100 text-orange-700':'bg-amber-100 text-amber-700'}`}>
+                  <span className={`num-mono text-xs font-bold px-2 py-0.5 rounded-full ${warnings.length>=3?'bg-danger-container text-danger':warnings.length===2?'bg-warning-container text-warning':'bg-warning-container text-warning'}`}>
                     {warnings.length}
                   </span>
                 )}
               </div>
               <div className="flex items-center gap-2">
-                <button onClick={() => refreshTab('Warnings')} className="flex items-center gap-1 text-xs text-gray-400 hover:text-gray-600">
+                <button onClick={() => refreshTab('Warnings')} className="flex items-center gap-1 text-xs text-on-surface-subtle hover:text-on-surface-muted transition-colors">
                   <RefreshCw size={12}/>
                 </button>
                 <button onClick={() => { setShowWarnForm(v => !v); setWarnError(''); }}
-                  className="flex items-center gap-1.5 text-xs font-semibold px-3 py-1.5 rounded-lg border border-amber-200 bg-amber-50 text-amber-700 hover:bg-amber-100">
+                  className="flex items-center gap-1.5 text-xs font-semibold px-3 py-1.5 rounded-lg border border-warning/25 bg-warning-container text-warning hover:opacity-90 transition-all">
                   <AlertTriangle size={11}/> Issue Warning
                   {showWarnForm ? <ChevronUp size={11}/> : <ChevronDown size={11}/>}
                 </button>
@@ -1123,24 +1148,24 @@ export default function EmployeeProfile() {
             </div>
 
             {showWarnForm && (
-              <div className="mb-4 p-4 bg-amber-50 border border-amber-100 rounded-xl space-y-3">
+              <div className="mb-4 p-4 bg-warning-container border border-warning/20 rounded-xl-2 space-y-3">
                 <div className="flex gap-2">
                   {(['warning','serious','final'] as const).map(s => (
                     <button key={s} onClick={() => setWarnSeverity(s)}
                       className={`flex-1 py-1.5 text-xs font-semibold rounded-lg border capitalize transition-all ${warnSeverity===s
-                        ? s==='final'?'bg-red-500 text-white border-red-500':s==='serious'?'bg-orange-500 text-white border-orange-500':'bg-amber-500 text-white border-amber-500'
-                        : 'bg-white text-gray-600 border-gray-200 hover:border-gray-300'}`}>{s}</button>
+                        ? s==='final'?'bg-danger text-white border-danger':s==='serious'?'bg-orange-500 text-white border-orange-500':'bg-warning text-white border-warning'
+                        : 'bg-surface text-on-surface-muted border-outline hover:border-outline-strong'}`}>{s}</button>
                   ))}
                 </div>
                 <textarea value={warnReason} onChange={e => { setWarnReason(e.target.value); setWarnError(''); }} rows={2}
                   placeholder="Reason for this warning…"
-                  className="w-full text-sm border border-gray-200 rounded-lg px-3 py-2 focus:outline-none resize-none"/>
-                {warnError && <p className="text-xs text-red-500 font-medium">{warnError}</p>}
+                  className="w-full text-sm bg-surface border border-outline rounded-lg px-3 py-2 focus:outline-none focus:border-accent focus:ring-2 focus:ring-accent/20 resize-none"/>
+                {warnError && <p className="text-xs text-danger font-medium">{warnError}</p>}
                 <div className="flex gap-2">
                   <button onClick={() => { setShowWarnForm(false); setWarnError(''); setWarnReason(''); }}
-                    className="flex-1 py-1.5 border border-gray-200 rounded-lg text-xs font-medium text-gray-600 hover:bg-white">Cancel</button>
+                    className="flex-1 py-1.5 border border-outline rounded-lg text-xs font-medium text-on-surface-muted hover:bg-surface transition-colors">Cancel</button>
                   <button onClick={handleIssueWarning} disabled={issuingWarn || !warnReason.trim()}
-                    className="flex-1 py-1.5 text-white rounded-lg text-xs font-semibold disabled:opacity-50" style={{background:'#d97706'}}>
+                    className="flex-1 py-1.5 bg-warning text-white rounded-lg text-xs font-semibold shadow-elev-1 hover:opacity-90 disabled:opacity-50 transition-all">
                     {issuingWarn ? 'Issuing…' : 'Issue Warning'}
                   </button>
                 </div>
@@ -1149,22 +1174,22 @@ export default function EmployeeProfile() {
 
             {warnLoading ? (
               <div className="flex items-center justify-center py-8">
-                <div className="w-5 h-5 border-4 border-primary-200 border-t-primary-500 rounded-full animate-spin"/>
+                <div className="w-5 h-5 border-4 border-outline border-t-accent rounded-full animate-spin"/>
               </div>
             ) : warnings.length === 0 ? (
-              <p className="text-xs text-gray-400">No warnings on record.</p>
+              <p className="text-xs text-on-surface-subtle">No warnings on record.</p>
             ) : (
               <div className="space-y-2">
                 {warnings.map((w, i) => (
-                  <div key={w.id} className={`flex items-start gap-3 p-3 rounded-xl border ${w.severity==='final'?'border-red-200 bg-red-50':w.severity==='serious'?'border-orange-200 bg-orange-50':'border-amber-100 bg-amber-50'}`}>
-                    <div className={`w-5 h-5 rounded-full flex items-center justify-center text-[10px] font-black flex-shrink-0 mt-0.5 ${w.severity==='final'?'bg-red-500 text-white':w.severity==='serious'?'bg-orange-500 text-white':'bg-amber-400 text-white'}`}>{i+1}</div>
+                  <div key={w.id} className={`flex items-start gap-3 p-4 rounded-xl-2 border ${w.severity==='final'?'border-danger/20 bg-danger-container':w.severity==='serious'?'border-orange-500/20 bg-orange-50 dark:bg-orange-950/30':'border-warning/20 bg-warning-container'}`}>
+                    <div className={`w-5 h-5 rounded-full flex items-center justify-center text-[10px] font-black flex-shrink-0 mt-0.5 num-mono ${w.severity==='final'?'bg-danger text-white':w.severity==='serious'?'bg-orange-500 text-white':'bg-warning text-white'}`}>{i+1}</div>
                     <div className="flex-1 min-w-0">
-                      <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded uppercase ${w.severity==='final'?'bg-red-100 text-red-700':w.severity==='serious'?'bg-orange-100 text-orange-700':'bg-amber-100 text-amber-700'}`}>{w.severity}</span>
-                      <p className="text-xs text-gray-700 mt-1 leading-snug">{w.reason}</p>
-                      <p className="text-[10px] text-gray-400 mt-0.5">{w.issued_by?`By ${w.issued_by} · `:''}{fmtDate(w.created_at)}</p>
+                      <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded uppercase ${w.severity==='final'?'bg-danger/15 text-danger':w.severity==='serious'?'bg-orange-500/15 text-orange-700 dark:text-orange-300':'bg-warning/15 text-warning'}`}>{w.severity}</span>
+                      <p className="text-xs text-on-surface mt-1 leading-snug">{w.reason}</p>
+                      <p className="text-[10px] text-on-surface-subtle mt-0.5 font-mono">{w.issued_by?`By ${w.issued_by} · `:''}{fmtDate(w.created_at)}</p>
                     </div>
                     <button onClick={() => handleDeleteWarning(w.id)}
-                      className="text-gray-300 hover:text-red-400 transition-colors flex-shrink-0 mt-0.5">
+                      className="text-on-surface-subtle hover:text-danger transition-colors flex-shrink-0 mt-0.5">
                       <Trash2 size={13}/>
                     </button>
                   </div>
@@ -1172,7 +1197,7 @@ export default function EmployeeProfile() {
               </div>
             )}
             {warnings.length === 2 && !pip && (
-              <p className="text-xs text-orange-600 font-semibold mt-3 flex items-center gap-1">
+              <p className="text-xs text-warning font-semibold mt-3 flex items-center gap-1">
                 <AlertTriangle size={11}/> 1 more warning will trigger a PIP automatically.
               </p>
             )}
@@ -1190,18 +1215,18 @@ export default function EmployeeProfile() {
       )}
 
       {showDelete && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 backdrop-blur-sm p-4">
-          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-sm p-6 text-center">
-            <div className="w-12 h-12 rounded-full bg-red-50 flex items-center justify-center mx-auto mb-4">
-              <Trash2 size={20} className="text-red-500"/>
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-bg/55 backdrop-blur-sm p-4">
+          <div className="bg-surface rounded-2xl shadow-elev-4 border border-outline w-full max-w-sm p-6 text-center">
+            <div className="w-12 h-12 rounded-full bg-danger-container flex items-center justify-center mx-auto mb-4">
+              <Trash2 size={20} className="text-danger"/>
             </div>
-            <h3 className="font-semibold text-gray-900 mb-1">Delete {emp.name}?</h3>
-            <p className="text-sm text-gray-500 mb-6">This permanently removes the employee record, all attendance, leaves, and payroll data. This cannot be undone.</p>
+            <h3 className="font-display text-base font-bold tracking-tight text-on-surface mb-1">Delete {emp.name}?</h3>
+            <p className="text-sm text-on-surface-muted mb-6">This permanently removes the employee record, all attendance, leaves, and payroll data. This cannot be undone.</p>
             <div className="flex gap-3">
               <button onClick={() => setShowDelete(false)} disabled={deleting}
-                className="flex-1 py-2.5 border border-gray-200 rounded-lg text-sm font-medium text-gray-600 hover:bg-gray-50 disabled:opacity-60">Cancel</button>
+                className="flex-1 py-2.5 border border-outline rounded-lg text-sm font-medium text-on-surface-muted hover:bg-surface-2 disabled:opacity-60 transition-colors">Cancel</button>
               <button onClick={handleDelete} disabled={deleting}
-                className="flex-1 py-2.5 bg-red-500 hover:bg-red-600 text-white rounded-lg text-sm font-medium disabled:opacity-60">
+                className="flex-1 py-2.5 bg-danger hover:opacity-90 text-white rounded-lg text-sm font-semibold shadow-elev-1 disabled:opacity-60 transition-all">
                 {deleting ? 'Deleting…' : 'Delete'}
               </button>
             </div>

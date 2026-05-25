@@ -28,11 +28,31 @@ type Scores = Record<CategoryKey, number>;
 export const GOAL_STATUSES = ['not_started', 'touched', 'in_progress', 'completed'] as const;
 export type GoalStatus = typeof GOAL_STATUSES[number];
 
-export const GOAL_STATUS_CONFIG: Record<GoalStatus, { label: string; color: string; bg: string; border: string; icon: any }> = {
-  not_started: { label: 'Not Started', color: '#6b7280', bg: '#f3f4f6', border: '#e5e7eb', icon: Circle },
-  touched:     { label: 'Touched',     color: '#d97706', bg: '#fffbeb', border: '#fde68a', icon: Minus },
-  in_progress: { label: 'In Progress', color: '#2563eb', bg: '#eff6ff', border: '#bfdbfe', icon: RefreshCw },
-  completed:   { label: 'Completed',   color: '#16a34a', bg: '#f0fdf4', border: '#bbf7d0', icon: Check },
+export const GOAL_STATUS_CONFIG: Record<GoalStatus, { label: string; color: string; bg: string; border: string; icon: any; tone: 'neutral' | 'warning' | 'brand' | 'success' }> = {
+  not_started: { label: 'Not Started', color: '#6b7280', bg: '#f3f4f6', border: '#e5e7eb', icon: Circle,    tone: 'neutral' },
+  touched:     { label: 'Touched',     color: '#d97706', bg: '#fffbeb', border: '#fde68a', icon: Minus,     tone: 'warning' },
+  in_progress: { label: 'In Progress', color: '#2563eb', bg: '#eff6ff', border: '#bfdbfe', icon: RefreshCw, tone: 'brand'   },
+  completed:   { label: 'Completed',   color: '#16a34a', bg: '#f0fdf4', border: '#bbf7d0', icon: Check,     tone: 'success' },
+};
+
+// Tailwind class sets for goal status pills (matches GOAL_STATUS_CONFIG tones)
+const GOAL_STATUS_CLASSES: Record<GoalStatus, { active: string; inactive: string }> = {
+  not_started: {
+    active:   'bg-surface-2 text-on-surface-muted border-outline',
+    inactive: 'bg-surface-2 text-on-surface-subtle border-outline',
+  },
+  touched: {
+    active:   'bg-warning-container text-warning border-warning/30',
+    inactive: 'bg-surface-2 text-on-surface-subtle border-outline',
+  },
+  in_progress: {
+    active:   'bg-brand-container text-on-brand-container border-brand/20',
+    inactive: 'bg-surface-2 text-on-surface-subtle border-outline',
+  },
+  completed: {
+    active:   'bg-success-container text-success border-success/20',
+    inactive: 'bg-surface-2 text-on-surface-subtle border-outline',
+  },
 };
 
 // ─── Read-only goal card (used on both admin view + employee MyPortal) ───────
@@ -48,30 +68,27 @@ export function GoalCard({ goal, index }: { goal: any; index: number }) {
   const hasManagerStatus  = !!goal.status && goal.status !== 'not_started';
 
   return (
-    <div className="flex gap-3 p-4 rounded-xl border" style={{ borderColor: '#e2e4ed', background: '#fafbff' }}>
-      <div className="w-6 h-6 rounded-full flex items-center justify-center text-xs font-bold flex-shrink-0 mt-0.5"
-        style={{ background: 'rgba(238,39,112,0.12)', color: '#EE2770' }}>
+    <div className="flex gap-3 p-4 rounded-xl-2 border border-outline bg-surface-2">
+      <div className="w-6 h-6 rounded-full flex items-center justify-center text-xs font-bold flex-shrink-0 mt-0.5 num-mono bg-accent/15 text-accent">
         {index + 1}
       </div>
       <div className="flex-1 min-w-0">
-        <p className="font-semibold text-sm" style={{ color: '#192250' }}>{goal.title}</p>
-        {goal.description && <p className="text-xs text-gray-500 mt-1">{goal.description}</p>}
+        <p className="font-semibold text-sm text-on-surface">{goal.title}</p>
+        {goal.description && <p className="text-xs text-on-surface-muted mt-1">{goal.description}</p>}
         {goal.success_criteria && (
-          <p className="text-xs text-gray-400 mt-1 italic">Target: {goal.success_criteria}</p>
+          <p className="text-xs text-on-surface-subtle mt-1 italic">Target: {goal.success_criteria}</p>
         )}
 
         {/* Status badges */}
         {(hasEmployeeStatus || hasManagerStatus) && (
           <div className="flex flex-wrap gap-2 mt-2.5">
             {hasEmployeeStatus && (
-              <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-xs font-semibold"
-                style={{ background: empCfg.bg, color: empCfg.color, border: `1px solid ${empCfg.border}` }}>
+              <span className={`inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-xs font-semibold border ${GOAL_STATUS_CLASSES[empStatus].active}`}>
                 <EmpIcon size={10} /> Self: {empCfg.label}
               </span>
             )}
             {hasManagerStatus && (
-              <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-xs font-semibold"
-                style={{ background: managerCfg.bg, color: managerCfg.color, border: `1px solid ${managerCfg.border}` }}>
+              <span className={`inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-xs font-semibold border ${GOAL_STATUS_CLASSES[managerStatus].active}`}>
                 <ManagerIcon size={10} /> Manager: {managerCfg.label}
               </span>
             )}
@@ -79,8 +96,8 @@ export function GoalCard({ goal, index }: { goal: any; index: number }) {
         )}
 
         {goal.reviewer_comment && (
-          <div className="mt-2 px-3 py-2 rounded-lg text-xs" style={{ background: 'rgba(25,34,80,0.05)', color: '#374151' }}>
-            <span className="font-semibold" style={{ color: '#192250' }}>Reviewer: </span>
+          <div className="mt-2 px-3 py-2 rounded-lg text-xs bg-brand/5 text-on-surface-muted">
+            <span className="font-semibold text-on-surface">Reviewer: </span>
             {goal.reviewer_comment}
           </div>
         )}
@@ -89,6 +106,7 @@ export function GoalCard({ goal, index }: { goal: any; index: number }) {
   );
 }
 
+// Hex score colors retained for Recharts (Cells / inline SVG fill props)
 function scoreColor(score: number) {
   if (score >= 85) return '#16a34a';
   if (score >= 70) return '#192250';
@@ -96,11 +114,19 @@ function scoreColor(score: number) {
   return '#dc2626';
 }
 
+// Token-class equivalent for HTML text usage
+function scoreColorClass(score: number) {
+  if (score >= 85) return 'text-success';
+  if (score >= 70) return 'text-brand';
+  if (score >= 50) return 'text-warning';
+  return 'text-danger';
+}
+
 function scoreBadge(score: number) {
-  if (score >= 85) return { bg: '#dcfce7', text: '#15803d', label: 'Excellent' };
-  if (score >= 70) return { bg: '#e0e4f5', text: '#192250', label: 'Good' };
-  if (score >= 50) return { bg: '#fef3c7', text: '#92400e', label: 'Average' };
-  return { bg: '#fee2e2', text: '#991b1b', label: 'Needs Work' };
+  if (score >= 85) return { bg: '#dcfce7', text: '#15803d', label: 'Excellent', className: 'bg-success-container text-success' };
+  if (score >= 70) return { bg: '#e0e4f5', text: '#192250', label: 'Good',       className: 'bg-brand-container text-on-brand-container' };
+  if (score >= 50) return { bg: '#fef3c7', text: '#92400e', label: 'Average',    className: 'bg-warning-container text-warning' };
+  return            { bg: '#fee2e2', text: '#991b1b', label: 'Needs Work', className: 'bg-danger-container text-danger' };
 }
 
 // ─── Slider + text input combo ───────────────────────────────────────────────
@@ -130,22 +156,20 @@ function ScoreInput({
   return (
     <div className="space-y-1.5">
       <div className="flex items-center justify-between gap-3">
-        <label className="text-sm font-semibold flex-1" style={{ color: '#192250' }}>{label}</label>
+        <label className="text-sm font-semibold flex-1 text-on-surface">{label}</label>
         <input
           type="number" min={0} max={100}
           value={raw}
           onChange={handleText}
           onBlur={handleBlur}
-          className="w-16 text-center border rounded-lg px-2 py-1 text-sm font-bold focus:outline-none tabular-nums"
-          style={{ borderColor: '#e2e4ed', color: scoreColor(value) }}
-          onFocus={e => { e.target.style.borderColor = '#192250'; }}
+          className={`w-16 text-center bg-surface border border-outline rounded-lg px-2 py-1 text-sm font-bold focus:outline-none focus:border-accent focus:ring-2 focus:ring-accent/20 num-mono ${scoreColorClass(value)}`}
         />
       </div>
       <input
         type="range" min={0} max={100} value={value}
         onChange={e => onChange(Number(e.target.value))}
-        className="w-full h-2 rounded-full appearance-none cursor-pointer"
-        style={{ accentColor: scoreColor(value) }}
+        className="w-full h-2 rounded-full appearance-none cursor-pointer bg-surface-2"
+        style={{ accentColor: 'rgb(var(--accent))' }}
       />
       {onNoteChange !== undefined && (
         <textarea
@@ -153,10 +177,9 @@ function ScoreInput({
           onChange={e => onNoteChange(e.target.value)}
           rows={1}
           placeholder={`Note for ${label} (optional)…`}
-          className="w-full border rounded-lg px-2.5 py-1.5 text-xs resize-none focus:outline-none leading-relaxed"
-          style={{ borderColor: '#e2e4ed', color: '#374151' }}
-          onFocus={e => { e.target.style.borderColor = '#192250'; (e.target as HTMLTextAreaElement).rows = 2; }}
-          onBlur={e => { e.target.style.borderColor = '#e2e4ed'; if (!e.target.value) (e.target as HTMLTextAreaElement).rows = 1; }}
+          className="w-full bg-surface border border-outline rounded-lg px-2.5 py-1.5 text-xs resize-none focus:outline-none focus:border-accent focus:ring-2 focus:ring-accent/20 leading-relaxed text-on-surface-muted"
+          onFocus={e => { (e.target as HTMLTextAreaElement).rows = 2; }}
+          onBlur={e => { if (!e.target.value) (e.target as HTMLTextAreaElement).rows = 1; }}
         />
       )}
     </div>
@@ -205,29 +228,29 @@ function AddReviewModal({
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4" style={{ background: 'rgba(0,0,0,0.5)' }}>
-      <div className="bg-white rounded-2xl shadow-2xl w-full max-w-lg max-h-[92vh] overflow-y-auto">
-        <div className="flex items-center justify-between p-5 border-b border-gray-100">
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-bg/55 backdrop-blur-sm">
+      <div className="bg-surface rounded-2xl shadow-elev-4 border border-outline w-full max-w-lg max-h-[92vh] overflow-y-auto">
+        <div className="flex items-center justify-between p-5 border-b border-outline">
           <div>
-            <h3 className="font-bold text-base" style={{ color: '#192250' }}>
+            <h3 className="font-display text-base font-bold tracking-tight text-on-surface">
               {existing ? 'Edit Review' : 'Add Review'}
             </h3>
-            <p className="text-xs text-gray-400 mt-0.5">
+            <p className="text-xs text-on-surface-subtle mt-0.5">
               {employee.name} · {MONTHS[month - 1]} {year}
             </p>
           </div>
-          <button onClick={onClose} className="p-1.5 hover:bg-gray-100 rounded-lg">
-            <X size={16} className="text-gray-400" />
+          <button onClick={onClose} className="p-1.5 hover:bg-surface-2 rounded-lg transition-colors">
+            <X size={16} className="text-on-surface-subtle" />
           </button>
         </div>
 
         <div className="p-5 space-y-5">
           {/* Overall score preview */}
-          <div className="rounded-xl p-4 text-center" style={{ background: 'rgba(25,34,80,0.04)', border: '1px solid rgba(25,34,80,0.08)' }}>
-            <p className="text-xs font-semibold uppercase tracking-wide text-gray-400 mb-1">Overall Score</p>
-            <p className="text-4xl font-bold" style={{ color: scoreColor(overall) }}>{overall}</p>
-            <p className="text-xs font-semibold mt-1" style={{ color: scoreBadge(overall).text }}>{scoreBadge(overall).label}</p>
-            <p className="text-xs text-gray-400 mt-1">Average of {CATEGORIES.length} parameters</p>
+          <div className="rounded-xl-2 p-4 text-center bg-surface-2 border border-outline">
+            <p className="text-xs font-semibold uppercase tracking-wide text-on-surface-subtle mb-1">Overall Score</p>
+            <p className={`num-mono text-4xl font-bold ${scoreColorClass(overall)}`}>{overall}</p>
+            <p className={`text-xs font-semibold mt-1 ${scoreColorClass(overall)}`}>{scoreBadge(overall).label}</p>
+            <p className="text-xs text-on-surface-subtle mt-1">Average of <span className="num-mono">{CATEGORIES.length}</span> parameters</p>
           </div>
 
           {CATEGORIES.map(({ key, label }) => (
@@ -242,29 +265,25 @@ function AddReviewModal({
           ))}
 
           <div>
-            <label className="text-sm font-semibold mb-1.5 block" style={{ color: '#192250' }}>Comments (optional)</label>
+            <label className="text-sm font-semibold mb-1.5 block text-on-surface">Comments (optional)</label>
             <textarea
               value={comments}
               onChange={e => setComments(e.target.value)}
               rows={3}
               placeholder="Overall feedback for this month..."
-              className="w-full border rounded-xl px-3 py-2.5 text-sm resize-none focus:outline-none"
-              style={{ borderColor: '#e2e4ed' }}
-              onFocus={e => { e.target.style.borderColor = '#192250'; }}
-              onBlur={e => { e.target.style.borderColor = '#e2e4ed'; }}
+              className="w-full bg-surface border border-outline rounded-xl-2 px-3 py-2.5 text-sm resize-none focus:outline-none focus:border-accent focus:ring-2 focus:ring-accent/20 text-on-surface"
             />
           </div>
         </div>
 
-        <div className="flex gap-3 p-5 border-t border-gray-100">
-          <button onClick={onClose} className="flex-1 py-2.5 border rounded-xl text-sm font-semibold text-gray-600 hover:bg-gray-50" style={{ borderColor: '#e2e4ed' }}>
+        <div className="flex gap-3 p-5 border-t border-outline">
+          <button onClick={onClose} className="flex-1 py-2.5 border border-outline rounded-xl-2 text-sm font-semibold text-on-surface-muted hover:bg-surface-2 transition-colors">
             Cancel
           </button>
           <button
             onClick={handleSave}
             disabled={saving}
-            className="flex-1 py-2.5 text-white rounded-xl text-sm font-semibold disabled:opacity-60"
-            style={{ background: 'linear-gradient(135deg, #EE2770 0%, #d11f62 100%)' }}
+            className="flex-1 py-2.5 bg-accent text-on-accent rounded-xl-2 text-sm font-semibold disabled:opacity-60 hover:opacity-90 shadow-elev-1 hover:shadow-elev-2 transition-all"
           >
             {saving ? 'Saving…' : 'Save Review'}
           </button>
@@ -300,73 +319,63 @@ function AddNoteModal({ employee, reviewer, onSave, onClose }: {
     } catch { /* ignore */ } finally { setSaving(false); }
   };
 
-  const typeConfig = {
-    positive: { label: 'Positive', color: '#15803d', bg: '#dcfce7', border: '#86efac' },
-    neutral:  { label: 'Neutral',  color: '#192250', bg: '#e0e4f5', border: '#c7cde8' },
-    negative: { label: 'Negative', color: '#991b1b', bg: '#fee2e2', border: '#fca5a5' },
+  const typeClasses: Record<'positive' | 'neutral' | 'negative', { active: string; inactive: string; label: string }> = {
+    positive: { label: 'Positive', active: 'bg-success-container text-success border-success/30',                  inactive: 'bg-surface-2 text-on-surface-subtle border-outline' },
+    neutral:  { label: 'Neutral',  active: 'bg-brand-container text-on-brand-container border-brand/20',           inactive: 'bg-surface-2 text-on-surface-subtle border-outline' },
+    negative: { label: 'Negative', active: 'bg-danger-container text-danger border-danger/30',                     inactive: 'bg-surface-2 text-on-surface-subtle border-outline' },
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4" style={{ background: 'rgba(0,0,0,0.5)' }}>
-      <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md">
-        <div className="flex items-center justify-between p-5 border-b border-gray-100">
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-bg/55 backdrop-blur-sm">
+      <div className="bg-surface rounded-2xl shadow-elev-4 border border-outline w-full max-w-md">
+        <div className="flex items-center justify-between p-5 border-b border-outline">
           <div>
-            <h3 className="font-bold text-base" style={{ color: '#192250' }}>Add Private Note</h3>
-            <p className="text-xs text-gray-400 mt-0.5">{employee.name} · Not visible to employee</p>
+            <h3 className="font-display text-base font-bold tracking-tight text-on-surface">Add Private Note</h3>
+            <p className="text-xs text-on-surface-subtle mt-0.5">{employee.name} · Not visible to employee</p>
           </div>
-          <button onClick={onClose} className="p-1.5 hover:bg-gray-100 rounded-lg"><X size={16} className="text-gray-400" /></button>
+          <button onClick={onClose} className="p-1.5 hover:bg-surface-2 rounded-lg transition-colors"><X size={16} className="text-on-surface-subtle" /></button>
         </div>
         <div className="p-5 space-y-4">
           <div>
-            <label className="text-xs font-semibold uppercase tracking-wide mb-2 block" style={{ color: '#192250' }}>Note Type</label>
+            <label className="text-xs font-semibold uppercase tracking-wide mb-2 block text-on-surface">Note Type</label>
             <div className="flex gap-2">
               {(['positive', 'neutral', 'negative'] as const).map(t => (
                 <button
                   key={t}
                   onClick={() => setNoteType(t)}
-                  className="flex-1 py-2 rounded-xl text-xs font-semibold border transition-all"
-                  style={noteType === t
-                    ? { background: typeConfig[t].bg, color: typeConfig[t].color, borderColor: typeConfig[t].border }
-                    : { background: '#f9fafb', color: '#9ca3af', borderColor: '#e5e7eb' }}
+                  className={`flex-1 py-2 rounded-xl-2 text-xs font-semibold border transition-all ${noteType === t ? typeClasses[t].active : typeClasses[t].inactive}`}
                 >
-                  {typeConfig[t].label}
+                  {typeClasses[t].label}
                 </button>
               ))}
             </div>
           </div>
           <div>
-            <label className="text-xs font-semibold uppercase tracking-wide mb-1.5 block" style={{ color: '#192250' }}>Date</label>
+            <label className="text-xs font-semibold uppercase tracking-wide mb-1.5 block text-on-surface">Date</label>
             <input
               type="date" value={noteDate}
               max={new Date().toISOString().slice(0, 10)}
               onChange={e => setNoteDate(e.target.value)}
-              className="w-full border rounded-xl px-3 py-2.5 text-sm focus:outline-none"
-              style={{ borderColor: '#e2e4ed' }}
-              onFocus={e => { e.target.style.borderColor = '#192250'; }}
-              onBlur={e => { e.target.style.borderColor = '#e2e4ed'; }}
+              className="w-full bg-surface border border-outline rounded-xl-2 px-3 py-2.5 text-sm focus:outline-none focus:border-accent focus:ring-2 focus:ring-accent/20 text-on-surface num-mono"
             />
           </div>
           <div>
-            <label className="text-xs font-semibold uppercase tracking-wide mb-1.5 block" style={{ color: '#192250' }}>Note</label>
+            <label className="text-xs font-semibold uppercase tracking-wide mb-1.5 block text-on-surface">Note</label>
             <textarea
               value={noteText}
               onChange={e => setNoteText(e.target.value)}
               rows={4}
               placeholder="Write your observation here..."
-              className="w-full border rounded-xl px-3 py-2.5 text-sm resize-none focus:outline-none"
-              style={{ borderColor: '#e2e4ed' }}
-              onFocus={e => { e.target.style.borderColor = '#192250'; }}
-              onBlur={e => { e.target.style.borderColor = '#e2e4ed'; }}
+              className="w-full bg-surface border border-outline rounded-xl-2 px-3 py-2.5 text-sm resize-none focus:outline-none focus:border-accent focus:ring-2 focus:ring-accent/20 text-on-surface"
             />
           </div>
         </div>
-        <div className="flex gap-3 p-5 border-t border-gray-100">
-          <button onClick={onClose} className="flex-1 py-2.5 border rounded-xl text-sm font-semibold text-gray-600 hover:bg-gray-50" style={{ borderColor: '#e2e4ed' }}>Cancel</button>
+        <div className="flex gap-3 p-5 border-t border-outline">
+          <button onClick={onClose} className="flex-1 py-2.5 border border-outline rounded-xl-2 text-sm font-semibold text-on-surface-muted hover:bg-surface-2 transition-colors">Cancel</button>
           <button
             onClick={handleSave}
             disabled={saving || !noteText.trim()}
-            className="flex-1 py-2.5 text-white rounded-xl text-sm font-semibold disabled:opacity-60"
-            style={{ background: 'linear-gradient(135deg, #EE2770 0%, #d11f62 100%)' }}
+            className="flex-1 py-2.5 bg-accent text-on-accent rounded-xl-2 text-sm font-semibold disabled:opacity-60 hover:opacity-90 shadow-elev-1 hover:shadow-elev-2 transition-all"
           >
             {saving ? 'Saving…' : 'Save Note'}
           </button>
@@ -396,47 +405,44 @@ function AdminGoalsModal({ record, onSave, onClose }: {
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4" style={{ background: 'rgba(0,0,0,0.5)' }}>
-      <div className="bg-white rounded-2xl shadow-2xl w-full max-w-2xl max-h-[90vh] overflow-y-auto">
-        <div className="flex items-center justify-between p-5 border-b border-gray-100">
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-bg/55 backdrop-blur-sm">
+      <div className="bg-surface rounded-2xl shadow-elev-4 border border-outline w-full max-w-2xl max-h-[90vh] overflow-y-auto">
+        <div className="flex items-center justify-between p-5 border-b border-outline">
           <div>
-            <h3 className="font-bold text-base" style={{ color: '#192250' }}>Review Appraisal Goals</h3>
-            <p className="text-xs text-gray-400 mt-0.5">
+            <h3 className="font-display text-base font-bold tracking-tight text-on-surface">Review Appraisal Goals</h3>
+            <p className="text-xs text-on-surface-subtle mt-0.5">
               {record.employee_name} · {MONTHS[record.month - 1]} {record.year} · Update status and add comments
             </p>
           </div>
-          <button onClick={onClose} className="p-1.5 hover:bg-gray-100 rounded-lg"><X size={16} className="text-gray-400" /></button>
+          <button onClick={onClose} className="p-1.5 hover:bg-surface-2 rounded-lg transition-colors"><X size={16} className="text-on-surface-subtle" /></button>
         </div>
         <div className="p-5 space-y-5">
           {goals.map((g, i) => (
-            <div key={i} className="border rounded-xl overflow-hidden" style={{ borderColor: '#e2e4ed' }}>
+            <div key={i} className="border border-outline rounded-xl-2 overflow-hidden bg-surface-2">
               {/* Goal header */}
               <div className="flex items-start justify-between gap-3 px-4 pt-4 pb-3">
                 <div className="flex items-start gap-2.5 flex-1">
-                  <div className="w-6 h-6 rounded-full flex items-center justify-center text-xs font-bold flex-shrink-0 mt-0.5"
-                    style={{ background: 'rgba(238,39,112,0.12)', color: '#EE2770' }}>{i + 1}</div>
+                  <div className="w-6 h-6 rounded-full flex items-center justify-center text-xs font-bold flex-shrink-0 mt-0.5 num-mono bg-accent/15 text-accent">{i + 1}</div>
                   <div className="flex-1">
                     <input
                       value={g.title ?? ''}
                       onChange={e => update(i, 'title', e.target.value)}
                       placeholder="Goal title"
-                      className="w-full font-semibold text-sm bg-transparent border-b focus:outline-none pb-1"
-                      style={{ color: '#192250', borderColor: '#e2e4ed' }}
+                      className="w-full font-semibold text-sm bg-transparent border-b border-outline focus:outline-none focus:border-accent pb-1 text-on-surface"
                     />
                     <input
                       value={g.description ?? ''}
                       onChange={e => update(i, 'description', e.target.value)}
                       placeholder="Description"
-                      className="w-full text-xs text-gray-500 bg-transparent border-b focus:outline-none pb-1 mt-1"
-                      style={{ borderColor: '#f3f4f6' }}
+                      className="w-full text-xs text-on-surface-muted bg-transparent border-b border-outline focus:outline-none focus:border-accent pb-1 mt-1"
                     />
                     {g.success_criteria && (
-                      <p className="text-xs text-gray-400 mt-1 italic">Target: {g.success_criteria}</p>
+                      <p className="text-xs text-on-surface-subtle mt-1 italic">Target: {g.success_criteria}</p>
                     )}
                   </div>
                 </div>
-                <button onClick={() => setGoals(g => g.filter((_, j) => j !== i))} className="p-1 hover:bg-red-50 rounded flex-shrink-0">
-                  <Trash2 size={13} className="text-red-300" />
+                <button onClick={() => setGoals(g => g.filter((_, j) => j !== i))} className="p-1 hover:bg-danger-container rounded flex-shrink-0 transition-colors">
+                  <Trash2 size={13} className="text-danger" />
                 </button>
               </div>
 
@@ -446,9 +452,8 @@ function AdminGoalsModal({ record, onSave, onClose }: {
                 const EmpIcon = empCfg?.icon;
                 return empCfg ? (
                   <div className="px-4 pb-2">
-                    <p className="text-xs font-semibold uppercase tracking-wide mb-1.5" style={{ color: '#6b7280' }}>Employee Self-Assessment</p>
-                    <span className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold border"
-                      style={{ background: empCfg.bg, color: empCfg.color, borderColor: empCfg.border }}>
+                    <p className="text-xs font-semibold uppercase tracking-wide mb-1.5 text-on-surface-subtle">Employee Self-Assessment</p>
+                    <span className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold border ${GOAL_STATUS_CLASSES[g.employee_status as GoalStatus].active}`}>
                       <EmpIcon size={11} /> {empCfg.label}
                     </span>
                   </div>
@@ -457,7 +462,7 @@ function AdminGoalsModal({ record, onSave, onClose }: {
 
               {/* Manager status selector */}
               <div className="px-4 pb-3">
-                <p className="text-xs font-semibold uppercase tracking-wide mb-2" style={{ color: '#6b7280' }}>Final Status (Manager)</p>
+                <p className="text-xs font-semibold uppercase tracking-wide mb-2 text-on-surface-subtle">Final Status (Manager)</p>
                 <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
                   {GOAL_STATUSES.map(s => {
                     const cfg = GOAL_STATUS_CONFIG[s];
@@ -467,10 +472,7 @@ function AdminGoalsModal({ record, onSave, onClose }: {
                       <button
                         key={s}
                         onClick={() => update(i, 'status', s)}
-                        className="flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs font-semibold border transition-all"
-                        style={active
-                          ? { background: cfg.bg, color: cfg.color, borderColor: cfg.border }
-                          : { background: '#f9fafb', color: '#9ca3af', borderColor: '#e5e7eb' }}
+                        className={`flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs font-semibold border transition-all ${active ? GOAL_STATUS_CLASSES[s].active : GOAL_STATUS_CLASSES[s].inactive}`}
                       >
                         <Icon size={11} /> {cfg.label}
                       </button>
@@ -486,10 +488,7 @@ function AdminGoalsModal({ record, onSave, onClose }: {
                   onChange={e => update(i, 'reviewer_comment', e.target.value)}
                   rows={2}
                   placeholder="Reviewer comment (visible to employee)…"
-                  className="w-full border rounded-lg px-3 py-2 text-xs resize-none focus:outline-none"
-                  style={{ borderColor: '#e2e4ed', color: '#374151' }}
-                  onFocus={e => { e.target.style.borderColor = '#192250'; }}
-                  onBlur={e => { e.target.style.borderColor = '#e2e4ed'; }}
+                  className="w-full bg-surface border border-outline rounded-lg px-3 py-2 text-xs resize-none focus:outline-none focus:border-accent focus:ring-2 focus:ring-accent/20 text-on-surface-muted"
                 />
               </div>
             </div>
@@ -498,14 +497,13 @@ function AdminGoalsModal({ record, onSave, onClose }: {
           {goals.length < 6 && (
             <button
               onClick={() => setGoals(g => [...g, { title: '', description: '', success_criteria: '', status: 'not_started' }])}
-              className="w-full py-2.5 border-2 border-dashed rounded-xl text-sm font-semibold text-gray-400 hover:border-pink-300 hover:text-pink-400 transition-colors"
-              style={{ borderColor: '#e2e4ed' }}
+              className="w-full py-2.5 border-2 border-dashed border-outline rounded-xl-2 text-sm font-semibold text-on-surface-subtle hover:border-accent/40 hover:text-accent transition-colors"
             >+ Add Goal</button>
           )}
         </div>
-        <div className="flex gap-3 p-5 border-t border-gray-100">
-          <button onClick={onClose} className="flex-1 py-2.5 border rounded-xl text-sm font-semibold text-gray-600 hover:bg-gray-50" style={{ borderColor: '#e2e4ed' }}>Cancel</button>
-          <button onClick={handleSave} disabled={saving} className="flex-1 py-2.5 text-white rounded-xl text-sm font-semibold disabled:opacity-60" style={{ background: 'linear-gradient(135deg, #EE2770 0%, #d11f62 100%)' }}>
+        <div className="flex gap-3 p-5 border-t border-outline">
+          <button onClick={onClose} className="flex-1 py-2.5 border border-outline rounded-xl-2 text-sm font-semibold text-on-surface-muted hover:bg-surface-2 transition-colors">Cancel</button>
+          <button onClick={handleSave} disabled={saving} className="flex-1 py-2.5 bg-accent text-on-accent rounded-xl-2 text-sm font-semibold disabled:opacity-60 hover:opacity-90 shadow-elev-1 hover:shadow-elev-2 transition-all">
             {saving ? 'Saving…' : 'Save Review'}
           </button>
         </div>
@@ -521,10 +519,10 @@ function CustomBarTooltip({ active, payload, label }: any) {
   if (score == null) return null;
   const badge = scoreBadge(score);
   return (
-    <div className="bg-white border border-gray-100 rounded-xl shadow-lg px-4 py-3 text-sm">
-      <p className="font-bold" style={{ color: '#192250' }}>{label}</p>
-      <p className="text-2xl font-black mt-0.5" style={{ color: scoreColor(score) }}>{score}</p>
-      <p className="text-xs font-semibold mt-0.5" style={{ color: badge.text }}>{badge.label}</p>
+    <div className="bg-surface border border-outline rounded-xl-2 shadow-elev-3 px-4 py-3 text-sm">
+      <p className="font-bold text-on-surface">{label}</p>
+      <p className={`num-mono text-2xl font-black mt-0.5 ${scoreColorClass(score)}`}>{score}</p>
+      <p className={`text-xs font-semibold mt-0.5 ${scoreColorClass(score)}`}>{badge.label}</p>
     </div>
   );
 }
@@ -615,10 +613,10 @@ export default function Performance() {
     setNotes(n => n.filter(x => x.id !== id));
   };
 
-  const noteTypeConfig: Record<string, { icon: any; color: string; bg: string; border: string }> = {
-    positive: { icon: CheckCircle, color: '#15803d', bg: '#f0fdf4', border: '#bbf7d0' },
-    neutral:  { icon: Info,         color: '#192250', bg: '#f5f6fb', border: '#d8dced' },
-    negative: { icon: AlertCircle,  color: '#dc2626', bg: '#fef2f2', border: '#fecaca' },
+  const noteTypeConfig: Record<string, { icon: any; className: string; iconClass: string }> = {
+    positive: { icon: CheckCircle, className: 'bg-success-container border-success/20', iconClass: 'text-success' },
+    neutral:  { icon: Info,        className: 'bg-brand-container border-brand/15',     iconClass: 'text-on-brand-container' },
+    negative: { icon: AlertCircle, className: 'bg-danger-container border-danger/20',   iconClass: 'text-danger' },
   };
 
   const yearOptions = Array.from({ length: 4 }, (_, i) => currentYear - i);
@@ -627,7 +625,7 @@ export default function Performance() {
     <><div className="space-y-6">
         {/* ── Page view tabs ── */}
         {isHROrAdmin && (
-          <div className="flex gap-1 bg-white rounded-xl p-1 border border-gray-100 shadow-sm w-fit">
+          <div className="flex gap-1 bg-surface rounded-xl-2 p-1 border border-outline shadow-elev-1 w-fit">
             {([
               { key: 'monthly',   label: 'Monthly Reviews',  icon: TrendingUp },
               { key: 'appraisal', label: 'Appraisal Goals',  icon: FileText },
@@ -635,10 +633,7 @@ export default function Performance() {
               <button
                 key={key}
                 onClick={() => setView(key)}
-                className="flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-semibold transition-all"
-                style={view === key
-                  ? { background: '#192250', color: '#fff' }
-                  : { color: '#6b7280' }}
+                className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-semibold transition-all ${view === key ? 'bg-brand text-on-brand' : 'text-on-surface-muted hover:bg-surface-2'}`}
               >
                 <Icon size={14} /> {label}
               </button>
@@ -657,39 +652,36 @@ export default function Performance() {
                 <select
                   value={selectedEmpId}
                   onChange={e => setSelectedEmpId(e.target.value)}
-                  className="appearance-none bg-white border border-gray-200 rounded-xl px-4 pr-9 py-2.5 text-sm font-semibold focus:outline-none shadow-sm"
-                  style={{ color: '#192250', minWidth: 200 }}
+                  className="appearance-none bg-surface border border-outline rounded-lg px-4 pr-9 py-2.5 text-sm font-semibold focus:outline-none focus:border-accent focus:ring-2 focus:ring-accent/20 shadow-elev-1 text-on-surface"
+                  style={{ minWidth: 200 }}
                 >
                   {employees.map(e => <option key={e.id} value={e.id}>{e.name}</option>)}
                 </select>
-                <ChevronDown size={14} className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 pointer-events-none" />
+                <ChevronDown size={14} className="absolute right-3 top-1/2 -translate-y-1/2 text-on-surface-subtle pointer-events-none" />
               </div>
 
               <div className="relative">
                 <select
                   value={selectedYear}
                   onChange={e => setSelectedYear(Number(e.target.value))}
-                  className="appearance-none bg-white border border-gray-200 rounded-xl px-4 pr-9 py-2.5 text-sm font-semibold focus:outline-none shadow-sm"
-                  style={{ color: '#192250' }}
+                  className="appearance-none bg-surface border border-outline rounded-lg px-4 pr-9 py-2.5 text-sm font-semibold focus:outline-none focus:border-accent focus:ring-2 focus:ring-accent/20 shadow-elev-1 text-on-surface num-mono"
                 >
                   {yearOptions.map(y => <option key={y} value={y}>{y}</option>)}
                 </select>
-                <ChevronDown size={14} className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 pointer-events-none" />
+                <ChevronDown size={14} className="absolute right-3 top-1/2 -translate-y-1/2 text-on-surface-subtle pointer-events-none" />
               </div>
 
               {isHROrAdmin && (
                 <div className="ml-auto flex gap-2">
                   <button
                     onClick={() => setShowAddNote(true)}
-                    className="flex items-center gap-2 px-4 py-2.5 rounded-xl text-sm font-semibold border transition-all hover:bg-gray-50"
-                    style={{ color: '#192250', borderColor: '#e2e4ed' }}
+                    className="flex items-center gap-2 px-4 py-2.5 rounded-xl-2 text-sm font-semibold border border-outline bg-surface text-on-surface transition-all hover:bg-surface-2 shadow-elev-1"
                   >
                     <MessageSquare size={15} /> Add Note
                   </button>
                   <button
                     onClick={() => setShowAddReview({ month: currentMonth })}
-                    className="flex items-center gap-2 px-4 py-2.5 rounded-xl text-sm font-semibold text-white transition-all"
-                    style={{ background: 'linear-gradient(135deg, #EE2770 0%, #d11f62 100%)' }}
+                    className="flex items-center gap-2 px-4 py-2.5 rounded-xl-2 text-sm font-semibold bg-accent text-on-accent transition-all hover:opacity-90 shadow-elev-1 hover:shadow-elev-2"
                   >
                     <Plus size={15} /> Add Review
                   </button>
@@ -700,151 +692,171 @@ export default function Performance() {
             {/* KPI Cards */}
             <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
               {[
-                { label: 'Avg YTD Score', value: reviewedMonths ? avgScore : '—', sub: reviewedMonths ? scoreBadge(avgScore).label : 'No reviews yet', icon: TrendingUp, color: '#192250' },
-                { label: 'Reviews Done', value: `${reviewedMonths}/12`, sub: `${12 - reviewedMonths} remaining`, icon: Target, color: '#EE2770' },
-                { label: 'Best Month', value: bestMonth ? MONTHS[bestMonth.month - 1] : '—', sub: bestMonth ? `Score: ${bestMonth.overall_score}` : 'No data', icon: Award, color: '#16a34a' },
-                { label: 'This Month', value: currentMonthRecord ? currentMonthRecord.overall_score : '—', sub: currentMonthRecord ? scoreBadge(currentMonthRecord.overall_score).label : 'Not reviewed', icon: Calendar, color: '#d97706' },
-              ].map(({ label, value, sub, icon: Icon, color }) => (
-                <div key={label} className="bg-white rounded-2xl p-5 shadow-sm border border-gray-100">
-                  <div className="flex items-start justify-between mb-3">
-                    <div className="w-10 h-10 rounded-xl flex items-center justify-center" style={{ background: `${color}18` }}>
-                      <Icon size={18} style={{ color }} />
+                { label: 'Avg YTD Score', value: reviewedMonths ? avgScore : '—', sub: reviewedMonths ? scoreBadge(avgScore).label : 'No reviews yet', icon: TrendingUp, iconBg: 'bg-brand-container',   iconColor: 'text-on-brand-container', blob: 'bg-brand/15',   subClass: 'text-on-surface-muted' },
+                { label: 'Reviews Done',  value: `${reviewedMonths}/12`, sub: `${12 - reviewedMonths} remaining`, icon: Target, iconBg: 'bg-accent/15',      iconColor: 'text-accent',              blob: 'bg-accent/15',  subClass: 'text-accent' },
+                { label: 'Best Month',    value: bestMonth ? MONTHS[bestMonth.month - 1] : '—', sub: bestMonth ? `Score: ${bestMonth.overall_score}` : 'No data', icon: Award,   iconBg: 'bg-success-container', iconColor: 'text-success', blob: 'bg-success/15', subClass: 'text-success' },
+                { label: 'This Month',    value: currentMonthRecord ? currentMonthRecord.overall_score : '—', sub: currentMonthRecord ? scoreBadge(currentMonthRecord.overall_score).label : 'Not reviewed', icon: Calendar, iconBg: 'bg-warning-container', iconColor: 'text-warning', blob: 'bg-warning/15', subClass: 'text-warning' },
+              ].map(({ label, value, sub, icon: Icon, iconBg, iconColor, blob, subClass }, i) => {
+                const isNumber = typeof value === 'number' || (typeof value === 'string' && /^\d/.test(value));
+                return (
+                  <div key={label} className={`group relative bg-surface rounded-xl-2 p-5 border border-outline shadow-elev-1 hover:shadow-elev-2 transition-all duration-300 overflow-hidden animate-fade-up stagger-${i + 1}`}>
+                    <div className={`absolute -top-8 -right-8 w-28 h-28 rounded-full ${blob} blur-2xl opacity-50 group-hover:opacity-80 transition-opacity duration-500`} />
+                    <div className="relative">
+                      <div className="flex items-start justify-between mb-3">
+                        <div className={`w-10 h-10 rounded-xl-2 flex items-center justify-center ${iconBg} shadow-elev-1 group-hover:scale-110 transition-transform duration-300`}>
+                          <Icon size={18} className={iconColor} strokeWidth={1.75} />
+                        </div>
+                      </div>
+                      <p className={`text-2xl font-black text-on-surface ${isNumber ? 'num-mono' : 'font-display tracking-tight'}`}>{value}</p>
+                      <p className="text-xs text-on-surface-subtle mt-1">{label}</p>
+                      <p className={`text-xs font-semibold mt-0.5 ${subClass}`}>{sub}</p>
                     </div>
                   </div>
-                  <p className="text-2xl font-black" style={{ color: '#192250' }}>{value}</p>
-                  <p className="text-xs text-gray-400 mt-1">{label}</p>
-                  <p className="text-xs font-semibold mt-0.5" style={{ color }}>{sub}</p>
-                </div>
-              ))}
+                );
+              })}
             </div>
 
             <div className="grid grid-cols-1 xl:grid-cols-3 gap-6">
               {/* Bar chart */}
-              <div className="xl:col-span-2 bg-white rounded-2xl p-5 shadow-sm border border-gray-100">
-                <div className="flex items-center justify-between mb-5">
-                  <div>
-                    <h2 className="font-bold text-sm" style={{ color: '#192250' }}>Monthly Performance — {selectedYear}</h2>
-                    <p className="text-xs text-gray-400 mt-0.5">Overall score out of 100</p>
+              <div className="xl:col-span-2 relative bg-surface rounded-xl-2 p-6 border border-outline shadow-elev-2 overflow-hidden group hover:shadow-elev-3 transition-shadow">
+                <div className="absolute -top-8 -right-8 w-28 h-28 rounded-full bg-brand/15 blur-2xl opacity-50 group-hover:opacity-80 transition-opacity duration-500" />
+                <div className="relative">
+                  <div className="flex items-center justify-between mb-5">
+                    <div>
+                      <h2 className="font-display text-xl font-bold tracking-tight text-on-surface">Monthly Performance — <span className="num-mono">{selectedYear}</span></h2>
+                      <p className="text-xs text-on-surface-muted mt-0.5">Overall score out of <span className="num-mono">100</span></p>
+                    </div>
+                    <div className="flex gap-3 text-xs flex-wrap">
+                      {[
+                        { c: '#16a34a', cls: 'bg-success',  l: '≥85'    },
+                        { c: '#192250', cls: 'bg-brand',    l: '70–84'  },
+                        { c: '#d97706', cls: 'bg-warning',  l: '50–69'  },
+                        { c: '#dc2626', cls: 'bg-danger',   l: '<50'    },
+                      ].map(({ cls, l }) => (
+                        <div key={l} className="flex items-center gap-1.5">
+                          <div className={`w-2.5 h-2.5 rounded-sm ${cls}`} />
+                          <span className="text-on-surface-muted num-mono">{l}</span>
+                        </div>
+                      ))}
+                    </div>
                   </div>
-                  <div className="flex gap-3 text-xs flex-wrap">
-                    {[['#16a34a','≥85'],['#192250','70–84'],['#d97706','50–69'],['#dc2626','<50']].map(([c, l]) => (
-                      <div key={l} className="flex items-center gap-1.5">
-                        <div className="w-2.5 h-2.5 rounded-sm" style={{ background: c }} />
-                        <span className="text-gray-500">{l}</span>
-                      </div>
-                    ))}
-                  </div>
+                  {loadingPerf ? (
+                    <div className="h-56 flex items-center justify-center text-on-surface-subtle text-sm">Loading…</div>
+                  ) : (
+                    <ResponsiveContainer width="100%" height={220}>
+                      <BarChart data={chartData} barSize={28}>
+                        <CartesianGrid strokeDasharray="3 3" stroke="rgba(148, 163, 184, 0.18)" vertical={false} />
+                        <XAxis dataKey="month" tick={{ fontSize: 11, fill: '#94a3b8', fontFamily: 'IBM Plex Mono' }} axisLine={false} tickLine={false} />
+                        <YAxis domain={[0, 100]} tick={{ fontSize: 11, fill: '#94a3b8', fontFamily: 'IBM Plex Mono' }} axisLine={false} tickLine={false} width={28} />
+                        <Tooltip content={<CustomBarTooltip />} cursor={{ fill: 'rgba(148, 163, 184, 0.12)' }} />
+                        <Bar dataKey="score" radius={[6, 6, 0, 0]}>
+                          {chartData.map((entry, idx) => (
+                            <Cell key={idx} fill={entry.score != null ? scoreColor(entry.score) : 'rgb(var(--surface-2))'} />
+                          ))}
+                        </Bar>
+                      </BarChart>
+                    </ResponsiveContainer>
+                  )}
                 </div>
-                {loadingPerf ? (
-                  <div className="h-56 flex items-center justify-center text-gray-300 text-sm">Loading…</div>
-                ) : (
-                  <ResponsiveContainer width="100%" height={220}>
-                    <BarChart data={chartData} barSize={28}>
-                      <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" vertical={false} />
-                      <XAxis dataKey="month" tick={{ fontSize: 11, fill: '#9ca3af' }} axisLine={false} tickLine={false} />
-                      <YAxis domain={[0, 100]} tick={{ fontSize: 11, fill: '#9ca3af' }} axisLine={false} tickLine={false} width={28} />
-                      <Tooltip content={<CustomBarTooltip />} cursor={{ fill: 'rgba(25,34,80,0.04)' }} />
-                      <Bar dataKey="score" radius={[6, 6, 0, 0]}>
-                        {chartData.map((entry, idx) => (
-                          <Cell key={idx} fill={entry.score != null ? scoreColor(entry.score) : '#e5e7eb'} />
-                        ))}
-                      </Bar>
-                    </BarChart>
-                  </ResponsiveContainer>
-                )}
               </div>
 
               {/* Notes / Category breakdown */}
               {isHROrAdmin ? (
-                <div className="bg-white rounded-2xl p-5 shadow-sm border border-gray-100 flex flex-col">
-                  <div className="flex items-center justify-between mb-4">
-                    <div>
-                      <h2 className="font-bold text-sm" style={{ color: '#192250' }}>Private Notes</h2>
-                      <p className="text-xs text-gray-400 mt-0.5">Not visible to employee</p>
+                <div className="relative bg-surface rounded-xl-2 p-6 border border-outline shadow-elev-2 overflow-hidden group hover:shadow-elev-3 transition-shadow flex flex-col">
+                  <div className="absolute -top-8 -right-8 w-28 h-28 rounded-full bg-accent/15 blur-2xl opacity-50 group-hover:opacity-80 transition-opacity duration-500" />
+                  <div className="relative flex flex-col flex-1 min-h-0">
+                    <div className="flex items-center justify-between mb-4">
+                      <div>
+                        <h2 className="font-display text-xl font-bold tracking-tight text-on-surface">Private Notes</h2>
+                        <p className="text-xs text-on-surface-muted mt-0.5">Not visible to employee</p>
+                      </div>
+                      <button onClick={() => setShowAddNote(true)} className="p-1.5 rounded-lg hover:bg-surface-2 transition-colors">
+                        <Plus size={15} className="text-accent" />
+                      </button>
                     </div>
-                    <button onClick={() => setShowAddNote(true)} className="p-1.5 rounded-lg hover:bg-gray-100 transition-colors">
-                      <Plus size={15} style={{ color: '#EE2770' }} />
-                    </button>
-                  </div>
-                  {loadingNotes ? (
-                    <div className="flex-1 flex items-center justify-center text-gray-300 text-sm">Loading…</div>
-                  ) : notes.length === 0 ? (
-                    <div className="flex-1 flex flex-col items-center justify-center text-center py-6">
-                      <MessageSquare size={28} className="text-gray-200 mb-2" />
-                      <p className="text-sm text-gray-400">No notes yet</p>
-                    </div>
-                  ) : (
-                    <div className="space-y-3 overflow-y-auto flex-1" style={{ maxHeight: 260 }}>
-                      {notes.map(note => {
-                        const cfg = noteTypeConfig[note.note_type] ?? noteTypeConfig.neutral;
-                        const Icon = cfg.icon;
-                        return (
-                          <div key={note.id} className="rounded-xl p-3 border" style={{ background: cfg.bg, borderColor: cfg.border }}>
-                            <div className="flex items-start gap-2">
-                              <Icon size={14} style={{ color: cfg.color, flexShrink: 0, marginTop: 1 }} />
-                              <div className="flex-1 min-w-0">
-                                <p className="text-xs font-semibold" style={{ color: cfg.color }}>
-                                  {new Date(note.note_date).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' })}
-                                </p>
-                                <p className="text-xs text-gray-600 mt-1 leading-relaxed">{note.note_text}</p>
-                                {note.created_by_name && <p className="text-xs text-gray-400 mt-1.5">— {note.created_by_name}</p>}
+                    {loadingNotes ? (
+                      <div className="flex-1 flex items-center justify-center text-on-surface-subtle text-sm">Loading…</div>
+                    ) : notes.length === 0 ? (
+                      <div className="flex-1 flex flex-col items-center justify-center text-center py-6">
+                        <MessageSquare size={28} className="text-on-surface-subtle mb-2" />
+                        <p className="text-sm text-on-surface-muted">No notes yet</p>
+                      </div>
+                    ) : (
+                      <div className="space-y-3 overflow-y-auto flex-1" style={{ maxHeight: 260 }}>
+                        {notes.map(note => {
+                          const cfg = noteTypeConfig[note.note_type] ?? noteTypeConfig.neutral;
+                          const Icon = cfg.icon;
+                          return (
+                            <div key={note.id} className={`rounded-xl-2 p-3 border ${cfg.className}`}>
+                              <div className="flex items-start gap-2">
+                                <Icon size={14} className={`${cfg.iconClass} flex-shrink-0 mt-0.5`} />
+                                <div className="flex-1 min-w-0">
+                                  <p className={`text-xs font-semibold ${cfg.iconClass}`}>
+                                    {new Date(note.note_date).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' })}
+                                  </p>
+                                  <p className="text-xs text-on-surface-muted mt-1 leading-relaxed">{note.note_text}</p>
+                                  {note.created_by_name && <p className="text-xs text-on-surface-subtle mt-1.5">— {note.created_by_name}</p>}
+                                </div>
+                                <button onClick={() => handleDeleteNote(note.id)} className="flex-shrink-0 p-1 hover:bg-surface/60 rounded transition-colors">
+                                  <Trash2 size={12} className={cfg.iconClass} />
+                                </button>
                               </div>
-                              <button onClick={() => handleDeleteNote(note.id)} className="flex-shrink-0 p-1 hover:bg-white/60 rounded transition-colors">
-                                <Trash2 size={12} style={{ color: cfg.color }} />
-                              </button>
                             </div>
-                          </div>
-                        );
-                      })}
-                    </div>
-                  )}
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
                 </div>
               ) : (
-                <div className="bg-white rounded-2xl p-5 shadow-sm border border-gray-100 flex flex-col">
-                  <h2 className="font-bold text-sm mb-4" style={{ color: '#192250' }}>Category Avg (YTD)</h2>
-                  {monthlyData.length === 0 ? (
-                    <div className="flex-1 flex items-center justify-center text-gray-300 text-sm">No reviews yet</div>
-                  ) : (
-                    <div className="space-y-3">
-                      {CATEGORIES.map(({ key, label }) => {
-                        const avg = Math.round(monthlyData.reduce((a, r) => a + (r[key] ?? 0), 0) / monthlyData.length);
-                        return (
-                          <div key={key}>
-                            <div className="flex justify-between text-xs mb-1">
-                              <span className="font-medium text-gray-600">{label}</span>
-                              <span className="font-bold tabular-nums" style={{ color: scoreColor(avg) }}>{avg}</span>
+                <div className="relative bg-surface rounded-xl-2 p-6 border border-outline shadow-elev-2 overflow-hidden group hover:shadow-elev-3 transition-shadow flex flex-col">
+                  <div className="absolute -top-8 -right-8 w-28 h-28 rounded-full bg-brand/15 blur-2xl opacity-50 group-hover:opacity-80 transition-opacity duration-500" />
+                  <div className="relative">
+                    <h2 className="font-display text-xl font-bold tracking-tight text-on-surface mb-4">Category Avg (YTD)</h2>
+                    {monthlyData.length === 0 ? (
+                      <div className="flex-1 flex items-center justify-center text-on-surface-subtle text-sm">No reviews yet</div>
+                    ) : (
+                      <div className="space-y-3">
+                        {CATEGORIES.map(({ key, label }) => {
+                          const avg = Math.round(monthlyData.reduce((a, r) => a + (r[key] ?? 0), 0) / monthlyData.length);
+                          return (
+                            <div key={key}>
+                              <div className="flex justify-between text-xs mb-1">
+                                <span className="font-medium text-on-surface-muted">{label}</span>
+                                <span className={`font-bold num-mono ${scoreColorClass(avg)}`}>{avg}</span>
+                              </div>
+                              <div className="h-2 bg-surface-2 rounded-full overflow-hidden">
+                                <div className="h-full rounded-full transition-all bg-accent" style={{ width: `${avg}%` }} />
+                              </div>
                             </div>
-                            <div className="h-2 bg-gray-100 rounded-full overflow-hidden">
-                              <div className="h-full rounded-full transition-all" style={{ width: `${avg}%`, background: scoreColor(avg) }} />
-                            </div>
-                          </div>
-                        );
-                      })}
-                    </div>
-                  )}
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
                 </div>
               )}
             </div>
 
             {/* Monthly table */}
-            <div className="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden">
-              <div className="flex items-center justify-between px-5 py-4 border-b border-gray-100">
-                <h2 className="font-bold text-sm" style={{ color: '#192250' }}>Monthly Reviews — {selectedYear}</h2>
-                <span className="text-xs text-gray-400">{reviewedMonths} of 12 months reviewed</span>
+            <div className="bg-surface rounded-xl-2 shadow-elev-1 border border-outline overflow-hidden">
+              <div className="flex items-center justify-between px-5 py-4 border-b border-outline">
+                <h2 className="font-display text-xl font-bold tracking-tight text-on-surface">Monthly Reviews — <span className="num-mono">{selectedYear}</span></h2>
+                <span className="text-xs text-on-surface-muted"><span className="num-mono">{reviewedMonths}</span> of <span className="num-mono">12</span> months reviewed</span>
               </div>
               <div className="overflow-x-auto">
                 <table className="w-full text-sm">
                   <thead>
-                    <tr style={{ background: '#f8f9fc' }}>
-                      <th className="text-left px-5 py-3 text-xs font-semibold text-gray-400 uppercase tracking-wide">Month</th>
+                    <tr className="bg-surface-2">
+                      <th className="text-left px-5 py-3 text-xs font-semibold text-on-surface-subtle uppercase tracking-wide">Month</th>
                       {CATEGORIES.map(c => (
-                        <th key={c.key} className="text-center px-2 py-3 text-xs font-semibold text-gray-400 uppercase tracking-wide whitespace-nowrap">
+                        <th key={c.key} className="text-center px-2 py-3 text-xs font-semibold text-on-surface-subtle uppercase tracking-wide whitespace-nowrap">
                           {c.label.split(' ')[0]}
                         </th>
                       ))}
-                      <th className="text-center px-3 py-3 text-xs font-semibold text-gray-400 uppercase tracking-wide">Overall</th>
-                      <th className="text-left px-3 py-3 text-xs font-semibold text-gray-400 uppercase tracking-wide">Reviewer</th>
-                      {isHROrAdmin && <th className="text-right px-5 py-3 text-xs font-semibold text-gray-400 uppercase tracking-wide">Action</th>}
+                      <th className="text-center px-3 py-3 text-xs font-semibold text-on-surface-subtle uppercase tracking-wide">Overall</th>
+                      <th className="text-left px-3 py-3 text-xs font-semibold text-on-surface-subtle uppercase tracking-wide">Reviewer</th>
+                      {isHROrAdmin && <th className="text-right px-5 py-3 text-xs font-semibold text-on-surface-subtle uppercase tracking-wide">Action</th>}
                     </tr>
                   </thead>
                   <tbody>
@@ -853,24 +865,23 @@ export default function Performance() {
                       const monthNum = idx + 1;
                       const isFuture = selectedYear === currentYear && monthNum > currentMonth;
                       return (
-                        <tr key={m} className="border-t border-gray-50 hover:bg-gray-50/50 transition-colors">
-                          <td className="px-5 py-3.5 font-semibold" style={{ color: '#192250' }}>{m} {selectedYear}</td>
+                        <tr key={m} className="border-t border-outline hover:bg-surface-2 transition-colors">
+                          <td className="px-5 py-3.5 font-semibold text-on-surface">{m} <span className="num-mono">{selectedYear}</span></td>
                           {CATEGORIES.map(c => (
                             <td key={c.key} className="px-2 py-3.5 text-center">
                               {record
-                                ? <span className="font-bold tabular-nums" style={{ color: scoreColor(record[c.key]) }}>{record[c.key]}</span>
-                                : <span className="text-gray-300">—</span>}
+                                ? <span className={`font-bold num-mono ${scoreColorClass(record[c.key])}`}>{record[c.key]}</span>
+                                : <span className="text-on-surface-subtle">—</span>}
                             </td>
                           ))}
                           <td className="px-3 py-3.5 text-center">
                             {record ? (
-                              <span className="inline-flex items-center px-2.5 py-1 rounded-full text-xs font-bold"
-                                style={{ background: scoreBadge(record.overall_score).bg, color: scoreBadge(record.overall_score).text }}>
+                              <span className={`inline-flex items-center px-2.5 py-1 rounded-full text-xs font-bold num-mono ${scoreBadge(record.overall_score).className}`}>
                                 {record.overall_score}
                               </span>
-                            ) : <span className="text-gray-300">—</span>}
+                            ) : <span className="text-on-surface-subtle">—</span>}
                           </td>
-                          <td className="px-3 py-3.5 text-xs text-gray-400">{record?.reviewer_name ?? '—'}</td>
+                          <td className="px-3 py-3.5 text-xs text-on-surface-muted">{record?.reviewer_name ?? '—'}</td>
                           {isHROrAdmin && (
                             <td className="px-5 py-3.5 text-right">
                               {!isFuture && record && (
@@ -882,8 +893,7 @@ export default function Performance() {
                                         await api.lockPerformanceReview(record.id, true, user?.name, user?.role);
                                         loadPerformance();
                                       }}
-                                      className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs font-semibold border hover:bg-amber-50 transition-colors"
-                                      style={{ color: '#d97706', borderColor: '#fde68a' }}
+                                      className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs font-semibold border border-outline bg-surface-2 text-warning hover:bg-warning-container transition-colors"
                                       title="Lock this review — prevents manager/employee edits"
                                     >
                                       <Lock size={11} /> Lock
@@ -895,8 +905,7 @@ export default function Performance() {
                                           await api.lockPerformanceReview(record.id, false, undefined, user?.role);
                                           loadPerformance();
                                         }}
-                                        className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs font-semibold border hover:bg-green-50 transition-colors"
-                                        style={{ color: '#15803d', borderColor: '#bbf7d0' }}
+                                        className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs font-semibold border border-outline bg-surface-2 text-success hover:bg-success-container transition-colors"
                                         title="Unlock this review (admin only)"
                                       >
                                         <Unlock size={11} /> Unlock
@@ -907,16 +916,14 @@ export default function Performance() {
                                   {(!record.is_locked || isAdmin) && (
                                     <button
                                       onClick={() => setShowAddReview({ month: monthNum, existing: record })}
-                                      className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-semibold border hover:bg-gray-50 transition-colors"
-                                      style={{ color: '#192250', borderColor: '#e2e4ed' }}
+                                      className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-semibold border border-outline text-on-surface hover:bg-surface-2 transition-colors"
                                     >
                                       <Edit3 size={11} /> Edit
                                     </button>
                                   )}
                                   {/* Locked indicator */}
                                   {record.is_locked && (
-                                    <span className="inline-flex items-center gap-1 text-xs font-semibold px-2 py-1 rounded-lg"
-                                      style={{ background: '#fef3c7', color: '#92400e' }}>
+                                    <span className="inline-flex items-center gap-1 text-xs font-semibold px-2 py-1 rounded-lg bg-warning-container text-warning">
                                       <Lock size={10} /> Locked
                                     </span>
                                   )}
@@ -925,8 +932,7 @@ export default function Performance() {
                               {!isFuture && !record && (
                                 <button
                                   onClick={() => setShowAddReview({ month: monthNum, existing: record })}
-                                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold border hover:bg-gray-50 transition-colors"
-                                  style={{ color: '#192250', borderColor: '#e2e4ed' }}
+                                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold border border-outline text-on-surface hover:bg-surface-2 transition-colors"
                                 >
                                   <Edit3 size={11} /> Add
                                 </button>
@@ -953,40 +959,39 @@ export default function Performance() {
                 <select
                   value={selectedYear}
                   onChange={e => { setSelectedYear(Number(e.target.value)); }}
-                  className="appearance-none bg-white border border-gray-200 rounded-xl px-4 pr-9 py-2.5 text-sm font-semibold focus:outline-none shadow-sm"
-                  style={{ color: '#192250' }}
+                  className="appearance-none bg-surface border border-outline rounded-lg px-4 pr-9 py-2.5 text-sm font-semibold focus:outline-none focus:border-accent focus:ring-2 focus:ring-accent/20 shadow-elev-1 text-on-surface num-mono"
                 >
                   {yearOptions.map(y => <option key={y} value={y}>{y}</option>)}
                 </select>
-                <ChevronDown size={14} className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 pointer-events-none" />
+                <ChevronDown size={14} className="absolute right-3 top-1/2 -translate-y-1/2 text-on-surface-subtle pointer-events-none" />
               </div>
               <div className="relative">
                 <select
                   value={appraisalEmpFilter}
                   onChange={e => setAppraisalEmpFilter(e.target.value)}
-                  className="appearance-none bg-white border border-gray-200 rounded-xl px-4 pr-9 py-2.5 text-sm font-semibold focus:outline-none shadow-sm"
-                  style={{ color: '#192250', minWidth: 180 }}
+                  className="appearance-none bg-surface border border-outline rounded-lg px-4 pr-9 py-2.5 text-sm font-semibold focus:outline-none focus:border-accent focus:ring-2 focus:ring-accent/20 shadow-elev-1 text-on-surface"
+                  style={{ minWidth: 180 }}
                 >
                   <option value="">All Employees</option>
                   {employees.map(e => <option key={e.id} value={e.id}>{e.name}</option>)}
                 </select>
-                <ChevronDown size={14} className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 pointer-events-none" />
+                <ChevronDown size={14} className="absolute right-3 top-1/2 -translate-y-1/2 text-on-surface-subtle pointer-events-none" />
               </div>
-              <p className="text-sm text-gray-400">
-                {(appraisalEmpFilter
+              <p className="text-sm text-on-surface-muted">
+                <span className="num-mono">{(appraisalEmpFilter
                   ? appraisalRecords.filter(r => r.employee_id === appraisalEmpFilter)
                   : appraisalRecords
-                ).length} submission{appraisalRecords.length !== 1 ? 's' : ''} for {selectedYear}
+                ).length}</span> submission{appraisalRecords.length !== 1 ? 's' : ''} for <span className="num-mono">{selectedYear}</span>
               </p>
             </div>
 
             {loadingAppraisal ? (
-              <div className="bg-white rounded-2xl p-12 text-center text-gray-300 shadow-sm border border-gray-100">Loading…</div>
+              <div className="bg-surface rounded-xl-2 p-12 text-center text-on-surface-subtle shadow-elev-1 border border-outline">Loading…</div>
             ) : (appraisalEmpFilter ? appraisalRecords.filter(r => r.employee_id === appraisalEmpFilter) : appraisalRecords).length === 0 ? (
-              <div className="bg-white rounded-2xl p-12 text-center shadow-sm border border-gray-100">
-                <FileText size={32} className="text-gray-200 mx-auto mb-3" />
-                <p className="text-gray-400 font-medium">No appraisal goals submitted for {selectedYear}{appraisalEmpFilter ? ` for ${employees.find(e => e.id === appraisalEmpFilter)?.name}` : ''}</p>
-                <p className="text-sm text-gray-300 mt-1">Employees submit their goals from My Portal</p>
+              <div className="bg-surface rounded-xl-2 p-12 text-center shadow-elev-1 border border-outline">
+                <FileText size={32} className="text-on-surface-subtle mx-auto mb-3" />
+                <p className="text-on-surface-muted font-medium">No appraisal goals submitted for <span className="num-mono">{selectedYear}</span>{appraisalEmpFilter ? ` for ${employees.find(e => e.id === appraisalEmpFilter)?.name}` : ''}</p>
+                <p className="text-sm text-on-surface-subtle mt-1">Employees submit their goals from My Portal</p>
               </div>
             ) : (
               <div className="space-y-3">
@@ -997,49 +1002,44 @@ export default function Performance() {
                   const key = `${record.employee_id}-${record.year}`;
                   const isExpanded = expandedGoal === key;
                   return (
-                    <div key={key} className="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden">
+                    <div key={key} className="bg-surface rounded-xl-2 shadow-elev-1 border border-outline overflow-hidden hover:bg-surface-2 transition-colors">
                       <button
                         onClick={() => setExpandedGoal(isExpanded ? null : key)}
-                        className="w-full flex items-center gap-4 px-5 py-4 hover:bg-gray-50/50 transition-colors text-left"
+                        className="w-full flex items-center gap-4 px-5 py-4 transition-colors text-left"
                       >
-                        <div className="w-9 h-9 rounded-xl flex items-center justify-center text-white text-xs font-bold flex-shrink-0"
-                          style={{ background: '#192250' }}>
+                        <div className="w-9 h-9 rounded-xl-2 flex items-center justify-center text-xs font-bold flex-shrink-0 bg-brand-container text-on-brand-container">
                           {record.employee_name?.split(' ').map((n: string) => n[0]).join('').slice(0, 2)}
                         </div>
                         <div className="flex-1 min-w-0">
-                          <p className="font-bold text-sm truncate" style={{ color: '#192250' }}>{record.employee_name}</p>
-                          <p className="text-xs text-gray-400">{record.designation} · {record.department}</p>
+                          <p className="font-bold text-sm truncate text-on-surface">{record.employee_name}</p>
+                          <p className="text-xs text-on-surface-muted">{record.designation} · {record.department}</p>
                         </div>
                         <div className="flex items-center gap-3 flex-shrink-0">
-                          <span className="text-xs font-semibold px-2.5 py-1 rounded-full"
-                            style={record.submitted
-                              ? { background: '#dcfce7', color: '#15803d' }
-                              : { background: '#fef3c7', color: '#92400e' }}>
+                          <span className={`text-xs font-semibold px-2.5 py-1 rounded-full ${record.submitted ? 'bg-success-container text-success' : 'bg-warning-container text-warning'}`}>
                             {record.submitted ? '✓ Submitted' : 'Draft'}
                           </span>
                           {record.submitted && (
-                            <span className="text-xs text-gray-400">
+                            <span className="text-xs text-on-surface-muted">
                               {new Date(record.submitted_at).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' })}
                             </span>
                           )}
-                          <span className="text-xs text-gray-400">{record.goals?.length ?? 0} goals</span>
+                          <span className="text-xs text-on-surface-muted"><span className="num-mono">{record.goals?.length ?? 0}</span> goals</span>
                           {isAdmin && (
                             <button
                               onClick={e => { e.stopPropagation(); setEditingGoal(record); }}
-                              className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs font-semibold border hover:bg-gray-50 transition-colors"
-                              style={{ color: '#EE2770', borderColor: '#ffd6e8' }}
+                              className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs font-semibold border border-accent/30 text-accent hover:bg-accent/10 transition-colors"
                             >
                               <Edit3 size={11} /> Review
                             </button>
                           )}
-                          <ChevronRight size={16} className={`text-gray-300 transition-transform ${isExpanded ? 'rotate-90' : ''}`} />
+                          <ChevronRight size={16} className={`text-on-surface-subtle transition-transform ${isExpanded ? 'rotate-90' : ''}`} />
                         </div>
                       </button>
 
                       {isExpanded && (
-                        <div className="border-t border-gray-100 px-5 py-4">
+                        <div className="border-t border-outline px-5 py-4 bg-surface">
                           {!record.goals?.length ? (
-                            <p className="text-sm text-gray-400">No goals entered.</p>
+                            <p className="text-sm text-on-surface-muted">No goals entered.</p>
                           ) : (
                             <div className="space-y-3">
                               {record.goals.map((g: any, i: number) => (

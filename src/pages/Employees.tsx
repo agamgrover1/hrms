@@ -6,12 +6,12 @@ import { useAuth } from '../context/AuthContext';
 // departments now loaded from API (Config → Departments)
 
 const avatarColors = [
-  'bg-primary-100 text-primary-600',
-  'bg-green-100 text-green-700',
-  'bg-blue-100 text-blue-700',
-  'bg-amber-100 text-amber-700',
-  'bg-pink-100 text-pink-700',
-  'bg-teal-100 text-teal-700',
+  'bg-brand-container text-on-brand-container',
+  'bg-success-container text-success',
+  'bg-brand-container text-on-brand-container',
+  'bg-warning-container text-warning',
+  'bg-accent-container text-on-accent-container',
+  'bg-success-container text-success',
 ];
 
 function EmployeeCard({ emp, index, onClick, warningCount = 0, onPip = false }: { emp: any; index: number; onClick: () => void; warningCount?: number; onPip?: boolean }) {
@@ -19,7 +19,7 @@ function EmployeeCard({ emp, index, onClick, warningCount = 0, onPip = false }: 
   return (
     <div
       onClick={onClick}
-      className="bg-white rounded-xl p-5 border border-gray-100 shadow-sm hover:shadow-md hover:border-primary-200 transition-all cursor-pointer group"
+      className="bg-surface rounded-xl-2 p-5 border border-outline shadow-elev-1 hover:shadow-elev-2 hover:border-accent/30 transition-all cursor-pointer group"
     >
       <div className="flex items-start justify-between">
         <div className="flex items-center gap-3">
@@ -27,31 +27,31 @@ function EmployeeCard({ emp, index, onClick, warningCount = 0, onPip = false }: 
             {emp.avatar}
           </div>
           <div>
-            <p className="font-semibold text-gray-900 group-hover:text-primary-600 transition-colors">{emp.name}</p>
-            <p className="text-xs text-gray-500 mt-0.5">{emp.designation}</p>
+            <p className="font-semibold text-on-surface group-hover:text-accent transition-colors">{emp.name}</p>
+            <p className="text-xs text-on-surface-subtle mt-0.5">{emp.designation}</p>
           </div>
         </div>
         <div className="flex flex-col items-end gap-1">
           {emp.employee_id && (
-            <span className="text-xs font-mono font-semibold text-primary-600 bg-primary-50 px-2 py-0.5 rounded-md">
+            <span className="num-mono text-xs font-semibold text-on-brand-container bg-brand-container px-2 py-0.5 rounded-md">
               {emp.employee_id}
             </span>
           )}
           <div className="flex items-center gap-1">
-            {onPip && <span className="text-[9px] font-bold px-1.5 py-0.5 rounded-full bg-red-100 text-red-600">PIP</span>}
-            {warningCount > 0 && <span className={`text-[9px] font-bold px-1.5 py-0.5 rounded-full ${warningCount >= 3 ? 'bg-red-100 text-red-600' : warningCount === 2 ? 'bg-orange-100 text-orange-600' : 'bg-amber-100 text-amber-600'}`}>⚠ {warningCount}</span>}
-            <ChevronRight size={16} className="text-gray-300 group-hover:text-primary-400 transition-colors" />
+            {onPip && <span className="text-[9px] font-bold px-1.5 py-0.5 rounded-full bg-danger-container text-danger">PIP</span>}
+            {warningCount > 0 && <span className={`text-[9px] font-bold px-1.5 py-0.5 rounded-full num-mono ${warningCount >= 3 ? 'bg-danger-container text-danger' : warningCount === 2 ? 'bg-warning-container text-warning' : 'bg-warning-container text-warning'}`}>⚠ {warningCount}</span>}
+            <ChevronRight size={16} className="text-on-surface-subtle group-hover:text-accent transition-colors" />
           </div>
         </div>
       </div>
       <div className="mt-4 space-y-1.5">
-        <div className="flex items-center gap-2 text-xs text-gray-500"><Mail size={12} className="text-gray-400" /> {emp.email}</div>
-        <div className="flex items-center gap-2 text-xs text-gray-500"><Phone size={12} className="text-gray-400" /> {emp.phone}</div>
-        <div className="flex items-center gap-2 text-xs text-gray-500"><MapPin size={12} className="text-gray-400" /> {emp.location}</div>
+        <div className="flex items-center gap-2 text-xs text-on-surface-subtle"><Mail size={12} className="text-on-surface-subtle" /> {emp.email}</div>
+        <div className="flex items-center gap-2 text-xs text-on-surface-subtle"><Phone size={12} className="text-on-surface-subtle" /> {emp.phone}</div>
+        <div className="flex items-center gap-2 text-xs text-on-surface-subtle"><MapPin size={12} className="text-on-surface-subtle" /> {emp.location}</div>
       </div>
       <div className="mt-4 flex items-center justify-between">
-        <span className="text-xs px-2.5 py-1 bg-gray-100 text-gray-600 rounded-full font-medium">{emp.department}</span>
-        <span className={`text-xs px-2.5 py-1 rounded-full font-medium ${emp.status === 'active' ? 'bg-green-50 text-green-600' : 'bg-red-50 text-red-500'}`}>
+        <span className="text-xs px-2.5 py-1 bg-surface-2 text-on-surface-muted rounded-full font-medium">{emp.department}</span>
+        <span className={`text-xs px-2.5 py-1 rounded-full font-medium ${emp.status === 'active' ? 'bg-success-container text-success' : 'bg-danger-container text-danger'}`}>
           {emp.status}
         </span>
       </div>
@@ -146,16 +146,16 @@ function EmployeeDetail({ emp, onClose, onEdit, onDelete }: { emp: any; onClose:
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 backdrop-blur-sm p-4">
-      <div className="bg-white rounded-2xl shadow-2xl w-full max-w-lg max-h-[90vh] overflow-y-auto">
-        <div className="relative h-28 bg-gradient-to-r from-primary-500 to-primary-400 rounded-t-2xl">
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-bg/55 backdrop-blur-sm p-4">
+      <div className="bg-surface rounded-2xl shadow-elev-4 border border-outline w-full max-w-lg max-h-[90vh] overflow-y-auto">
+        <div className="relative h-28 bg-gradient-to-r from-brand to-accent rounded-t-2xl">
           <div className="absolute top-4 right-4 flex gap-2">
             <button onClick={onEdit}
               className="flex items-center gap-1.5 px-3 py-1.5 bg-white/20 hover:bg-white/30 rounded-lg transition-colors text-white text-xs font-medium">
               <Pencil size={13} /> Edit
             </button>
             <button onClick={onDelete}
-              className="flex items-center gap-1.5 px-3 py-1.5 bg-red-500/80 hover:bg-red-500 rounded-lg transition-colors text-white text-xs font-medium">
+              className="flex items-center gap-1.5 px-3 py-1.5 bg-danger/80 hover:bg-danger rounded-lg transition-colors text-white text-xs font-medium">
               <Trash2 size={13} /> Delete
             </button>
             <button onClick={onClose} className="p-1.5 bg-white/20 hover:bg-white/30 rounded-lg transition-colors">
@@ -165,13 +165,13 @@ function EmployeeDetail({ emp, onClose, onEdit, onDelete }: { emp: any; onClose:
         </div>
         <div className="px-6 pb-6">
           <div className="-mt-10 mb-4">
-            <div className="w-20 h-20 rounded-2xl bg-primary-100 text-primary-600 flex items-center justify-center text-xl font-bold border-4 border-white shadow-md">
+            <div className="w-20 h-20 rounded-2xl bg-brand-container text-on-brand-container flex items-center justify-center text-xl font-bold border-4 border-surface shadow-elev-2">
               {emp.avatar}
             </div>
           </div>
-          <h2 className="text-xl font-bold text-gray-900">{emp.name}</h2>
-          <p className="text-primary-600 font-medium text-sm">{emp.designation}</p>
-          <p className="text-gray-400 text-xs mt-0.5">{emp.employee_id} · {emp.department}</p>
+          <h2 className="font-display text-xl font-bold tracking-tight text-on-surface">{emp.name}</h2>
+          <p className="text-on-brand-container font-medium text-sm">{emp.designation}</p>
+          <p className="text-on-surface-subtle text-xs mt-0.5"><span className="num-mono">{emp.employee_id}</span> · {emp.department}</p>
           <div className="mt-6 grid grid-cols-2 gap-4">
             {[
               { label: 'Email', value: emp.email },
@@ -183,33 +183,33 @@ function EmployeeDetail({ emp, onClose, onEdit, onDelete }: { emp: any; onClose:
               { label: 'Shift', value: emp.shift === 'night' ? '🌙 Night Shift (6:30 PM – 3:30 AM)' : '☀️ Day Shift (9:00 AM – 6:00 PM)' },
             ].map(({ label, value }) => (
               <div key={label}>
-                <p className="text-xs text-gray-400 font-medium">{label}</p>
-                <p className="text-sm text-gray-800 mt-0.5">{value}</p>
+                <p className="text-xs text-on-surface-subtle font-medium">{label}</p>
+                <p className="text-sm text-on-surface mt-0.5">{value}</p>
               </div>
             ))}
           </div>
-          <div className="mt-6 p-4 bg-gray-50 rounded-xl">
-            <p className="text-xs font-semibold text-gray-500 mb-3 uppercase tracking-wide">Compensation</p>
+          <div className="mt-6 p-4 bg-surface-2 rounded-xl-2">
+            <p className="text-xs font-semibold text-on-surface-subtle mb-3 uppercase tracking-wide">Compensation</p>
             <div className="grid grid-cols-2 gap-3">
               <div>
-                <p className="text-xs text-gray-400">Monthly Gross</p>
-                <p className="text-sm font-semibold text-gray-800 mt-0.5">₹{Number(emp.salary).toLocaleString('en-IN')}</p>
+                <p className="text-xs text-on-surface-subtle">Monthly Gross</p>
+                <p className="num-mono text-sm font-semibold text-on-surface mt-0.5">₹{Number(emp.salary).toLocaleString('en-IN')}</p>
               </div>
               <div>
-                <p className="text-xs text-gray-400">Annual CTC</p>
-                <p className="text-sm font-semibold text-gray-800 mt-0.5">₹{(Number(emp.ctc) / 100000).toFixed(1)}L</p>
+                <p className="text-xs text-on-surface-subtle">Annual CTC</p>
+                <p className="num-mono text-sm font-semibold text-on-surface mt-0.5">₹{(Number(emp.ctc) / 100000).toFixed(1)}L</p>
               </div>
             </div>
           </div>
 
-          <div className="mt-4 p-4 border border-gray-100 rounded-xl">
+          <div className="mt-4 p-4 border border-outline rounded-xl-2">
             <div className="flex items-center justify-between mb-3">
-              <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide">Probation / Confirmation</p>
-              <span className={`text-xs font-semibold px-2.5 py-0.5 rounded-full ${onProbation ? 'bg-amber-100 text-amber-700' : 'bg-green-100 text-green-700'}`}>
+              <p className="text-xs font-semibold text-on-surface-subtle uppercase tracking-wide">Probation / Confirmation</p>
+              <span className={`text-xs font-semibold px-2.5 py-0.5 rounded-full ${onProbation ? 'bg-warning-container text-warning' : 'bg-success-container text-success'}`}>
                 {onProbation ? 'On Probation' : 'Confirmed'}
               </span>
             </div>
-            <label className="block text-xs text-gray-500 mb-1.5">
+            <label className="block text-xs text-on-surface-subtle mb-1.5">
               {onProbation ? 'Probation End Date' : 'Confirmation Date'}
             </label>
             <div className="flex gap-2">
@@ -217,95 +217,95 @@ function EmployeeDetail({ emp, onClose, onEdit, onDelete }: { emp: any; onClose:
                 type="date"
                 value={probationEnd}
                 onChange={e => { setProbationEnd(e.target.value); setProbationSaved(false); setProbationError(''); }}
-                className="flex-1 text-sm border border-gray-200 rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-primary-200"
+                className="flex-1 text-sm bg-surface border border-outline rounded-lg px-3 py-2 focus:outline-none focus:border-accent focus:ring-2 focus:ring-accent/20"
               />
               <button
                 onClick={handleSaveProbation}
                 disabled={savingProbation}
-                className="px-3 py-2 text-xs font-semibold text-white bg-primary-500 hover:bg-primary-600 rounded-lg disabled:opacity-60 whitespace-nowrap"
+                className="px-3 py-2 text-xs font-semibold text-on-accent bg-accent hover:opacity-90 rounded-lg disabled:opacity-60 whitespace-nowrap transition-all"
               >
                 {savingProbation ? '…' : probationSaved ? '✓ Saved' : 'Save'}
               </button>
             </div>
-            <p className="text-xs text-gray-400 mt-1.5">
+            <p className="text-xs text-on-surface-subtle mt-1.5">
               {onProbation
                 ? 'Set an earlier date to confirm the employee sooner. The employee will be notified.'
                 : 'Update the confirmation date if it needs correction. The employee will be notified.'}
             </p>
-            {probationError && <p className="text-xs text-red-500 mt-1.5">{probationError}</p>}
+            {probationError && <p className="text-xs text-danger mt-1.5">{probationError}</p>}
           </div>
 
-          <div className="mt-4 p-4 border border-gray-100 rounded-xl">
-            <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-3">Leave Balance</p>
+          <div className="mt-4 p-4 border border-outline rounded-xl-2">
+            <p className="text-xs font-semibold text-on-surface-subtle uppercase tracking-wide mb-3">Leave Balance</p>
             {!balLoaded ? (
-              <p className="text-xs text-gray-400">Loading…</p>
+              <p className="text-xs text-on-surface-subtle">Loading…</p>
             ) : (
               <div className="space-y-3">
                 <div className="grid grid-cols-2 gap-3">
                   <div>
-                    <label className="block text-xs text-gray-500 mb-1">Full Day (carries forward)</label>
+                    <label className="block text-xs text-on-surface-subtle mb-1">Full Day (carries forward)</label>
                     <input
                       type="number" min="0" max="365"
                       value={balAdj.full_day}
                       onChange={e => setBalAdj(b => ({ ...b, full_day: Number(e.target.value) }))}
-                      className="w-full text-sm border border-gray-200 rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-primary-200"
+                      className="num-mono w-full text-sm bg-surface border border-outline rounded-lg px-3 py-2 focus:outline-none focus:border-accent focus:ring-2 focus:ring-accent/20"
                     />
                   </div>
                   <div>
-                    <label className="block text-xs text-gray-500 mb-1">Short Leave / Half Day credits</label>
+                    <label className="block text-xs text-on-surface-subtle mb-1">Short Leave / Half Day credits</label>
                     <input
                       type="number" min="0" max="30"
                       value={balAdj.short_leave}
                       onChange={e => setBalAdj(b => ({ ...b, short_leave: Number(e.target.value) }))}
-                      className="w-full text-sm border border-gray-200 rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-primary-200"
+                      className="num-mono w-full text-sm bg-surface border border-outline rounded-lg px-3 py-2 focus:outline-none focus:border-accent focus:ring-2 focus:ring-accent/20"
                     />
                   </div>
                 </div>
                 <button
                   onClick={handleSaveBalance}
                   disabled={savingBal}
-                  className="w-full py-2 text-xs font-semibold text-white bg-primary-500 hover:bg-primary-600 rounded-lg disabled:opacity-60"
+                  className="w-full py-2 text-xs font-semibold text-on-accent bg-accent hover:opacity-90 rounded-lg disabled:opacity-60 transition-all"
                 >
                   {savingBal ? 'Saving…' : balSaved ? '✓ Balance Updated' : 'Save Balance'}
                 </button>
-                {balError && <p className="text-xs text-red-500">{balError}</p>}
+                {balError && <p className="text-xs text-danger">{balError}</p>}
               </div>
             )}
           </div>
 
           {/* ── Warnings & PIP ── */}
-          <div className="mt-4 p-4 border border-gray-100 rounded-xl">
+          <div className="mt-4 p-4 border border-outline rounded-xl-2">
             <div className="flex items-center justify-between mb-3">
               <div className="flex items-center gap-2">
-                <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide">Warnings</p>
+                <p className="text-xs font-semibold text-on-surface-subtle uppercase tracking-wide">Warnings</p>
                 {warnings.length > 0 && (
-                  <span className={`text-xs font-bold px-2 py-0.5 rounded-full ${warnings.length >= 3 ? 'bg-red-100 text-red-700' : warnings.length === 2 ? 'bg-orange-100 text-orange-700' : 'bg-amber-100 text-amber-700'}`}>
+                  <span className={`num-mono text-xs font-bold px-2 py-0.5 rounded-full ${warnings.length >= 3 ? 'bg-danger-container text-danger' : warnings.length === 2 ? 'bg-warning-container text-warning' : 'bg-warning-container text-warning'}`}>
                     {warnings.length} {warnings.length === 1 ? 'warning' : 'warnings'}
                   </span>
                 )}
               </div>
               <button onClick={() => setShowWarnForm(v => !v)}
-                className="text-xs font-semibold px-2.5 py-1 rounded-lg border border-amber-200 bg-amber-50 text-amber-700 hover:bg-amber-100 flex items-center gap-1">
+                className="text-xs font-semibold px-2.5 py-1 rounded-lg border border-outline bg-warning-container text-warning hover:opacity-90 flex items-center gap-1 transition-opacity">
                 <AlertTriangle size={11} /> Issue Warning
               </button>
             </div>
 
             {/* PIP banner */}
             {pip && (
-              <div className="mb-3 p-3 rounded-xl border border-red-200 bg-red-50 flex items-start gap-2">
-                <Shield size={14} className="text-red-500 mt-0.5 flex-shrink-0" />
+              <div className="mb-3 p-3 rounded-xl-2 border border-outline bg-danger-container flex items-start gap-2">
+                <Shield size={14} className="text-danger mt-0.5 flex-shrink-0" />
                 <div className="flex-1 min-w-0">
-                  <p className="text-xs font-bold text-red-700">On Performance Improvement Plan (PIP)</p>
-                  <p className="text-xs text-red-600 mt-0.5">
+                  <p className="text-xs font-bold text-danger">On Performance Improvement Plan (PIP)</p>
+                  <p className="text-xs text-danger mt-0.5">
                     {new Date(pip.start_date + 'T12:00:00Z').toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' })}
                     {' → '}
                     {new Date(pip.end_date + 'T12:00:00Z').toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' })}
                   </p>
-                  {pip.goals && <p className="text-xs text-red-500 mt-1 italic">"{pip.goals}"</p>}
+                  {pip.goals && <p className="text-xs text-danger mt-1 italic">"{pip.goals}"</p>}
                 </div>
                 <select value={pip.status}
                   onChange={async e => { const updated = await api.updatePip(pip.id, { status: e.target.value }); setPip(updated.status === 'active' ? updated : null); }}
-                  className="text-xs border border-red-200 rounded-lg px-1.5 py-1 bg-white text-red-600 focus:outline-none flex-shrink-0">
+                  className="text-xs border border-outline rounded-lg px-1.5 py-1 bg-surface text-danger focus:outline-none flex-shrink-0">
                   <option value="active">Active</option>
                   <option value="completed">Completed</option>
                   <option value="dismissed">Dismissed</option>
@@ -315,25 +315,24 @@ function EmployeeDetail({ emp, onClose, onEdit, onDelete }: { emp: any; onClose:
 
             {/* Issue warning form */}
             {showWarnForm && (
-              <div className="mb-3 p-3 rounded-xl border border-amber-100 bg-amber-50 space-y-2.5">
+              <div className="mb-3 p-3 rounded-xl-2 border border-outline bg-warning-container space-y-2.5">
                 <div className="flex gap-2">
                   {(['warning','serious','final'] as const).map(s => (
                     <button key={s} onClick={() => setWarnSeverity(s)}
                       className={`flex-1 py-1.5 text-xs font-semibold rounded-lg border capitalize transition-all ${warnSeverity === s
-                        ? s === 'final' ? 'bg-red-500 text-white border-red-500' : s === 'serious' ? 'bg-orange-500 text-white border-orange-500' : 'bg-amber-500 text-white border-amber-500'
-                        : 'bg-white text-gray-600 border-gray-200 hover:border-gray-300'}`}>
+                        ? s === 'final' ? 'bg-danger text-white border-danger' : s === 'serious' ? 'bg-warning text-white border-warning' : 'bg-warning text-white border-warning'
+                        : 'bg-surface text-on-surface-muted border-outline hover:border-outline-strong'}`}>
                       {s}
                     </button>
                   ))}
                 </div>
                 <textarea value={warnReason} onChange={e => setWarnReason(e.target.value)} rows={2}
                   placeholder="Describe the reason for this warning…"
-                  className="w-full text-xs border border-gray-200 rounded-lg px-2.5 py-2 focus:outline-none resize-none" />
+                  className="w-full text-xs bg-surface border border-outline rounded-lg px-2.5 py-2 focus:outline-none focus:border-accent focus:ring-2 focus:ring-accent/20 resize-none" />
                 <div className="flex gap-2">
-                  <button onClick={() => setShowWarnForm(false)} className="flex-1 py-1.5 border border-gray-200 rounded-lg text-xs font-medium text-gray-600 hover:bg-white">Cancel</button>
+                  <button onClick={() => setShowWarnForm(false)} className="flex-1 py-1.5 border border-outline rounded-lg text-xs font-medium text-on-surface-muted hover:bg-surface transition-colors">Cancel</button>
                   <button onClick={handleIssueWarning} disabled={issuingWarn || !warnReason.trim()}
-                    className="flex-1 py-1.5 text-white rounded-lg text-xs font-semibold disabled:opacity-50"
-                    style={{ background: '#d97706' }}>
+                    className="flex-1 py-1.5 text-white rounded-lg text-xs font-semibold disabled:opacity-50 bg-warning hover:opacity-90 transition-opacity">
                     {issuingWarn ? 'Issuing…' : 'Issue Warning'}
                   </button>
                 </div>
@@ -342,20 +341,20 @@ function EmployeeDetail({ emp, onClose, onEdit, onDelete }: { emp: any; onClose:
 
             {/* Warning list */}
             {warnings.length === 0 ? (
-              <p className="text-xs text-gray-400">No warnings on record.</p>
+              <p className="text-xs text-on-surface-subtle">No warnings on record.</p>
             ) : (
               <div className="space-y-2">
                 {warnings.map((w, i) => (
-                  <div key={w.id} className={`flex items-start gap-2.5 p-2.5 rounded-xl border ${w.severity === 'final' ? 'border-red-200 bg-red-50' : w.severity === 'serious' ? 'border-orange-200 bg-orange-50' : 'border-amber-100 bg-amber-50'}`}>
-                    <div className={`w-5 h-5 rounded-full flex items-center justify-center text-[10px] font-black flex-shrink-0 mt-0.5 ${w.severity === 'final' ? 'bg-red-500 text-white' : w.severity === 'serious' ? 'bg-orange-500 text-white' : 'bg-amber-400 text-white'}`}>{i + 1}</div>
+                  <div key={w.id} className={`flex items-start gap-2.5 p-2.5 rounded-xl-2 border border-outline ${w.severity === 'final' ? 'bg-danger-container' : w.severity === 'serious' ? 'bg-warning-container' : 'bg-warning-container'}`}>
+                    <div className={`num-mono w-5 h-5 rounded-full flex items-center justify-center text-[10px] font-black flex-shrink-0 mt-0.5 ${w.severity === 'final' ? 'bg-danger text-white' : w.severity === 'serious' ? 'bg-warning text-white' : 'bg-warning text-white'}`}>{i + 1}</div>
                     <div className="flex-1 min-w-0">
-                      <p className="text-xs text-gray-700 leading-snug">{w.reason}</p>
-                      <p className="text-[10px] text-gray-400 mt-0.5">
+                      <p className="text-xs text-on-surface-muted leading-snug">{w.reason}</p>
+                      <p className="text-[10px] text-on-surface-subtle mt-0.5">
                         {w.issued_by ? `By ${w.issued_by} · ` : ''}{new Date(w.created_at).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' })}
                       </p>
                     </div>
                     <button onClick={async () => { await api.deleteWarning(w.id); setWarnings(prev => prev.filter(x => x.id !== w.id)); }}
-                      className="text-gray-300 hover:text-red-400 transition-colors flex-shrink-0 mt-0.5">
+                      className="text-on-surface-subtle hover:text-danger transition-colors flex-shrink-0 mt-0.5">
                       <Trash2 size={12} />
                     </button>
                   </div>
@@ -363,7 +362,7 @@ function EmployeeDetail({ emp, onClose, onEdit, onDelete }: { emp: any; onClose:
               </div>
             )}
             {warnings.length === 2 && !pip && (
-              <p className="text-xs text-orange-600 font-semibold mt-2 flex items-center gap-1">
+              <p className="text-xs text-warning font-semibold mt-2 flex items-center gap-1">
                 <AlertTriangle size={11} /> 1 more warning will trigger a PIP.
               </p>
             )}
@@ -420,8 +419,8 @@ function AddEmployeeModal({ onClose, onSaved, existingEmployees, departments = [
 
   const set = (k: string, v: string) => setForm(f => ({ ...f, [k]: v }));
 
-  const inputCls = 'w-full text-sm border border-gray-200 rounded-lg px-3 py-2.5 focus:outline-none focus:ring-2 focus:ring-primary-200 focus:border-primary-400 bg-white';
-  const labelCls = 'block text-xs font-medium text-gray-600 mb-1';
+  const inputCls = 'w-full text-sm border border-outline rounded-lg px-3 py-2.5 focus:outline-none focus:ring-2 focus:ring-accent/20 focus:border-accent bg-surface text-on-surface';
+  const labelCls = 'block text-xs font-medium text-on-surface-muted mb-1';
 
   const handleSubmit = async (e: React.SyntheticEvent<HTMLFormElement>) => {
     e.preventDefault();
@@ -460,45 +459,45 @@ function AddEmployeeModal({ onClose, onSaved, existingEmployees, departments = [
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 backdrop-blur-sm p-4">
-      <div className="bg-white rounded-2xl shadow-2xl w-full max-w-2xl max-h-[92vh] overflow-y-auto">
-        <div className="flex items-center justify-between px-6 py-4 border-b border-gray-100">
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-bg/55 backdrop-blur-sm p-4">
+      <div className="bg-surface rounded-2xl shadow-elev-4 border border-outline w-full max-w-2xl max-h-[92vh] overflow-y-auto">
+        <div className="flex items-center justify-between px-6 py-4 border-b border-outline">
           <div className="flex items-center gap-3">
-            <div className="w-9 h-9 rounded-lg bg-primary-50 flex items-center justify-center">
-              <User size={18} className="text-primary-600" />
+            <div className="w-9 h-9 rounded-lg bg-brand-container flex items-center justify-center">
+              <User size={18} className="text-on-brand-container" />
             </div>
             <div>
-              <h2 className="text-base font-semibold text-gray-900">Add New Employee</h2>
-              <p className="text-xs text-gray-400">Fill in details to onboard a new team member</p>
+              <h2 className="font-display text-base font-semibold tracking-tight text-on-surface">Add New Employee</h2>
+              <p className="text-xs text-on-surface-subtle">Fill in details to onboard a new team member</p>
             </div>
           </div>
-          <button onClick={onClose} className="p-1.5 hover:bg-gray-100 rounded-lg transition-colors">
-            <X size={18} className="text-gray-500" />
+          <button onClick={onClose} className="p-1.5 hover:bg-surface-2 rounded-lg transition-colors">
+            <X size={18} className="text-on-surface-subtle" />
           </button>
         </div>
 
         <form onSubmit={handleSubmit} className="p-6 space-y-5">
-          <div className="p-4 bg-primary-50 border border-primary-100 rounded-xl">
-            <label className="block text-xs font-semibold text-primary-700 mb-1">
-              Employee ID <span className="text-red-400">*</span>
-              <span className="ml-2 font-normal text-primary-500">(auto-suggested — you can change it)</span>
+          <div className="p-4 bg-brand-container border border-outline rounded-xl-2">
+            <label className="block text-xs font-semibold text-on-brand-container mb-1">
+              Employee ID <span className="text-danger">*</span>
+              <span className="ml-2 font-normal text-on-brand-container/70">(auto-suggested — you can change it)</span>
             </label>
             <input
               type="text"
               value={form.employee_id}
               onChange={e => set('employee_id', e.target.value.toUpperCase())}
               placeholder="e.g. DL0012"
-              className="w-full text-sm font-mono font-semibold border border-primary-200 rounded-lg px-3 py-2.5 bg-white focus:outline-none focus:ring-2 focus:ring-primary-300 focus:border-primary-400 tracking-widest"
+              className="num-mono w-full text-sm font-semibold border border-outline rounded-lg px-3 py-2.5 bg-surface text-on-surface focus:outline-none focus:ring-2 focus:ring-accent/20 focus:border-accent tracking-widest"
             />
           </div>
 
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
             <div>
-              <label className={labelCls}>Full Name <span className="text-red-400">*</span></label>
+              <label className={labelCls}>Full Name <span className="text-danger">*</span></label>
               <input type="text" value={form.name} onChange={e => set('name', e.target.value)} placeholder="e.g. Ravi Kumar" className={inputCls} />
             </div>
             <div>
-              <label className={labelCls}>Email Address <span className="text-red-400">*</span></label>
+              <label className={labelCls}>Email Address <span className="text-danger">*</span></label>
               <input type="email" value={form.email} onChange={e => set('email', e.target.value)} placeholder="ravi@company.com" className={inputCls} />
             </div>
             <div>
@@ -513,7 +512,7 @@ function AddEmployeeModal({ onClose, onSaved, existingEmployees, departments = [
 
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
             <div>
-              <label className={labelCls}>Designation / Job Title <span className="text-red-400">*</span></label>
+              <label className={labelCls}>Designation / Job Title <span className="text-danger">*</span></label>
               <input type="text" list="desig-list" value={form.designation} onChange={e => set('designation', e.target.value)} placeholder="e.g. Software Engineer" className={inputCls} />
               {designations.length > 0 && <datalist id="desig-list">{designations.map(d => <option key={d} value={d} />)}</datalist>}
             </div>
@@ -535,7 +534,7 @@ function AddEmployeeModal({ onClose, onSaved, existingEmployees, departments = [
               </select>
             </div>
             <div>
-              <label className={labelCls}>Department <span className="text-red-400">*</span></label>
+              <label className={labelCls}>Department <span className="text-danger">*</span></label>
               <select value={form.department} onChange={e => set('department', e.target.value)} className={inputCls}>
                 {departments.map(d => <option key={d}>{d}</option>)}
               </select>
@@ -545,7 +544,7 @@ function AddEmployeeModal({ onClose, onSaved, existingEmployees, departments = [
               <input type="date" value={form.join_date} onChange={e => set('join_date', e.target.value)} className={inputCls} />
             </div>
             <div>
-              <label className={labelCls}>Date of Birth <span className="text-gray-400 font-normal text-[10px]">(enables birthday optional leave)</span></label>
+              <label className={labelCls}>Date of Birth <span className="text-on-surface-subtle font-normal text-[10px]">(enables birthday optional leave)</span></label>
               <input type="date" value={(form as any).date_of_birth ?? ''} onChange={e => set('date_of_birth', e.target.value)} max={new Date().toISOString().split('T')[0]} className={inputCls} />
             </div>
           </div>
@@ -569,24 +568,24 @@ function AddEmployeeModal({ onClose, onSaved, existingEmployees, departments = [
           </div>
 
           <div>
-            <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-3">Compensation</p>
+            <p className="text-xs font-semibold text-on-surface-subtle uppercase tracking-wide mb-3">Compensation</p>
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
               <div>
                 <label className={labelCls}>Monthly Gross Salary (₹)</label>
-                <input type="number" value={form.salary} onChange={e => set('salary', e.target.value)} placeholder="e.g. 80000" className={inputCls} />
+                <input type="number" value={form.salary} onChange={e => set('salary', e.target.value)} placeholder="e.g. 80000" className={inputCls + ' num-mono'} />
               </div>
               <div>
                 <label className={labelCls}>Annual CTC (₹)</label>
-                <input type="number" value={form.ctc} onChange={e => set('ctc', e.target.value)} placeholder="e.g. 1200000" className={inputCls} />
+                <input type="number" value={form.ctc} onChange={e => set('ctc', e.target.value)} placeholder="e.g. 1200000" className={inputCls + ' num-mono'} />
               </div>
             </div>
           </div>
 
           {/* Login Credentials */}
-          <div className="border border-primary-100 rounded-xl overflow-hidden">
-            <div className="px-4 py-3 bg-primary-50 border-b border-primary-100">
-              <p className="text-xs font-semibold text-primary-700 uppercase tracking-wide">Login Credentials <span className="text-red-400">*</span></p>
-              <p className="text-xs text-primary-500 mt-0.5">Required — the employee will use these to log in to the portal.</p>
+          <div className="border border-outline rounded-xl-2 overflow-hidden">
+            <div className="px-4 py-3 bg-brand-container border-b border-outline">
+              <p className="text-xs font-semibold text-on-brand-container uppercase tracking-wide">Login Credentials <span className="text-danger">*</span></p>
+              <p className="text-xs text-on-brand-container/70 mt-0.5">Required — the employee will use these to log in to the portal.</p>
             </div>
             <div className="p-4 grid grid-cols-1 sm:grid-cols-2 gap-4">
               <div>
@@ -598,7 +597,7 @@ function AddEmployeeModal({ onClose, onSaved, existingEmployees, departments = [
                 </select>
               </div>
               <div>
-                <label className={labelCls}>Password <span className="text-red-400">*</span></label>
+                <label className={labelCls}>Password <span className="text-danger">*</span></label>
                 <div className="relative">
                   <input
                     type={showPass ? 'text' : 'password'}
@@ -608,7 +607,7 @@ function AddEmployeeModal({ onClose, onSaved, existingEmployees, departments = [
                     className={inputCls + ' pr-10'}
                   />
                   <button type="button" onClick={() => setShowPass(p => !p)}
-                    className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600">
+                    className="absolute right-3 top-1/2 -translate-y-1/2 text-on-surface-subtle hover:text-on-surface-muted">
                     {showPass ? <EyeOff size={15} /> : <Eye size={15} />}
                   </button>
                 </div>
@@ -617,16 +616,16 @@ function AddEmployeeModal({ onClose, onSaved, existingEmployees, departments = [
           </div>
 
           {error && (
-            <p className="text-sm text-red-600 bg-red-50 border border-red-100 rounded-lg px-4 py-2.5">{error}</p>
+            <p className="text-sm text-danger bg-danger-container border border-outline rounded-lg px-4 py-2.5">{error}</p>
           )}
 
           <div className="flex gap-3 pt-1">
             <button type="button" onClick={onClose}
-              className="flex-1 px-4 py-2.5 text-sm font-medium text-gray-600 bg-gray-100 hover:bg-gray-200 rounded-lg transition-colors">
+              className="flex-1 px-4 py-2.5 text-sm font-medium text-on-surface-muted bg-surface-2 hover:bg-surface-3 rounded-lg transition-colors">
               Cancel
             </button>
             <button type="submit" disabled={saving}
-              className="flex-1 px-4 py-2.5 text-sm font-medium text-white bg-primary-500 hover:bg-primary-600 rounded-lg transition-colors disabled:opacity-60 disabled:cursor-not-allowed">
+              className="flex-1 px-4 py-2.5 text-sm font-medium text-on-accent bg-accent hover:opacity-90 shadow-elev-1 hover:shadow-elev-2 rounded-lg transition-all disabled:opacity-60 disabled:cursor-not-allowed">
               {saving ? 'Saving…' : 'Add Employee'}
             </button>
           </div>
@@ -673,8 +672,8 @@ export function EditEmployeeModal({ emp, onClose, onSaved, allEmployees, departm
 
   const set = (k: string, v: string) => setForm(f => ({ ...f, [k]: v }));
 
-  const inputCls = 'w-full text-sm border border-gray-200 rounded-lg px-3 py-2.5 focus:outline-none focus:ring-2 focus:ring-primary-200 focus:border-primary-400 bg-white';
-  const labelCls = 'block text-xs font-medium text-gray-600 mb-1';
+  const inputCls = 'w-full text-sm border border-outline rounded-lg px-3 py-2.5 focus:outline-none focus:ring-2 focus:ring-accent/20 focus:border-accent bg-surface text-on-surface';
+  const labelCls = 'block text-xs font-medium text-on-surface-muted mb-1';
 
   const handleSubmit = async (e: React.SyntheticEvent<HTMLFormElement>) => {
     e.preventDefault();
@@ -702,34 +701,34 @@ export function EditEmployeeModal({ emp, onClose, onSaved, allEmployees, departm
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 backdrop-blur-sm p-4">
-      <div className="bg-white rounded-2xl shadow-2xl w-full max-w-2xl max-h-[92vh] overflow-y-auto">
-        <div className="flex items-center justify-between px-6 py-4 border-b border-gray-100">
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-bg/55 backdrop-blur-sm p-4">
+      <div className="bg-surface rounded-2xl shadow-elev-4 border border-outline w-full max-w-2xl max-h-[92vh] overflow-y-auto">
+        <div className="flex items-center justify-between px-6 py-4 border-b border-outline">
           <div className="flex items-center gap-3">
-            <div className="w-9 h-9 rounded-lg bg-amber-50 flex items-center justify-center">
-              <Pencil size={17} className="text-amber-600" />
+            <div className="w-9 h-9 rounded-lg bg-warning-container flex items-center justify-center">
+              <Pencil size={17} className="text-warning" />
             </div>
             <div>
-              <h2 className="text-base font-semibold text-gray-900">Edit Employee</h2>
+              <h2 className="font-display text-base font-semibold tracking-tight text-on-surface">Edit Employee</h2>
               <div className="flex items-center gap-2 mt-0.5">
-                <span className="text-xs font-mono font-semibold text-primary-600 bg-primary-50 px-2 py-0.5 rounded">{emp.employee_id}</span>
-                <span className="text-xs text-gray-400">{emp.name}</span>
+                <span className="num-mono text-xs font-semibold text-on-brand-container bg-brand-container px-2 py-0.5 rounded">{emp.employee_id}</span>
+                <span className="text-xs text-on-surface-subtle">{emp.name}</span>
               </div>
             </div>
           </div>
-          <button onClick={onClose} className="p-1.5 hover:bg-gray-100 rounded-lg transition-colors">
-            <X size={18} className="text-gray-500" />
+          <button onClick={onClose} className="p-1.5 hover:bg-surface-2 rounded-lg transition-colors">
+            <X size={18} className="text-on-surface-subtle" />
           </button>
         </div>
 
         <form onSubmit={handleSubmit} className="p-6 space-y-5">
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
             <div>
-              <label className={labelCls}>Full Name <span className="text-red-400">*</span></label>
+              <label className={labelCls}>Full Name <span className="text-danger">*</span></label>
               <input type="text" value={form.name} onChange={e => set('name', e.target.value)} className={inputCls} />
             </div>
             <div>
-              <label className={labelCls}>Email Address <span className="text-red-400">*</span></label>
+              <label className={labelCls}>Email Address <span className="text-danger">*</span></label>
               <input type="email" value={form.email} onChange={e => set('email', e.target.value)} className={inputCls} />
             </div>
             <div>
@@ -744,7 +743,7 @@ export function EditEmployeeModal({ emp, onClose, onSaved, allEmployees, departm
 
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
             <div>
-              <label className={labelCls}>Designation / Job Title <span className="text-red-400">*</span></label>
+              <label className={labelCls}>Designation / Job Title <span className="text-danger">*</span></label>
               <input type="text" value={form.designation} onChange={e => set('designation', e.target.value)} className={inputCls} />
             </div>
             <div>
@@ -765,7 +764,7 @@ export function EditEmployeeModal({ emp, onClose, onSaved, allEmployees, departm
               </select>
             </div>
             <div>
-              <label className={labelCls}>Department <span className="text-red-400">*</span></label>
+              <label className={labelCls}>Department <span className="text-danger">*</span></label>
               <select value={form.department} onChange={e => set('department', e.target.value)} className={inputCls}>
                 {departments.map(d => <option key={d}>{d}</option>)}
               </select>
@@ -775,7 +774,7 @@ export function EditEmployeeModal({ emp, onClose, onSaved, allEmployees, departm
               <input type="date" value={form.join_date} onChange={e => set('join_date', e.target.value)} className={inputCls} />
             </div>
             <div>
-              <label className={labelCls}>Date of Birth <span className="text-gray-400 font-normal text-[10px]">(enables birthday optional leave)</span></label>
+              <label className={labelCls}>Date of Birth <span className="text-on-surface-subtle font-normal text-[10px]">(enables birthday optional leave)</span></label>
               <input type="date" value={(form as any).date_of_birth ?? ''} onChange={e => set('date_of_birth', e.target.value)} max={new Date().toISOString().split('T')[0]} className={inputCls} />
             </div>
           </div>
@@ -799,21 +798,21 @@ export function EditEmployeeModal({ emp, onClose, onSaved, allEmployees, departm
           </div>
 
           <div>
-            <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-3">Compensation</p>
+            <p className="text-xs font-semibold text-on-surface-subtle uppercase tracking-wide mb-3">Compensation</p>
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
               <div>
                 <label className={labelCls}>Monthly Gross Salary (₹)</label>
-                <input type="number" value={form.salary} onChange={e => set('salary', e.target.value)} placeholder="e.g. 80000" className={inputCls} />
+                <input type="number" value={form.salary} onChange={e => set('salary', e.target.value)} placeholder="e.g. 80000" className={inputCls + ' num-mono'} />
               </div>
               <div>
                 <label className={labelCls}>Annual CTC (₹)</label>
-                <input type="number" value={form.ctc} onChange={e => set('ctc', e.target.value)} placeholder="e.g. 1200000" className={inputCls} />
+                <input type="number" value={form.ctc} onChange={e => set('ctc', e.target.value)} placeholder="e.g. 1200000" className={inputCls + ' num-mono'} />
               </div>
             </div>
           </div>
 
           <div>
-            <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-3">Next Appraisal Schedule</p>
+            <p className="text-xs font-semibold text-on-surface-subtle uppercase tracking-wide mb-3">Next Appraisal Schedule</p>
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
               <div>
                 <label className={labelCls}>Appraisal Month</label>
@@ -836,7 +835,7 @@ export function EditEmployeeModal({ emp, onClose, onSaved, allEmployees, departm
               </div>
             </div>
             {form.next_appraisal_month && form.next_appraisal_year && (
-              <p className="text-xs mt-2 font-medium" style={{ color: '#EE2770' }}>
+              <p className="text-xs mt-2 font-medium text-accent">
                 Appraisal form will open for this employee in{' '}
                 {['January','February','March','April','May','June','July','August','September','October','November','December'][Number(form.next_appraisal_month) - 1]}{' '}
                 {form.next_appraisal_year}
@@ -845,17 +844,16 @@ export function EditEmployeeModal({ emp, onClose, onSaved, allEmployees, departm
           </div>
 
           {error && (
-            <p className="text-sm text-red-600 bg-red-50 border border-red-100 rounded-lg px-4 py-2.5">{error}</p>
+            <p className="text-sm text-danger bg-danger-container border border-outline rounded-lg px-4 py-2.5">{error}</p>
           )}
 
           <div className="flex gap-3 pt-1">
             <button type="button" onClick={onClose}
-              className="flex-1 px-4 py-2.5 text-sm font-medium text-gray-600 bg-gray-100 hover:bg-gray-200 rounded-lg transition-colors">
+              className="flex-1 px-4 py-2.5 text-sm font-medium text-on-surface-muted bg-surface-2 hover:bg-surface-3 rounded-lg transition-colors">
               Cancel
             </button>
             <button type="submit" disabled={saving}
-              className="flex-1 px-4 py-2.5 text-sm font-medium text-white rounded-lg transition-colors disabled:opacity-60 disabled:cursor-not-allowed"
-              style={{ background: 'linear-gradient(135deg, #EE2770 0%, #d11f62 100%)' }}>
+              className="flex-1 px-4 py-2.5 text-sm font-medium text-on-accent bg-accent hover:opacity-90 shadow-elev-1 hover:shadow-elev-2 rounded-lg transition-all disabled:opacity-60 disabled:cursor-not-allowed">
               {saving ? 'Saving…' : 'Save Changes'}
             </button>
           </div>
@@ -921,37 +919,37 @@ export default function Employees() {
     <div className="space-y-5">
       <div className="flex flex-wrap items-center gap-3">
         <div className="relative flex-1 min-w-48">
-          <Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
+          <Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-on-surface-subtle" />
           <input type="text" value={search} onChange={e => setSearch(e.target.value)} placeholder="Search by name, email or employee ID…"
-            className="w-full pl-9 pr-4 py-2.5 text-sm bg-white border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-200 focus:border-primary-400" />
+            className="w-full pl-9 pr-4 py-2.5 text-sm bg-surface border border-outline rounded-lg text-on-surface focus:outline-none focus:ring-2 focus:ring-accent/20 focus:border-accent" />
         </div>
         <div className="flex items-center gap-2">
-          <Filter size={14} className="text-gray-400" />
+          <Filter size={14} className="text-on-surface-subtle" />
           <select value={deptFilter} onChange={e => setDeptFilter(e.target.value)}
-            className="text-sm border border-gray-200 rounded-lg px-3 py-2.5 bg-white focus:outline-none focus:ring-2 focus:ring-primary-200 text-gray-700">
+            className="text-sm border border-outline rounded-lg px-3 py-2.5 bg-surface focus:outline-none focus:ring-2 focus:ring-accent/20 focus:border-accent text-on-surface-muted">
             <option>All</option>
             {departments.map(d => <option key={d}>{d}</option>)}
           </select>
           <select value={statusFilter} onChange={e => setStatusFilter(e.target.value)}
-            className="text-sm border border-gray-200 rounded-lg px-3 py-2.5 bg-white focus:outline-none focus:ring-2 focus:ring-primary-200 text-gray-700">
+            className="text-sm border border-outline rounded-lg px-3 py-2.5 bg-surface focus:outline-none focus:ring-2 focus:ring-accent/20 focus:border-accent text-on-surface-muted">
             <option>All</option>
             <option>active</option>
             <option>inactive</option>
           </select>
         </div>
         <button onClick={() => setShowAdd(true)}
-          className="ml-auto flex items-center gap-2 px-4 py-2.5 bg-primary-500 hover:bg-primary-600 text-white text-sm font-medium rounded-lg transition-colors shadow-sm">
+          className="ml-auto flex items-center gap-2 px-4 py-2.5 bg-accent hover:opacity-90 text-on-accent text-sm font-medium rounded-lg transition-all shadow-elev-1 hover:shadow-elev-2">
           <Plus size={15} /> Add Employee
         </button>
       </div>
 
       {loading ? (
         <div className="flex items-center justify-center h-48">
-          <div className="w-8 h-8 border-4 border-primary-200 border-t-primary-500 rounded-full animate-spin" />
+          <div className="w-8 h-8 border-4 border-outline border-t-accent rounded-full animate-spin" />
         </div>
       ) : (
         <>
-          <p className="text-sm text-gray-500">{filtered.length} employee{filtered.length !== 1 ? 's' : ''} found</p>
+          <p className="text-sm text-on-surface-subtle"><span className="num-mono">{filtered.length}</span> employee{filtered.length !== 1 ? 's' : ''} found</p>
           <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-4">
             {filtered.map((emp, i) => (
               <EmployeeCard key={emp.id} emp={emp} index={i} onClick={() => navigate(`/employees/${emp.id}`)}
@@ -962,20 +960,20 @@ export default function Employees() {
       )}
 
       {confirmDelete && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 backdrop-blur-sm p-4">
-          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-sm p-6 text-center">
-            <div className="w-12 h-12 rounded-full bg-red-50 flex items-center justify-center mx-auto mb-4">
-              <Trash2 size={20} className="text-red-500" />
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-bg/55 backdrop-blur-sm p-4">
+          <div className="bg-surface rounded-2xl shadow-elev-4 border border-outline w-full max-w-sm p-6 text-center">
+            <div className="w-12 h-12 rounded-full bg-danger-container flex items-center justify-center mx-auto mb-4">
+              <Trash2 size={20} className="text-danger" />
             </div>
-            <h3 className="font-semibold text-gray-900 mb-1">Delete {confirmDelete.name}?</h3>
-            <p className="text-sm text-gray-500 mb-6">This will permanently remove the employee record. This action cannot be undone.</p>
+            <h3 className="font-display font-semibold tracking-tight text-on-surface mb-1">Delete {confirmDelete.name}?</h3>
+            <p className="text-sm text-on-surface-subtle mb-6">This will permanently remove the employee record. This action cannot be undone.</p>
             <div className="flex gap-3">
               <button onClick={() => setConfirmDelete(null)} disabled={deleting}
-                className="flex-1 py-2.5 border border-gray-200 rounded-lg text-sm font-medium text-gray-600 hover:bg-gray-50">
+                className="flex-1 py-2.5 border border-outline rounded-lg text-sm font-medium text-on-surface-muted hover:bg-surface-2 transition-colors">
                 Cancel
               </button>
               <button onClick={() => handleDelete(confirmDelete)} disabled={deleting}
-                className="flex-1 py-2.5 bg-red-500 hover:bg-red-600 text-white rounded-lg text-sm font-medium transition-colors disabled:opacity-60">
+                className="flex-1 py-2.5 bg-danger hover:opacity-90 text-white rounded-lg text-sm font-medium transition-all disabled:opacity-60">
                 {deleting ? 'Deleting…' : 'Delete'}
               </button>
             </div>

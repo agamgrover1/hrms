@@ -26,18 +26,18 @@ function parseLocalDate(dateStr: string): Date {
 }
 
 const statusConfig = {
-  present:      { label: 'Present',      color: 'bg-green-50 text-green-600',   dot: 'bg-green-500' },
-  absent:       { label: 'Absent',       color: 'bg-red-50 text-red-500',       dot: 'bg-red-500' },
-  late:         { label: 'Late',         color: 'bg-amber-50 text-amber-600',   dot: 'bg-amber-500' },
-  'half-day':   { label: 'Half Day',     color: 'bg-blue-50 text-blue-600',     dot: 'bg-blue-500' },
-  short_leave:  { label: 'Short Leave',  color: 'bg-orange-50 text-orange-600', dot: 'bg-orange-400' },
-  on_leave:     { label: 'On Leave',     color: 'bg-violet-50 text-violet-600', dot: 'bg-violet-400' },
-  unpaid_leave: { label: 'Unpaid Leave', color: 'bg-rose-50 text-rose-600',     dot: 'bg-rose-400' },
-  weekend:      { label: 'Weekend',      color: 'bg-gray-50 text-gray-400',     dot: 'bg-gray-300' },
-  holiday:      { label: 'Holiday',      color: 'bg-purple-50 text-purple-500', dot: 'bg-purple-400' },
-  wfh:          { label: 'Work From Home',    color: 'bg-[#192250]/10 text-[#192250]',  dot: 'bg-[#192250]' },
-  wfh_half:     { label: 'Half Day WFH',      color: 'bg-[#EE2770]/10 text-[#EE2770]', dot: 'bg-[#EE2770]' },
-  no_record:    { label: 'No Record',         color: 'bg-gray-100 text-gray-500',     dot: 'bg-gray-300' },
+  present:      { label: 'Present',      color: 'bg-success-container text-success', dot: 'bg-success' },
+  absent:       { label: 'Absent',       color: 'bg-danger-container text-danger',   dot: 'bg-danger' },
+  late:         { label: 'Late',         color: 'bg-warning-container text-warning', dot: 'bg-warning' },
+  'half-day':   { label: 'Half Day',     color: 'bg-brand-container text-on-brand-container', dot: 'bg-brand' },
+  short_leave:  { label: 'Short Leave',  color: 'bg-warning-container text-warning', dot: 'bg-warning' },
+  on_leave:     { label: 'On Leave',     color: 'bg-brand-container text-on-brand-container', dot: 'bg-brand' },
+  unpaid_leave: { label: 'Unpaid Leave', color: 'bg-danger-container text-danger',   dot: 'bg-danger' },
+  weekend:      { label: 'Weekend',      color: 'bg-surface-2 text-on-surface-subtle', dot: 'bg-surface-3' },
+  holiday:      { label: 'Holiday',      color: 'bg-surface-2 text-on-surface-muted', dot: 'bg-on-surface-muted' },
+  wfh:          { label: 'Work From Home', color: 'bg-brand-container text-on-brand-container', dot: 'bg-brand' },
+  wfh_half:     { label: 'Half Day WFH', color: 'bg-accent/10 text-accent',          dot: 'bg-accent' },
+  no_record:    { label: 'No Record',    color: 'bg-surface-2 text-on-surface-muted', dot: 'bg-surface-3' },
 };
 
 function generateCalendarDays(year: number, month: number) {
@@ -67,8 +67,8 @@ function MarkAttendanceModal({ employees, onClose, onSaved }: {
 
   const set = (k: string, v: string) => setForm(f => ({ ...f, [k]: v }));
 
-  const inputCls = 'w-full text-sm border border-gray-200 rounded-lg px-3 py-2.5 focus:outline-none focus:ring-2 focus:ring-primary-200 focus:border-primary-400 bg-white';
-  const labelCls = 'block text-xs font-medium text-gray-600 mb-1';
+  const inputCls = 'w-full text-sm border border-outline rounded-lg px-3 py-2.5 focus:outline-none focus:ring-2 focus:ring-brand/30 focus:border-brand bg-surface text-on-surface';
+  const labelCls = 'block text-xs font-medium text-on-surface-muted mb-1';
 
   const needsTimes = form.status === 'present' || form.status === 'late' || form.status === 'half-day' || form.status === 'short_leave';
 
@@ -98,39 +98,39 @@ function MarkAttendanceModal({ employees, onClose, onSaved }: {
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 backdrop-blur-sm p-4">
-      <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md">
-        <div className="flex items-center justify-between px-6 py-4 border-b border-gray-100">
+      <div className="bg-surface rounded-2xl shadow-elev-3 w-full max-w-md border border-outline">
+        <div className="flex items-center justify-between px-6 py-4 border-b border-outline">
           <div className="flex items-center gap-3">
-            <div className="w-9 h-9 rounded-lg bg-violet-50 flex items-center justify-center">
-              <CalendarDays size={17} className="text-violet-600" />
+            <div className="w-9 h-9 rounded-lg bg-brand-container flex items-center justify-center">
+              <CalendarDays size={17} className="text-on-brand-container" />
             </div>
             <div>
-              <h2 className="text-base font-semibold text-gray-900">Mark Attendance</h2>
-              <p className="text-xs text-gray-400">Manually record attendance for any employee</p>
+              <h2 className="font-display text-base font-bold tracking-tight text-on-surface">Mark Attendance</h2>
+              <p className="text-xs text-on-surface-subtle">Manually record attendance for any employee</p>
             </div>
           </div>
-          <button onClick={onClose} className="p-1.5 hover:bg-gray-100 rounded-lg transition-colors">
-            <X size={18} className="text-gray-500" />
+          <button onClick={onClose} className="p-1.5 hover:bg-surface-2 rounded-lg transition-colors">
+            <X size={18} className="text-on-surface-muted" />
           </button>
         </div>
 
         <form onSubmit={handleSubmit} className="p-6 space-y-4">
           {/* Employee */}
           <div>
-            <label className={labelCls}>Employee <span className="text-red-400">*</span></label>
+            <label className={labelCls}>Employee <span className="text-danger">*</span></label>
             <select value={form.employee_id} onChange={e => set('employee_id', e.target.value)} className={inputCls}>
               {employees.map(emp => (
                 <option key={emp.id} value={emp.id}>{emp.name} ({emp.employee_id})</option>
               ))}
             </select>
             {selectedEmp && (
-              <p className="text-xs text-gray-400 mt-1">{selectedEmp.designation} · {selectedEmp.department}</p>
+              <p className="text-xs text-on-surface-subtle mt-1">{selectedEmp.designation} · {selectedEmp.department}</p>
             )}
           </div>
 
           {/* Date */}
           <div>
-            <label className={labelCls}>Date <span className="text-red-400">*</span></label>
+            <label className={labelCls}>Date <span className="text-danger">*</span></label>
             <input
               type="date"
               value={form.date}
@@ -142,7 +142,7 @@ function MarkAttendanceModal({ employees, onClose, onSaved }: {
 
           {/* Status */}
           <div>
-            <label className={labelCls}>Status <span className="text-red-400">*</span></label>
+            <label className={labelCls}>Status <span className="text-danger">*</span></label>
             <div className="grid grid-cols-2 gap-2">
               {(['present', 'absent', 'late', 'half-day', 'short_leave'] as const).map(s => {
                 const cfg = statusConfig[s];
@@ -154,8 +154,8 @@ function MarkAttendanceModal({ employees, onClose, onSaved }: {
                     onClick={() => set('status', s)}
                     className={`flex items-center gap-2 px-3 py-2 rounded-lg border text-sm font-medium transition-all ${
                       active
-                        ? 'border-primary-400 bg-primary-50 text-primary-700'
-                        : 'border-gray-200 bg-white text-gray-600 hover:border-gray-300'
+                        ? 'border-brand bg-brand-container text-on-brand-container'
+                        : 'border-outline bg-surface text-on-surface-muted hover:border-outline hover:bg-surface-2'
                     }`}
                   >
                     <span className={`w-2 h-2 rounded-full ${cfg.dot}`} />
@@ -181,16 +181,16 @@ function MarkAttendanceModal({ employees, onClose, onSaved }: {
           )}
 
           {error && (
-            <p className="text-sm text-red-600 bg-red-50 border border-red-100 rounded-lg px-4 py-2.5">{error}</p>
+            <p className="text-sm text-danger bg-danger-container border border-danger/20 rounded-lg px-4 py-2.5">{error}</p>
           )}
 
           <div className="flex gap-3 pt-1">
             <button type="button" onClick={onClose}
-              className="flex-1 px-4 py-2.5 text-sm font-medium text-gray-600 bg-gray-100 hover:bg-gray-200 rounded-lg transition-colors">
+              className="flex-1 px-4 py-2.5 text-sm font-medium text-on-surface bg-surface-2 border border-outline hover:bg-surface-3 rounded-lg transition-colors">
               Cancel
             </button>
             <button type="submit" disabled={saving}
-              className="flex-1 px-4 py-2.5 text-sm font-medium text-white bg-primary-500 hover:bg-primary-600 rounded-lg transition-colors disabled:opacity-60">
+              className="flex-1 px-4 py-2.5 text-sm font-medium text-on-accent bg-accent hover:opacity-90 rounded-lg shadow-elev-1 transition-all disabled:opacity-60">
               {saving ? 'Saving…' : 'Save Record'}
             </button>
           </div>
@@ -375,19 +375,19 @@ export default function Attendance() {
   return (
     <div className="space-y-5">
       {/* Clock In Widget */}
-      <div className="rounded-2xl p-6 text-white flex items-center justify-between"
+      <div className="rounded-xl-2 p-6 text-white flex items-center justify-between shadow-elev-2"
         style={{ background: 'linear-gradient(135deg, #192250 0%, #111737 100%)' }}>
         <div>
           <p className="text-sm font-medium" style={{ color: 'rgba(255,255,255,0.55)' }}>
             {now.toLocaleDateString('en-IN', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' })}
           </p>
-          <p className="text-3xl font-bold mt-1 tabular-nums">{new Date().toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' })}</p>
-          {clocked && <p className="text-xs mt-1" style={{ color: '#ff75b0' }}>Clocked in at {clockTime}</p>}
+          <p className="num-mono text-3xl font-bold mt-1">{new Date().toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' })}</p>
+          {clocked && <p className="num-mono text-xs mt-1" style={{ color: '#ff75b0' }}>Clocked in at {clockTime}</p>}
         </div>
         <div className="flex items-center gap-3">
           {isHROrAdmin && (
             <button onClick={() => setShowMark(true)}
-              className="flex items-center gap-2 px-4 py-2.5 rounded-xl text-sm font-semibold transition-all"
+              className="flex items-center gap-2 px-4 py-2.5 rounded-xl-2 text-sm font-semibold transition-all"
               style={{ background: 'rgba(238,39,112,0.2)', border: '1px solid rgba(238,39,112,0.4)', color: '#ff75b0' }}
               onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = 'rgba(238,39,112,0.35)'; }}
               onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = 'rgba(238,39,112,0.2)'; }}>
@@ -395,7 +395,7 @@ export default function Attendance() {
             </button>
           )}
           <button onClick={handleClock}
-            className={`px-6 py-3 rounded-xl font-semibold text-sm transition-all shadow-lg active:scale-95 ${clocked ? 'cursor-default' : ''}`}
+            className={`px-6 py-3 rounded-xl-2 font-semibold text-sm transition-all shadow-elev-2 active:scale-95 ${clocked ? 'cursor-default' : ''}`}
             style={clocked
               ? { background: 'rgba(255,255,255,0.1)', color: 'rgba(255,255,255,0.6)' }
               : { background: '#EE2770', color: '#fff', boxShadow: '0 4px 15px rgba(238,39,112,0.4)' }}>
@@ -419,30 +419,29 @@ export default function Attendance() {
         }
 
         return (
-          <div className="bg-white rounded-2xl border border-gray-100 shadow-sm overflow-hidden">
+          <div className="bg-surface rounded-xl-2 border border-outline shadow-elev-1 overflow-hidden">
             {/* Header row */}
             <div className="flex flex-wrap items-center gap-3 px-5 py-4">
               <div className="flex items-center gap-2.5 flex-1 min-w-0">
-                <div className="w-9 h-9 rounded-xl flex items-center justify-center flex-shrink-0"
-                  style={{ background: 'rgba(25,34,80,0.07)' }}>
-                  <Fingerprint size={18} style={{ color: '#192250' }} />
+                <div className="w-9 h-9 rounded-xl-2 bg-brand-container flex items-center justify-center flex-shrink-0">
+                  <Fingerprint size={18} className="text-on-brand-container" />
                 </div>
                 <div className="min-w-0">
-                  <p className="font-bold text-sm" style={{ color: '#192250' }}>Biometric Sync</p>
+                  <p className="font-display font-bold text-sm tracking-tight text-on-surface">Biometric Sync</p>
                   <div className="flex items-center gap-2 mt-0.5 flex-wrap">
-                    <span className="flex items-center gap-1 text-xs text-gray-400">
-                      <Activity size={10} className="text-green-500" />
+                    <span className="flex items-center gap-1 text-xs text-on-surface-subtle">
+                      <Activity size={10} className="text-success" />
                       Auto-sync every 5 min
                     </span>
                     {lastSync && (
-                      <span className="text-xs text-gray-400">
+                      <span className="num-mono text-xs text-on-surface-subtle">
                         · Last: {fmtAgo(lastSync.synced_at)}
                         {lastSync.records_updated + lastSync.records_created > 0
                           ? ` (${lastSync.records_updated + lastSync.records_created} records)`
                           : ' (no changes)'}
                       </span>
                     )}
-                    {!lastSync && <span className="text-xs text-gray-400">· No syncs yet</span>}
+                    {!lastSync && <span className="text-xs text-on-surface-subtle">· No syncs yet</span>}
                   </div>
                 </div>
               </div>
@@ -452,8 +451,7 @@ export default function Attendance() {
                 <button
                   onClick={() => handleSyncNow(true)}
                   disabled={syncing}
-                  className="flex items-center gap-1.5 px-3 py-2 text-xs font-semibold rounded-xl border transition-all disabled:opacity-50"
-                  style={{ color: '#192250', borderColor: '#e2e4ed', background: '#fff' }}
+                  className="flex items-center gap-1.5 px-3 py-2 text-xs font-semibold rounded-xl-2 border border-outline bg-surface-2 text-on-surface hover:bg-surface-3 transition-colors disabled:opacity-50"
                 >
                   <Calendar size={13} />
                   {syncing ? '…' : 'Sync This Month'}
@@ -462,8 +460,7 @@ export default function Attendance() {
                 <button
                   onClick={() => handleSyncNow(false)}
                   disabled={syncing}
-                  className="flex items-center gap-1.5 px-4 py-2 text-xs font-semibold text-white rounded-xl transition-all disabled:opacity-60 shadow-sm"
-                  style={{ background: 'linear-gradient(135deg, #192250 0%, #141c43 100%)' }}
+                  className="flex items-center gap-1.5 px-4 py-2 text-xs font-semibold text-on-accent bg-accent hover:opacity-90 rounded-xl-2 shadow-elev-1 transition-all disabled:opacity-60"
                 >
                   <RefreshCw size={13} className={syncing ? 'animate-spin' : ''} />
                   {syncing ? 'Syncing…' : 'Sync Today'}
@@ -471,60 +468,60 @@ export default function Attendance() {
                 {/* Toggle history */}
                 <button
                   onClick={() => setShowSyncHistory(v => !v)}
-                  className="p-2 rounded-xl hover:bg-gray-50 transition-colors"
+                  className="p-2 rounded-xl-2 hover:bg-surface-2 transition-colors"
                   title="Toggle sync history"
                 >
-                  {showSyncHistory ? <ChevronUp size={16} className="text-gray-400" /> : <ChevronDown size={16} className="text-gray-400" />}
+                  {showSyncHistory ? <ChevronUp size={16} className="text-on-surface-subtle" /> : <ChevronDown size={16} className="text-on-surface-subtle" />}
                 </button>
               </div>
             </div>
 
             {/* Feedback messages */}
             {(syncError || syncSuccess) && (
-              <div className={`mx-5 mb-4 px-4 py-2.5 rounded-xl text-xs font-semibold ${syncError ? 'bg-red-50 text-red-600 border border-red-100' : 'bg-green-50 text-green-700 border border-green-100'}`}>
+              <div className={`mx-5 mb-4 px-4 py-2.5 rounded-xl-2 text-xs font-semibold ${syncError ? 'bg-danger-container text-danger border border-danger/20' : 'bg-success-container text-success border border-success/20'}`}>
                 {syncError || syncSuccess}
               </div>
             )}
 
             {/* Sync history table */}
             {showSyncHistory && (
-              <div className="border-t border-gray-100 overflow-x-auto">
+              <div className="border-t border-outline overflow-x-auto">
                 {syncHistory.length === 0 ? (
-                  <p className="text-sm text-gray-400 text-center py-6">No sync history yet</p>
+                  <p className="text-sm text-on-surface-subtle text-center py-6">No sync history yet</p>
                 ) : (
                   <table className="w-full text-sm">
                     <thead>
-                      <tr style={{ background: '#f8f9fc' }}>
+                      <tr className="bg-surface-2">
                         {['Synced At', 'Trigger', 'Date', 'Updated', 'Created', 'Status'].map(h => (
-                          <th key={h} className="text-left px-4 py-2.5 text-xs font-semibold text-gray-400 uppercase tracking-wide whitespace-nowrap">{h}</th>
+                          <th key={h} className="text-left px-4 py-2.5 text-xs font-semibold text-on-surface-subtle uppercase tracking-wide whitespace-nowrap">{h}</th>
                         ))}
                       </tr>
                     </thead>
-                    <tbody>
+                    <tbody className="divide-y divide-outline">
                       {syncHistory.map(s => {
                         const isRolledBack = s.is_rolled_back || s.status === 'rolled_back';
                         const isFailed = s.status === 'failed';
                         return (
-                          <tr key={s.id} className="border-t border-gray-50 hover:bg-gray-50/50">
-                            <td className="px-4 py-3 text-xs text-gray-500 whitespace-nowrap">
+                          <tr key={s.id} className="hover:bg-surface-2 transition-colors">
+                            <td className="px-4 py-3 num-mono text-xs text-on-surface-muted whitespace-nowrap">
                               {new Date(s.synced_at).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' })}
                               {', '}{new Date(s.synced_at).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', hour12: true })}
                             </td>
-                            <td className="px-4 py-3 text-xs text-gray-600 capitalize whitespace-nowrap">
+                            <td className="px-4 py-3 text-xs text-on-surface-muted capitalize whitespace-nowrap">
                               {s.triggered === 'manual' ? `Manual${s.triggered_by ? ` — ${s.triggered_by}` : ''}` : 'Auto'}
                             </td>
-                            <td className="px-4 py-3 text-xs text-gray-500">{s.date_range ?? '—'}</td>
-                            <td className="px-4 py-3 text-xs font-semibold text-center" style={{ color: '#192250' }}>{s.records_updated ?? 0}</td>
-                            <td className="px-4 py-3 text-xs font-semibold text-center" style={{ color: '#192250' }}>{s.records_created ?? 0}</td>
+                            <td className="px-4 py-3 text-xs text-on-surface-muted">{s.date_range ?? '—'}</td>
+                            <td className="px-4 py-3 num-mono text-xs font-semibold text-center text-on-surface">{s.records_updated ?? 0}</td>
+                            <td className="px-4 py-3 num-mono text-xs font-semibold text-center text-on-surface">{s.records_created ?? 0}</td>
                             <td className="px-4 py-3">
                               <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-semibold ${
-                                isRolledBack ? 'bg-gray-100 text-gray-500' :
-                                isFailed ? 'bg-red-50 text-red-600' :
-                                'bg-green-50 text-green-700'
+                                isRolledBack ? 'bg-surface-2 text-on-surface-muted' :
+                                isFailed ? 'bg-danger-container text-danger' :
+                                'bg-success-container text-success'
                               }`}>
                                 {isRolledBack ? 'Rolled Back' : isFailed ? '✕ Failed' : '✓ Success'}
                               </span>
-                              {s.error_msg && <p className="text-xs text-red-400 mt-0.5 truncate max-w-[150px]">{s.error_msg}</p>}
+                              {s.error_msg && <p className="text-xs text-danger mt-0.5 truncate max-w-[150px]">{s.error_msg}</p>}
                             </td>
                           </tr>
                         );
@@ -540,13 +537,13 @@ export default function Attendance() {
 
       {/* ── View Toggle ─────────────────────────────────────────────────── */}
       <div className="flex flex-wrap items-center gap-3">
-        <div className="inline-flex bg-gray-100 p-1 rounded-lg">
+        <div className="inline-flex bg-surface-2 p-1 rounded-lg border border-outline">
           <button onClick={() => setViewMode('employee')}
-            className={`px-4 py-1.5 text-sm font-semibold rounded-md transition-all ${viewMode === 'employee' ? 'bg-white shadow-sm text-gray-900' : 'text-gray-500 hover:text-gray-700'}`}>
+            className={`px-4 py-1.5 text-sm font-semibold rounded-md transition-all ${viewMode === 'employee' ? 'bg-accent text-on-accent shadow-elev-1' : 'text-on-surface-muted hover:text-on-surface'}`}>
             By Employee
           </button>
           <button onClick={() => { setViewMode('status'); setStatusFilter('all'); }}
-            className={`px-4 py-1.5 text-sm font-semibold rounded-md transition-all ${viewMode === 'status' ? 'bg-white shadow-sm text-gray-900' : 'text-gray-500 hover:text-gray-700'}`}>
+            className={`px-4 py-1.5 text-sm font-semibold rounded-md transition-all ${viewMode === 'status' ? 'bg-accent text-on-accent shadow-elev-1' : 'text-on-surface-muted hover:text-on-surface'}`}>
             By Status
           </button>
         </div>
@@ -554,17 +551,18 @@ export default function Attendance() {
         {viewMode === 'employee' ? (
           <>
             <select value={selectedEmpId} onChange={e => setSelectedEmpId(e.target.value)}
-              className="text-sm border border-gray-200 rounded-lg px-3 py-2.5 bg-white focus:outline-none focus:ring-2 focus:ring-primary-200 text-gray-700">
+              className="text-sm border border-outline rounded-lg px-3 py-2.5 bg-surface focus:outline-none focus:ring-2 focus:ring-brand/30 text-on-surface">
               {employees.map(e => <option key={e.id} value={e.id}>{e.name}</option>)}
             </select>
-            <span className="text-sm text-gray-400">{monthName} {viewYear}</span>
+            <span className="text-sm text-on-surface-subtle">{monthName} {viewYear}</span>
             {(() => {
               const emp = employees.find(e => e.id === selectedEmpId);
               if (!emp) return null;
               const isNight = emp.shift === 'night';
               return (
-                <span className="inline-flex items-center gap-1.5 text-xs font-semibold px-3 py-1.5 rounded-full"
-                  style={isNight ? { background: '#1e1b4b', color: '#a5b4fc' } : { background: '#fef3c7', color: '#92400e' }}>
+                <span className={`inline-flex items-center gap-1.5 text-xs font-semibold px-3 py-1.5 rounded-full ${
+                  isNight ? 'bg-brand-container text-on-brand-container' : 'bg-warning-container text-warning'
+                }`}>
                   {isNight ? '🌙' : '☀️'} {isNight ? 'Night Shift · 6:30 PM – 3:30 AM' : 'Day Shift · 9:00 AM – 6:00 PM'}
                 </span>
               );
@@ -574,8 +572,8 @@ export default function Attendance() {
           <>
             <input type="date" value={statusDate} max={todayStr}
               onChange={e => setStatusDate(e.target.value)}
-              className="text-sm border border-gray-200 rounded-lg px-3 py-2 bg-white focus:outline-none focus:ring-2 focus:ring-primary-200 text-gray-700"/>
-            <span className="text-sm text-gray-400">
+              className="text-sm border border-outline rounded-lg px-3 py-2 bg-surface focus:outline-none focus:ring-2 focus:ring-brand/30 text-on-surface"/>
+            <span className="text-sm text-on-surface-subtle">
               {parseLocalDate(statusDate).toLocaleDateString('en-IN', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' })}
             </span>
           </>
@@ -586,11 +584,11 @@ export default function Attendance() {
       {/* Summary Cards — clicking jumps into Status view filtered to today */}
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
         {[
-          { label: 'Present', value: presentCount, icon: CheckCircle, color: 'text-green-500', filter: 'present' },
-          { label: 'Absent',  value: absentCount,  icon: XCircle,     color: 'text-red-500',   filter: 'absent'  },
-          { label: 'Late',    value: lateCount,    icon: AlertCircle, color: 'text-amber-500', filter: 'late'    },
-          { label: 'Avg Hours/Day', value: fmtHours(totalHours / Math.max(presentCount + lateCount, 1)), icon: Clock, color: 'text-primary-500', filter: null },
-        ].map(({ label, value, icon: Icon, color, filter }) => (
+          { label: 'Present', value: presentCount, icon: CheckCircle, color: 'text-success', blob: 'bg-success/15', filter: 'present' },
+          { label: 'Absent',  value: absentCount,  icon: XCircle,     color: 'text-danger',  blob: 'bg-danger/15',  filter: 'absent'  },
+          { label: 'Late',    value: lateCount,    icon: AlertCircle, color: 'text-warning', blob: 'bg-warning/15', filter: 'late'    },
+          { label: 'Avg Hours/Day', value: fmtHours(totalHours / Math.max(presentCount + lateCount, 1)), icon: Clock, color: 'text-brand', blob: 'bg-brand/15', filter: null },
+        ].map(({ label, value, icon: Icon, color, blob, filter }, i) => (
           <button key={label}
             onClick={() => {
               if (!filter) return;
@@ -599,31 +597,34 @@ export default function Attendance() {
               setStatusFilter(filter);
             }}
             disabled={!filter}
-            className={`bg-white rounded-xl p-4 border border-gray-100 shadow-sm text-left transition-all ${filter ? 'cursor-pointer hover:border-primary-200 hover:shadow-md' : 'cursor-default opacity-90'}`}>
-            <Icon size={18} className={color} />
-            <p className="text-2xl font-bold text-gray-900 mt-2">{value}</p>
-            <p className="text-xs text-gray-400 mt-0.5">{label}{filter ? ' →' : ''}</p>
+            className={`group relative overflow-hidden bg-surface rounded-xl-2 p-4 border border-outline shadow-elev-1 text-left transition-all animate-fade-up stagger-${i + 1} ${filter ? 'cursor-pointer hover:shadow-elev-2' : 'cursor-default opacity-90'}`}>
+            <div className={`absolute -top-8 -right-8 w-28 h-28 rounded-full ${blob} blur-2xl opacity-50 group-hover:opacity-80 transition-opacity duration-500`} />
+            <div className="relative">
+              <Icon size={18} className={color} />
+              <p className="num-mono text-2xl font-bold text-on-surface mt-2">{value}</p>
+              <p className="text-xs text-on-surface-subtle mt-0.5">{label}{filter ? ' →' : ''}</p>
+            </div>
           </button>
         ))}
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
         {/* Calendar */}
-        <div className="bg-white rounded-xl p-5 border border-gray-100 shadow-sm">
+        <div className="bg-surface rounded-xl-2 p-5 border border-outline shadow-elev-1">
           <div className="flex items-center justify-between mb-4">
-            <h3 className="font-semibold text-gray-800">{monthName} {viewYear}</h3>
+            <h3 className="font-display text-xl font-bold tracking-tight text-on-surface">{monthName} {viewYear}</h3>
             <div className="flex gap-1">
-              <button onClick={prevMonth} className="p-1.5 hover:bg-gray-100 rounded-lg transition-colors">
-                <ChevronLeft size={16} className="text-gray-400" />
+              <button onClick={prevMonth} className="p-1.5 hover:bg-surface-2 rounded-lg transition-colors">
+                <ChevronLeft size={16} className="text-on-surface-subtle" />
               </button>
-              <button onClick={nextMonth} className="p-1.5 hover:bg-gray-100 rounded-lg transition-colors">
-                <ChevronRight size={16} className="text-gray-400" />
+              <button onClick={nextMonth} className="p-1.5 hover:bg-surface-2 rounded-lg transition-colors">
+                <ChevronRight size={16} className="text-on-surface-subtle" />
               </button>
             </div>
           </div>
           <div className="grid grid-cols-7 gap-1 mb-2">
             {['Su', 'Mo', 'Tu', 'We', 'Th', 'Fr', 'Sa'].map(d => (
-              <div key={d} className="text-center text-xs font-medium text-gray-400 py-1">{d}</div>
+              <div key={d} className="text-center text-xs font-medium text-on-surface-subtle py-1">{d}</div>
             ))}
           </div>
           <div className="grid grid-cols-7 gap-1">
@@ -636,9 +637,9 @@ export default function Attendance() {
               const isToday = day === now.getDate() && viewMonth === now.getMonth() && viewYear === now.getFullYear();
               const dotColor = record ? statusConfig[record.status as keyof typeof statusConfig]?.dot : '';
               return (
-                <div key={i} className={`relative flex flex-col items-center py-1 rounded-lg text-sm transition-colors
-                  ${isToday ? 'bg-primary-500 text-white font-semibold' : 'hover:bg-gray-50 text-gray-700'}
-                  ${record?.status === 'absent' && !isToday ? 'text-red-400' : ''}`}>
+                <div key={i} className={`relative flex flex-col items-center py-1 rounded-lg num-mono text-sm transition-colors
+                  ${isToday ? 'bg-accent text-on-accent font-semibold' : 'hover:bg-surface-2 text-on-surface'}
+                  ${record?.status === 'absent' && !isToday ? 'text-danger' : ''}`}>
                   {day}
                   {record && record.status !== 'weekend' && (
                     <span className={`w-1.5 h-1.5 rounded-full mt-0.5 ${isToday ? 'bg-white/70' : dotColor}`} />
@@ -657,7 +658,7 @@ export default function Attendance() {
             {['present', 'absent', 'late', 'half-day', 'short_leave', 'on_leave', 'unpaid_leave', 'wfh', 'wfh_half', 'weekend'].map(s => {
               const cfg = statusConfig[s as keyof typeof statusConfig];
               return (
-                <div key={s} className="flex items-center gap-1.5 text-xs text-gray-500">
+                <div key={s} className="flex items-center gap-1.5 text-xs text-on-surface-muted">
                   <span className={`w-2 h-2 rounded-full ${cfg.dot}`} />
                   {cfg.label}
                 </div>
@@ -667,11 +668,11 @@ export default function Attendance() {
         </div>
 
         {/* Daily Log */}
-        <div className="bg-white rounded-xl p-5 border border-gray-100 shadow-sm">
-          <h3 className="font-semibold text-gray-800 mb-4">Daily Log</h3>
+        <div className="bg-surface rounded-xl-2 p-5 border border-outline shadow-elev-1">
+          <h3 className="font-display text-xl font-bold tracking-tight text-on-surface mb-4">Daily Log</h3>
           {loading ? (
             <div className="flex items-center justify-center h-48">
-              <div className="w-6 h-6 border-4 border-primary-200 border-t-primary-500 rounded-full animate-spin" />
+              <div className="w-6 h-6 border-4 border-brand/20 border-t-brand rounded-full animate-spin" />
             </div>
           ) : (
             <div className="space-y-2 max-h-96 overflow-y-auto">
@@ -712,13 +713,12 @@ export default function Attendance() {
                 return (
                   <div key={r.date}
                     onClick={() => r.check_in && handleOpenSessions(r)}
-                    className={`flex items-start justify-between py-2.5 border-b border-gray-50 last:border-0 gap-3 ${r.check_in ? 'cursor-pointer hover:bg-gray-50/60 rounded-lg px-1 -mx-1 transition-colors' : ''}`}>
+                    className={`flex items-start justify-between py-2.5 border-b border-outline last:border-0 gap-3 ${r.check_in ? 'cursor-pointer hover:bg-surface-2 rounded-lg px-1 -mx-1 transition-colors' : ''}`}>
                     {/* Left: status + date */}
                     <div className="flex items-center gap-2 flex-wrap min-w-0">
                       <span className={`text-xs px-2 py-0.5 rounded-full font-medium flex-shrink-0 ${cfg?.color}`}>{cfg?.label}</span>
                       {isShortDay && (
-                        <span className="text-xs px-2 py-0.5 rounded-full font-semibold border flex-shrink-0"
-                          style={{ background: '#fffbeb', color: '#b45309', borderColor: '#fde68a' }}>Short Day</span>
+                        <span className="text-xs px-2 py-0.5 rounded-full font-semibold border border-warning/40 bg-warning-container text-warning flex-shrink-0">Short Day</span>
                       )}
                       {leaveTag && (
                         <span className="text-xs px-2 py-0.5 rounded-full font-semibold border flex-shrink-0"
@@ -727,7 +727,7 @@ export default function Attendance() {
                           {leave?.status === 'pending' && <span className="ml-1 opacity-60">(pending)</span>}
                         </span>
                       )}
-                      <span className="text-sm text-gray-700 flex-shrink-0">
+                      <span className="num-mono text-sm text-on-surface-muted flex-shrink-0">
                         {parseLocalDate(r.date).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' })}
                       </span>
                     </div>
@@ -736,51 +736,51 @@ export default function Attendance() {
                     {r.check_in ? (
                       <div className="flex flex-col items-end gap-0.5 flex-shrink-0">
                         {/* Presence window — secondary grey */}
-                        <span className="text-[11px] text-gray-400">
+                        <span className="num-mono text-[11px] text-on-surface-subtle">
                           {r.check_in} → {r.check_out ?? 'Active'}
                         </span>
 
                         {/* Productive hours — primary bold green */}
-                        <span className="text-xs font-bold" style={{ color: '#15803d' }}>
+                        <span className="num-mono text-xs font-bold text-success">
                           {fmtHours(r.total_hours)} worked
                         </span>
 
                         {/* Break time — only when sessions had breaks */}
                         {fmtBreak && (
-                          <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded-full"
-                            style={{ background: '#fffbeb', color: '#b45309' }}>
+                          <span className="num-mono text-[10px] font-semibold px-1.5 py-0.5 rounded-full bg-warning-container text-warning">
                             {fmtBreak} break
                           </span>
                         )}
 
                         {/* Extension tag */}
                         {isExtension && (
-                          <span className="inline-flex items-center gap-1 text-[10px] font-bold px-1.5 py-0.5 rounded-full border"
-                            style={{ background: 'rgba(238,39,112,0.08)', color: '#EE2770', borderColor: 'rgba(238,39,112,0.25)' }}>
+                          <span className="inline-flex items-center gap-1 text-[10px] font-bold px-1.5 py-0.5 rounded-full border border-accent/25 bg-accent/10 text-accent">
                             💻 Extension{Number(r.extension_hours) > 0 ? ` · ${fmtHours(r.extension_hours)}` : ''}
                           </span>
                         )}
                         {/* Activity score badge — only for extension-tracked records with score data */}
                         {isExtension && r.activity_score != null && (() => {
                           const score = Number(r.activity_score);
-                          const color = score >= 70 ? '#15803d' : score >= 40 ? '#d97706' : '#dc2626';
-                          const bg    = score >= 70 ? 'rgba(22,163,74,0.08)' : score >= 40 ? 'rgba(217,119,6,0.08)' : 'rgba(220,38,38,0.08)';
+                          const tone = score >= 70
+                            ? 'bg-success-container text-success border-success/40'
+                            : score >= 40
+                              ? 'bg-warning-container text-warning border-warning/40'
+                              : 'bg-danger-container text-danger border-danger/40';
                           const label = score >= 70 ? '🟢' : score >= 40 ? '🟡' : '🔴';
                           return (
-                            <span className="inline-flex items-center gap-1 text-[10px] font-bold px-1.5 py-0.5 rounded-full border"
-                              style={{ background: bg, color, borderColor: color + '40' }}
+                            <span className={`inline-flex items-center gap-1 num-mono text-[10px] font-bold px-1.5 py-0.5 rounded-full border ${tone}`}
                               title="Activity score: % of clocked-in time with mouse/keyboard interaction">
                               {label} {score}% active
                             </span>
                           );
                         })()}
                       </div>
-                    ) : <span className="text-xs text-gray-300">—</span>}
+                    ) : <span className="text-xs text-on-surface-subtle">—</span>}
                   </div>
                 );
               })}
               {records.filter(r => r.status !== 'weekend').length === 0 && (
-                <p className="text-sm text-gray-400 text-center py-8">No records found</p>
+                <p className="text-sm text-on-surface-subtle text-center py-8">No records found</p>
               )}
             </div>
           )}
@@ -822,38 +822,36 @@ export default function Attendance() {
           return es.status === statusFilter;
         });
 
-        const TABS: { key: string; label: string; color: string }[] = [
-          { key: 'all',      label: 'All',         color: '#6b7280' },
-          { key: 'present',  label: 'Present',     color: '#16a34a' },
-          { key: 'late',     label: 'Late',        color: '#d97706' },
-          { key: 'absent',   label: 'Absent',      color: '#dc2626' },
-          { key: 'on_leave', label: 'On Leave',    color: '#7c3aed' },
-          { key: 'wfh',      label: 'WFH',         color: '#0d9488' },
-          { key: 'no_record',label: 'No Record',   color: '#4b5563' },
+        const TABS: { key: string; label: string; activeCls: string }[] = [
+          { key: 'all',      label: 'All',         activeCls: 'bg-accent text-on-accent' },
+          { key: 'present',  label: 'Present',     activeCls: 'bg-success text-on-accent' },
+          { key: 'late',     label: 'Late',        activeCls: 'bg-warning text-on-accent' },
+          { key: 'absent',   label: 'Absent',      activeCls: 'bg-danger text-on-accent' },
+          { key: 'on_leave', label: 'On Leave',    activeCls: 'bg-brand text-on-accent' },
+          { key: 'wfh',      label: 'WFH',         activeCls: 'bg-accent text-on-accent' },
+          { key: 'no_record',label: 'No Record',   activeCls: 'bg-surface-3 text-on-surface' },
         ];
 
         return (
           <div className="space-y-4">
             {/* Weekend banner — explains why the day shows all No Record */}
             {isWeekend && (
-              <div className="px-4 py-3 rounded-xl text-sm font-medium flex items-start gap-2.5 border"
-                style={{ background: '#fffbeb', color: '#92400e', borderColor: '#fde68a' }}>
+              <div className="px-4 py-3 rounded-xl-2 text-sm font-medium flex items-start gap-2.5 border border-warning/30 bg-warning-container text-warning">
                 <span>🏖️</span>
                 <span>This is a weekend — most employees won't have attendance records. Showing data anyway in case anyone worked.</span>
               </div>
             )}
 
             {/* Status tabs with counts */}
-            <div className="bg-white rounded-2xl border border-gray-100 shadow-sm p-2 overflow-x-auto">
+            <div className="bg-surface rounded-xl-2 border border-outline shadow-elev-1 p-2 overflow-x-auto">
               <div className="flex gap-1 min-w-max">
                 {TABS.map(t => {
                   const active = statusFilter === t.key;
                   return (
                     <button key={t.key} onClick={() => setStatusFilter(t.key)}
-                      className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-semibold whitespace-nowrap transition-all ${active ? 'text-white shadow-sm' : 'text-gray-600 hover:bg-gray-50'}`}
-                      style={active ? { background: t.color } : {}}>
+                      className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-semibold whitespace-nowrap transition-all ${active ? `${t.activeCls} shadow-elev-1` : 'text-on-surface-muted hover:bg-surface-2'}`}>
                       {t.label}
-                      <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded-full ${active ? 'bg-white/25' : 'bg-gray-100 text-gray-500'}`}>
+                      <span className={`num-mono text-[10px] font-bold px-1.5 py-0.5 rounded-full ${active ? 'bg-white/25' : 'bg-surface-2 text-on-surface-muted'}`}>
                         {counts[t.key] ?? 0}
                       </span>
                     </button>
@@ -863,13 +861,13 @@ export default function Attendance() {
             </div>
 
             {/* Employee list */}
-            <div className="bg-white rounded-2xl border border-gray-100 shadow-sm overflow-hidden">
-              <div className="px-5 py-4 border-b border-gray-100 flex items-center justify-between">
+            <div className="bg-surface rounded-xl-2 border border-outline shadow-elev-1 overflow-hidden">
+              <div className="px-5 py-4 border-b border-outline flex items-center justify-between">
                 <div>
-                  <h3 className="font-semibold text-sm text-gray-800">
-                    {TABS.find(t => t.key === statusFilter)?.label} ({filtered.length})
+                  <h3 className="font-display text-xl font-bold tracking-tight text-on-surface">
+                    {TABS.find(t => t.key === statusFilter)?.label} (<span className="num-mono">{filtered.length}</span>)
                   </h3>
-                  <p className="text-xs text-gray-400 mt-0.5">
+                  <p className="text-xs text-on-surface-subtle mt-0.5">
                     {parseLocalDate(statusDate).toLocaleDateString('en-IN', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' })}
                   </p>
                 </div>
@@ -877,51 +875,51 @@ export default function Attendance() {
 
               {statusLoading ? (
                 <div className="flex items-center justify-center py-12">
-                  <div className="w-6 h-6 border-4 border-primary-200 border-t-primary-500 rounded-full animate-spin" />
+                  <div className="w-6 h-6 border-4 border-brand/20 border-t-brand rounded-full animate-spin" />
                 </div>
               ) : filtered.length === 0 ? (
-                <p className="text-center text-sm text-gray-400 py-12">
+                <p className="text-center text-sm text-on-surface-subtle py-12">
                   No employees in this category on this date
                 </p>
               ) : (
-                <div className="divide-y divide-gray-50">
+                <div className="divide-y divide-outline">
                   {filtered.map(({ employee, record, status }) => {
                     const cfg = statusConfig[status as keyof typeof statusConfig];
                     const isExt = record?.source === 'wfh_extension';
                     const isBio = record?.source === 'biometric';
                     return (
-                      <div key={employee.id} className="flex items-center gap-3 px-5 py-3 hover:bg-gray-50/40 transition-colors">
+                      <div key={employee.id} className="flex items-center gap-3 px-5 py-3 hover:bg-surface-2 transition-colors">
                         {/* Avatar */}
-                        <div className="w-9 h-9 rounded-full bg-primary-100 text-primary-600 flex items-center justify-center text-xs font-bold flex-shrink-0">
+                        <div className="w-9 h-9 rounded-full bg-brand-container text-on-brand-container flex items-center justify-center text-xs font-bold flex-shrink-0">
                           {employee.avatar || (employee.name ? employee.name.split(' ').map((p: string) => p[0]).filter(Boolean).join('').slice(0,2) : '?')}
                         </div>
                         {/* Name + meta */}
                         <div className="flex-1 min-w-0">
-                          <p className="text-sm font-semibold text-gray-800 truncate">{employee.name ?? '—'}</p>
-                          <p className="text-xs text-gray-400 truncate">{employee.employee_id ?? '—'}{employee.designation ? ` · ${employee.designation}` : ''}</p>
+                          <p className="text-sm font-semibold text-on-surface truncate">{employee.name ?? '—'}</p>
+                          <p className="text-xs text-on-surface-subtle truncate">{employee.employee_id ?? '—'}{employee.designation ? ` · ${employee.designation}` : ''}</p>
                         </div>
                         {/* Times + hours */}
                         <div className="hidden sm:flex flex-col items-end gap-0.5 flex-shrink-0 min-w-[120px]">
                           {record?.check_in ? (
                             <>
-                              <span className="text-[11px] text-gray-400">{record.check_in} → {record.check_out ?? 'Active'}</span>
-                              <span className="text-xs font-bold" style={{ color: '#15803d' }}>{fmtHours(record.total_hours)} worked</span>
+                              <span className="num-mono text-[11px] text-on-surface-subtle">{record.check_in} → {record.check_out ?? 'Active'}</span>
+                              <span className="num-mono text-xs font-bold text-success">{fmtHours(record.total_hours)} worked</span>
                             </>
                           ) : (
-                            <span className="text-xs text-gray-300">—</span>
+                            <span className="text-xs text-on-surface-subtle">—</span>
                           )}
                         </div>
                         {/* Source tag */}
                         <div className="hidden md:block flex-shrink-0">
                           {isExt && (
-                            <span className="text-[10px] font-bold px-1.5 py-0.5 rounded-full" style={{ background: 'rgba(238,39,112,0.08)', color: '#EE2770' }}>💻 Ext</span>
+                            <span className="text-[10px] font-bold px-1.5 py-0.5 rounded-full bg-accent/10 text-accent">💻 Ext</span>
                           )}
                           {isBio && (
-                            <span className="text-[10px] font-bold px-1.5 py-0.5 rounded-full" style={{ background: 'rgba(22,163,74,0.08)', color: '#15803d' }}>🔵 Bio</span>
+                            <span className="text-[10px] font-bold px-1.5 py-0.5 rounded-full bg-success-container text-success">🔵 Bio</span>
                           )}
                         </div>
                         {/* Status badge */}
-                        <span className={`text-xs px-2.5 py-1 rounded-full font-medium flex-shrink-0 ${cfg?.color ?? 'bg-gray-100 text-gray-500'}`}>
+                        <span className={`text-xs px-2.5 py-1 rounded-full font-medium flex-shrink-0 ${cfg?.color ?? 'bg-surface-2 text-on-surface-muted'}`}>
                           {status === 'no_record' ? 'No Record' : (cfg?.label ?? status)}
                         </span>
                       </div>
@@ -948,12 +946,12 @@ export default function Attendance() {
       {/* ── Session Detail Modal ────────────────────────────────────────────── */}
       {sessionModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 backdrop-blur-sm p-4">
-          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md overflow-hidden">
+          <div className="bg-surface rounded-2xl shadow-elev-3 w-full max-w-md overflow-hidden border border-outline">
             {/* Header */}
-            <div className="flex items-center justify-between px-6 py-4 border-b border-gray-100"
+            <div className="flex items-center justify-between px-6 py-4 border-b border-outline"
               style={{ background: 'linear-gradient(135deg,#192250 0%,#111737 100%)' }}>
               <div>
-                <p className="text-white font-bold text-sm">
+                <p className="font-display text-white font-bold text-sm tracking-tight">
                   {parseLocalDate(sessionModal.record.date).toLocaleDateString('en-IN', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' })}
                 </p>
                 <p className="text-white/50 text-xs mt-0.5">Session breakdown</p>
@@ -966,22 +964,22 @@ export default function Attendance() {
             <div className="p-5">
               {sessionModal.loading ? (
                 <div className="flex items-center justify-center py-10">
-                  <div className="w-6 h-6 border-4 border-primary-200 border-t-primary-500 rounded-full animate-spin" />
+                  <div className="w-6 h-6 border-4 border-brand/20 border-t-brand rounded-full animate-spin" />
                 </div>
               ) : sessionModal.error ? (
                 <div className="text-center py-8">
-                  <p className="text-sm text-red-500 bg-red-50 border border-red-100 rounded-xl px-4 py-3">{sessionModal.error}</p>
-                  <button onClick={() => handleOpenSessions(sessionModal.record)} className="mt-3 text-xs text-primary-600 hover:underline">Retry</button>
+                  <p className="text-sm text-danger bg-danger-container border border-danger/20 rounded-xl-2 px-4 py-3">{sessionModal.error}</p>
+                  <button onClick={() => handleOpenSessions(sessionModal.record)} className="mt-3 text-xs text-on-brand-container hover:underline">Retry</button>
                 </div>
               ) : sessionModal.sessions.length === 0 ? (
                 <div className="text-center py-8">
-                  <p className="text-sm text-gray-400">No session data — single clock-in/out record</p>
+                  <p className="text-sm text-on-surface-subtle">No session data — single clock-in/out record</p>
                   {sessionModal.record.check_in && (
-                    <div className="mt-4 p-3 bg-gray-50 rounded-xl text-sm">
-                      <span className="font-semibold text-gray-700">{sessionModal.record.check_in}</span>
-                      <span className="text-gray-400 mx-2">→</span>
-                      <span className="font-semibold text-gray-700">{sessionModal.record.check_out ?? 'Active'}</span>
-                      <span className="ml-3 font-bold" style={{ color: '#15803d' }}>{fmtHours(sessionModal.record.total_hours)}</span>
+                    <div className="mt-4 p-3 bg-surface-2 border border-outline rounded-xl-2 text-sm">
+                      <span className="num-mono font-semibold text-on-surface">{sessionModal.record.check_in}</span>
+                      <span className="text-on-surface-subtle mx-2">→</span>
+                      <span className="num-mono font-semibold text-on-surface">{sessionModal.record.check_out ?? 'Active'}</span>
+                      <span className="num-mono ml-3 font-bold text-success">{fmtHours(sessionModal.record.total_hours)}</span>
                     </div>
                   )}
                 </div>
@@ -1011,53 +1009,56 @@ export default function Attendance() {
                 return (
                   <div className="space-y-2">
                     {blocks.map((b, i) => (
-                      <div key={i} className={`flex items-center gap-3 p-3 rounded-xl ${b.type === 'work' ? 'border' : ''}`}
-                        style={b.type === 'work'
-                          ? { background: 'rgba(22,163,74,0.04)', borderColor: 'rgba(22,163,74,0.15)' }
-                          : { background: '#fffbeb' }}>
-                        <div className={`w-2 h-full min-h-[32px] rounded-full flex-shrink-0 self-stretch`}
-                          style={{ background: b.type === 'work' ? '#15803d' : '#d97706', width: '3px' }}/>
+                      <div key={i} className={`flex items-center gap-3 p-3 rounded-xl-2 border ${
+                        b.type === 'work'
+                          ? 'bg-success-container/40 border-success/20'
+                          : 'bg-warning-container border-warning/20'
+                      }`}>
+                        <div className={`min-h-[32px] rounded-full flex-shrink-0 self-stretch ${b.type === 'work' ? 'bg-success' : 'bg-warning'}`}
+                          style={{ width: '3px' }}/>
                         <div className="flex-1 min-w-0">
                           <div className="flex items-center gap-2">
-                            <span className="text-xs font-bold" style={{ color: b.type === 'work' ? '#15803d' : '#b45309' }}>
+                            <span className={`text-xs font-bold ${b.type === 'work' ? 'text-success' : 'text-warning'}`}>
                               {b.type === 'work' ? `Work Session ${blocks.filter((x,j) => x.type==='work'&&j<=i).length}` : 'Break'}
                             </span>
                             {b.type === 'work' && b.source === 'wfh_extension' && (
-                              <span className="text-[9px] font-bold px-1.5 py-0.5 rounded-full" style={{ background: 'rgba(238,39,112,0.1)', color: '#EE2770' }}>💻 ext</span>
+                              <span className="text-[9px] font-bold px-1.5 py-0.5 rounded-full bg-accent/10 text-accent">💻 ext</span>
                             )}
                             {b.type === 'work' && b.source === 'biometric' && (
-                              <span className="text-[9px] font-bold px-1.5 py-0.5 rounded-full" style={{ background: 'rgba(22,163,74,0.1)', color: '#15803d' }}>🔵 bio</span>
+                              <span className="text-[9px] font-bold px-1.5 py-0.5 rounded-full bg-success-container text-success">🔵 bio</span>
                             )}
                           </div>
-                          <p className="text-xs text-gray-500 mt-0.5">
+                          <p className="num-mono text-xs text-on-surface-muted mt-0.5">
                             {fmt12(b.from)} <span className="mx-1">→</span> {fmt12(b.to)}
                           </p>
                         </div>
-                        <span className="text-sm font-black flex-shrink-0" style={{ color: b.type === 'work' ? '#192250' : '#b45309' }}>
+                        <span className={`num-mono text-sm font-black flex-shrink-0 ${b.type === 'work' ? 'text-on-surface' : 'text-warning'}`}>
                           {fmtMins(b.minutes)}
                         </span>
                       </div>
                     ))}
 
                     {/* Summary row */}
-                    <div className="mt-3 pt-3 border-t border-gray-100 flex items-center justify-between">
+                    <div className="mt-3 pt-3 border-t border-outline flex items-center justify-between">
                       <div className="text-center flex-1">
-                        <p className="text-xs text-gray-400">Worked</p>
-                        <p className="text-lg font-black" style={{ color: '#15803d' }}>{fmtMins(totalWorked)}</p>
+                        <p className="text-xs text-on-surface-subtle">Worked</p>
+                        <p className="num-mono text-lg font-black text-success">{fmtMins(totalWorked)}</p>
                       </div>
-                      <div className="w-px h-10 bg-gray-100" />
+                      <div className="w-px h-10 bg-outline" />
                       <div className="text-center flex-1">
-                        <p className="text-xs text-gray-400">Break</p>
-                        <p className="text-lg font-black" style={{ color: totalBreak > 0 ? '#b45309' : '#d1d5db' }}>{totalBreak > 0 ? fmtMins(totalBreak) : '—'}</p>
+                        <p className="text-xs text-on-surface-subtle">Break</p>
+                        <p className={`num-mono text-lg font-black ${totalBreak > 0 ? 'text-warning' : 'text-on-surface-subtle'}`}>{totalBreak > 0 ? fmtMins(totalBreak) : '—'}</p>
                       </div>
-                      <div className="w-px h-10 bg-gray-100" />
+                      <div className="w-px h-10 bg-outline" />
                       <div className="text-center flex-1">
-                        <p className="text-xs text-gray-400">Active</p>
+                        <p className="text-xs text-on-surface-subtle">Active</p>
                         {(() => {
                           const totalActiveM = sessions.reduce((s, r) => s + Number(r.active_minutes || 0), 0);
                           const score = totalWorked > 0 ? Math.min(100, Math.round(totalActiveM / totalWorked * 100)) : null;
-                          const color = score === null ? '#d1d5db' : score >= 70 ? '#15803d' : score >= 40 ? '#d97706' : '#dc2626';
-                          return <p className="text-lg font-black" style={{ color }}>{score !== null ? `${score}%` : '—'}</p>;
+                          const tone = score === null
+                            ? 'text-on-surface-subtle'
+                            : score >= 70 ? 'text-success' : score >= 40 ? 'text-warning' : 'text-danger';
+                          return <p className={`num-mono text-lg font-black ${tone}`}>{score !== null ? `${score}%` : '—'}</p>;
                         })()}
                       </div>
                     </div>
