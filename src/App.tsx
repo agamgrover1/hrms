@@ -20,8 +20,7 @@ import ProjectHours from './pages/ProjectHours';
 import HoursApproval from './pages/HoursApproval';
 
 function landingFor(role: string): string {
-  if (role === 'employee') return '/my';
-  if (role === 'project_coordinator') return '/hours';
+  if (role === 'employee' || role === 'project_coordinator') return '/my';
   return '/';
 }
 
@@ -58,9 +57,9 @@ function AppRoutes() {
         <Route path="hours" element={<ProtectedRoute roles={['admin', 'hr_manager', 'project_coordinator']}><ProjectHours /></ProtectedRoute>} />
         <Route path="hours/approvals" element={<ProtectedRoute><HoursApproval /></ProtectedRoute>} />
 
-        {/* Employee routes */}
-        <Route path="my" element={<ProtectedRoute roles={['employee']}><MyPortal /></ProtectedRoute>} />
-        <Route path="my-team" element={<ProtectedRoute roles={['employee']}><MyTeam /></ProtectedRoute>} />
+        {/* Employee routes — project_coordinator is also an employee */}
+        <Route path="my" element={<ProtectedRoute roles={['employee', 'project_coordinator']}><MyPortal /></ProtectedRoute>} />
+        <Route path="my-team" element={<ProtectedRoute roles={['employee', 'project_coordinator']}><MyTeam /></ProtectedRoute>} />
       </Route>
 
       {/* Catch-all */}

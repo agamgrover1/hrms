@@ -100,16 +100,15 @@ function getNotifRoute(type: string, role: string): string {
     case 'hours_assigned':
     case 'hours_updated':
     case 'hours_removed':
-      // Employee receives → My Hours tab
-      // Project coordinator / HR receive only as side-effect → Hours page
-      return isHR || role === 'project_coordinator' ? '/hours' : '/my?tab=my-hours';
+    case 'hours_approved':
+    case 'hours_rejected':
+      // Personal events → recipient's own My Hours tab.
+      // HR/admin only get these as side-effects → master grid.
+      // (project_coordinator IS an employee — they go to /my for their own hours.)
+      return isHR ? '/hours' : '/my?tab=my-hours';
     case 'hours_logged':
       // Reviewer receives → Approvals queue
       return '/hours/approvals';
-    case 'hours_approved':
-    case 'hours_rejected':
-      // Employee receives → My Hours tab
-      return isHR || role === 'project_coordinator' ? '/hours' : '/my?tab=my-hours';
 
     // ── General ────────────────────────────────────────────────────────────────
     case 'info':

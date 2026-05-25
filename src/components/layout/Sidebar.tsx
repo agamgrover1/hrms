@@ -49,9 +49,11 @@ export default function Sidebar() {
   const isOnTeam = location.pathname === '/my-team';
   const isOnProjects = location.pathname.startsWith('/projects') || location.pathname.startsWith('/hours');
 
-  // Determine if this employee manages anyone (has direct reports)
+  // Determine if this employee/coord manages anyone (has direct reports)
+  // and whether they're listed as project_reporting on any active project.
   useEffect(() => {
-    if (!isEmployee || !user?.employee_id_ref) return;
+    const showPersonal = isEmployee || isCoord;
+    if (!showPersonal || !user?.employee_id_ref) return;
     api.getEmployees()
       .then(emps => {
         const emp = emps.find((e: any) => e.employee_id === user.employee_id_ref);
@@ -59,13 +61,12 @@ export default function Sidebar() {
         api.getTeamMembers(emp.id)
           .then((members: any[]) => setIsManager(members.length > 0))
           .catch(() => {});
-        // Is this employee a project reporting person on any active project?
         api.getProjects({ status: 'active' })
           .then((projs: any[]) => setIsProjectReviewer(projs.some(p => p.project_reporting_id === emp.id)))
           .catch(() => {});
       })
       .catch(() => {});
-  }, [user?.employee_id_ref, isEmployee]);
+  }, [user?.employee_id_ref, isEmployee, isCoord]);
 
   const navLinkClass = (isActive: boolean) =>
     `flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-all duration-150 group
@@ -159,7 +160,8 @@ export default function Sidebar() {
           </div>
         )}
 
-        {/* Approvals shortcut for employees who are project_reporting on some project */}
+        {/* Approvals shortcut for plain employees who are project_reporting on some project.
+            (Coordinators already have Approvals in their Project Mgmt group above.) */}
         {isEmployee && isProjectReviewer && (
           <NavLink to="/hours/approvals" end
             className={({ isActive }) => navLinkClass(isActive)}
@@ -173,8 +175,8 @@ export default function Sidebar() {
           </NavLink>
         )}
 
-        {/* Employee routes */}
-        {isEmployee && (
+        {/* Personal portal — employees AND project_coordinators (a position, not a desk job) */}
+        {(isEmployee || isCoord) && (
           <>
             {/* My Portal */}
             <NavLink to="/my" end
