@@ -1,42 +1,66 @@
 import { NavLink, useLocation } from 'react-router-dom';
 import {
-  LayoutDashboard, Users, Clock, Calendar, DollarSign, Target,
-  ChevronLeft, ChevronRight, UserCog, User, Settings, TrendingUp, ChevronDown, Wrench,
-  Briefcase, ClipboardCheck,
+  LayoutDashboard, Users, Clock3, CalendarDays, Wallet, Sparkles,
+  ChevronLeft, ChevronRight, UserCog, User, SlidersHorizontal, TrendingUp, Wrench,
+  Briefcase, ClipboardCheck, Layers, type LucideIcon,
 } from 'lucide-react';
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { useAuth } from '../../context/AuthContext';
 import { api } from '../../services/api';
 
-const adminNavItems = [
-  { to: '/', icon: LayoutDashboard, label: 'Dashboard' },
-  { to: '/employees', icon: Users, label: 'Employees' },
-  { to: '/attendance', icon: Clock, label: 'Attendance' },
-  { to: '/leave', icon: Calendar, label: 'Leave' },
-  { to: '/payroll', icon: DollarSign, label: 'Payroll' },
-  { to: '/performance', icon: Target, label: 'Performance' },
-  { to: '/users', icon: UserCog, label: 'User Management' },
-  { to: '/incentives', icon: TrendingUp, label: 'Finance' },
-  { to: '/asset-repairs', icon: Wrench, label: 'IT & Repairs' },
-  { to: '/config', icon: Settings, label: 'Configuration' },
-];
+type NavItem = { to: string; icon: LucideIcon; label: string; end?: boolean };
+type NavGroup = { id: string; label: string; items: NavItem[] };
 
-const projectNavItems = [
-  { to: '/projects', icon: Briefcase, label: 'Projects' },
-  { to: '/hours', icon: Clock, label: 'Project Hours' },
-  { to: '/hours/approvals', icon: ClipboardCheck, label: 'Approvals' },
-];
+const workspaceGroup: NavGroup = {
+  id: 'workspace',
+  label: 'Workspace',
+  items: [
+    { to: '/', icon: LayoutDashboard, label: 'Overview', end: true },
+    { to: '/employees', icon: Users, label: 'People' },
+    { to: '/attendance', icon: Clock3, label: 'Attendance' },
+    { to: '/leave', icon: CalendarDays, label: 'Time off' },
+  ],
+};
 
-// My Team sub-items for managers (employee role)
-const teamSubItems = [
-  { to: '/my-team', label: 'Leaves', icon: Calendar, search: '?tab=leaves' },
-  { to: '/my-team', label: 'Performance', icon: Target, search: '?tab=performance' },
-];
+const opsGroup: NavGroup = {
+  id: 'ops',
+  label: 'Operations',
+  items: [
+    { to: '/payroll', icon: Wallet, label: 'Payroll' },
+    { to: '/performance', icon: Sparkles, label: 'Performance' },
+    { to: '/incentives', icon: TrendingUp, label: 'Finance' },
+    { to: '/asset-repairs', icon: Wrench, label: 'IT & Repairs' },
+  ],
+};
+
+const projectGroup: NavGroup = {
+  id: 'projects',
+  label: 'Project Mgmt',
+  items: [
+    { to: '/projects', icon: Briefcase, label: 'Projects' },
+    { to: '/hours', icon: Layers, label: 'Hours grid' },
+    { to: '/hours/approvals', icon: ClipboardCheck, label: 'Approvals' },
+  ],
+};
+
+const settingsGroup: NavGroup = {
+  id: 'settings',
+  label: 'Settings',
+  items: [
+    { to: '/users', icon: UserCog, label: 'User mgmt' },
+    { to: '/config', icon: SlidersHorizontal, label: 'Configuration' },
+  ],
+};
+
+const ROLE_PILL: Record<string, { label: string; bg: string; color: string }> = {
+  admin:               { label: 'Admin',         bg: 'rgba(255,109,168,0.18)', color: '#ffd7e4' },
+  hr_manager:          { label: 'HR Manager',    bg: 'rgba(174,184,232,0.18)', color: '#dae0fa' },
+  project_coordinator: { label: 'Project Coord.', bg: 'rgba(103,232,249,0.16)', color: '#a5f3fc' },
+  employee:            { label: 'Employee',      bg: 'rgba(255,255,255,0.08)', color: 'rgba(255,255,255,0.7)' },
+};
 
 export default function Sidebar() {
   const [collapsed, setCollapsed] = useState(false);
-  const [teamOpen, setTeamOpen] = useState(true);
-  const [projectsOpen, setProjectsOpen] = useState(true);
   const [isManager, setIsManager] = useState(false);
   const [isProjectReviewer, setIsProjectReviewer] = useState(false);
   const { user } = useAuth();
@@ -46,11 +70,7 @@ export default function Sidebar() {
   const isEmployee = role === 'employee';
   const isCoord = role === 'project_coordinator';
   const isAdminLike = role === 'admin' || role === 'hr_manager';
-  const isOnTeam = location.pathname === '/my-team';
-  const isOnProjects = location.pathname.startsWith('/projects') || location.pathname.startsWith('/hours');
 
-  // Determine if this employee/coord manages anyone (has direct reports)
-  // and whether they're listed as project_reporting on any active project.
   useEffect(() => {
     const showPersonal = isEmployee || isCoord;
     if (!showPersonal || !user?.employee_id_ref) return;
@@ -68,24 +88,48 @@ export default function Sidebar() {
       .catch(() => {});
   }, [user?.employee_id_ref, isEmployee, isCoord]);
 
-  const navLinkClass = (isActive: boolean) =>
-    `flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-all duration-150 group
-    ${collapsed ? 'justify-center' : ''}
-    ${isActive ? 'text-white' : 'text-white/50 hover:text-white/80'}`;
+  // Build the set of groups visible to this role
+  const groups: NavGroup[] = [];
+  if (isAdminLike) {
+    groups.push(workspaceGroup, opsGroup, projectGroup, settingsGroup);
+  } else if (isCoord) {
+    // Coord sees Project Mgmt + their own personal nav (rendered below)
+    groups.push(projectGroup);
+  }
 
-  const navLinkStyle = (isActive: boolean) => isActive ? {
-    background: 'rgba(238,39,112,0.18)',
-    boxShadow: 'inset 3px 0 0 #EE2770',
-  } : {};
+  // Personal nav for employees + coordinators
+  const personalGroup: NavGroup | null = (isEmployee || isCoord) ? {
+    id: 'personal',
+    label: 'You',
+    items: [
+      { to: '/my', icon: User, label: 'My portal', end: true },
+      ...(isManager ? [{ to: '/my-team', icon: Users, label: 'My team' } as NavItem] : []),
+      ...(isEmployee && isProjectReviewer ? [{ to: '/hours/approvals', icon: ClipboardCheck, label: 'Approvals', end: true } as NavItem] : []),
+    ],
+  } : null;
+  if (personalGroup) groups.push(personalGroup);
+
+  const rolePill = ROLE_PILL[role] ?? ROLE_PILL.employee;
 
   return (
-    <div
-      className={`${collapsed ? 'w-16' : 'w-60'} transition-all duration-300 flex flex-col min-h-screen flex-shrink-0`}
-      style={{ background: 'linear-gradient(180deg, #192250 0%, #141c43 100%)' }}
+    <aside
+      className={`${collapsed ? 'w-[72px]' : 'w-64'} transition-all duration-300 flex flex-col min-h-screen flex-shrink-0 relative isolate`}
+      style={{
+        background: 'linear-gradient(180deg, #0d122b 0%, #141c43 45%, #192250 100%)',
+        borderRight: '1px solid rgba(255,255,255,0.06)',
+      }}
     >
+      {/* Subtle aurora glow at the top */}
+      <div
+        aria-hidden
+        className="absolute inset-x-0 top-0 h-48 pointer-events-none -z-10"
+        style={{
+          background: 'radial-gradient(circle at 30% 0%, rgba(238,39,112,0.18) 0%, transparent 55%), radial-gradient(circle at 80% 10%, rgba(174,184,232,0.12) 0%, transparent 50%)',
+        }}
+      />
+
       {/* Logo */}
-      <div className={`flex items-center px-3 py-3 ${collapsed ? 'justify-center' : ''}`}
-        style={{ borderBottom: '1px solid rgba(255,255,255,0.08)' }}>
+      <div className={`flex items-center px-4 pt-5 pb-4 ${collapsed ? 'justify-center px-2' : ''}`}>
         {collapsed ? (
           <img src="/favicon.png" alt="Digital Leap" className="w-9 h-9 object-contain flex-shrink-0" />
         ) : (
@@ -93,160 +137,107 @@ export default function Sidebar() {
         )}
       </div>
 
-      {/* Role badge */}
-      {!collapsed && (
-        <div className="px-4 py-2.5" style={{ borderBottom: '1px solid rgba(255,255,255,0.08)' }}>
-          <span className="text-xs font-semibold px-2.5 py-1 rounded-full"
-            style={{
-              background: role === 'admin' ? 'rgba(238,39,112,0.2)' : 'rgba(255,255,255,0.1)',
-              color: role === 'admin' ? '#ff75b0' : 'rgba(255,255,255,0.6)',
-            }}>
-            {role === 'hr_manager' ? 'HR Manager'
-              : role === 'project_coordinator' ? 'Project Coordinator'
-              : role.charAt(0).toUpperCase() + role.slice(1)}
+      {/* User card */}
+      {user && !collapsed && (
+        <div className="mx-3 mb-3 px-3 py-3 rounded-xl-2"
+          style={{ background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.07)' }}>
+          <div className="flex items-center gap-2.5 min-w-0">
+            <div className="w-9 h-9 rounded-full flex-shrink-0 flex items-center justify-center text-white text-sm font-bold"
+              style={{ background: 'linear-gradient(135deg, #EE2770 0%, #c01660 100%)', boxShadow: '0 4px 14px rgba(238,39,112,0.35)' }}>
+              {user.avatar || user.name?.split(' ').map(n => n[0]).join('').slice(0,2).toUpperCase()}
+            </div>
+            <div className="min-w-0 flex-1">
+              <p className="text-sm font-semibold text-white truncate font-display tracking-tight leading-tight">{user.name?.split(' ')[0]}</p>
+              <p className="text-[10px] uppercase tracking-[0.14em] text-white/45 truncate mt-0.5">{user.employee_id_ref || 'no id'}</p>
+            </div>
+          </div>
+          <span className="inline-flex items-center mt-2 px-2 py-0.5 rounded-full text-[10px] font-semibold tracking-wide"
+            style={{ background: rolePill.bg, color: rolePill.color }}>
+            {rolePill.label}
           </span>
+        </div>
+      )}
+      {user && collapsed && (
+        <div className="mb-2 flex items-center justify-center">
+          <div className="w-9 h-9 rounded-full flex items-center justify-center text-white text-sm font-bold"
+            style={{ background: 'linear-gradient(135deg, #EE2770 0%, #c01660 100%)' }}>
+            {user.avatar || user.name?.split(' ').map(n => n[0]).join('').slice(0,2).toUpperCase()}
+          </div>
         </div>
       )}
 
       {/* Nav */}
-      <nav className="flex-1 py-4 px-2 space-y-0.5 overflow-y-auto">
-
-        {/* Admin / HR routes (hidden for project_coordinator who only has Project Mgmt) */}
-        {isAdminLike && adminNavItems.map(({ to, icon: Icon, label }) => (
-          <NavLink key={to} to={to} end={to === '/'}
-            className={({ isActive }) => navLinkClass(isActive)}
-            style={({ isActive }) => navLinkStyle(isActive)}>
-            {({ isActive }) => (
-              <>
-                <Icon size={18} style={{ color: isActive ? '#EE2770' : undefined }} />
-                {!collapsed && <span>{label}</span>}
-              </>
-            )}
-          </NavLink>
+      <nav className="flex-1 px-2 py-2 overflow-y-auto space-y-3" style={{ scrollbarWidth: 'thin' }}>
+        {groups.map(group => (
+          <SidebarGroup key={group.id} group={group} collapsed={collapsed} pathname={location.pathname} />
         ))}
-
-        {/* Project Mgmt — shown for admin / hr_manager / project_coordinator */}
-        {(isAdminLike || isCoord) && (
-          <div className="pt-2">
-            <button
-              onClick={() => !collapsed && setProjectsOpen(v => !v)}
-              className={`flex items-center w-full px-3 py-2.5 rounded-lg text-sm font-medium transition-all
-                ${collapsed ? 'justify-center' : 'justify-between'}
-                ${isOnProjects ? 'text-white' : 'text-white/55 hover:text-white/85'}`}
-              style={isOnProjects ? { background: 'rgba(238,39,112,0.12)' } : {}}>
-              <div className="flex items-center gap-3">
-                <Briefcase size={18} style={{ color: isOnProjects ? '#EE2770' : undefined }} />
-                {!collapsed && <span>Project Mgmt</span>}
-              </div>
-              {!collapsed && (
-                <ChevronDown size={14}
-                  className={`transition-transform text-white/40 ${projectsOpen ? 'rotate-180' : ''}`} />
-              )}
-            </button>
-            {!collapsed && projectsOpen && (
-              <div className="mt-0.5 ml-3 pl-5 space-y-0.5"
-                style={{ borderLeft: '1px solid rgba(255,255,255,0.1)' }}>
-                {projectNavItems.map(({ to, icon: Icon, label }) => (
-                  <NavLink key={to} to={to} end={to === '/hours'}
-                    className={({ isActive }) =>
-                      `flex items-center gap-2.5 px-3 py-2 rounded-lg text-xs font-semibold transition-all
-                       ${isActive ? 'text-white' : 'text-white/45 hover:text-white/75'}`}
-                    style={({ isActive }) => isActive ? { background: 'rgba(238,39,112,0.15)', color: '#ff75b0' } : {}}>
-                    <Icon size={13} /> {label}
-                  </NavLink>
-                ))}
-              </div>
-            )}
-          </div>
-        )}
-
-        {/* Approvals shortcut for plain employees who are project_reporting on some project.
-            (Coordinators already have Approvals in their Project Mgmt group above.) */}
-        {isEmployee && isProjectReviewer && (
-          <NavLink to="/hours/approvals" end
-            className={({ isActive }) => navLinkClass(isActive)}
-            style={({ isActive }) => navLinkStyle(isActive)}>
-            {({ isActive }) => (
-              <>
-                <ClipboardCheck size={18} style={{ color: isActive ? '#EE2770' : undefined }} />
-                {!collapsed && <span>Hour Approvals</span>}
-              </>
-            )}
-          </NavLink>
-        )}
-
-        {/* Personal portal — employees AND project_coordinators (a position, not a desk job) */}
-        {(isEmployee || isCoord) && (
-          <>
-            {/* My Portal */}
-            <NavLink to="/my" end
-              className={({ isActive }) => navLinkClass(isActive)}
-              style={({ isActive }) => navLinkStyle(isActive)}>
-              {({ isActive }) => (
-                <>
-                  <User size={18} style={{ color: isActive ? '#EE2770' : undefined }} />
-                  {!collapsed && <span>My Portal</span>}
-                </>
-              )}
-            </NavLink>
-
-            {/* My Team — only shown if this employee manages others */}
-            {isManager && <div>
-              {/* Section header button */}
-              <button
-                onClick={() => !collapsed && setTeamOpen(v => !v)}
-                className={`flex items-center w-full px-3 py-2.5 rounded-lg text-sm font-medium transition-all
-                  ${collapsed ? 'justify-center' : 'justify-between'}
-                  ${isOnTeam ? 'text-white' : 'text-white/50 hover:text-white/80'}`}
-                style={isOnTeam ? { background: 'rgba(238,39,112,0.12)' } : {}}>
-                <div className="flex items-center gap-3">
-                  <Users size={18} style={{ color: isOnTeam ? '#EE2770' : undefined }} />
-                  {!collapsed && <span>My Team</span>}
-                </div>
-                {!collapsed && (
-                  <ChevronDown size={14}
-                    className={`transition-transform text-white/40 ${teamOpen ? 'rotate-180' : ''}`} />
-                )}
-              </button>
-
-              {/* Sub-items */}
-              {!collapsed && teamOpen && (
-                <div className="mt-0.5 ml-3 pl-5 space-y-0.5"
-                  style={{ borderLeft: '1px solid rgba(255,255,255,0.1)' }}>
-                  <NavLink to="/my-team"
-                    className={`flex items-center gap-2.5 px-3 py-2 rounded-lg text-xs font-semibold transition-all
-                      ${isOnTeam && !location.search ? 'text-white' : 'text-white/45 hover:text-white/75'}`}
-                    style={isOnTeam && !location.search ? { background: 'rgba(238,39,112,0.15)', color: '#ff75b0' } : {}}>
-                    <Users size={13} /> Overview
-                  </NavLink>
-                  <NavLink to="/my-team?tab=leaves"
-                    className={`flex items-center gap-2.5 px-3 py-2 rounded-lg text-xs font-semibold transition-all
-                      ${location.search === '?tab=leaves' ? 'text-white' : 'text-white/45 hover:text-white/75'}`}
-                    style={location.search === '?tab=leaves' ? { background: 'rgba(238,39,112,0.15)', color: '#ff75b0' } : {}}>
-                    <Calendar size={13} /> Leaves
-                  </NavLink>
-                  <NavLink to="/my-team?tab=performance"
-                    className={`flex items-center gap-2.5 px-3 py-2 rounded-lg text-xs font-semibold transition-all
-                      ${location.search === '?tab=performance'
-                        ? 'text-white' : 'text-white/45 hover:text-white/75'}`}
-                    style={location.search === '?tab=performance'
-                      ? { background: 'rgba(238,39,112,0.15)', color: '#ff75b0' } : {}}>
-                    <Target size={13} /> Performance
-                  </NavLink>
-                </div>
-              )}
-            </div>}
-          </>
-        )}
       </nav>
 
-      {/* Collapse toggle */}
-      <div className="px-2 pb-4 pt-3" style={{ borderTop: '1px solid rgba(255,255,255,0.08)' }}>
+      {/* Bottom: collapse + version */}
+      <div className="px-2 pb-4 pt-3" style={{ borderTop: '1px solid rgba(255,255,255,0.07)' }}>
         <button
           onClick={() => setCollapsed(!collapsed)}
-          className={`flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium text-white/40 hover:text-white/70 hover:bg-white/5 transition-all w-full ${collapsed ? 'justify-center' : ''}`}>
-          {collapsed ? <ChevronRight size={18} /> : <><ChevronLeft size={18} /><span>Collapse</span></>}
+          className={`flex items-center gap-3 px-3 py-2 rounded-xl text-xs font-medium text-white/40 hover:text-white/70 hover:bg-white/5 transition-all w-full ${collapsed ? 'justify-center' : ''}`}>
+          {collapsed ? <ChevronRight size={16} strokeWidth={1.75} /> : <><ChevronLeft size={16} strokeWidth={1.75} /><span>Collapse</span></>}
         </button>
+        {!collapsed && (
+          <p className="text-[10px] text-white/25 text-center mt-2 font-mono tracking-wider">DL · HRMS · v1.0</p>
+        )}
+      </div>
+    </aside>
+  );
+}
+
+function SidebarGroup({ group, collapsed, pathname }: { group: NavGroup; collapsed: boolean; pathname: string }) {
+  // Track the active item index for the morphing pill background
+  const containerRef = useRef<HTMLDivElement>(null);
+  const activeIndex = group.items.findIndex(item =>
+    item.end ? pathname === item.to : pathname.startsWith(item.to) && (item.to !== '/' || pathname === '/')
+  );
+
+  return (
+    <div ref={containerRef}>
+      {!collapsed && (
+        <p className="px-3 mb-1.5 text-[10px] font-bold uppercase tracking-[0.16em] text-white/35 font-display">
+          {group.label}
+        </p>
+      )}
+      <div className="space-y-0.5">
+        {group.items.map((item, i) => {
+          const Icon = item.icon;
+          const active = i === activeIndex;
+          return (
+            <NavLink
+              key={item.to}
+              to={item.to}
+              end={item.end}
+              className={`relative flex items-center gap-3 rounded-xl text-sm transition-all duration-200 group
+                ${collapsed ? 'justify-center px-2 py-2.5' : 'px-3 py-2'}
+                ${active
+                  ? 'text-white font-semibold'
+                  : 'text-white/60 hover:text-white hover:bg-white/[0.04] font-medium'}`}
+              style={active ? {
+                background: 'linear-gradient(90deg, rgba(238,39,112,0.22) 0%, rgba(238,39,112,0.06) 100%)',
+                boxShadow: 'inset 2px 0 0 #EE2770, 0 1px 0 rgba(255,255,255,0.04)',
+              } : {}}
+            >
+              <Icon
+                size={18}
+                strokeWidth={active ? 2 : 1.75}
+                className={`flex-shrink-0 transition-transform duration-200 ${active ? 'scale-110' : 'group-hover:scale-105'}`}
+                style={{ color: active ? '#ff75b0' : undefined }}
+              />
+              {!collapsed && (
+                <span className="font-display tracking-tight leading-none">
+                  {item.label}
+                </span>
+              )}
+              {active && !collapsed && (
+                <span className="ml-auto w-1.5 h-1.5 rounded-full bg-accent" style={{ background: '#EE2770', boxShadow: '0 0 8px #EE2770' }} />
+              )}
+            </NavLink>
+          );
+        })}
       </div>
     </div>
   );

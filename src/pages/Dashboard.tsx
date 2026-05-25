@@ -167,41 +167,101 @@ export default function Dashboard() {
     </div>
   );
 
+  const greeting = (() => {
+    const h = now.getHours();
+    return h < 12 ? 'Good morning' : h < 17 ? 'Good afternoon' : 'Good evening';
+  })();
+  const firstName = user?.name?.split(' ')[0] ?? 'there';
+  const ringCircumference = 2 * Math.PI * 48;
+  const ringOffset = ringCircumference * (1 - attendanceRate / 100);
+
   return (
     <div className="space-y-6">
-      {/* Greeting strip */}
-      <div className="flex flex-col sm:flex-row sm:items-end sm:justify-between gap-3">
-        <div>
-          <p className="text-xs font-semibold text-on-surface-muted uppercase tracking-[0.18em]">
-            {now.toLocaleDateString('en-IN', { weekday: 'long', day: 'numeric', month: 'long' })}
-          </p>
-          <h2 className="text-2xl sm:text-[28px] font-bold tracking-tight text-on-surface mt-1">
-            {(() => {
-              const h = now.getHours();
-              const greet = h < 12 ? 'Good morning' : h < 17 ? 'Good afternoon' : 'Good evening';
-              const first = user?.name?.split(' ')[0] ?? 'there';
-              return `${greet}, ${first}.`;
-            })()}
-          </h2>
-          <p className="text-sm text-on-surface-muted mt-1">
-            Here's what's happening across the team today.
-          </p>
-        </div>
-      </div>
+      {/* ── Hero band ───────────────────────────────────────────────────────── */}
+      <section className="relative aurora-bg grain-overlay rounded-xl-4 overflow-hidden text-white">
+        <div className="relative grid grid-cols-1 lg:grid-cols-[1.4fr_1fr] gap-6 p-6 sm:p-8">
+          {/* Left: greeting + lede */}
+          <div className="min-w-0">
+            <p className="text-[11px] font-semibold text-white/70 uppercase tracking-[0.22em]">
+              {now.toLocaleDateString('en-IN', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' })}
+            </p>
+            <h1 className="font-display text-3xl sm:text-4xl xl:text-5xl font-semibold leading-[1.05] tracking-tight mt-2">
+              {greeting},
+              <span className="block bg-gradient-to-r from-white via-white to-white/70 bg-clip-text text-transparent">
+                {firstName}.
+              </span>
+            </h1>
+            <p className="text-sm text-white/70 mt-3 max-w-md leading-relaxed">
+              {pendingLeaves.length > 0
+                ? `${pendingLeaves.length} leave request${pendingLeaves.length === 1 ? '' : 's'} waiting on you, and ${todayPresent} of ${activeEmployees} folks clocked in today.`
+                : `Everything's clear — ${todayPresent} of ${activeEmployees} folks are clocked in today.`}
+            </p>
+            {/* Quick actions */}
+            <div className="flex flex-wrap gap-2 mt-5">
+              <Link to="/attendance" className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-full text-xs font-semibold bg-white text-[#192250] hover:bg-white/90 transition-colors">
+                <UserCheck size={13} strokeWidth={2.25} /> Attendance
+              </Link>
+              <Link to="/leave" className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-full text-xs font-semibold bg-white/12 backdrop-blur-sm border border-white/15 text-white hover:bg-white/20 transition-colors">
+                <Calendar size={13} strokeWidth={2.25} /> Leaves
+              </Link>
+              <Link to="/employees" className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-full text-xs font-semibold bg-white/12 backdrop-blur-sm border border-white/15 text-white hover:bg-white/20 transition-colors">
+                <Users size={13} strokeWidth={2.25} /> People
+              </Link>
+              <Link to="/hours" className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-full text-xs font-semibold bg-white/12 backdrop-blur-sm border border-white/15 text-white hover:bg-white/20 transition-colors">
+                <ClockIcon size={13} strokeWidth={2.25} /> Project hours
+              </Link>
+            </div>
+          </div>
 
-      {/* KPI cards */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4">
-        {stats.map(({ label, value, sub, icon: Icon, iconBg, iconColor }) => (
-          <div key={label} className="group relative bg-surface rounded-xl-2 p-5 border border-outline shadow-elev-1 hover:shadow-elev-2 transition-shadow overflow-hidden">
-            <div className="absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-accent/30 to-transparent opacity-0 group-hover:opacity-100 transition-opacity" />
-            <div className="flex items-start justify-between gap-3">
-              <div className="min-w-0">
-                <p className="text-xs font-semibold text-on-surface-muted uppercase tracking-wider">{label}</p>
-                <p className="text-3xl font-bold tracking-tight text-on-surface mt-2 leading-none">{value}</p>
-                <p className="text-xs text-on-surface-subtle mt-2">{sub}</p>
+          {/* Right: attendance ring + key stats */}
+          <div className="flex items-center gap-6 lg:justify-end">
+            {/* Progress ring */}
+            <div className="relative w-32 h-32 sm:w-36 sm:h-36 flex-shrink-0">
+              <svg viewBox="0 0 120 120" className="w-full h-full -rotate-90">
+                <circle cx="60" cy="60" r="48" fill="none" strokeWidth="8" className="ring-track" />
+                <circle cx="60" cy="60" r="48" fill="none" strokeWidth="8"
+                  className="ring-value"
+                  strokeDasharray={ringCircumference}
+                  strokeDashoffset={ringOffset} />
+              </svg>
+              <div className="absolute inset-0 flex flex-col items-center justify-center">
+                <span className="num-mono text-3xl sm:text-4xl font-semibold leading-none">{attendanceRate}<span className="text-base text-white/55 ml-0.5">%</span></span>
+                <span className="text-[10px] font-semibold uppercase tracking-[0.18em] text-white/55 mt-1.5">Present today</span>
               </div>
-              <div className={`w-11 h-11 rounded-2xl ${iconBg} flex items-center justify-center flex-shrink-0`}>
-                <Icon size={20} className={iconColor} />
+            </div>
+            {/* Two side stats */}
+            <div className="space-y-3 flex-1 min-w-0">
+              <div className="rounded-xl-2 px-4 py-3 bg-white/8 border border-white/10 backdrop-blur-sm">
+                <p className="text-[10px] uppercase tracking-[0.16em] text-white/55 font-semibold">People</p>
+                <p className="num-mono text-2xl font-semibold mt-0.5 leading-none">{employees.length}</p>
+                <p className="text-[11px] text-white/55 mt-1">{activeEmployees} active</p>
+              </div>
+              <div className="rounded-xl-2 px-4 py-3 bg-white/8 border border-white/10 backdrop-blur-sm">
+                <p className="text-[10px] uppercase tracking-[0.16em] text-white/55 font-semibold">Net payroll</p>
+                <p className="num-mono text-2xl font-semibold mt-0.5 leading-none">{totalNetPay ? `₹${(totalNetPay / 100000).toFixed(1)}L` : '—'}</p>
+                <p className="text-[11px] text-white/55 mt-1">{currentMonthName} {currentYear}</p>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      {/* ── Bento KPI grid (asymmetric) ─────────────────────────────────────── */}
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+        {stats.map(({ label, value, sub, icon: Icon, iconBg, iconColor }, i) => (
+          <div key={label}
+            className={`group relative bg-surface rounded-xl-2 p-5 border border-outline shadow-elev-1 hover:shadow-elev-2 transition-all duration-300 overflow-hidden ${i === 0 ? 'col-span-2 lg:col-span-2' : ''}`}>
+            {/* Decorative accent corner */}
+            <div className={`absolute -top-8 -right-8 w-24 h-24 rounded-full opacity-30 group-hover:opacity-50 transition-opacity ${iconBg} blur-xl`} />
+
+            <div className="relative flex items-start justify-between gap-3">
+              <div className="min-w-0">
+                <p className="text-[10px] font-bold text-on-surface-muted uppercase tracking-[0.16em]">{label}</p>
+                <p className={`num-mono font-semibold text-on-surface mt-2 leading-none ${i === 0 ? 'text-5xl' : 'text-3xl'}`}>{value}</p>
+                <p className="text-xs text-on-surface-subtle mt-2.5">{sub}</p>
+              </div>
+              <div className={`w-11 h-11 rounded-2xl ${iconBg} flex items-center justify-center flex-shrink-0 shadow-elev-1`}>
+                <Icon size={20} className={iconColor} strokeWidth={1.75} />
               </div>
             </div>
           </div>
