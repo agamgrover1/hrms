@@ -2,12 +2,28 @@ import { useEffect, useState } from 'react';
 import {
   AreaChart, Area, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, PieChart, Pie, Cell
 } from 'recharts';
-import { Users, Calendar, DollarSign, TrendingUp, AlertCircle, CheckCircle2, UserCheck, Clock as ClockIcon } from 'lucide-react';
+import { Users, Calendar, DollarSign, TrendingUp, AlertCircle, CheckCircle2, UserCheck, Clock as ClockIcon, Wrench } from 'lucide-react';
 import { Link } from 'react-router-dom';
 import { api } from '../services/api';
 import { useAuth } from '../context/AuthContext';
 
-const COLORS = ['#5C4BDA', '#8269ff', '#a99bff', '#38bdf8', '#34d399', '#fb923c', '#f472b6'];
+// M3-friendly chart palette — vivid enough to read on both light and dark surfaces
+const COLORS = ['#7c5cff', '#a78bff', '#67e8f9', '#34d399', '#fbbf24', '#fb7185', '#f472b6'];
+const CHART_AXIS = '#94a3b8';
+const CHART_GRID = 'rgba(148, 163, 184, 0.18)';
+const CHART_BRAND = '#7c5cff';
+const CHART_ACCENT = '#EE2770';
+const CHART_DANGER = '#f87171';
+const CHART_TOOLTIP_BG = 'rgb(var(--surface-3))';
+const CHART_TOOLTIP_TEXT = 'rgb(var(--on-surface))';
+const CHART_TOOLTIP_STYLE = {
+  background: CHART_TOOLTIP_BG,
+  borderRadius: 12,
+  border: '1px solid rgb(var(--outline))',
+  boxShadow: 'var(--elev-3)',
+  color: CHART_TOOLTIP_TEXT,
+  fontSize: 12,
+} as const;
 const DAY_LABELS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 const MONTH_SHORT = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 const MONTH_FULL  = ['January','February','March','April','May','June','July','August','September','October','November','December'];
@@ -139,32 +155,53 @@ export default function Dashboard() {
   };
 
   const stats = [
-    { label: 'Total Employees', value: employees.length || '—', sub: `${activeEmployees} active`, icon: Users, iconBg: 'bg-primary-100', iconColor: 'text-primary-600' },
-    { label: "Today's Attendance", value: activeEmployees ? `${todayPresent}/${activeEmployees}` : '—', sub: activeEmployees ? `${attendanceRate}% attendance rate` : 'No employees', icon: UserCheck, iconBg: 'bg-green-100', iconColor: 'text-green-600' },
-    { label: 'Pending Leaves', value: pendingLeaves.length, sub: 'Awaiting approval', icon: Calendar, iconBg: 'bg-amber-100', iconColor: 'text-amber-600' },
-    { label: 'Monthly Payroll', value: totalNetPay ? `₹${(totalNetPay / 100000).toFixed(1)}L` : '—', sub: `${currentMonthName} ${currentYear} · Net`, icon: DollarSign, iconBg: 'bg-blue-100', iconColor: 'text-blue-600' },
+    { label: 'Total Employees', value: employees.length || '—', sub: `${activeEmployees} active`, icon: Users, iconBg: 'bg-brand-container', iconColor: 'text-on-brand-container' },
+    { label: "Today's Attendance", value: activeEmployees ? `${todayPresent}/${activeEmployees}` : '—', sub: activeEmployees ? `${attendanceRate}% attendance rate` : 'No employees', icon: UserCheck, iconBg: 'bg-success-container', iconColor: 'text-success' },
+    { label: 'Pending Leaves', value: pendingLeaves.length, sub: 'Awaiting approval', icon: Calendar, iconBg: 'bg-warning-container', iconColor: 'text-warning' },
+    { label: 'Monthly Payroll', value: totalNetPay ? `₹${(totalNetPay / 100000).toFixed(1)}L` : '—', sub: `${currentMonthName} ${currentYear} · Net`, icon: DollarSign, iconBg: 'bg-accent-container', iconColor: 'text-on-accent-container' },
   ];
 
   if (loading) return (
     <div className="flex items-center justify-center h-64">
-      <div className="w-8 h-8 border-4 border-primary-200 border-t-primary-500 rounded-full animate-spin" />
+      <div className="w-8 h-8 border-4 border-outline border-t-accent rounded-full animate-spin" />
     </div>
   );
 
   return (
     <div className="space-y-6">
+      {/* Greeting strip */}
+      <div className="flex flex-col sm:flex-row sm:items-end sm:justify-between gap-3">
+        <div>
+          <p className="text-xs font-semibold text-on-surface-muted uppercase tracking-[0.18em]">
+            {now.toLocaleDateString('en-IN', { weekday: 'long', day: 'numeric', month: 'long' })}
+          </p>
+          <h2 className="text-2xl sm:text-[28px] font-bold tracking-tight text-on-surface mt-1">
+            {(() => {
+              const h = now.getHours();
+              const greet = h < 12 ? 'Good morning' : h < 17 ? 'Good afternoon' : 'Good evening';
+              const first = user?.name?.split(' ')[0] ?? 'there';
+              return `${greet}, ${first}.`;
+            })()}
+          </h2>
+          <p className="text-sm text-on-surface-muted mt-1">
+            Here's what's happening across the team today.
+          </p>
+        </div>
+      </div>
+
       {/* KPI cards */}
       <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4">
         {stats.map(({ label, value, sub, icon: Icon, iconBg, iconColor }) => (
-          <div key={label} className="bg-white rounded-xl p-5 shadow-sm border border-gray-100">
-            <div className="flex items-start justify-between">
-              <div>
-                <p className="text-sm text-gray-500 font-medium">{label}</p>
-                <p className="text-2xl font-bold text-gray-900 mt-1">{value}</p>
-                <p className="text-xs text-gray-400 mt-0.5">{sub}</p>
+          <div key={label} className="group relative bg-surface rounded-xl-2 p-5 border border-outline shadow-elev-1 hover:shadow-elev-2 transition-shadow overflow-hidden">
+            <div className="absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-accent/30 to-transparent opacity-0 group-hover:opacity-100 transition-opacity" />
+            <div className="flex items-start justify-between gap-3">
+              <div className="min-w-0">
+                <p className="text-xs font-semibold text-on-surface-muted uppercase tracking-wider">{label}</p>
+                <p className="text-3xl font-bold tracking-tight text-on-surface mt-2 leading-none">{value}</p>
+                <p className="text-xs text-on-surface-subtle mt-2">{sub}</p>
               </div>
-              <div className={`w-10 h-10 rounded-lg ${iconBg} flex items-center justify-center`}>
-                <Icon size={18} className={iconColor} />
+              <div className={`w-11 h-11 rounded-2xl ${iconBg} flex items-center justify-center flex-shrink-0`}>
+                <Icon size={20} className={iconColor} />
               </div>
             </div>
           </div>
@@ -180,114 +217,114 @@ export default function Dashboard() {
         const unpaid = openTickets.reduce((s, t) => s + Number(t.final_cost ?? t.quoted_cost ?? 0), 0);
         if (openTickets.length === 0) return null;
         return (
-          <Link to="/asset-repairs" className="flex items-center gap-3 px-4 py-3 rounded-xl border border-amber-100 bg-amber-50 hover:bg-amber-100/50 transition-colors group">
-            <div className="w-10 h-10 rounded-xl bg-amber-100 flex items-center justify-center flex-shrink-0">
-              <span className="text-lg">🔧</span>
+          <Link to="/asset-repairs" className="flex items-center gap-3 px-4 py-3 rounded-xl-2 border border-warning/20 bg-warning-container/60 hover:bg-warning-container transition-colors group">
+            <div className="w-10 h-10 rounded-2xl bg-warning/15 flex items-center justify-center flex-shrink-0">
+              <Wrench size={18} className="text-warning" />
             </div>
             <div className="flex-1 min-w-0 flex flex-wrap items-center gap-x-4 gap-y-1">
               {reported > 0 && (
-                <span className="text-sm text-amber-900"><strong className="font-bold">{reported}</strong> new</span>
+                <span className="text-sm text-on-surface"><strong className="font-bold">{reported}</strong> new</span>
               )}
               {inRepair > 0 && (
-                <span className="text-sm text-amber-900"><strong className="font-bold">{inRepair}</strong> in repair</span>
+                <span className="text-sm text-on-surface"><strong className="font-bold">{inRepair}</strong> in repair</span>
               )}
               {awaitingApproval > 0 && (
-                <span className="text-sm text-red-700"><strong className="font-bold">{awaitingApproval}</strong> need approval</span>
+                <span className="text-sm text-danger"><strong className="font-bold">{awaitingApproval}</strong> need approval</span>
               )}
               {unpaid > 0 && (
-                <span className="text-sm text-amber-900"><strong className="font-bold">₹{unpaid.toLocaleString('en-IN')}</strong> unpaid</span>
+                <span className="text-sm text-on-surface"><strong className="font-bold">₹{unpaid.toLocaleString('en-IN')}</strong> unpaid</span>
               )}
             </div>
-            <span className="text-xs font-semibold text-amber-700 group-hover:underline">View →</span>
+            <span className="text-xs font-semibold text-warning group-hover:underline">View →</span>
           </Link>
         );
       })()}
 
       {/* Project Hours summary tile */}
       {hoursSummary && (hoursSummary.total_allocated > 0 || hoursSummary.pending_review_count > 0) && (
-        <Link to="/hours" className="flex items-center gap-3 px-4 py-3 rounded-xl border border-indigo-100 bg-indigo-50/60 hover:bg-indigo-100/50 transition-colors group">
-          <div className="w-10 h-10 rounded-xl bg-indigo-100 flex items-center justify-center flex-shrink-0">
-            <ClockIcon size={18} className="text-indigo-700" />
+        <Link to="/hours" className="flex items-center gap-3 px-4 py-3 rounded-xl-2 border border-brand/15 bg-brand-container/50 hover:bg-brand-container transition-colors group">
+          <div className="w-10 h-10 rounded-2xl bg-brand/15 flex items-center justify-center flex-shrink-0">
+            <ClockIcon size={18} className="text-on-brand-container" />
           </div>
           <div className="flex-1 min-w-0 flex flex-wrap items-center gap-x-4 gap-y-1">
-            <span className="text-sm text-indigo-900">
+            <span className="text-sm text-on-surface">
               <strong className="font-bold">{Math.round(Number(hoursSummary.total_allocated))}h</strong> allocated · {currentMonthName}
             </span>
-            <span className="text-sm text-indigo-900">
+            <span className="text-sm text-on-surface">
               <strong className="font-bold">{Math.round(Number(hoursSummary.total_logged_approved))}h</strong> logged
             </span>
             {hoursSummary.pending_review_count > 0 && (
-              <span className="text-sm text-rose-700">
+              <span className="text-sm text-danger">
                 <strong className="font-bold">{hoursSummary.pending_review_count}</strong> pending review
               </span>
             )}
-            <span className="text-xs text-indigo-700">
+            <span className="text-xs text-on-surface-muted">
               {hoursSummary.employees?.length ?? 0} employees on plan
             </span>
           </div>
-          <span className="text-xs font-semibold text-indigo-700 group-hover:underline">View Hours →</span>
+          <span className="text-xs font-semibold text-on-brand-container group-hover:underline">View Hours →</span>
         </Link>
       )}
 
       {/* Attendance trend + Dept distribution */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-        <div className="lg:col-span-2 bg-white rounded-xl p-5 shadow-sm border border-gray-100">
+        <div className="lg:col-span-2 bg-surface rounded-xl-2 p-5 border border-outline shadow-elev-1">
           <div className="flex items-center justify-between mb-4">
             <div>
-              <h3 className="font-semibold text-gray-800">Attendance Trend</h3>
-              <p className="text-xs text-gray-400 mt-0.5">Last 7 working days</p>
+              <h3 className="font-semibold text-on-surface tracking-tight">Attendance Trend</h3>
+              <p className="text-xs text-on-surface-muted mt-0.5">Last 7 working days</p>
             </div>
             {weekChange !== null && (
-              <span className={`text-xs px-2.5 py-1 rounded-full font-medium flex items-center gap-1 ${weekChange >= 0 ? 'bg-green-50 text-green-600' : 'bg-red-50 text-red-500'}`}>
+              <span className={`text-xs px-2.5 py-1 rounded-full font-semibold flex items-center gap-1 ${weekChange >= 0 ? 'bg-success-container text-success' : 'bg-danger-container text-danger'}`}>
                 <TrendingUp size={11} /> {weekChange >= 0 ? '+' : ''}{weekChange}% this week
               </span>
             )}
           </div>
           {attendanceTrend.length === 0 ? (
-            <div className="flex items-center justify-center h-[200px] text-sm text-gray-400">No attendance data for this month yet</div>
+            <div className="flex items-center justify-center h-[200px] text-sm text-on-surface-muted">No attendance data for this month yet</div>
           ) : (
             <ResponsiveContainer width="100%" height={200}>
               <AreaChart data={attendanceTrend}>
                 <defs>
                   <linearGradient id="presentGrad" x1="0" y1="0" x2="0" y2="1">
-                    <stop offset="5%" stopColor="#5C4BDA" stopOpacity={0.15} />
-                    <stop offset="95%" stopColor="#5C4BDA" stopOpacity={0} />
+                    <stop offset="5%" stopColor={CHART_BRAND} stopOpacity={0.25} />
+                    <stop offset="95%" stopColor={CHART_BRAND} stopOpacity={0} />
                   </linearGradient>
                 </defs>
-                <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
-                <XAxis dataKey="day" tick={{ fontSize: 12, fill: '#9ca3af' }} axisLine={false} tickLine={false} />
-                <YAxis tick={{ fontSize: 12, fill: '#9ca3af' }} axisLine={false} tickLine={false} domain={[0, yMax]} allowDecimals={false} />
-                <Tooltip contentStyle={{ borderRadius: 8, border: 'none', boxShadow: '0 4px 20px rgba(0,0,0,0.1)' }} />
-                <Area type="monotone" dataKey="present" stroke="#5C4BDA" strokeWidth={2} fill="url(#presentGrad)" name="Present" />
-                <Area type="monotone" dataKey="absent" stroke="#f87171" strokeWidth={2} fill="none" strokeDasharray="4 2" name="Absent" />
+                <CartesianGrid strokeDasharray="3 3" stroke={CHART_GRID} />
+                <XAxis dataKey="day" tick={{ fontSize: 12, fill: CHART_AXIS }} axisLine={false} tickLine={false} />
+                <YAxis tick={{ fontSize: 12, fill: CHART_AXIS }} axisLine={false} tickLine={false} domain={[0, yMax]} allowDecimals={false} />
+                <Tooltip contentStyle={CHART_TOOLTIP_STYLE} itemStyle={{ color: CHART_TOOLTIP_TEXT }} labelStyle={{ color: CHART_TOOLTIP_TEXT }} />
+                <Area type="monotone" dataKey="present" stroke={CHART_BRAND} strokeWidth={2.5} fill="url(#presentGrad)" name="Present" />
+                <Area type="monotone" dataKey="absent" stroke={CHART_DANGER} strokeWidth={2} fill="none" strokeDasharray="4 3" name="Absent" />
               </AreaChart>
             </ResponsiveContainer>
           )}
         </div>
 
-        <div className="bg-white rounded-xl p-5 shadow-sm border border-gray-100">
-          <h3 className="font-semibold text-gray-800 mb-1">By Department</h3>
-          <p className="text-xs text-gray-400 mb-4">Headcount distribution</p>
+        <div className="bg-surface rounded-xl-2 p-5 border border-outline shadow-elev-1">
+          <h3 className="font-semibold text-on-surface tracking-tight mb-1">By Department</h3>
+          <p className="text-xs text-on-surface-muted mb-4">Headcount distribution</p>
           {deptData.length === 0 ? (
-            <div className="flex items-center justify-center h-[160px] text-sm text-gray-400">No employee data</div>
+            <div className="flex items-center justify-center h-[160px] text-sm text-on-surface-muted">No employee data</div>
           ) : (
             <>
               <ResponsiveContainer width="100%" height={160}>
                 <PieChart>
-                  <Pie data={deptData} cx="50%" cy="50%" innerRadius={45} outerRadius={75} dataKey="value" stroke="none">
+                  <Pie data={deptData} cx="50%" cy="50%" innerRadius={45} outerRadius={75} dataKey="value" stroke="none" paddingAngle={2}>
                     {deptData.map((_, i) => <Cell key={i} fill={COLORS[i % COLORS.length]} />)}
                   </Pie>
-                  <Tooltip contentStyle={{ borderRadius: 8, border: 'none', boxShadow: '0 4px 20px rgba(0,0,0,0.1)' }} />
+                  <Tooltip contentStyle={CHART_TOOLTIP_STYLE} itemStyle={{ color: CHART_TOOLTIP_TEXT }} labelStyle={{ color: CHART_TOOLTIP_TEXT }} />
                 </PieChart>
               </ResponsiveContainer>
               <div className="space-y-1.5 mt-2">
                 {deptData.slice(0, 5).map((d, i) => (
                   <div key={d.name} className="flex items-center justify-between text-xs">
-                    <div className="flex items-center gap-2">
+                    <div className="flex items-center gap-2 min-w-0">
                       <span className="w-2 h-2 rounded-full flex-shrink-0" style={{ background: COLORS[i % COLORS.length] }} />
-                      <span className="text-gray-500 truncate max-w-[100px]">{d.name}</span>
+                      <span className="text-on-surface-muted truncate">{d.name}</span>
                     </div>
-                    <span className="font-medium text-gray-700">{d.value}</span>
+                    <span className="font-semibold text-on-surface tabular-nums">{d.value}</span>
                   </div>
                 ))}
               </div>
@@ -298,50 +335,50 @@ export default function Dashboard() {
 
       {/* Headcount growth + Pending leaves + Recent activity */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-        <div className="bg-white rounded-xl p-5 shadow-sm border border-gray-100">
-          <h3 className="font-semibold text-gray-800 mb-1">Headcount Growth</h3>
-          <p className="text-xs text-gray-400 mb-4">{headcountSubtitle}</p>
+        <div className="bg-surface rounded-xl-2 p-5 border border-outline shadow-elev-1">
+          <h3 className="font-semibold text-on-surface tracking-tight mb-1">Headcount Growth</h3>
+          <p className="text-xs text-on-surface-muted mb-4">{headcountSubtitle}</p>
           <ResponsiveContainer width="100%" height={140}>
-            <BarChart data={headcountMonths} barSize={20}>
-              <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" vertical={false} />
-              <XAxis dataKey="month" tick={{ fontSize: 11, fill: '#9ca3af' }} axisLine={false} tickLine={false} />
-              <YAxis tick={{ fontSize: 11, fill: '#9ca3af' }} axisLine={false} tickLine={false} domain={[0, yMax]} allowDecimals={false} />
-              <Tooltip contentStyle={{ borderRadius: 8, border: 'none', boxShadow: '0 4px 20px rgba(0,0,0,0.1)' }} />
-              <Bar dataKey="count" fill="#5C4BDA" radius={[4, 4, 0, 0]} name="Headcount" />
+            <BarChart data={headcountMonths} barSize={22}>
+              <CartesianGrid strokeDasharray="3 3" stroke={CHART_GRID} vertical={false} />
+              <XAxis dataKey="month" tick={{ fontSize: 11, fill: CHART_AXIS }} axisLine={false} tickLine={false} />
+              <YAxis tick={{ fontSize: 11, fill: CHART_AXIS }} axisLine={false} tickLine={false} domain={[0, yMax]} allowDecimals={false} />
+              <Tooltip cursor={{ fill: CHART_GRID }} contentStyle={CHART_TOOLTIP_STYLE} itemStyle={{ color: CHART_TOOLTIP_TEXT }} labelStyle={{ color: CHART_TOOLTIP_TEXT }} />
+              <Bar dataKey="count" fill={CHART_BRAND} radius={[6, 6, 0, 0]} name="Headcount" />
             </BarChart>
           </ResponsiveContainer>
         </div>
 
-        <div className="bg-white rounded-xl p-5 shadow-sm border border-gray-100">
+        <div className="bg-surface rounded-xl-2 p-5 border border-outline shadow-elev-1">
           <div className="flex items-center justify-between mb-4">
-            <h3 className="font-semibold text-gray-800">Pending Leaves</h3>
-            <span className="text-xs bg-amber-50 text-amber-600 px-2 py-0.5 rounded-full font-medium">{pendingLeaves.length} pending</span>
+            <h3 className="font-semibold text-on-surface tracking-tight">Pending Leaves</h3>
+            <span className="text-xs bg-warning-container text-warning px-2.5 py-0.5 rounded-full font-semibold">{pendingLeaves.length} pending</span>
           </div>
           <div className="space-y-3">
             {pendingLeaves.slice(0, 3).map((l: any) => {
               const busy = approvingLeave[l.id];
               return (
-                <div key={l.id} className="flex items-center justify-between">
-                  <div className="flex items-center gap-2.5">
-                    <div className="w-7 h-7 rounded-full bg-primary-100 flex items-center justify-center text-primary-600 text-xs font-semibold flex-shrink-0">
+                <div key={l.id} className="flex items-center justify-between gap-2">
+                  <div className="flex items-center gap-2.5 min-w-0">
+                    <div className="w-8 h-8 rounded-full bg-brand-container flex items-center justify-center text-on-brand-container text-xs font-bold flex-shrink-0">
                       {(l.employee_name ?? '?').split(' ').map((n: string) => n[0]).join('').slice(0, 2)}
                     </div>
-                    <div>
-                      <p className="text-sm font-medium text-gray-800">{(l.employee_name ?? 'Employee').split(' ')[0]}</p>
-                      <p className="text-xs text-gray-400 capitalize">{(l.type ?? '').replace(/_/g, ' ')} · {l.days}d</p>
+                    <div className="min-w-0">
+                      <p className="text-sm font-semibold text-on-surface truncate">{(l.employee_name ?? 'Employee').split(' ')[0]}</p>
+                      <p className="text-xs text-on-surface-muted capitalize truncate">{(l.type ?? '').replace(/_/g, ' ')} · {l.days}d</p>
                     </div>
                   </div>
-                  <div className="flex gap-1.5">
+                  <div className="flex gap-1.5 flex-shrink-0">
                     <button
                       disabled={busy}
                       onClick={() => handleLeaveAction(l.id, 'approved')}
-                      className="px-2.5 py-1 text-xs bg-green-50 text-green-600 rounded-md hover:bg-green-100 transition-colors font-medium disabled:opacity-50">
+                      className="px-2.5 py-1 text-xs bg-success-container text-success rounded-md hover:opacity-80 transition-opacity font-semibold disabled:opacity-50">
                       {busy ? '…' : 'Approve'}
                     </button>
                     <button
                       disabled={busy}
                       onClick={() => handleLeaveAction(l.id, 'rejected')}
-                      className="px-2.5 py-1 text-xs bg-red-50 text-red-500 rounded-md hover:bg-red-100 transition-colors font-medium disabled:opacity-50">
+                      className="px-2.5 py-1 text-xs bg-danger-container text-danger rounded-md hover:opacity-80 transition-opacity font-semibold disabled:opacity-50">
                       Reject
                     </button>
                   </div>
@@ -349,26 +386,31 @@ export default function Dashboard() {
               );
             })}
             {pendingLeaves.length > 3 && (
-              <p className="text-xs text-center text-gray-400 pt-1">+{pendingLeaves.length - 3} more — see Leave Management</p>
+              <p className="text-xs text-center text-on-surface-muted pt-1">+{pendingLeaves.length - 3} more — see Leave Management</p>
             )}
-            {pendingLeaves.length === 0 && <p className="text-sm text-gray-400 text-center py-4">No pending requests</p>}
+            {pendingLeaves.length === 0 && (
+              <div className="flex flex-col items-center gap-1.5 py-4 text-on-surface-muted">
+                <CheckCircle2 size={20} className="text-success/60" />
+                <p className="text-sm">No pending requests</p>
+              </div>
+            )}
           </div>
         </div>
 
-        <div className="bg-white rounded-xl p-5 shadow-sm border border-gray-100">
-          <h3 className="font-semibold text-gray-800 mb-4">Recent Activity</h3>
+        <div className="bg-surface rounded-xl-2 p-5 border border-outline shadow-elev-1">
+          <h3 className="font-semibold text-on-surface tracking-tight mb-4">Recent Activity</h3>
           {recentActivity.length === 0 ? (
-            <p className="text-sm text-gray-400 text-center py-4">No recent activity</p>
+            <p className="text-sm text-on-surface-muted text-center py-4">No recent activity</p>
           ) : (
             <div className="space-y-3">
               {recentActivity.map((item, i) => (
                 <div key={i} className="flex gap-3">
-                  <div className="w-7 h-7 rounded-full bg-gray-100 flex items-center justify-center flex-shrink-0 mt-0.5">
-                    <item.icon size={13} className={item.color} />
+                  <div className="w-8 h-8 rounded-full bg-surface-2 flex items-center justify-center flex-shrink-0 mt-0.5">
+                    <item.icon size={14} className={item.color} />
                   </div>
-                  <div>
-                    <p className="text-sm text-gray-700">{item.text}</p>
-                    <p className="text-xs text-gray-400 mt-0.5">{item.time}</p>
+                  <div className="min-w-0">
+                    <p className="text-sm text-on-surface leading-snug">{item.text}</p>
+                    <p className="text-xs text-on-surface-muted mt-0.5">{item.time}</p>
                   </div>
                 </div>
               ))}

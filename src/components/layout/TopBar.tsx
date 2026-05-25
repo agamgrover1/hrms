@@ -3,6 +3,7 @@ import { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../../context/AuthContext';
 import { api } from '../../services/api';
+import ThemeToggle from '../ThemeToggle';
 
 // Map notification type + user role → destination route
 function getNotifRoute(type: string, role: string): string {
@@ -252,18 +253,21 @@ export default function TopBar({ title }: Props) {
 
   return (
     <>
-    <header className="h-16 bg-white border-b border-gray-100 flex items-center px-6 gap-4 sticky top-0 z-10 shadow-sm">
-      <h1 className="text-lg font-bold flex-shrink-0" style={{ color: '#192250' }}>{title}</h1>
+    <header className="h-16 bg-surface border-b border-outline flex items-center px-6 gap-4 sticky top-0 z-10 shadow-elev-1">
+      <h1 className="text-lg font-bold tracking-tight text-on-surface flex-shrink-0">{title}</h1>
 
-      <div className="ml-auto flex items-center gap-3">
+      <div className="ml-auto flex items-center gap-2">
+        {/* Theme toggle */}
+        <ThemeToggle />
+
         {/* Bell */}
         <div className="relative" ref={notifsRef}>
           <button
             onClick={handleBellClick}
-            className="relative p-2 rounded-lg hover:bg-gray-50 transition-colors"
+            className="relative p-2 rounded-full hover:bg-surface-2 transition-colors"
             title="Notifications"
           >
-            <Bell size={18} className={unread ? 'text-gray-700' : 'text-gray-400'} />
+            <Bell size={18} className={unread ? 'text-on-surface' : 'text-on-surface-muted'} />
             {unread > 0 && (
               <span className="absolute -top-0.5 -right-0.5 min-w-[18px] h-[18px] px-1 flex items-center justify-center rounded-full text-[10px] font-bold text-white"
                 style={{ background: '#EE2770' }}>
@@ -273,12 +277,12 @@ export default function TopBar({ title }: Props) {
           </button>
 
           {showNotifs && (
-            <div className="absolute right-0 top-full mt-2 w-80 bg-white rounded-2xl shadow-2xl border border-gray-100 z-30 overflow-hidden"
+            <div className="absolute right-0 top-full mt-2 w-80 bg-surface rounded-2xl shadow-elev-3 border border-outline z-30 overflow-hidden"
               style={{ maxHeight: '480px' }}>
               {/* Header */}
-              <div className="flex items-center justify-between px-4 py-3 border-b border-gray-100">
+              <div className="flex items-center justify-between px-4 py-3 border-b border-outline">
                 <div className="flex items-center gap-2">
-                  <p className="font-bold text-sm" style={{ color: '#192250' }}>Notifications</p>
+                  <p className="font-bold text-sm text-on-surface">Notifications</p>
                   {unread > 0 && (
                     <span className="text-xs font-bold px-2 py-0.5 rounded-full text-white" style={{ background: '#EE2770' }}>
                       {unread}
@@ -289,14 +293,12 @@ export default function TopBar({ title }: Props) {
                   <div className="flex items-center gap-2">
                     {unread > 0 && (
                       <button onClick={handleMarkAll}
-                        className="flex items-center gap-1 text-xs font-semibold hover:opacity-70 transition-opacity"
-                        style={{ color: '#192250' }}>
+                        className="flex items-center gap-1 text-xs font-semibold text-on-surface-muted hover:text-on-surface transition-colors">
                         <Check size={11} /> Mark all read
                       </button>
                     )}
                     <button onClick={handleClearAll}
-                      className="flex items-center gap-1 text-xs font-semibold hover:opacity-70 transition-opacity"
-                      style={{ color: '#dc2626' }}>
+                      className="flex items-center gap-1 text-xs font-semibold text-danger hover:opacity-70 transition-opacity">
                       <Trash2 size={11} /> Clear all
                     </button>
                   </div>
@@ -307,8 +309,8 @@ export default function TopBar({ title }: Props) {
               <div className="overflow-y-auto" style={{ maxHeight: '380px' }}>
                 {notifications.length === 0 ? (
                   <div className="flex flex-col items-center justify-center py-12 gap-2">
-                    <Bell size={28} className="text-gray-200" />
-                    <p className="text-sm text-gray-400">You're all caught up!</p>
+                    <Bell size={28} className="text-on-surface-subtle" />
+                    <p className="text-sm text-on-surface-muted">You're all caught up!</p>
                   </div>
                 ) : (
                   notifications.map(n => {
@@ -323,8 +325,8 @@ export default function TopBar({ title }: Props) {
                           setShowNotifs(false);
                           navigate(route);
                         }}
-                        className="flex items-start gap-3 px-4 py-3 border-b border-gray-50 cursor-pointer hover:bg-gray-50/70 transition-colors group"
-                        style={!n.is_read ? { background: 'rgba(238,39,112,0.03)' } : {}}
+                        className="flex items-start gap-3 px-4 py-3 border-b border-outline cursor-pointer hover:bg-surface-2 transition-colors group"
+                        style={!n.is_read ? { background: 'rgb(var(--accent) / 0.04)' } : {}}
                       >
                         {/* Icon bubble */}
                         <div className="w-9 h-9 rounded-xl flex items-center justify-center flex-shrink-0 mt-0.5"
@@ -334,26 +336,25 @@ export default function TopBar({ title }: Props) {
                         {/* Content */}
                         <div className="flex-1 min-w-0">
                           <div className="flex items-start justify-between gap-2">
-                            <p className="text-sm font-semibold leading-tight"
-                              style={{ color: n.is_read ? '#6b7280' : '#192250' }}>
+                            <p className={`text-sm font-semibold leading-tight ${n.is_read ? 'text-on-surface-muted' : 'text-on-surface'}`}>
                               {n.title}
                             </p>
                             <div className="flex items-center gap-1 flex-shrink-0 mt-0.5">
-                              <ChevronDown size={11} className="text-gray-300 -rotate-90 group-hover:text-gray-500 transition-colors" />
+                              <ChevronDown size={11} className="text-on-surface-subtle -rotate-90 group-hover:text-on-surface-muted transition-colors" />
                               <button onClick={e => handleDelete(e, n.id)}
-                                className="opacity-0 group-hover:opacity-100 text-gray-300 hover:text-red-400 transition-all">
+                                className="opacity-0 group-hover:opacity-100 text-on-surface-subtle hover:text-danger transition-all">
                                 <XCircle size={13} />
                               </button>
                             </div>
                           </div>
                           {n.body && (
-                            <p className="text-xs text-gray-500 mt-0.5 leading-relaxed line-clamp-2">{n.body}</p>
+                            <p className="text-xs text-on-surface-muted mt-0.5 leading-relaxed line-clamp-2">{n.body}</p>
                           )}
-                          <p className="text-[10px] text-gray-300 mt-1 font-medium">{timeAgo(n.created_at)}</p>
+                          <p className="text-[10px] text-on-surface-subtle mt-1 font-medium">{timeAgo(n.created_at)}</p>
                         </div>
                         {/* Unread dot */}
                         {!n.is_read && (
-                          <div className="w-2 h-2 rounded-full flex-shrink-0 mt-2" style={{ background: '#EE2770' }} />
+                          <div className="w-2 h-2 rounded-full flex-shrink-0 mt-2 bg-accent" />
                         )}
                       </div>
                     );
@@ -368,41 +369,42 @@ export default function TopBar({ title }: Props) {
         <div className="relative">
           <button
             onClick={() => { setShowMenu(!showMenu); setShowNotifs(false); }}
-            className="flex items-center gap-2.5 pl-3 pr-2 py-1.5 rounded-lg hover:bg-gray-50 transition-colors border border-gray-100"
+            className="flex items-center gap-2.5 pl-3 pr-2 py-1.5 rounded-full hover:bg-surface-2 transition-colors border border-outline"
           >
-            <div className="w-7 h-7 rounded-full flex items-center justify-center text-white text-xs font-bold"
-              style={{ background: '#192250' }}>
+            <div className="w-7 h-7 rounded-full flex items-center justify-center text-on-brand text-xs font-bold bg-brand">
               {user?.avatar}
             </div>
             <div className="text-left hidden sm:block">
-              <p className="text-sm font-semibold leading-tight" style={{ color: '#192250' }}>
+              <p className="text-sm font-semibold leading-tight text-on-surface">
                 {user?.name.split(' ')[0]}
               </p>
-              <p className="text-xs text-gray-400">
-                {user?.role === 'hr_manager' ? 'HR Manager' : user?.role === 'admin' ? 'Admin' : 'Employee'}
+              <p className="text-xs text-on-surface-muted">
+                {user?.role === 'hr_manager' ? 'HR Manager'
+                  : user?.role === 'admin' ? 'Admin'
+                  : user?.role === 'project_coordinator' ? 'Project Coord.'
+                  : 'Employee'}
               </p>
             </div>
-            <ChevronDown size={14} className="text-gray-400" />
+            <ChevronDown size={14} className="text-on-surface-muted" />
           </button>
 
           {showMenu && (
             <>
               <div className="fixed inset-0 z-10" onClick={() => setShowMenu(false)} />
-              <div className="absolute right-0 top-full mt-2 bg-white border border-gray-100 rounded-xl shadow-lg py-2 w-48 z-20">
-                <div className="px-4 py-2 border-b border-gray-50">
-                  <p className="text-sm font-semibold" style={{ color: '#192250' }}>{user?.name}</p>
-                  <p className="text-xs text-gray-400">{user?.email}</p>
+              <div className="absolute right-0 top-full mt-2 bg-surface border border-outline rounded-2xl shadow-elev-3 py-2 w-52 z-20">
+                <div className="px-4 py-2 border-b border-outline">
+                  <p className="text-sm font-semibold text-on-surface">{user?.name}</p>
+                  <p className="text-xs text-on-surface-muted truncate">{user?.email}</p>
                 </div>
                 <button
                   onClick={() => { setShowMenu(false); setPwForm({ current: '', next: '', confirm: '' }); setPwError(''); setPwSuccess(false); setShowChangePw(true); }}
-                  className="w-full flex items-center gap-2.5 px-4 py-2.5 text-sm hover:bg-gray-50 transition-colors mt-1 text-gray-700"
+                  className="w-full flex items-center gap-2.5 px-4 py-2.5 text-sm hover:bg-surface-2 transition-colors mt-1 text-on-surface"
                 >
-                  <KeyRound size={15} className="text-gray-400" /> Change Password
+                  <KeyRound size={15} className="text-on-surface-muted" /> Change Password
                 </button>
                 <button
                   onClick={logout}
-                  className="w-full flex items-center gap-2.5 px-4 py-2.5 text-sm hover:bg-red-50 transition-colors"
-                  style={{ color: '#EE2770' }}
+                  className="w-full flex items-center gap-2.5 px-4 py-2.5 text-sm hover:bg-accent-container transition-colors text-accent"
                 >
                   <LogOut size={15} /> Sign Out
                 </button>

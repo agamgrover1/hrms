@@ -31,7 +31,7 @@ export default function Layout() {
   const title = getTitle(location.pathname);
 
   return (
-    <div className="flex min-h-screen bg-gray-50">
+    <div className="flex min-h-screen bg-bg">
       <Sidebar />
       <div className="flex-1 flex flex-col min-w-0">
         <TopBar title={title} />

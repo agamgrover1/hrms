@@ -1,36 +1,170 @@
-@import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@300;400;500;600;700&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&family=DM+Sans:wght@400;500;600;700&display=swap');
 
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
 
-* {
-  box-sizing: border-box;
+/* ═══════════════════════════════════════════════════════════════════════════
+   Material 3 inspired design tokens — Digital Leap edition
+   Each token is a SPACE-SEPARATED RGB triplet so Tailwind's `<alpha-value>`
+   syntax (`rgb(var(--surface) / 0.5)`) works in both light and dark modes.
+   ═══════════════════════════════════════════════════════════════════════════ */
+:root {
+  /* ── Brand seeds (unchanged in both modes) ─────────────────────────────── */
+  --brand-navy: 25 34 80;
+  --brand-pink: 238 39 112;
+
+  /* ── Light theme ───────────────────────────────────────────────────────── */
+  --bg:                 248 249 252;   /* page canvas — slightly cooler than white */
+  --surface:            255 255 255;   /* card */
+  --surface-2:          250 251 254;   /* slightly raised, e.g. nested card */
+  --surface-3:          243 245 250;   /* elevated panel / popover */
+  --on-surface:         15 23 42;      /* primary text */
+  --on-surface-muted:   100 116 139;   /* secondary text */
+  --on-surface-subtle:  148 163 184;   /* tertiary text */
+
+  --primary:            25 34 80;
+  --on-primary:         255 255 255;
+  --primary-container:  232 234 248;
+  --on-primary-container: 25 34 80;
+
+  --accent:             238 39 112;
+  --on-accent:          255 255 255;
+  --accent-container:   253 234 240;
+  --on-accent-container: 159 21 75;
+
+  --success:            34 134 79;
+  --success-container:  214 240 222;
+  --warning:            217 119 6;
+  --warning-container:  254 243 199;
+  --error:              220 38 38;
+  --error-container:    254 226 226;
+
+  --outline:            226 232 240;
+  --outline-strong:     203 213 225;
+
+  /* Material 3 elevation system — uses subtle shadow + surface tint */
+  --shadow-rgb:         15 23 42;
+  --elev-1: 0 1px 2px 0 rgb(var(--shadow-rgb) / 0.04), 0 1px 1px 0 rgb(var(--shadow-rgb) / 0.04);
+  --elev-2: 0 2px 4px -1px rgb(var(--shadow-rgb) / 0.06), 0 1px 2px 0 rgb(var(--shadow-rgb) / 0.04);
+  --elev-3: 0 8px 16px -4px rgb(var(--shadow-rgb) / 0.08), 0 4px 8px -2px rgb(var(--shadow-rgb) / 0.05);
+  --elev-4: 0 16px 32px -8px rgb(var(--shadow-rgb) / 0.12), 0 8px 16px -4px rgb(var(--shadow-rgb) / 0.06);
+}
+
+[data-theme='dark'] {
+  --bg:                 11 14 26;
+  --surface:            22 26 44;
+  --surface-2:          30 35 56;
+  --surface-3:          40 47 70;
+  --on-surface:         244 246 252;
+  --on-surface-muted:   161 174 198;
+  --on-surface-subtle:  112 124 148;
+
+  --primary:            174 184 232;   /* lighter navy — readable on dark */
+  --on-primary:         16 22 56;
+  --primary-container:  37 49 100;
+  --on-primary-container: 218 224 250;
+
+  --accent:             255 109 168;   /* lighter pink */
+  --on-accent:          78 8 40;
+  --accent-container:   132 27 78;
+  --on-accent-container: 255 215 228;
+
+  --success:            74 192 138;
+  --success-container:  10 71 44;
+  --warning:            252 175 76;
+  --warning-container:  78 49 4;
+  --error:              251 113 113;
+  --error-container:    87 17 17;
+
+  --outline:            56 61 84;
+  --outline-strong:     78 84 110;
+
+  --shadow-rgb:         0 0 0;
+  --elev-1: 0 1px 2px 0 rgb(0 0 0 / 0.30);
+  --elev-2: 0 2px 4px -1px rgb(0 0 0 / 0.40), 0 1px 2px 0 rgb(0 0 0 / 0.30);
+  --elev-3: 0 8px 16px -4px rgb(0 0 0 / 0.50), 0 4px 8px -2px rgb(0 0 0 / 0.30);
+  --elev-4: 0 16px 32px -8px rgb(0 0 0 / 0.60), 0 8px 16px -4px rgb(0 0 0 / 0.40);
+}
+
+/* ─────────────────────────────────────────────────────────────────────────── */
+* { box-sizing: border-box; }
+
+html {
+  /* tabular numerals for tables, slashed-zero for code/IDs */
+  font-feature-settings: 'cv02','cv03','cv04','cv11';
 }
 
 body {
   margin: 0;
-  font-family: 'DM Sans', system-ui, sans-serif;
-  background-color: #f5f5f7;
-  color: #1a1a2e;
+  font-family: 'Inter', system-ui, -apple-system, sans-serif;
+  font-feature-settings: 'cv02','cv03','cv04','cv11';
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  background-color: rgb(var(--bg));
+  color: rgb(var(--on-surface));
+  transition: background-color 240ms ease, color 240ms ease;
 }
 
-#root {
-  width: 100%;
-  min-height: 100vh;
-}
+#root { width: 100%; min-height: 100vh; }
 
-::-webkit-scrollbar {
-  width: 6px;
-  height: 6px;
-}
-::-webkit-scrollbar-track {
-  background: #f1f1f1;
-}
+/* Custom scrollbar — themed */
+::-webkit-scrollbar { width: 8px; height: 8px; }
+::-webkit-scrollbar-track { background: transparent; }
 ::-webkit-scrollbar-thumb {
-  background: #c5c5d2;
-  border-radius: 3px;
+  background: rgb(var(--on-surface-subtle) / 0.3);
+  border-radius: 4px;
+  border: 2px solid transparent;
+  background-clip: content-box;
 }
-::-webkit-scrollbar-thumb:hover {
-  background: #5C4BDA;
+::-webkit-scrollbar-thumb:hover { background: rgb(var(--on-surface-subtle) / 0.6); background-clip: content-box; }
+
+/* Selection colour */
+::selection { background: rgb(var(--accent) / 0.25); color: rgb(var(--on-surface)); }
+
+/* Modern card utility — used by redesigned pages */
+.card-m3 {
+  background: rgb(var(--surface));
+  border: 1px solid rgb(var(--outline));
+  border-radius: 16px;
+  box-shadow: var(--elev-1);
 }
+.card-m3-elev {
+  background: rgb(var(--surface));
+  border-radius: 16px;
+  box-shadow: var(--elev-2);
+}
+
+/* M3-style button base */
+.btn-m3 {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  border-radius: 9999px;
+  padding: 10px 20px;
+  font-weight: 600;
+  font-size: 14px;
+  letter-spacing: 0.01em;
+  transition: all 180ms cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+/* Filled tonal — M3 signature */
+.btn-m3-tonal {
+  background: rgb(var(--primary-container));
+  color: rgb(var(--on-primary-container));
+}
+.btn-m3-tonal:hover { box-shadow: var(--elev-1); filter: brightness(0.96); }
+[data-theme='dark'] .btn-m3-tonal:hover { filter: brightness(1.1); }
+
+/* Filled accent */
+.btn-m3-filled {
+  background: rgb(var(--accent));
+  color: rgb(var(--on-accent));
+  box-shadow: var(--elev-1);
+}
+.btn-m3-filled:hover { box-shadow: var(--elev-2); transform: translateY(-1px); }
+
+/* Smooth theme switch */
+* { transition: background-color 200ms ease, border-color 200ms ease, color 150ms ease; }
+input, select, textarea, button { transition: none; }
