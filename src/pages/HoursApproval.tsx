@@ -107,38 +107,47 @@ export default function HoursApproval() {
     <div className="space-y-5">
       {/* Summary */}
       <div className="grid grid-cols-2 sm:grid-cols-3 gap-4">
-        <div className="bg-white rounded-xl p-4 border border-gray-100 shadow-sm">
-          <p className="text-2xl font-bold text-amber-600">{counts.pending}</p>
-          <p className="text-xs text-gray-500 mt-0.5">Pending</p>
+        <div className="group relative bg-surface rounded-xl-2 p-4 border border-outline shadow-elev-1 overflow-hidden animate-fade-up stagger-1">
+          <div className="absolute -top-8 -right-8 w-28 h-28 rounded-full bg-warning-container blur-2xl opacity-50" />
+          <div className="relative">
+            <p className="num-mono text-2xl font-bold text-warning">{counts.pending}</p>
+            <p className="text-xs text-on-surface-muted mt-0.5">Pending</p>
+          </div>
         </div>
-        <div className="bg-white rounded-xl p-4 border border-gray-100 shadow-sm">
-          <p className="text-2xl font-bold text-emerald-600">{counts.approved}</p>
-          <p className="text-xs text-gray-500 mt-0.5">Approved</p>
+        <div className="group relative bg-surface rounded-xl-2 p-4 border border-outline shadow-elev-1 overflow-hidden animate-fade-up stagger-2">
+          <div className="absolute -top-8 -right-8 w-28 h-28 rounded-full bg-success-container blur-2xl opacity-50" />
+          <div className="relative">
+            <p className="num-mono text-2xl font-bold text-success">{counts.approved}</p>
+            <p className="text-xs text-on-surface-muted mt-0.5">Approved</p>
+          </div>
         </div>
-        <div className="bg-white rounded-xl p-4 border border-gray-100 shadow-sm">
-          <p className="text-2xl font-bold text-rose-600">{counts.rejected}</p>
-          <p className="text-xs text-gray-500 mt-0.5">Rejected</p>
+        <div className="group relative bg-surface rounded-xl-2 p-4 border border-outline shadow-elev-1 overflow-hidden animate-fade-up stagger-3">
+          <div className="absolute -top-8 -right-8 w-28 h-28 rounded-full bg-danger-container blur-2xl opacity-50" />
+          <div className="relative">
+            <p className="num-mono text-2xl font-bold text-danger">{counts.rejected}</p>
+            <p className="text-xs text-on-surface-muted mt-0.5">Rejected</p>
+          </div>
         </div>
       </div>
 
       {/* Filters */}
       <div className="flex flex-wrap items-center gap-3">
-        <div className="inline-flex items-center gap-1.5 bg-white rounded-lg border border-gray-200 p-1">
+        <div className="inline-flex items-center gap-1.5 bg-surface rounded-lg border border-outline p-1">
           {(['pending','approved','rejected','all'] as const).map(s => (
             <button key={s} onClick={() => setFilterStatus(s)}
-              className={`px-3 py-1.5 rounded-md text-xs font-semibold capitalize ${filterStatus === s ? 'bg-primary-50 text-primary-700' : 'text-gray-500 hover:text-gray-700'}`}>
+              className={`px-3 py-1.5 rounded-md text-xs font-semibold capitalize ${filterStatus === s ? 'bg-accent text-on-accent' : 'text-on-surface-muted hover:text-on-surface'}`}>
               {s}
             </button>
           ))}
         </div>
         {isAdmin && (
-          <div className="inline-flex items-center gap-1.5 bg-white rounded-lg border border-gray-200 p-1">
+          <div className="inline-flex items-center gap-1.5 bg-surface rounded-lg border border-outline p-1">
             <button onClick={() => setScope('mine')}
-              className={`px-3 py-1.5 rounded-md text-xs font-semibold ${scope === 'mine' ? 'bg-primary-50 text-primary-700' : 'text-gray-500'}`}>
+              className={`px-3 py-1.5 rounded-md text-xs font-semibold ${scope === 'mine' ? 'bg-accent text-on-accent' : 'text-on-surface-muted hover:text-on-surface'}`}>
               <Filter size={11} className="inline mr-1" />My Reviews
             </button>
             <button onClick={() => setScope('all')}
-              className={`px-3 py-1.5 rounded-md text-xs font-semibold ${scope === 'all' ? 'bg-primary-50 text-primary-700' : 'text-gray-500'}`}>
+              className={`px-3 py-1.5 rounded-md text-xs font-semibold ${scope === 'all' ? 'bg-accent text-on-accent' : 'text-on-surface-muted hover:text-on-surface'}`}>
               All Projects
             </button>
           </div>
@@ -148,25 +157,26 @@ export default function HoursApproval() {
       {/* Groups */}
       <div className="space-y-4">
         {loading ? (
-          <div className="bg-white rounded-xl p-12 border border-gray-100 text-center text-gray-400">Loading logs…</div>
+          <div className="bg-surface rounded-xl-2 p-12 border border-outline text-center text-on-surface-subtle">Loading logs…</div>
         ) : Object.keys(grouped).length === 0 ? (
-          <div className="bg-white rounded-xl p-12 border border-gray-100 text-center">
-            <ClipboardCheck size={32} className="mx-auto text-gray-300 mb-2" />
-            <p className="text-sm text-gray-500">Nothing to review here.</p>
+          <div className="bg-surface rounded-xl-2 p-12 border border-outline text-center">
+            <ClipboardCheck size={32} className="mx-auto text-on-surface-subtle mb-2" />
+            <p className="text-sm text-on-surface-muted">Nothing to review here.</p>
           </div>
         ) : Object.entries(grouped).map(([key, group]) => {
           const sample = group[0];
           return (
-            <div key={key} className="bg-white rounded-xl border border-gray-100 shadow-sm overflow-hidden">
-              <div className="px-4 py-3 bg-gradient-to-r from-primary-50 to-white border-b border-gray-100 flex items-center justify-between">
+            <div key={key} className="relative bg-surface rounded-xl-3 border border-outline shadow-elev-2 overflow-hidden group hover:shadow-elev-3 transition-shadow">
+              <div className="absolute -top-8 -right-8 w-28 h-28 rounded-full bg-brand/15 blur-2xl opacity-0 group-hover:opacity-50 transition-opacity duration-500" />
+              <div className="relative px-4 py-3 bg-gradient-to-r from-brand-container/50 to-surface border-b border-outline flex items-center justify-between">
                 <div>
-                  <p className="font-semibold text-gray-900">{sample.project_name}{sample.project_client_name ? ` · ${sample.project_client_name}` : ''}</p>
-                  <p className="text-xs text-gray-500">{MONTHS[sample.month-1]} {sample.year} · Week {sample.week_num}</p>
+                  <p className="font-display text-xl font-bold tracking-tight text-on-surface">{sample.project_name}{sample.project_client_name ? ` · ${sample.project_client_name}` : ''}</p>
+                  <p className="text-xs text-on-surface-muted">{MONTHS[sample.month-1]} {sample.year} · Week {sample.week_num}</p>
                 </div>
-                <p className="text-xs text-gray-400">{group.length} {group.length === 1 ? 'entry' : 'entries'}</p>
+                <p className="text-xs text-on-surface-subtle">{group.length} {group.length === 1 ? 'entry' : 'entries'}</p>
               </div>
-              <table className="w-full text-sm">
-                <thead className="bg-gray-50 border-b border-gray-100 text-left text-xs font-semibold text-gray-500 uppercase">
+              <table className="relative w-full text-sm">
+                <thead className="bg-surface-2 border-b border-outline text-left text-xs font-semibold text-on-surface-muted uppercase">
                   <tr>
                     <th className="px-4 py-2">Employee</th>
                     <th className="px-4 py-2 text-right">Allocated</th>
@@ -176,30 +186,30 @@ export default function HoursApproval() {
                     <th className="px-4 py-2 text-right">Action</th>
                   </tr>
                 </thead>
-                <tbody className="divide-y divide-gray-100">
+                <tbody className="divide-y divide-outline">
                   {group.map(log => {
                     const alloc = weekAllocFor(log);
                     const delta = Number(log.hours_logged) - alloc;
                     const overAlloc = delta > 0;
                     return (
-                      <tr key={log.id}>
-                        <td className="px-4 py-3 font-medium text-gray-800">{log.employee_name}</td>
-                        <td className="px-4 py-3 text-right text-gray-600">{alloc}h</td>
+                      <tr key={log.id} className="hover:bg-surface-2 transition-colors">
+                        <td className="px-4 py-3 font-medium text-on-surface">{log.employee_name}</td>
+                        <td className="px-4 py-3 text-right text-on-surface-muted num-mono">{alloc}h</td>
                         <td className="px-4 py-3 text-right">
-                          <span className={`inline-flex items-center gap-1 font-semibold ${overAlloc ? 'text-rose-600' : 'text-gray-800'}`}>
+                          <span className={`num-mono inline-flex items-center gap-1 font-semibold ${overAlloc ? 'text-danger' : 'text-on-surface'}`}>
                             {log.hours_logged}h
                             {delta !== 0 && (
-                              <span className="text-[10px] font-normal text-gray-400">
-                                {overAlloc && <AlertTriangle size={10} className="inline text-rose-500 mr-0.5" />}
+                              <span className="text-[10px] font-normal text-on-surface-subtle">
+                                {overAlloc && <AlertTriangle size={10} className="inline text-danger mr-0.5" />}
                                 {overAlloc ? '+' : ''}{delta}
                               </span>
                             )}
                           </span>
                         </td>
-                        <td className="px-4 py-3 text-gray-600 text-xs max-w-md">
-                          {log.work_description || <span className="text-gray-300 italic">—</span>}
+                        <td className="px-4 py-3 text-on-surface-muted text-xs max-w-md">
+                          {log.work_description || <span className="text-on-surface-subtle italic">—</span>}
                           {log.status === 'rejected' && log.rejection_reason && (
-                            <p className="text-rose-600 mt-1 flex items-center gap-1">
+                            <p className="text-danger mt-1 flex items-center gap-1">
                               <XCircle size={11} /> {log.rejection_reason}
                             </p>
                           )}
@@ -211,16 +221,16 @@ export default function HoursApproval() {
                           {log.status === 'pending' ? (
                             <div className="inline-flex items-center gap-1">
                               <button onClick={() => approve(log)}
-                                className="px-2.5 py-1.5 rounded-md text-xs font-semibold text-white bg-emerald-600 hover:bg-emerald-700">
+                                className="px-2.5 py-1.5 rounded-md text-xs font-semibold text-white bg-success hover:bg-success/90 transition-colors">
                                 <CheckCircle size={12} className="inline mr-1" />Approve
                               </button>
                               <button onClick={() => setRejecting(log)}
-                                className="px-2.5 py-1.5 rounded-md text-xs font-semibold text-rose-600 border border-rose-200 hover:bg-rose-50">
+                                className="px-2.5 py-1.5 rounded-md text-xs font-semibold text-danger border border-danger/30 hover:bg-danger-container transition-colors">
                                 <XCircle size={12} className="inline mr-1" />Reject
                               </button>
                             </div>
                           ) : (
-                            <span className="text-xs text-gray-400">{log.reviewed_by_name || '—'}</span>
+                            <span className="text-xs text-on-surface-subtle">{log.reviewed_by_name || '—'}</span>
                           )}
                         </td>
                       </tr>
@@ -246,13 +256,12 @@ export default function HoursApproval() {
 
 function StatusPill({ status }: { status: string }) {
   const cfg = status === 'approved'
-    ? { label: 'Approved', bg: '#f0fdf4', color: '#15803d' }
+    ? { label: 'Approved', className: 'bg-success-container text-success' }
     : status === 'rejected'
-    ? { label: 'Rejected', bg: '#fef2f2', color: '#dc2626' }
-    : { label: 'Pending', bg: '#fffbeb', color: '#b45309' };
+    ? { label: 'Rejected', className: 'bg-danger-container text-danger' }
+    : { label: 'Pending', className: 'bg-warning-container text-warning' };
   return (
-    <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium"
-      style={{ background: cfg.bg, color: cfg.color }}>
+    <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium ${cfg.className}`}>
       {cfg.label}
     </span>
   );
@@ -261,29 +270,29 @@ function StatusPill({ status }: { status: string }) {
 function RejectModal({ log, onClose, onConfirm }: { log: HourLog; onClose: () => void; onConfirm: (reason: string) => void }) {
   const [reason, setReason] = useState('');
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 backdrop-blur-sm p-4">
-      <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md">
-        <div className="flex items-center justify-between px-6 py-5 border-b border-gray-100">
-          <h3 className="text-lg font-semibold text-gray-900">Reject hour log</h3>
-          <button onClick={onClose} className="p-1.5 hover:bg-gray-100 rounded-lg"><X size={16} className="text-gray-500" /></button>
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-bg/55 backdrop-blur-sm p-4">
+      <div className="bg-surface rounded-2xl shadow-elev-4 border border-outline w-full max-w-md">
+        <div className="flex items-center justify-between px-6 py-5 border-b border-outline">
+          <h3 className="font-display text-lg font-semibold text-on-surface">Reject hour log</h3>
+          <button onClick={onClose} className="p-1.5 hover:bg-surface-2 rounded-lg"><X size={16} className="text-on-surface-muted" /></button>
         </div>
         <div className="p-6 space-y-3">
-          <p className="text-sm text-gray-600">
-            Rejecting <span className="font-medium text-gray-900">{log.hours_logged}h</span> from{' '}
-            <span className="font-medium text-gray-900">{log.employee_name}</span> on{' '}
-            <span className="font-medium text-gray-900">{log.project_name}</span> (W{log.week_num}).
+          <p className="text-sm text-on-surface-muted">
+            Rejecting <span className="num-mono font-medium text-on-surface">{log.hours_logged}h</span> from{' '}
+            <span className="font-medium text-on-surface">{log.employee_name}</span> on{' '}
+            <span className="font-medium text-on-surface">{log.project_name}</span> (W{log.week_num}).
           </p>
           <div>
-            <label className="text-xs font-medium text-gray-500 mb-1.5 block">Reason *</label>
+            <label className="text-xs font-medium text-on-surface-muted mb-1.5 block">Reason *</label>
             <textarea value={reason} onChange={e => setReason(e.target.value)} rows={4}
               placeholder="Explain what's wrong so the employee can resubmit."
-              className="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-rose-200 resize-none" />
+              className="w-full bg-surface border border-outline rounded-lg px-3 py-2.5 text-sm text-on-surface focus:outline-none focus:ring-2 focus:ring-danger/30 resize-none" />
           </div>
         </div>
-        <div className="px-6 py-4 border-t border-gray-100 flex justify-end gap-2">
-          <button onClick={onClose} className="px-4 py-2 text-sm font-medium text-gray-600 hover:bg-gray-50 rounded-lg">Cancel</button>
+        <div className="px-6 py-4 border-t border-outline flex justify-end gap-2">
+          <button onClick={onClose} className="px-4 py-2 text-sm font-medium text-on-surface-muted hover:bg-surface-2 rounded-lg transition-colors">Cancel</button>
           <button onClick={() => reason.trim() && onConfirm(reason.trim())} disabled={!reason.trim()}
-            className="px-4 py-2 text-sm font-semibold text-white rounded-lg disabled:opacity-50 bg-rose-600 hover:bg-rose-700">
+            className="px-4 py-2 text-sm font-semibold text-white rounded-lg disabled:opacity-50 bg-danger hover:bg-danger/90 transition-colors">
             Confirm Reject
           </button>
         </div>

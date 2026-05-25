@@ -36,9 +36,9 @@ const FLAGS = [
 ];
 
 const STATUS_PILL: Record<string, { label: string; bg: string; color: string }> = {
-  active:   { label: 'Active',   bg: '#f0fdf4', color: '#15803d' },
-  on_hold:  { label: 'On Hold',  bg: '#fffbeb', color: '#b45309' },
-  archived: { label: 'Archived', bg: '#f3f4f6', color: '#6b7280' },
+  active:   { label: 'Active',   bg: 'rgb(var(--success-container))', color: 'rgb(var(--success))' },
+  on_hold:  { label: 'On Hold',  bg: 'rgb(var(--warning-container))', color: 'rgb(var(--warning))' },
+  archived: { label: 'Archived', bg: 'rgb(var(--surface-3))',         color: 'rgb(var(--on-surface-muted))' },
 };
 
 function typeLabel(v: string | null) {
@@ -98,19 +98,25 @@ export default function Projects() {
     load();
   };
 
+  const summaryTiles: Array<{ label: string; value: number; color: string; blob: string; stagger: string }> = [
+    { label: 'Active',   value: counts.active,   color: 'text-success',           blob: 'bg-brand/15',     stagger: 'stagger-1' },
+    { label: 'On Hold',  value: counts.on_hold,  color: 'text-warning',           blob: 'bg-warning/20',   stagger: 'stagger-2' },
+    { label: 'Archived', value: counts.archived, color: 'text-on-surface-muted',  blob: 'bg-surface-3',    stagger: 'stagger-3' },
+    { label: 'Flagged',  value: counts.flagged,  color: 'text-danger',            blob: 'bg-danger/15',    stagger: 'stagger-4' },
+  ];
+
   return (
     <div className="space-y-5">
       {/* Summary cards */}
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
-        {[
-          { label: 'Active', value: counts.active, color: 'text-emerald-600' },
-          { label: 'On Hold', value: counts.on_hold, color: 'text-amber-600' },
-          { label: 'Archived', value: counts.archived, color: 'text-gray-600' },
-          { label: 'Flagged', value: counts.flagged, color: 'text-rose-600' },
-        ].map(({ label, value, color }) => (
-          <div key={label} className="bg-white rounded-xl p-4 border border-gray-100 shadow-sm">
-            <p className={`text-2xl font-bold ${color}`}>{value}</p>
-            <p className="text-xs text-gray-400 mt-0.5">{label}</p>
+        {summaryTiles.map(({ label, value, color, blob, stagger }) => (
+          <div key={label}
+            className={`group relative bg-surface rounded-xl-2 p-4 border border-outline shadow-elev-1 hover:shadow-elev-2 transition-all duration-300 overflow-hidden animate-fade-up ${stagger}`}>
+            <div className={`absolute -top-8 -right-8 w-28 h-28 rounded-full ${blob} blur-2xl opacity-50 group-hover:opacity-80 transition-opacity duration-500`} />
+            <div className="relative">
+              <p className={`num-mono text-2xl font-bold ${color}`}>{value}</p>
+              <p className="text-xs text-on-surface-subtle mt-0.5">{label}</p>
+            </div>
           </div>
         ))}
       </div>
@@ -118,21 +124,21 @@ export default function Projects() {
       {/* Toolbar */}
       <div className="flex flex-wrap items-center gap-3">
         <div className="relative flex-1 min-w-48">
-          <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
+          <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-on-surface-subtle" />
           <input
             value={search}
             onChange={e => setSearch(e.target.value)}
             placeholder="Search project, client, reporting…"
-            className="w-full pl-9 pr-4 py-2.5 text-sm bg-white border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-200"
+            className="w-full pl-9 pr-4 py-2.5 text-sm bg-surface border border-outline rounded-lg text-on-surface placeholder:text-on-surface-subtle focus:outline-none focus:ring-2 focus:ring-accent/30"
           />
         </div>
         <select value={typeFilter} onChange={e => setTypeFilter(e.target.value)}
-          className="text-sm border border-gray-200 rounded-lg px-3 py-2.5 bg-white text-gray-700">
+          className="text-sm border border-outline rounded-lg px-3 py-2.5 bg-surface text-on-surface-muted focus:outline-none focus:ring-2 focus:ring-accent/30">
           <option value="">All Types</option>
           {PROJECT_TYPES.map(t => <option key={t.value} value={t.value}>{t.label}</option>)}
         </select>
         <select value={statusFilter} onChange={e => setStatusFilter(e.target.value)}
-          className="text-sm border border-gray-200 rounded-lg px-3 py-2.5 bg-white text-gray-700">
+          className="text-sm border border-outline rounded-lg px-3 py-2.5 bg-surface text-on-surface-muted focus:outline-none focus:ring-2 focus:ring-accent/30">
           <option value="active">Active</option>
           <option value="on_hold">On Hold</option>
           <option value="archived">Archived</option>
@@ -141,8 +147,7 @@ export default function Projects() {
         {canEdit && (
           <button
             onClick={() => { setEditing(null); setShowForm(true); }}
-            className="inline-flex items-center gap-2 px-4 py-2.5 rounded-lg text-sm font-semibold text-white"
-            style={{ background: '#EE2770' }}
+            className="inline-flex items-center gap-2 px-4 py-2.5 rounded-lg text-sm font-semibold bg-accent text-on-accent hover:opacity-90 shadow-elev-1 hover:shadow-elev-2 transition-all"
           >
             <Plus size={15} /> New Project
           </button>
@@ -150,10 +155,10 @@ export default function Projects() {
       </div>
 
       {/* Table */}
-      <div className="bg-white rounded-xl border border-gray-100 shadow-sm overflow-hidden">
+      <div className="bg-surface rounded-xl-2 border border-outline shadow-elev-1 overflow-hidden">
         <table className="w-full text-sm">
-          <thead className="bg-gray-50 border-b border-gray-100">
-            <tr className="text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">
+          <thead className="bg-surface-2 border-b border-outline">
+            <tr className="text-left text-xs font-semibold text-on-surface-muted uppercase tracking-wider">
               <th className="px-4 py-3">Project</th>
               <th className="px-4 py-3">Type</th>
               <th className="px-4 py-3">Reporting</th>
@@ -162,49 +167,52 @@ export default function Projects() {
               {canEdit && <th className="px-4 py-3 text-right">Actions</th>}
             </tr>
           </thead>
-          <tbody className="divide-y divide-gray-100">
+          <tbody className="divide-y divide-outline">
             {loading ? (
-              <tr><td colSpan={canEdit ? 6 : 5} className="px-4 py-8 text-center text-gray-400">Loading projects…</td></tr>
+              <tr><td colSpan={canEdit ? 6 : 5} className="px-4 py-8 text-center text-on-surface-subtle">Loading projects…</td></tr>
             ) : filtered.length === 0 ? (
               <tr><td colSpan={canEdit ? 6 : 5} className="px-4 py-12 text-center">
-                <Briefcase size={28} className="mx-auto text-gray-300 mb-2" />
-                <p className="text-sm text-gray-500">No projects match your filters.</p>
+                <Briefcase size={28} className="mx-auto text-on-surface-subtle mb-2" />
+                <p className="text-sm text-on-surface-muted">No projects match your filters.</p>
               </td></tr>
             ) : filtered.map(p => {
               const archived = p.status === 'archived';
-              const flagBg = p.flag === 'red' ? '#fef2f2' : p.flag === 'yellow' ? '#fffbeb' : 'transparent';
+              const flagClass = p.flag === 'red'
+                ? 'bg-danger-container/30 hover:bg-danger-container/40'
+                : p.flag === 'yellow'
+                ? 'bg-warning-container/30 hover:bg-warning-container/40'
+                : 'hover:bg-surface-2';
               const pill = STATUS_PILL[p.status] ?? STATUS_PILL.active;
               return (
-                <tr key={p.id} className={archived ? 'opacity-60' : ''} style={{ background: flagBg }}>
+                <tr key={p.id} className={`${flagClass} transition-colors ${archived ? 'opacity-60' : ''}`}>
                   <td className="px-4 py-3">
                     <div className="flex items-start gap-2">
                       {p.flag && (
                         <Flag size={14}
-                          className="mt-0.5"
-                          style={{ color: p.flag === 'red' ? '#dc2626' : '#d97706' }} />
+                          className={`mt-0.5 ${p.flag === 'red' ? 'text-danger' : 'text-warning'}`} />
                       )}
                       <div>
-                        <p className={`font-semibold text-gray-900 ${archived ? 'line-through' : ''}`}>{p.name}</p>
+                        <p className={`font-semibold text-on-surface ${archived ? 'line-through' : ''}`}>{p.name}</p>
                         <div className="flex flex-wrap items-center gap-2 mt-0.5">
-                          {p.client_name && <span className="text-xs text-gray-500">{p.client_name}</span>}
+                          {p.client_name && <span className="text-xs text-on-surface-muted">{p.client_name}</span>}
                           {p.dashboard_url && (
                             <a href={p.dashboard_url} target="_blank" rel="noopener noreferrer"
-                              className="inline-flex items-center gap-1 text-xs text-primary-600 hover:underline">
+                              className="inline-flex items-center gap-1 text-xs text-on-brand-container hover:underline">
                               Dashboard <ExternalLink size={10} />
                             </a>
                           )}
                         </div>
                         {p.flag_reason && (
-                          <p className="text-xs text-rose-700 mt-1 flex items-center gap-1">
+                          <p className="text-xs text-danger mt-1 flex items-center gap-1">
                             <AlertTriangle size={11} /> {p.flag_reason}
                           </p>
                         )}
                       </div>
                     </div>
                   </td>
-                  <td className="px-4 py-3 text-gray-600">{typeLabel(p.project_type)}</td>
-                  <td className="px-4 py-3 text-gray-600">{p.project_reporting_name ?? '—'}</td>
-                  <td className="px-4 py-3 text-gray-600">{p.project_lead_name ?? '—'}</td>
+                  <td className="px-4 py-3 text-on-surface-muted">{typeLabel(p.project_type)}</td>
+                  <td className="px-4 py-3 text-on-surface-muted">{p.project_reporting_name ?? '—'}</td>
+                  <td className="px-4 py-3 text-on-surface-muted">{p.project_lead_name ?? '—'}</td>
                   <td className="px-4 py-3">
                     <span className="inline-flex items-center px-2.5 py-1 rounded-full text-xs font-medium"
                       style={{ background: pill.bg, color: pill.color }}>
@@ -215,13 +223,13 @@ export default function Projects() {
                     <td className="px-4 py-3 text-right">
                       <div className="inline-flex items-center gap-1">
                         <button onClick={() => { setEditing(p); setShowForm(true); }}
-                          className="p-1.5 rounded hover:bg-gray-100" title="Edit">
-                          <Pencil size={14} className="text-gray-500" />
+                          className="p-1.5 rounded hover:bg-surface-3 transition-colors" title="Edit">
+                          <Pencil size={14} className="text-on-surface-muted" />
                         </button>
                         {!archived && (
                           <button onClick={() => handleDelete(p)}
-                            className="p-1.5 rounded hover:bg-rose-50" title="Archive">
-                            <Trash2 size={14} className="text-rose-500" />
+                            className="p-1.5 rounded hover:bg-danger-container/50 transition-colors" title="Archive">
+                            <Trash2 size={14} className="text-danger" />
                           </button>
                         )}
                       </div>
@@ -305,54 +313,58 @@ function ProjectForm({
     }
   };
 
+  const inputCls = "w-full border border-outline rounded-lg px-3 py-2.5 text-sm bg-surface text-on-surface placeholder:text-on-surface-subtle focus:outline-none focus:ring-2 focus:ring-accent/30";
+  const selectCls = "w-full border border-outline rounded-lg px-3 py-2.5 text-sm bg-surface text-on-surface focus:outline-none focus:ring-2 focus:ring-accent/30";
+  const labelCls = "text-xs font-medium text-on-surface-muted mb-1.5 block";
+
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 backdrop-blur-sm p-4">
-      <div className="bg-white rounded-2xl shadow-2xl w-full max-w-xl max-h-[92vh] overflow-y-auto">
-        <div className="flex items-center justify-between px-6 py-5 border-b border-gray-100">
-          <h3 className="text-lg font-semibold text-gray-900">{existing ? 'Edit Project' : 'New Project'}</h3>
-          <button onClick={onClose} className="p-1.5 hover:bg-gray-100 rounded-lg"><X size={16} className="text-gray-500" /></button>
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-bg/55 backdrop-blur-sm p-4">
+      <div className="bg-surface rounded-2xl shadow-elev-4 border border-outline w-full max-w-xl max-h-[92vh] overflow-y-auto">
+        <div className="flex items-center justify-between px-6 py-5 border-b border-outline">
+          <h3 className="font-display text-lg font-bold text-on-surface tracking-tight">{existing ? 'Edit Project' : 'New Project'}</h3>
+          <button onClick={onClose} className="p-1.5 hover:bg-surface-2 rounded-lg transition-colors"><X size={16} className="text-on-surface-muted" /></button>
         </div>
         <div className="p-6 space-y-4">
           <div>
-            <label className="text-xs font-medium text-gray-500 mb-1.5 block">Project Name *</label>
+            <label className={labelCls}>Project Name *</label>
             <input value={form.name} onChange={e => setF('name', e.target.value)}
               placeholder='e.g. "Anatoliy Chistov - Sarab"'
-              className="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-primary-200" />
+              className={inputCls} />
           </div>
           <div className="grid grid-cols-2 gap-3">
             <div>
-              <label className="text-xs font-medium text-gray-500 mb-1.5 block">Client Name</label>
+              <label className={labelCls}>Client Name</label>
               <input value={form.client_name} onChange={e => setF('client_name', e.target.value)}
-                className="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-primary-200" />
+                className={inputCls} />
             </div>
             <div>
-              <label className="text-xs font-medium text-gray-500 mb-1.5 block">Project Type</label>
+              <label className={labelCls}>Project Type</label>
               <select value={form.project_type} onChange={e => setF('project_type', e.target.value)}
-                className="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm bg-white">
+                className={selectCls}>
                 {PROJECT_TYPES.map(t => <option key={t.value} value={t.value}>{t.label}</option>)}
               </select>
             </div>
           </div>
           <div>
-            <label className="text-xs font-medium text-gray-500 mb-1.5 block">Dashboard URL</label>
+            <label className={labelCls}>Dashboard URL</label>
             <input value={form.dashboard_url} onChange={e => setF('dashboard_url', e.target.value)}
               placeholder="https://…"
-              className="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-primary-200" />
+              className={inputCls} />
           </div>
           <div className="grid grid-cols-2 gap-3">
             <div>
-              <label className="text-xs font-medium text-gray-500 mb-1.5 block">Project Reporting</label>
+              <label className={labelCls}>Project Reporting</label>
               <select value={form.project_reporting_id} onChange={e => setF('project_reporting_id', e.target.value)}
-                className="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm bg-white">
+                className={selectCls}>
                 <option value="">— None —</option>
                 {employees.map(e => <option key={e.id} value={e.id}>{e.name}</option>)}
               </select>
-              <p className="text-[11px] text-gray-400 mt-1">Approves hour logs on this project.</p>
+              <p className="text-[11px] text-on-surface-subtle mt-1">Approves hour logs on this project.</p>
             </div>
             <div>
-              <label className="text-xs font-medium text-gray-500 mb-1.5 block">Project Lead</label>
+              <label className={labelCls}>Project Lead</label>
               <select value={form.project_lead_id} onChange={e => setF('project_lead_id', e.target.value)}
-                className="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm bg-white">
+                className={selectCls}>
                 <option value="">— None —</option>
                 {employees.map(e => <option key={e.id} value={e.id}>{e.name}</option>)}
               </select>
@@ -360,42 +372,41 @@ function ProjectForm({
           </div>
           <div className="grid grid-cols-2 gap-3">
             <div>
-              <label className="text-xs font-medium text-gray-500 mb-1.5 block">Status</label>
+              <label className={labelCls}>Status</label>
               <select value={form.status} onChange={e => setF('status', e.target.value)}
-                className="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm bg-white">
+                className={selectCls}>
                 <option value="active">Active</option>
                 <option value="on_hold">On Hold</option>
                 <option value="archived">Archived</option>
               </select>
             </div>
             <div>
-              <label className="text-xs font-medium text-gray-500 mb-1.5 block">Flag</label>
+              <label className={labelCls}>Flag</label>
               <select value={form.flag} onChange={e => setF('flag', e.target.value)}
-                className="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm bg-white">
+                className={selectCls}>
                 {FLAGS.map(f => <option key={f.value} value={f.value}>{f.label}</option>)}
               </select>
             </div>
           </div>
           {form.flag && (
             <div>
-              <label className="text-xs font-medium text-gray-500 mb-1.5 block">Flag Reason</label>
+              <label className={labelCls}>Flag Reason</label>
               <input value={form.flag_reason} onChange={e => setF('flag_reason', e.target.value)}
                 placeholder="Why is this flagged?"
-                className="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-primary-200" />
+                className={inputCls} />
             </div>
           )}
           <div>
-            <label className="text-xs font-medium text-gray-500 mb-1.5 block">Notes</label>
+            <label className={labelCls}>Notes</label>
             <textarea value={form.notes} onChange={e => setF('notes', e.target.value)} rows={3}
-              className="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-primary-200 resize-none" />
+              className={`${inputCls} resize-none`} />
           </div>
-          {error && <p className="text-sm text-rose-600 bg-rose-50 px-3 py-2 rounded-lg">{error}</p>}
+          {error && <p className="text-sm text-danger bg-danger-container/50 px-3 py-2 rounded-lg">{error}</p>}
         </div>
-        <div className="px-6 py-4 border-t border-gray-100 flex justify-end gap-2">
-          <button onClick={onClose} className="px-4 py-2 text-sm font-medium text-gray-600 hover:bg-gray-50 rounded-lg">Cancel</button>
+        <div className="px-6 py-4 border-t border-outline flex justify-end gap-2">
+          <button onClick={onClose} className="px-4 py-2 text-sm font-medium text-on-surface-muted hover:bg-surface-2 rounded-lg transition-colors">Cancel</button>
           <button onClick={handleSave} disabled={saving}
-            className="px-4 py-2 text-sm font-semibold text-white rounded-lg disabled:opacity-50"
-            style={{ background: '#EE2770' }}>
+            className="px-4 py-2 text-sm font-semibold rounded-lg bg-accent text-on-accent hover:opacity-90 shadow-elev-1 hover:shadow-elev-2 transition-all disabled:opacity-50">
             {saving ? 'Saving…' : (existing ? 'Save Changes' : 'Create Project')}
           </button>
         </div>

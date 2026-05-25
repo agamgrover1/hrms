@@ -6,10 +6,10 @@ import { departments } from '../data/mockData';
 import { api } from '../services/api';
 
 const roleConfig: Record<Role, { label: string; color: string; icon: typeof Shield }> = {
-  admin: { label: 'Admin', color: 'bg-red-50 text-red-600 border-red-200', icon: Shield },
-  hr_manager: { label: 'HR Manager', color: 'bg-primary-50 text-primary-600 border-primary-200', icon: UserCheck },
-  project_coordinator: { label: 'Project Coordinator', color: 'bg-indigo-50 text-indigo-600 border-indigo-200', icon: Briefcase },
-  employee: { label: 'Employee', color: 'bg-gray-50 text-gray-600 border-gray-200', icon: Users },
+  admin: { label: 'Admin', color: 'bg-danger-container text-danger border-danger/20', icon: Shield },
+  hr_manager: { label: 'HR Manager', color: 'bg-brand-container text-on-brand-container border-brand/20', icon: UserCheck },
+  project_coordinator: { label: 'Project Coordinator', color: 'bg-brand-container text-on-brand-container border-brand/20', icon: Briefcase },
+  employee: { label: 'Employee', color: 'bg-surface-2 text-on-surface-muted border-outline', icon: Users },
 };
 
 interface UserFormData {
@@ -71,42 +71,42 @@ function UserModal({
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 backdrop-blur-sm p-4">
-      <div className="bg-white rounded-2xl shadow-2xl w-full max-w-lg max-h-[90vh] overflow-y-auto">
-        <div className="flex items-center justify-between px-6 py-5 border-b border-gray-100">
-          <h3 className="text-lg font-semibold text-gray-900">{mode === 'create' ? 'Create New User' : 'Edit User'}</h3>
-          <button onClick={onClose} className="p-1.5 hover:bg-gray-100 rounded-lg"><X size={16} className="text-gray-500" /></button>
+      <div className="bg-surface rounded-xl-2 shadow-elev-3 w-full max-w-lg max-h-[90vh] overflow-y-auto border border-outline">
+        <div className="flex items-center justify-between px-6 py-5 border-b border-outline">
+          <h3 className="font-display text-xl font-bold tracking-tight text-on-surface">{mode === 'create' ? 'Create New User' : 'Edit User'}</h3>
+          <button onClick={onClose} className="p-1.5 hover:bg-surface-2 rounded-lg transition-colors"><X size={16} className="text-on-surface-subtle" /></button>
         </div>
         <div className="p-6 space-y-4">
           <div className="grid grid-cols-2 gap-3">
             <div className="col-span-2">
-              <label className="text-xs font-medium text-gray-500 mb-1.5 block">Full Name *</label>
+              <label className="text-xs font-medium text-on-surface-subtle mb-1.5 block">Full Name *</label>
               <input value={form.name} onChange={e => set('name', e.target.value)} placeholder="e.g. Priya Sharma"
-                className="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-primary-200 focus:border-primary-400" />
+                className="w-full border border-outline rounded-lg px-3 py-2.5 text-sm bg-surface text-on-surface focus:outline-none focus:ring-2 focus:ring-brand/30 focus:border-brand" />
             </div>
             <div className="col-span-2">
-              <label className="text-xs font-medium text-gray-500 mb-1.5 block">Email *</label>
+              <label className="text-xs font-medium text-on-surface-subtle mb-1.5 block">Email *</label>
               <input value={form.email} onChange={e => set('email', e.target.value)} type="email" placeholder="email@company.com"
-                className="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-primary-200 focus:border-primary-400" />
+                className="w-full border border-outline rounded-lg px-3 py-2.5 text-sm bg-surface text-on-surface focus:outline-none focus:ring-2 focus:ring-brand/30 focus:border-brand" />
             </div>
             <div className="col-span-2">
-              <label className="text-xs font-medium text-gray-500 mb-1.5 block">Password *</label>
+              <label className="text-xs font-medium text-on-surface-subtle mb-1.5 block">Password *</label>
               <div className="relative">
                 <input value={form.password} onChange={e => set('password', e.target.value)} type={showPass ? 'text' : 'password'} placeholder="Min. 6 characters"
-                  className="w-full border border-gray-200 rounded-lg px-3 py-2.5 pr-10 text-sm focus:outline-none focus:ring-2 focus:ring-primary-200 focus:border-primary-400" />
-                <button type="button" onClick={() => setShowPass(!showPass)} className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400">
+                  className="w-full border border-outline rounded-lg px-3 py-2.5 pr-10 text-sm bg-surface text-on-surface focus:outline-none focus:ring-2 focus:ring-brand/30 focus:border-brand" />
+                <button type="button" onClick={() => setShowPass(!showPass)} className="absolute right-3 top-1/2 -translate-y-1/2 text-on-surface-subtle hover:text-on-surface transition-colors">
                   {showPass ? <EyeOff size={15} /> : <Eye size={15} />}
                 </button>
               </div>
             </div>
             <div>
-              <label className="text-xs font-medium text-gray-500 mb-1.5 block">Employee ID *</label>
+              <label className="text-xs font-medium text-on-surface-subtle mb-1.5 block">Employee ID *</label>
               <input value={form.employeeId} onChange={e => set('employeeId', e.target.value)} placeholder="EMP011"
-                className="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-primary-200 focus:border-primary-400" />
+                className="w-full border border-outline rounded-lg px-3 py-2.5 text-sm bg-surface text-on-surface focus:outline-none focus:ring-2 focus:ring-brand/30 focus:border-brand" />
             </div>
             <div>
-              <label className="text-xs font-medium text-gray-500 mb-1.5 block">Role *</label>
+              <label className="text-xs font-medium text-on-surface-subtle mb-1.5 block">Role *</label>
               <select value={form.role} onChange={e => set('role', e.target.value as Role)}
-                className="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-primary-200 focus:border-primary-400 bg-white">
+                className="w-full border border-outline rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-brand/30 focus:border-brand bg-surface text-on-surface">
                 <option value="employee">Employee</option>
                 <option value="hr_manager">HR Manager</option>
                 <option value="project_coordinator">Project Coordinator</option>
@@ -114,23 +114,23 @@ function UserModal({
               </select>
             </div>
             <div>
-              <label className="text-xs font-medium text-gray-500 mb-1.5 block">Department *</label>
+              <label className="text-xs font-medium text-on-surface-subtle mb-1.5 block">Department *</label>
               <select value={form.department} onChange={e => set('department', e.target.value)}
-                className="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-primary-200 focus:border-primary-400 bg-white">
+                className="w-full border border-outline rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-brand/30 focus:border-brand bg-surface text-on-surface">
                 <option value="">Select department</option>
                 {departments.map(d => <option key={d}>{d}</option>)}
                 <option value="Administration">Administration</option>
               </select>
             </div>
             <div>
-              <label className="text-xs font-medium text-gray-500 mb-1.5 block">Designation *</label>
+              <label className="text-xs font-medium text-on-surface-subtle mb-1.5 block">Designation *</label>
               <input value={form.designation} onChange={e => set('designation', e.target.value)} placeholder="e.g. Software Engineer"
-                className="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-primary-200 focus:border-primary-400" />
+                className="w-full border border-outline rounded-lg px-3 py-2.5 text-sm bg-surface text-on-surface focus:outline-none focus:ring-2 focus:ring-brand/30 focus:border-brand" />
             </div>
             <div className="col-span-2">
-              <label className="text-xs font-medium text-gray-500 mb-1.5 block">Reporting Manager</label>
+              <label className="text-xs font-medium text-on-surface-subtle mb-1.5 block">Reporting Manager</label>
               <select value={form.reporting_manager_id} onChange={e => set('reporting_manager_id', e.target.value)}
-                className="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-primary-200 focus:border-primary-400 bg-white">
+                className="w-full border border-outline rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-brand/30 focus:border-brand bg-surface text-on-surface">
                 <option value="">— No Manager —</option>
                 {employees.map(emp => (
                   <option key={emp.id} value={emp.id}>{emp.name} ({emp.designation})</option>
@@ -139,11 +139,11 @@ function UserModal({
             </div>
           </div>
 
-          {error && <p className="text-sm text-red-500 bg-red-50 px-3 py-2 rounded-lg">{error}</p>}
+          {error && <p className="text-sm text-danger bg-danger-container px-3 py-2 rounded-lg">{error}</p>}
 
           <div className="flex gap-3 pt-2">
-            <button onClick={onClose} className="flex-1 py-2.5 border border-gray-200 text-gray-600 rounded-lg text-sm font-medium hover:bg-gray-50 transition-colors">Cancel</button>
-            <button onClick={handleSave} className="flex-1 py-2.5 bg-primary-500 hover:bg-primary-600 text-white rounded-lg text-sm font-medium transition-colors">
+            <button onClick={onClose} className="flex-1 py-2.5 border border-outline text-on-surface-muted rounded-lg text-sm font-medium hover:bg-surface-2 transition-colors">Cancel</button>
+            <button onClick={handleSave} className="flex-1 py-2.5 bg-accent text-on-accent hover:opacity-90 rounded-lg text-sm font-medium shadow-elev-1 hover:shadow-elev-2 transition-all">
               {mode === 'create' ? 'Create User' : 'Save Changes'}
             </button>
           </div>
@@ -207,26 +207,35 @@ export default function UserManagement() {
     employee: users.filter(u => u.role === 'employee').length,
   };
 
+  const summaryTiles: Array<{ label: string; value: number; valueColor: string; blobColor: string }> = [
+    { label: 'Total Users',         value: counts.total,               valueColor: 'text-on-surface',          blobColor: 'bg-brand/15' },
+    { label: 'Admins',              value: counts.admin,               valueColor: 'text-danger',              blobColor: 'bg-danger/15' },
+    { label: 'HR Managers',         value: counts.hr_manager,          valueColor: 'text-on-brand-container',  blobColor: 'bg-brand/15' },
+    { label: 'Project Coordinator', value: counts.project_coordinator, valueColor: 'text-on-brand-container',  blobColor: 'bg-brand/15' },
+    { label: 'Employees',           value: counts.employee,            valueColor: 'text-on-surface-muted',    blobColor: 'bg-accent/15' },
+  ];
+
   return (
     <div className="space-y-5">
       {/* Toast */}
       {toast && (
-        <div className="fixed top-5 right-5 z-50 bg-gray-900 text-white text-sm px-4 py-2.5 rounded-xl shadow-lg animate-fade-in">
+        <div className="fixed top-5 right-5 z-50 bg-surface-3 text-on-surface text-sm px-4 py-2.5 rounded-xl-2 shadow-elev-3 border border-outline animate-fade-in">
           ✓ {toast}
         </div>
       )}
 
       {/* Summary */}
-      <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
-        {[
-          { label: 'Total Users', value: counts.total, color: 'text-gray-900' },
-          { label: 'Admins', value: counts.admin, color: 'text-red-600' },
-          { label: 'HR Managers', value: counts.hr_manager, color: 'text-primary-600' },
-          { label: 'Employees', value: counts.employee, color: 'text-gray-700' },
-        ].map(({ label, value, color }) => (
-          <div key={label} className="bg-white rounded-xl p-4 border border-gray-100 shadow-sm">
-            <p className={`text-2xl font-bold ${color}`}>{value}</p>
-            <p className="text-xs text-gray-400 mt-0.5">{label}</p>
+      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-4">
+        {summaryTiles.map(({ label, value, valueColor, blobColor }, i) => (
+          <div
+            key={label}
+            className={`group relative bg-surface rounded-xl-2 p-5 border border-outline shadow-elev-1 hover:shadow-elev-2 transition-all duration-300 overflow-hidden animate-fade-up stagger-${i + 1}`}
+          >
+            <div className={`absolute -top-8 -right-8 w-28 h-28 rounded-full ${blobColor} blur-2xl opacity-50 group-hover:opacity-80 transition-opacity duration-500`} />
+            <div className="relative">
+              <p className={`num-mono text-3xl font-semibold leading-none ${valueColor}`}>{value}</p>
+              <p className="text-[10px] font-bold text-on-surface-muted mt-2.5 uppercase tracking-[0.16em]">{label}</p>
+            </div>
           </div>
         ))}
       </div>
@@ -234,18 +243,18 @@ export default function UserManagement() {
       {/* Toolbar */}
       <div className="flex flex-wrap items-center gap-3">
         <div className="relative flex-1 min-w-48">
-          <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
+          <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-on-surface-subtle" />
           <input
             value={search}
             onChange={e => setSearch(e.target.value)}
             placeholder="Search by name, email or ID..."
-            className="w-full pl-9 pr-4 py-2.5 text-sm bg-white border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-200"
+            className="w-full pl-9 pr-4 py-2.5 text-sm bg-surface border border-outline rounded-lg text-on-surface focus:outline-none focus:ring-2 focus:ring-brand/30 focus:border-brand"
           />
         </div>
         <select
           value={roleFilter}
           onChange={e => setRoleFilter(e.target.value as Role | 'all')}
-          className="text-sm border border-gray-200 rounded-lg px-3 py-2.5 bg-white focus:outline-none focus:ring-2 focus:ring-primary-200 text-gray-700"
+          className="text-sm border border-outline rounded-lg px-3 py-2.5 bg-surface focus:outline-none focus:ring-2 focus:ring-brand/30 focus:border-brand text-on-surface-muted"
         >
           <option value="all">All Roles</option>
           <option value="admin">Admin</option>
@@ -255,19 +264,19 @@ export default function UserManagement() {
         </select>
         <button
           onClick={() => setModal({ mode: 'create' })}
-          className="flex items-center gap-2 px-4 py-2.5 bg-primary-500 hover:bg-primary-600 text-white text-sm font-medium rounded-lg transition-colors shadow-sm"
+          className="flex items-center gap-2 px-4 py-2.5 bg-accent text-on-accent hover:opacity-90 text-sm font-medium rounded-lg shadow-elev-1 hover:shadow-elev-2 transition-all"
         >
           <Plus size={15} /> Add User
         </button>
       </div>
 
       {/* Table */}
-      <div className="bg-white rounded-xl border border-gray-100 shadow-sm overflow-hidden">
+      <div className="bg-surface rounded-xl-2 border border-outline shadow-elev-1 overflow-hidden">
         <table className="w-full">
           <thead>
-            <tr className="bg-gray-50 border-b border-gray-100">
+            <tr className="bg-surface-2 border-b border-outline">
               {['User', 'Employee ID', 'Role', 'Department', 'Status', 'Actions'].map(h => (
-                <th key={h} className="text-left text-xs font-semibold text-gray-500 px-4 py-3 uppercase tracking-wide">{h}</th>
+                <th key={h} className="text-left text-xs font-semibold text-on-surface-subtle px-4 py-3 uppercase tracking-wide">{h}</th>
               ))}
             </tr>
           </thead>
@@ -276,34 +285,34 @@ export default function UserManagement() {
               const cfg = roleConfig[u.role];
               const RoleIcon = cfg.icon;
               return (
-                <tr key={u.id} className="border-b border-gray-50 hover:bg-gray-50/50 transition-colors">
+                <tr key={u.id} className="border-b border-outline hover:bg-surface-2 transition-colors">
                   <td className="px-4 py-3">
                     <div className="flex items-center gap-2.5">
-                      <div className="w-8 h-8 rounded-full bg-primary-100 text-primary-600 flex items-center justify-center text-xs font-bold">
+                      <div className="w-8 h-8 rounded-full bg-brand-container text-on-brand-container flex items-center justify-center text-xs font-bold">
                         {u.avatar}
                       </div>
                       <div>
-                        <p className="text-sm font-medium text-gray-900">{u.name}
-                          {u.id === currentUser?.id && <span className="ml-1.5 text-xs text-primary-400">(you)</span>}
+                        <p className="text-sm font-medium text-on-surface">{u.name}
+                          {u.id === currentUser?.id && <span className="ml-1.5 text-xs text-on-brand-container">(you)</span>}
                         </p>
-                        <p className="text-xs text-gray-400">{u.email}</p>
+                        <p className="text-xs text-on-surface-subtle">{u.email}</p>
                       </div>
                     </div>
                   </td>
-                  <td className="px-4 py-3 text-sm text-gray-600">{u.employee_id_ref ?? u.employeeId ?? '—'}</td>
+                  <td className="px-4 py-3 text-sm text-on-surface-muted num-mono">{u.employee_id_ref ?? u.employeeId ?? '—'}</td>
                   <td className="px-4 py-3">
                     <span className={`inline-flex items-center gap-1.5 text-xs px-2.5 py-1 rounded-full border font-medium ${cfg.color}`}>
                       <RoleIcon size={11} /> {cfg.label}
                     </span>
                   </td>
-                  <td className="px-4 py-3 text-sm text-gray-500">{u.department}</td>
+                  <td className="px-4 py-3 text-sm text-on-surface-subtle">{u.department}</td>
                   <td className="px-4 py-3">
                     <button
                       onClick={() => handleToggleActive(u)}
                       disabled={u.id === currentUser?.id}
-                      className={`flex items-center gap-1.5 text-xs font-medium transition-colors ${u.id === currentUser?.id ? 'opacity-50 cursor-default' : 'cursor-pointer hover:opacity-80'} ${u.active ? 'text-green-600' : 'text-gray-400'}`}
+                      className={`flex items-center gap-1.5 text-xs font-medium transition-colors ${u.id === currentUser?.id ? 'opacity-50 cursor-default' : 'cursor-pointer hover:opacity-80'} ${u.active ? 'text-success' : 'text-on-surface-subtle'}`}
                     >
-                      {u.active ? <ToggleRight size={18} className="text-green-500" /> : <ToggleLeft size={18} className="text-gray-400" />}
+                      {u.active ? <ToggleRight size={18} className="text-success" /> : <ToggleLeft size={18} className="text-on-surface-subtle" />}
                       {u.active ? 'Active' : 'Inactive'}
                     </button>
                   </td>
@@ -311,14 +320,14 @@ export default function UserManagement() {
                     <div className="flex items-center gap-2">
                       <button
                         onClick={() => setModal({ mode: 'edit', user: u })}
-                        className="p-1.5 text-gray-400 hover:text-primary-600 hover:bg-primary-50 rounded-lg transition-colors"
+                        className="p-1.5 text-on-surface-muted hover:text-on-surface hover:bg-surface-2 rounded-lg transition-colors"
                       >
                         <Edit2 size={14} />
                       </button>
                       {u.id !== currentUser?.id && (
                         <button
                           onClick={() => setConfirmDelete(u.id)}
-                          className="p-1.5 text-gray-400 hover:text-red-500 hover:bg-red-50 rounded-lg transition-colors"
+                          className="p-1.5 text-on-surface-muted hover:text-danger hover:bg-surface-2 rounded-lg transition-colors"
                         >
                           <Trash2 size={14} />
                         </button>
@@ -331,7 +340,7 @@ export default function UserManagement() {
           </tbody>
         </table>
         {filtered.length === 0 && (
-          <div className="py-16 text-center text-gray-400 text-sm">No users found.</div>
+          <div className="py-16 text-center text-on-surface-subtle text-sm">No users found.</div>
         )}
       </div>
 
@@ -347,15 +356,15 @@ export default function UserManagement() {
 
       {confirmDelete && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 backdrop-blur-sm p-4">
-          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-sm p-6 text-center">
-            <div className="w-12 h-12 rounded-full bg-red-50 flex items-center justify-center mx-auto mb-4">
-              <Trash2 size={20} className="text-red-500" />
+          <div className="bg-surface rounded-xl-2 shadow-elev-3 border border-outline w-full max-w-sm p-6 text-center">
+            <div className="w-12 h-12 rounded-full bg-danger-container flex items-center justify-center mx-auto mb-4">
+              <Trash2 size={20} className="text-danger" />
             </div>
-            <h3 className="font-semibold text-gray-900 mb-1">Delete user?</h3>
-            <p className="text-sm text-gray-500 mb-6">This will permanently remove the user and their login access.</p>
+            <h3 className="font-display text-xl font-bold tracking-tight text-on-surface mb-1">Delete user?</h3>
+            <p className="text-sm text-on-surface-subtle mb-6">This will permanently remove the user and their login access.</p>
             <div className="flex gap-3">
-              <button onClick={() => setConfirmDelete(null)} className="flex-1 py-2.5 border border-gray-200 rounded-lg text-sm font-medium text-gray-600 hover:bg-gray-50">Cancel</button>
-              <button onClick={() => handleDelete(confirmDelete)} className="flex-1 py-2.5 bg-red-500 hover:bg-red-600 text-white rounded-lg text-sm font-medium transition-colors">Delete</button>
+              <button onClick={() => setConfirmDelete(null)} className="flex-1 py-2.5 border border-outline rounded-lg text-sm font-medium text-on-surface-muted hover:bg-surface-2 transition-colors">Cancel</button>
+              <button onClick={() => handleDelete(confirmDelete)} className="flex-1 py-2.5 bg-danger text-white rounded-lg text-sm font-medium hover:opacity-90 shadow-elev-1 hover:shadow-elev-2 transition-all">Delete</button>
             </div>
           </div>
         </div>

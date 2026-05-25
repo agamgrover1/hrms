@@ -40,10 +40,10 @@ const TARGET_WEEKLY = 35;
 
 function varianceClass(weeklyAlloc: number) {
   // Color the allocation against the 35h target
-  if (weeklyAlloc === 0) return 'text-gray-400';
-  if (weeklyAlloc >= 33 && weeklyAlloc <= 37) return 'text-emerald-700 bg-emerald-50';
-  if ((weeklyAlloc >= 28 && weeklyAlloc <= 32) || (weeklyAlloc >= 38 && weeklyAlloc <= 40)) return 'text-amber-700 bg-amber-50';
-  return 'text-rose-700 bg-rose-50';
+  if (weeklyAlloc === 0) return 'text-on-surface-subtle';
+  if (weeklyAlloc >= 33 && weeklyAlloc <= 37) return 'text-success bg-success-container';
+  if ((weeklyAlloc >= 28 && weeklyAlloc <= 32) || (weeklyAlloc >= 38 && weeklyAlloc <= 40)) return 'text-warning bg-warning-container';
+  return 'text-danger bg-danger-container';
 }
 
 function num(v: any) { return Number(v ?? 0); }
@@ -136,7 +136,7 @@ export default function ProjectHours() {
     <div className="space-y-5">
       {/* Header / toolbar */}
       <div className="flex flex-wrap items-center gap-3">
-        <div className="flex items-center gap-2 bg-white rounded-lg border border-gray-200 px-2 py-1">
+        <div className="flex items-center gap-2 bg-surface rounded-lg border border-outline px-2 py-1">
           <select value={month} onChange={e => setMonth(Number(e.target.value))}
             className="text-sm bg-transparent focus:outline-none px-1 py-1">
             {MONTHS.map((m, i) => <option key={m} value={i+1}>{m}</option>)}
@@ -147,21 +147,20 @@ export default function ProjectHours() {
           </select>
         </div>
         <div className="relative flex-1 min-w-48">
-          <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
+          <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-on-surface-subtle" />
           <input
             value={search}
             onChange={e => setSearch(e.target.value)}
             placeholder="Filter project, employee, reporting…"
-            className="w-full pl-9 pr-4 py-2.5 text-sm bg-white border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-200"
+            className="w-full pl-9 pr-4 py-2.5 text-sm bg-surface border border-outline rounded-lg focus:outline-none focus:ring-2 focus:ring-accent/20"
           />
         </div>
         <button onClick={handleCopyPrev}
-          className="inline-flex items-center gap-2 px-3 py-2.5 rounded-lg text-sm font-medium border border-gray-200 bg-white text-gray-700 hover:bg-gray-50">
+          className="inline-flex items-center gap-2 px-3 py-2.5 rounded-lg text-sm font-medium border border-outline bg-surface-2 text-on-surface hover:bg-surface-3 transition-colors">
           <Copy size={14} /> Copy from previous month
         </button>
         <button onClick={() => setShowAdd(true)}
-          className="inline-flex items-center gap-2 px-4 py-2.5 rounded-lg text-sm font-semibold text-white"
-          style={{ background: '#EE2770' }}>
+          className="inline-flex items-center gap-2 px-4 py-2.5 rounded-lg text-sm font-semibold bg-accent text-on-accent">
           <Plus size={15} /> Add Assignment
         </button>
       </div>
@@ -169,23 +168,23 @@ export default function ProjectHours() {
       {/* Summary strip */}
       {summary && (
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-          <SummaryTile label="Allocated this month" value={`${summary.total_allocated} h`} />
-          <SummaryTile label="Pending review" value={String(summary.pending_review_count)} accent={summary.pending_review_count > 0 ? '#dc2626' : undefined} />
-          <SummaryTile label="Active assignments" value={String(filtered.length)} />
-          <SummaryTile label="Employees on plan" value={String(summary.employees.length)} />
+          <SummaryTile label="Allocated this month" value={`${summary.total_allocated} h`} blobClass="bg-brand/15" stagger={1} />
+          <SummaryTile label="Pending review" value={String(summary.pending_review_count)} blobClass="bg-warning/20" stagger={2} accentClass={summary.pending_review_count > 0 ? 'text-danger' : undefined} />
+          <SummaryTile label="Active assignments" value={String(filtered.length)} blobClass="bg-brand-container" stagger={3} />
+          <SummaryTile label="Employees on plan" value={String(summary.employees.length)} blobClass="bg-accent-container" stagger={4} />
         </div>
       )}
 
       <div className="grid grid-cols-1 lg:grid-cols-[1fr_320px] gap-5">
         {/* Main grid */}
-        <div className="bg-white rounded-xl border border-gray-100 shadow-sm overflow-x-auto">
+        <div className="bg-surface rounded-xl-2 border border-outline shadow-elev-1 overflow-x-auto">
           <table className="w-full text-sm">
-            <thead className="bg-gray-50 border-b border-gray-100 sticky top-0">
-              <tr className="text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">
+            <thead className="bg-surface-2 border-b border-outline sticky top-0">
+              <tr className="text-left text-xs font-semibold text-on-surface-muted uppercase tracking-wider">
                 <th className="px-3 py-3">Project</th>
                 <th className="px-3 py-3">Employee</th>
                 <th className="px-3 py-3">Reporting</th>
-                <th className="px-3 py-3 text-center bg-gray-100">M</th>
+                <th className="px-3 py-3 text-center bg-surface-3">M</th>
                 <th className="px-3 py-3 text-center">W1</th>
                 <th className="px-3 py-3 text-center">W2</th>
                 <th className="px-3 py-3 text-center">W3</th>
@@ -194,32 +193,31 @@ export default function ProjectHours() {
                 <th className="px-3 py-3"></th>
               </tr>
             </thead>
-            <tbody className="divide-y divide-gray-100">
+            <tbody className="divide-y divide-outline">
               {loading ? (
-                <tr><td colSpan={10} className="px-3 py-8 text-center text-gray-400">Loading…</td></tr>
+                <tr><td colSpan={10} className="px-3 py-8 text-center text-on-surface-subtle">Loading…</td></tr>
               ) : filtered.length === 0 ? (
                 <tr><td colSpan={10} className="px-3 py-12 text-center">
-                  <ClipboardCheck size={28} className="mx-auto text-gray-300 mb-2" />
-                  <p className="text-sm text-gray-500">No assignments for {MONTHS[month-1]} {year}.</p>
-                  <p className="text-xs text-gray-400 mt-0.5">Use "Add Assignment" or "Copy from previous month".</p>
+                  <ClipboardCheck size={28} className="mx-auto text-on-surface-subtle mb-2" />
+                  <p className="text-sm text-on-surface-muted">No assignments for {MONTHS[month-1]} {year}.</p>
+                  <p className="text-xs text-on-surface-subtle mt-0.5">Use "Add Assignment" or "Copy from previous month".</p>
                 </td></tr>
               ) : filtered.map(a => {
-                const flagBg = a.project_flag === 'red' ? 'rgba(254,242,242,0.5)' : a.project_flag === 'yellow' ? 'rgba(255,251,235,0.5)' : 'transparent';
+                const flagBg = a.project_flag === 'red' ? 'rgb(var(--danger-container) / 0.4)' : a.project_flag === 'yellow' ? 'rgb(var(--warning-container) / 0.4)' : 'transparent';
                 return (
                   <tr key={a.id} style={{ background: flagBg }}>
                     <td className="px-3 py-2">
                       <div className="flex items-start gap-2">
                         {a.project_flag && (
-                          <Flag size={12} className="mt-0.5"
-                            style={{ color: a.project_flag === 'red' ? '#dc2626' : '#d97706' }} />
+                          <Flag size={12} className={`mt-0.5 ${a.project_flag === 'red' ? 'text-danger' : 'text-warning'}`} />
                         )}
                         <div>
-                          <p className="font-medium text-gray-900 leading-tight">{a.project_name}</p>
+                          <p className="font-medium text-on-surface leading-tight">{a.project_name}</p>
                           <div className="flex items-center gap-1.5 mt-0.5">
-                            {a.project_client_name && <span className="text-[11px] text-gray-500">{a.project_client_name}</span>}
+                            {a.project_client_name && <span className="text-[11px] text-on-surface-muted">{a.project_client_name}</span>}
                             {a.dashboard_url && (
                               <a href={a.dashboard_url} target="_blank" rel="noopener noreferrer"
-                                className="text-[11px] text-primary-600 hover:underline inline-flex items-center gap-0.5">
+                                className="text-[11px] text-brand hover:underline inline-flex items-center gap-0.5">
                                 <ExternalLink size={9} />
                               </a>
                             )}
@@ -227,9 +225,11 @@ export default function ProjectHours() {
                         </div>
                       </div>
                     </td>
-                    <td className="px-3 py-2 text-gray-700">{a.employee_name}</td>
-                    <td className="px-3 py-2 text-gray-500 text-xs">{a.project_reporting_name ?? '—'}</td>
-                    <td className="px-3 py-2 text-center font-semibold text-gray-900 bg-gray-50">{num(a.monthly_hours)}</td>
+                    <td className="px-3 py-2 text-on-surface-muted">{a.employee_name}</td>
+                    <td className="px-3 py-2 text-on-surface-muted text-xs">{a.project_reporting_name ?? '—'}</td>
+                    <td className="px-3 py-2 text-center font-semibold text-on-surface bg-surface-2">
+                      <span className="num-mono">{num(a.monthly_hours)}</span>
+                    </td>
                     {WEEK_KEYS.map(k => (
                       <HoursCell key={k}
                         value={num(a[k])}
@@ -238,8 +238,8 @@ export default function ProjectHours() {
                       />
                     ))}
                     <td className="px-3 py-2 text-right">
-                      <button onClick={() => handleDelete(a)} className="p-1.5 rounded hover:bg-rose-50" title="Delete">
-                        <Trash2 size={13} className="text-rose-500" />
+                      <button onClick={() => handleDelete(a)} className="p-1.5 rounded hover:bg-danger-container" title="Delete">
+                        <Trash2 size={13} className="text-danger" />
                       </button>
                     </td>
                   </tr>
@@ -250,14 +250,15 @@ export default function ProjectHours() {
         </div>
 
         {/* Right rail */}
-        <aside className="bg-white rounded-xl border border-gray-100 shadow-sm overflow-hidden h-fit lg:sticky lg:top-4">
-          <div className="px-4 py-3 border-b border-gray-100 bg-gradient-to-r from-primary-50 to-white">
-            <p className="text-xs font-semibold text-gray-500 uppercase tracking-wider">Per-employee weekly</p>
-            <p className="text-[11px] text-gray-400 mt-0.5">Target: {TARGET_WEEKLY}h/week</p>
+        <aside className="group relative bg-surface rounded-xl-2 border border-outline shadow-elev-1 overflow-hidden h-fit lg:sticky lg:top-4">
+          <div className="absolute -top-8 -right-8 w-28 h-28 rounded-full bg-brand/15 blur-2xl opacity-50" />
+          <div className="relative px-4 py-3 border-b border-outline bg-surface-2">
+            <p className="font-display text-xl font-bold tracking-tight text-on-surface">Per-employee weekly</p>
+            <p className="text-[11px] text-on-surface-subtle mt-0.5">Target: <span className="num-mono">{TARGET_WEEKLY}</span>h/week</p>
           </div>
-          <div className="overflow-auto max-h-[70vh]">
+          <div className="relative overflow-auto max-h-[70vh]">
             <table className="w-full text-xs">
-              <thead className="bg-gray-50 text-gray-500">
+              <thead className="bg-surface-2 text-on-surface-muted">
                 <tr>
                   <th className="px-2 py-2 text-left">Employee</th>
                   <th className="px-1 py-2 text-center">W1</th>
@@ -265,30 +266,32 @@ export default function ProjectHours() {
                   <th className="px-1 py-2 text-center">W3</th>
                   <th className="px-1 py-2 text-center">W4</th>
                   <th className="px-1 py-2 text-center">W5</th>
-                  <th className="px-1 py-2 text-center bg-gray-100">M</th>
+                  <th className="px-1 py-2 text-center bg-surface-3">M</th>
                 </tr>
               </thead>
-              <tbody className="divide-y divide-gray-100">
+              <tbody className="divide-y divide-outline">
                 {!summary || summary.employees.length === 0 ? (
-                  <tr><td colSpan={7} className="px-3 py-6 text-center text-gray-400 text-xs">No data yet.</td></tr>
+                  <tr><td colSpan={7} className="px-3 py-6 text-center text-on-surface-subtle text-xs">No data yet.</td></tr>
                 ) : summary.employees.map(e => (
                   <tr key={e.employee_id}>
-                    <td className="px-2 py-1.5 font-medium text-gray-800 whitespace-nowrap">{e.employee_name || '—'}</td>
+                    <td className="px-2 py-1.5 font-medium text-on-surface whitespace-nowrap">{e.employee_name || '—'}</td>
                     {([e.w1, e.w2, e.w3, e.w4, e.w5] as number[]).map((w, i) => (
                       <td key={i} className={`px-1 py-1.5 text-center font-medium ${varianceClass(w)}`}>
-                        {w}
+                        <span className="num-mono">{w}</span>
                       </td>
                     ))}
-                    <td className="px-1 py-1.5 text-center font-bold text-gray-900 bg-gray-50">{e.monthly}</td>
+                    <td className="px-1 py-1.5 text-center font-bold text-on-surface bg-surface-2">
+                      <span className="num-mono">{e.monthly}</span>
+                    </td>
                   </tr>
                 ))}
               </tbody>
             </table>
           </div>
-          <div className="px-3 py-2 border-t border-gray-100 bg-gray-50 text-[10px] text-gray-500 flex items-center gap-3">
-            <span className="inline-flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-emerald-500" />33–37</span>
-            <span className="inline-flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-amber-500" />28–32 / 38–40</span>
-            <span className="inline-flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-rose-500" />other</span>
+          <div className="relative px-3 py-2 border-t border-outline bg-surface-2 text-[10px] text-on-surface-muted flex items-center gap-3">
+            <span className="inline-flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-success" />33–37</span>
+            <span className="inline-flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-warning" />28–32 / 38–40</span>
+            <span className="inline-flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-danger" />other</span>
           </div>
         </aside>
       </div>
@@ -308,11 +311,14 @@ export default function ProjectHours() {
   );
 }
 
-function SummaryTile({ label, value, accent }: { label: string; value: string; accent?: string }) {
+function SummaryTile({ label, value, accentClass, blobClass, stagger }: { label: string; value: string; accentClass?: string; blobClass?: string; stagger?: number }) {
   return (
-    <div className="bg-white rounded-xl p-4 border border-gray-100 shadow-sm">
-      <p className="text-2xl font-bold" style={{ color: accent ?? '#0f172a' }}>{value}</p>
-      <p className="text-xs text-gray-500 mt-0.5">{label}</p>
+    <div className={`group relative bg-surface rounded-xl-2 p-4 border border-outline shadow-elev-1 overflow-hidden animate-fade-up stagger-${stagger ?? 1}`}>
+      <div className={`absolute -top-8 -right-8 w-28 h-28 rounded-full ${blobClass ?? 'bg-brand/15'} blur-2xl opacity-50`} />
+      <div className="relative">
+        <p className={`num-mono text-2xl font-bold ${accentClass ?? 'text-on-surface'}`}>{value}</p>
+        <p className="text-xs text-on-surface-muted mt-0.5">{label}</p>
+      </div>
     </div>
   );
 }
@@ -338,12 +344,12 @@ function HoursCell({ value, saving, onCommit }: { value: number; saving: boolean
           onChange={e => setDraft(e.target.value)}
           onBlur={commit}
           onKeyDown={e => { if (e.key === 'Enter') commit(); if (e.key === 'Escape') { setEditing(false); setDraft(String(value)); } }}
-          className="w-14 text-center text-sm border border-primary-300 rounded px-1 py-1 focus:outline-none focus:ring-2 focus:ring-primary-200"
+          className="num-mono w-14 text-center text-sm border border-accent rounded px-1 py-1 focus:outline-none focus:ring-2 focus:ring-accent/20"
         />
       ) : (
         <button
           onClick={() => setEditing(true)}
-          className={`w-14 px-2 py-1 rounded text-sm font-medium hover:bg-gray-100 ${value === 0 ? 'text-gray-300' : 'text-gray-900'}`}
+          className={`num-mono w-14 px-2 py-1 rounded text-sm font-medium hover:bg-surface-2 ${value === 0 ? 'text-on-surface-subtle' : 'text-on-surface'}`}
         >
           {value}
         </button>
@@ -401,57 +407,56 @@ function AssignmentForm({
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 backdrop-blur-sm p-4">
-      <div className="bg-white rounded-2xl shadow-2xl w-full max-w-lg">
-        <div className="flex items-center justify-between px-6 py-5 border-b border-gray-100">
-          <h3 className="text-lg font-semibold text-gray-900">New Assignment · {MONTHS[month-1]} {year}</h3>
-          <button onClick={onClose} className="p-1.5 hover:bg-gray-100 rounded-lg"><X size={16} className="text-gray-500" /></button>
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-bg/55 backdrop-blur-sm p-4">
+      <div className="bg-surface rounded-2xl shadow-elev-4 border border-outline w-full max-w-lg">
+        <div className="flex items-center justify-between px-6 py-5 border-b border-outline">
+          <h3 className="font-display text-xl font-bold tracking-tight text-on-surface">New Assignment · {MONTHS[month-1]} {year}</h3>
+          <button onClick={onClose} className="p-1.5 hover:bg-surface-2 rounded-lg"><X size={16} className="text-on-surface-muted" /></button>
         </div>
         <div className="p-6 space-y-4">
           <div>
-            <label className="text-xs font-medium text-gray-500 mb-1.5 block">Project *</label>
+            <label className="text-xs font-medium text-on-surface-muted mb-1.5 block">Project *</label>
             <select value={form.project_id} onChange={e => setF('project_id', e.target.value)}
-              className="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm bg-white">
+              className="w-full border border-outline rounded-lg px-3 py-2.5 text-sm bg-surface">
               <option value="">— Select project —</option>
               {projects.map(p => <option key={p.id} value={p.id}>{p.name}{p.client_name ? ` (${p.client_name})` : ''}</option>)}
             </select>
           </div>
           <div>
-            <label className="text-xs font-medium text-gray-500 mb-1.5 block">Employee *</label>
+            <label className="text-xs font-medium text-on-surface-muted mb-1.5 block">Employee *</label>
             <select value={form.employee_id} onChange={e => setF('employee_id', e.target.value)}
-              className="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm bg-white">
+              className="w-full border border-outline rounded-lg px-3 py-2.5 text-sm bg-surface">
               <option value="">— Select employee —</option>
               {employees.map(e => <option key={e.id} value={e.id}>{e.name}</option>)}
             </select>
           </div>
           <div>
-            <label className="text-xs font-medium text-gray-500 mb-1.5 block">Weekly hours</label>
+            <label className="text-xs font-medium text-on-surface-muted mb-1.5 block">Weekly hours</label>
             <div className="grid grid-cols-5 gap-2">
               {(['w1_hours','w2_hours','w3_hours','w4_hours','w5_hours'] as Array<keyof typeof form>).map((k, i) => (
                 <div key={k}>
-                  <p className="text-[10px] text-gray-400 mb-1">W{i+1}</p>
+                  <p className="text-[10px] text-on-surface-subtle mb-1">W{i+1}</p>
                   <input
                     type="number" step="0.5" min="0"
                     value={form[k]} onChange={e => setF(k, e.target.value)}
-                    className="w-full border border-gray-200 rounded-lg px-2 py-2 text-sm text-center"
+                    className="num-mono w-full border border-outline rounded-lg px-2 py-2 text-sm text-center bg-surface"
                   />
                 </div>
               ))}
             </div>
-            <p className="text-xs text-gray-500 mt-2">Monthly total: <span className="font-semibold text-gray-900">{total} h</span></p>
+            <p className="text-xs text-on-surface-muted mt-2">Monthly total: <span className="num-mono font-semibold text-on-surface">{total} h</span></p>
           </div>
           <div>
-            <label className="text-xs font-medium text-gray-500 mb-1.5 block">Notes</label>
+            <label className="text-xs font-medium text-on-surface-muted mb-1.5 block">Notes</label>
             <textarea value={form.notes} onChange={e => setF('notes', e.target.value)} rows={2}
-              className="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-primary-200 resize-none" />
+              className="w-full border border-outline rounded-lg px-3 py-2.5 text-sm bg-surface focus:outline-none focus:ring-2 focus:ring-accent/20 resize-none" />
           </div>
-          {error && <p className="text-sm text-rose-600 bg-rose-50 px-3 py-2 rounded-lg">{error}</p>}
+          {error && <p className="text-sm text-danger bg-danger-container px-3 py-2 rounded-lg">{error}</p>}
         </div>
-        <div className="px-6 py-4 border-t border-gray-100 flex justify-end gap-2">
-          <button onClick={onClose} className="px-4 py-2 text-sm font-medium text-gray-600 hover:bg-gray-50 rounded-lg">Cancel</button>
+        <div className="px-6 py-4 border-t border-outline flex justify-end gap-2">
+          <button onClick={onClose} className="px-4 py-2 text-sm font-medium text-on-surface-muted hover:bg-surface-2 rounded-lg">Cancel</button>
           <button onClick={handleSave} disabled={saving}
-            className="px-4 py-2 text-sm font-semibold text-white rounded-lg disabled:opacity-50"
-            style={{ background: '#EE2770' }}>
+            className="px-4 py-2 text-sm font-semibold bg-accent text-on-accent rounded-lg disabled:opacity-50">
             {saving ? 'Saving…' : 'Create Assignment'}
           </button>
         </div>
