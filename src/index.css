@@ -1,4 +1,4 @@
-@import url('https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,400;12..96,500;12..96,600;12..96,700;12..96,800&family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap');
 
 @tailwind base;
 @tailwind components;
@@ -215,9 +215,60 @@ input, select, textarea, button { transition: none; }
 }
 
 /* Display font helper */
-.font-display { font-family: 'Bricolage Grotesque', 'Inter', system-ui, sans-serif; }
-h1, h2, h3 { font-family: 'Bricolage Grotesque', 'Inter', system-ui, sans-serif; letter-spacing: -0.015em; }
+.font-display { font-family: 'Plus Jakarta Sans', 'Inter', system-ui, sans-serif; }
+h1, h2, h3 { font-family: 'Plus Jakarta Sans', 'Inter', system-ui, sans-serif; letter-spacing: -0.02em; font-weight: 700; }
 
 /* Progress ring helper — used in the Dashboard hero */
 .ring-track  { stroke: rgb(255 255 255 / 0.15); }
 .ring-value  { stroke: rgb(var(--accent)); stroke-linecap: round; transition: stroke-dashoffset 600ms cubic-bezier(0.4, 0, 0.2, 1); }
+
+/* ── Mount animations ────────────────────────────────────────────────────── */
+@keyframes fade-up {
+  from { opacity: 0; transform: translateY(12px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+@keyframes fade-in {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+.animate-fade-up { animation: fade-up 520ms cubic-bezier(0.22, 1, 0.36, 1) both; }
+.animate-fade-in { animation: fade-in 380ms ease-out both; }
+
+/* Stagger helpers (apply alongside .animate-fade-up via inline style or these classes) */
+.stagger-1 { animation-delay: 50ms; }
+.stagger-2 { animation-delay: 120ms; }
+.stagger-3 { animation-delay: 200ms; }
+.stagger-4 { animation-delay: 280ms; }
+.stagger-5 { animation-delay: 360ms; }
+.stagger-6 { animation-delay: 440ms; }
+
+/* ── Command palette ─────────────────────────────────────────────────────── */
+.cmdk-overlay {
+  position: fixed; inset: 0;
+  background: rgb(var(--bg) / 0.55);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  z-index: 100;
+  animation: fade-in 180ms ease-out;
+}
+.cmdk-panel {
+  width: min(640px, 92vw);
+  background: rgb(var(--surface));
+  border: 1px solid rgb(var(--outline));
+  border-radius: 16px;
+  box-shadow: var(--elev-4);
+  overflow: hidden;
+  animation: fade-up 220ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+.cmdk-input::placeholder { color: rgb(var(--on-surface-subtle)); }
+.cmdk-item-active {
+  background: rgb(var(--accent) / 0.10);
+  color: rgb(var(--on-surface));
+}
+
+/* ── Heatmap cell — used in the Dashboard ───────────────────────────────── */
+.heat-cell {
+  border-radius: 6px;
+  transition: transform 140ms ease, box-shadow 140ms ease;
+}
+.heat-cell:hover { transform: scale(1.08); box-shadow: 0 0 0 2px rgb(var(--accent) / 0.45); }

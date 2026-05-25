@@ -1,6 +1,7 @@
 import { Outlet, useLocation } from 'react-router-dom';
 import Sidebar from './Sidebar';
 import TopBar from './TopBar';
+import CommandPalette from '../CommandPalette';
 
 const pageTitles: Record<string, string> = {
   '/': 'Dashboard',
@@ -39,6 +40,7 @@ export default function Layout() {
           <Outlet />
         </main>
       </div>
+      <CommandPalette />
     </div>
   );
 }

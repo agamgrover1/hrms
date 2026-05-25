@@ -1,4 +1,4 @@
-import { Bell, ChevronDown, LogOut, CheckCircle, Calendar, TrendingUp, FileText, Target, XCircle, Award, Check, Trash2, AlertTriangle, ShieldAlert, KeyRound, Eye, EyeOff, Wrench, Clock as ClockIcon } from 'lucide-react';
+import { Bell, ChevronDown, LogOut, CheckCircle, Calendar, TrendingUp, FileText, Target, XCircle, Award, Check, Trash2, AlertTriangle, ShieldAlert, KeyRound, Eye, EyeOff, Wrench, Clock as ClockIcon, Search } from 'lucide-react';
 import { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../../context/AuthContext';
@@ -254,7 +254,21 @@ export default function TopBar({ title }: Props) {
   return (
     <>
     <header className="h-16 bg-surface border-b border-outline flex items-center px-6 gap-4 sticky top-0 z-10 shadow-elev-1">
-      <h1 className="text-lg font-bold tracking-tight text-on-surface flex-shrink-0">{title}</h1>
+      <h1 className="font-display text-lg font-bold tracking-tight text-on-surface flex-shrink-0">{title}</h1>
+
+      {/* Command palette trigger — synthesizes ⌘K so CommandPalette picks it up */}
+      <button
+        onClick={() => {
+          const key = navigator.platform.toLowerCase().includes('mac') ? { metaKey: true } : { ctrlKey: true };
+          window.dispatchEvent(new KeyboardEvent('keydown', { key: 'k', ...key, bubbles: true }));
+        }}
+        className="hidden sm:flex items-center gap-2 px-3 py-1.5 ml-2 rounded-full text-xs text-on-surface-muted bg-surface-2 hover:bg-surface-3 border border-outline transition-colors min-w-[200px] max-w-[280px]"
+        title="Search (⌘K)"
+      >
+        <Search size={13} strokeWidth={2} />
+        <span className="flex-1 text-left">Search anything…</span>
+        <kbd className="font-mono text-[10px] font-semibold bg-surface border border-outline px-1.5 py-0.5 rounded">⌘K</kbd>
+      </button>
 
       <div className="ml-auto flex items-center gap-2">
         {/* Theme toggle */}
