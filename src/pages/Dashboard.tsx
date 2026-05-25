@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import {
   AreaChart, Area, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, PieChart, Pie, Cell
 } from 'recharts';
-import { Users, Calendar, DollarSign, TrendingUp, AlertCircle, CheckCircle2, UserCheck } from 'lucide-react';
+import { Users, Calendar, DollarSign, TrendingUp, AlertCircle, CheckCircle2, UserCheck, Clock as ClockIcon } from 'lucide-react';
 import { Link } from 'react-router-dom';
 import { api } from '../services/api';
 import { useAuth } from '../context/AuthContext';
@@ -32,6 +32,7 @@ export default function Dashboard() {
   const [payroll, setPayroll] = useState<any[]>([]);
   const [attendance, setAttendance] = useState<any[]>([]);
   const [repairTickets, setRepairTickets] = useState<any[]>([]);
+  const [hoursSummary, setHoursSummary] = useState<any>(null);
   const [loading, setLoading] = useState(true);
   const [approvingLeave, setApprovingLeave] = useState<Record<string, boolean>>({});
 
@@ -48,12 +49,14 @@ export default function Dashboard() {
       api.getPayroll({ month: currentMonthName, year: currentYear }),
       api.getAttendance({ month: currentMonth, year: currentYear }),
       api.getRepairTickets().catch(() => []),
-    ]).then(([emps, leaves, pay, att, tickets]) => {
+      api.getHoursSummary(currentMonth, currentYear).catch(() => null),
+    ]).then(([emps, leaves, pay, att, tickets, hours]) => {
       setEmployees(emps);
       setLeaveRequests(leaves);
       setPayroll(pay);
       setAttendance(att);
       setRepairTickets(tickets);
+      setHoursSummary(hours);
     }).finally(() => setLoading(false));
   }, []);
 
@@ -199,6 +202,32 @@ export default function Dashboard() {
           </Link>
         );
       })()}
+
+      {/* Project Hours summary tile */}
+      {hoursSummary && (hoursSummary.total_allocated > 0 || hoursSummary.pending_review_count > 0) && (
+        <Link to="/hours" className="flex items-center gap-3 px-4 py-3 rounded-xl border border-indigo-100 bg-indigo-50/60 hover:bg-indigo-100/50 transition-colors group">
+          <div className="w-10 h-10 rounded-xl bg-indigo-100 flex items-center justify-center flex-shrink-0">
+            <ClockIcon size={18} className="text-indigo-700" />
+          </div>
+          <div className="flex-1 min-w-0 flex flex-wrap items-center gap-x-4 gap-y-1">
+            <span className="text-sm text-indigo-900">
+              <strong className="font-bold">{Math.round(Number(hoursSummary.total_allocated))}h</strong> allocated · {currentMonthName}
+            </span>
+            <span className="text-sm text-indigo-900">
+              <strong className="font-bold">{Math.round(Number(hoursSummary.total_logged_approved))}h</strong> logged
+            </span>
+            {hoursSummary.pending_review_count > 0 && (
+              <span className="text-sm text-rose-700">
+                <strong className="font-bold">{hoursSummary.pending_review_count}</strong> pending review
+              </span>
+            )}
+            <span className="text-xs text-indigo-700">
+              {hoursSummary.employees?.length ?? 0} employees on plan
+            </span>
+          </div>
+          <span className="text-xs font-semibold text-indigo-700 group-hover:underline">View Hours →</span>
+        </Link>
+      )}
 
       {/* Attendance trend + Dept distribution */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">

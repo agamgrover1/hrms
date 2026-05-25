@@ -15,11 +15,20 @@ import EmployeeProfile from './pages/EmployeeProfile';
 import AssetRepairs from './pages/AssetRepairs';
 import MyPortal from './pages/employee/MyPortal';
 import MyTeam from './pages/employee/MyTeam';
+import Projects from './pages/Projects';
+import ProjectHours from './pages/ProjectHours';
+import HoursApproval from './pages/HoursApproval';
+
+function landingFor(role: string): string {
+  if (role === 'employee') return '/my';
+  if (role === 'project_coordinator') return '/hours';
+  return '/';
+}
 
 function ProtectedRoute({ children, roles }: { children: React.ReactNode; roles?: string[] }) {
   const { user } = useAuth();
   if (!user) return <Navigate to="/login" replace />;
-  if (roles && !roles.includes(user.role)) return <Navigate to={user.role === 'employee' ? '/my' : '/'} replace />;
+  if (roles && !roles.includes(user.role)) return <Navigate to={landingFor(user.role)} replace />;
   return <>{children}</>;
 }
 
@@ -28,7 +37,7 @@ function AppRoutes() {
 
   return (
     <Routes>
-      <Route path="/login" element={user ? <Navigate to={user.role === 'employee' ? '/my' : '/'} replace /> : <Login />} />
+      <Route path="/login" element={user ? <Navigate to={landingFor(user.role)} replace /> : <Login />} />
 
       <Route path="/" element={<ProtectedRoute><Layout /></ProtectedRoute>}>
         {/* Admin & HR Manager routes */}
@@ -44,13 +53,18 @@ function AppRoutes() {
         <Route path="incentives" element={<ProtectedRoute roles={['admin', 'hr_manager']}><Incentives /></ProtectedRoute>} />
         <Route path="asset-repairs" element={<ProtectedRoute roles={['admin', 'hr_manager']}><AssetRepairs /></ProtectedRoute>} />
 
+        {/* Project Mgmt routes */}
+        <Route path="projects" element={<ProtectedRoute roles={['admin', 'hr_manager', 'project_coordinator']}><Projects /></ProtectedRoute>} />
+        <Route path="hours" element={<ProtectedRoute roles={['admin', 'hr_manager', 'project_coordinator']}><ProjectHours /></ProtectedRoute>} />
+        <Route path="hours/approvals" element={<ProtectedRoute><HoursApproval /></ProtectedRoute>} />
+
         {/* Employee routes */}
         <Route path="my" element={<ProtectedRoute roles={['employee']}><MyPortal /></ProtectedRoute>} />
         <Route path="my-team" element={<ProtectedRoute roles={['employee']}><MyTeam /></ProtectedRoute>} />
       </Route>
 
       {/* Catch-all */}
-      <Route path="*" element={<Navigate to={user ? (user.role === 'employee' ? '/my' : '/') : '/login'} replace />} />
+      <Route path="*" element={<Navigate to={user ? landingFor(user.role) : '/login'} replace />} />
     </Routes>
   );
 }

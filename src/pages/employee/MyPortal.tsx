@@ -1,6 +1,6 @@
 import { useState, useEffect, Component, type ReactNode } from 'react';
 import { useSearchParams } from 'react-router-dom';
-import { Clock, Calendar, DollarSign, User, CheckCircle, XCircle, AlertCircle, Plus, X, Target, FileText, Lock, Trash2, Save, Users, Monitor } from 'lucide-react';
+import { Clock, Calendar, DollarSign, User, CheckCircle, XCircle, AlertCircle, Plus, X, Target, FileText, Lock, Trash2, Save, Users, Monitor, Briefcase, Edit2 } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
 import { api } from '../../services/api';
 
@@ -57,6 +57,7 @@ const baseTabs = [
   { key: 'attendance',   label: 'Attendance',   icon: Clock },
   { key: 'leave',        label: 'My Leaves',    icon: Calendar },
   { key: 'wfh',          label: 'Work From Home', icon: Monitor },
+  { key: 'my-hours',     label: 'My Hours',     icon: Briefcase },
   { key: 'incentives',   label: 'Incentives',     icon: Target  },
   { key: 'expenses',    label: 'Expenses',       icon: DollarSign },
   { key: 'device',       label: 'My Device',    icon: Monitor },
@@ -1800,6 +1801,13 @@ export default function MyPortal() {
         </div>
       )}
 
+      {/* ── My Hours (project hours allocation + logs) ── */}
+      {tab === 'my-hours' && empDbId && (
+        <TabErrorBoundary>
+          <MyHoursTab employeeId={empDbId} employeeName={user?.name ?? ''} />
+        </TabErrorBoundary>
+      )}
+
       {/* ── My Team ── */}
       {tab === 'myteam' && (
         <div className="space-y-5">
@@ -2207,5 +2215,292 @@ function RejectReasonInput({
         </button>
       </div>
     </>
+  );
+}
+
+// ── My Hours Tab ───────────────────────────────────────────────────────────
+const MH_MONTHS = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+
+interface MHAssignment {
+  id: string;
+  project_id: string;
+  project_name?: string;
+  project_client_name?: string | null;
+  month: number; year: number;
+  monthly_hours: number;
+  w1_hours: number; w2_hours: number; w3_hours: number; w4_hours: number; w5_hours: number;
+}
+
+interface MHLog {
+  id: string;
+  project_id: string;
+  assignment_id?: string;
+  month: number; year: number; week_num: number;
+  hours_logged: number;
+  work_description: string | null;
+  status: string;
+  rejection_reason: string | null;
+  reviewed_by_name: string | null;
+}
+
+function MyHoursTab({ employeeId, employeeName }: { employeeId: string; employeeName: string }) {
+  const today = new Date();
+  const [month, setMonth] = useState(today.getMonth() + 1);
+  const [year, setYear] = useState(today.getFullYear());
+  const [assignments, setAssignments] = useState<MHAssignment[]>([]);
+  const [logs, setLogs] = useState<MHLog[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [logging, setLogging] = useState<{ assignment: MHAssignment; weekNum: number; existing?: MHLog } | null>(null);
+
+  const load = () => {
+    setLoading(true);
+    Promise.all([
+      api.getProjectAssignments({ employee_id: employeeId, month, year }).then(d => setAssignments(d as MHAssignment[])).catch(() => {}),
+      api.getHourLogs({ employee_id: employeeId, month, year }).then(d => setLogs(d as MHLog[])).catch(() => {}),
+    ]).finally(() => setLoading(false));
+  };
+
+  useEffect(() => { load(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [employeeId, month, year]);
+
+  const logByKey = new Map<string, MHLog>();
+  for (const l of logs) logByKey.set(`${l.project_id}_${l.week_num}`, l);
+
+  const totalAlloc = assignments.reduce((sum, a) => sum + Number(a.monthly_hours), 0);
+  const totalLoggedApproved = logs.filter(l => l.status === 'approved').reduce((s, l) => s + Number(l.hours_logged), 0);
+  const totalLoggedPending = logs.filter(l => l.status === 'pending').reduce((s, l) => s + Number(l.hours_logged), 0);
+
+  return (
+    <div className="space-y-5">
+      {/* Header */}
+      <div className="flex flex-wrap items-center gap-3">
+        <div className="flex items-center gap-2 bg-white rounded-lg border border-gray-200 px-2 py-1">
+          <select value={month} onChange={e => setMonth(Number(e.target.value))} className="text-sm bg-transparent focus:outline-none px-1 py-1">
+            {MH_MONTHS.map((m, i) => <option key={m} value={i+1}>{m}</option>)}
+          </select>
+          <select value={year} onChange={e => setYear(Number(e.target.value))} className="text-sm bg-transparent focus:outline-none px-1 py-1">
+            {[year-1, year, year+1].map(y => <option key={y} value={y}>{y}</option>)}
+          </select>
+        </div>
+      </div>
+
+      {/* Stats */}
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+        <Tile label="Allocated" value={`${totalAlloc} h`} />
+        <Tile label="Approved" value={`${totalLoggedApproved} h`} color="#15803d" />
+        <Tile label="Pending review" value={`${totalLoggedPending} h`} color="#b45309" />
+        <Tile label="Projects" value={String(assignments.length)} />
+      </div>
+
+      {/* Project rows */}
+      <div className="bg-white rounded-xl border border-gray-100 shadow-sm overflow-x-auto">
+        <table className="w-full text-sm">
+          <thead className="bg-gray-50 border-b border-gray-100">
+            <tr className="text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">
+              <th className="px-3 py-3">Project</th>
+              {[1,2,3,4,5].map(w => <th key={w} className="px-3 py-3 text-center">W{w}</th>)}
+              <th className="px-3 py-3 text-center bg-gray-100">M total</th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-gray-100">
+            {loading ? (
+              <tr><td colSpan={7} className="px-3 py-8 text-center text-gray-400">Loading…</td></tr>
+            ) : assignments.length === 0 ? (
+              <tr><td colSpan={7} className="px-3 py-12 text-center">
+                <Briefcase size={28} className="mx-auto text-gray-300 mb-2" />
+                <p className="text-sm text-gray-500">No projects assigned for {MH_MONTHS[month-1]} {year}.</p>
+                <p className="text-xs text-gray-400 mt-0.5">Your coordinator hasn't planned this month yet.</p>
+              </td></tr>
+            ) : assignments.map(a => {
+              const weekAllocs = [a.w1_hours, a.w2_hours, a.w3_hours, a.w4_hours, a.w5_hours];
+              const totalLogged = weekAllocs.reduce((sum, _, i) => {
+                const l = logByKey.get(`${a.project_id}_${i+1}`);
+                return sum + (l ? Number(l.hours_logged) : 0);
+              }, 0);
+              return (
+                <tr key={a.id}>
+                  <td className="px-3 py-3">
+                    <p className="font-semibold text-gray-900">{a.project_name}</p>
+                    {a.project_client_name && <p className="text-xs text-gray-500">{a.project_client_name}</p>}
+                  </td>
+                  {weekAllocs.map((alloc, i) => {
+                    const weekNum = i + 1;
+                    const log = logByKey.get(`${a.project_id}_${weekNum}`);
+                    const allocN = Number(alloc);
+                    const showCell = allocN > 0 || !!log;
+                    if (!showCell) return <td key={i} className="px-3 py-3 text-center text-gray-300">—</td>;
+                    return (
+                      <td key={i} className="px-3 py-3 text-center">
+                        <WeekCell alloc={allocN} log={log} onClick={() => setLogging({ assignment: a, weekNum, existing: log })} />
+                      </td>
+                    );
+                  })}
+                  <td className="px-3 py-3 text-center font-bold text-gray-900 bg-gray-50">
+                    {totalLogged} / {Number(a.monthly_hours)}
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+
+      {/* Rejected logs surfaced */}
+      {logs.filter(l => l.status === 'rejected').length > 0 && (
+        <div className="bg-rose-50 border border-rose-100 rounded-xl p-4">
+          <p className="text-sm font-bold text-rose-700 mb-2">Rejected logs need your attention</p>
+          <div className="space-y-1.5">
+            {logs.filter(l => l.status === 'rejected').map(l => {
+              const a = assignments.find(x => x.project_id === l.project_id);
+              return (
+                <div key={l.id} className="flex items-start justify-between gap-3 text-sm bg-white rounded-lg p-3 border border-rose-100">
+                  <div>
+                    <p className="font-medium text-gray-900">{a?.project_name ?? 'Project'} · W{l.week_num}</p>
+                    <p className="text-xs text-rose-600 mt-0.5">{l.rejection_reason || 'No reason given'}</p>
+                  </div>
+                  {a && (
+                    <button onClick={() => setLogging({ assignment: a, weekNum: l.week_num, existing: l })}
+                      className="text-xs font-semibold text-primary-600 hover:underline">Resubmit</button>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
+      {logging && (
+        <HourLogModal
+          assignment={logging.assignment}
+          weekNum={logging.weekNum}
+          existing={logging.existing}
+          employeeId={employeeId}
+          employeeName={employeeName}
+          onClose={() => setLogging(null)}
+          onSaved={() => { setLogging(null); load(); }}
+        />
+      )}
+    </div>
+  );
+}
+
+function Tile({ label, value, color }: { label: string; value: string; color?: string }) {
+  return (
+    <div className="bg-white rounded-xl p-4 border border-gray-100 shadow-sm">
+      <p className="text-2xl font-bold" style={{ color: color ?? '#0f172a' }}>{value}</p>
+      <p className="text-xs text-gray-500 mt-0.5">{label}</p>
+    </div>
+  );
+}
+
+function WeekCell({ alloc, log, onClick }: { alloc: number; log?: MHLog; onClick: () => void }) {
+  if (!log) {
+    return (
+      <button onClick={onClick}
+        className="inline-flex flex-col items-center px-2 py-1 rounded-md text-xs hover:bg-primary-50 group">
+        <span className="font-semibold text-gray-300">— / {alloc}</span>
+        <span className="text-[10px] text-primary-600 opacity-0 group-hover:opacity-100">Log hours</span>
+      </button>
+    );
+  }
+  const pillCfg = log.status === 'approved'
+    ? { dot: '#15803d', text: 'text-emerald-700' }
+    : log.status === 'rejected'
+    ? { dot: '#dc2626', text: 'text-rose-700' }
+    : { dot: '#d97706', text: 'text-amber-700' };
+  return (
+    <button onClick={onClick}
+      className={`inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-md text-xs hover:bg-gray-100 ${pillCfg.text} font-semibold`}>
+      <span className="w-1.5 h-1.5 rounded-full" style={{ background: pillCfg.dot }} />
+      {Number(log.hours_logged)} / {alloc}
+      <Edit2 size={10} className="opacity-50" />
+    </button>
+  );
+}
+
+function HourLogModal({
+  assignment, weekNum, existing, employeeId, employeeName, onClose, onSaved,
+}: {
+  assignment: MHAssignment;
+  weekNum: number;
+  existing?: MHLog;
+  employeeId: string;
+  employeeName: string;
+  onClose: () => void;
+  onSaved: () => void;
+}) {
+  const allocKey = `w${weekNum}_hours` as 'w1_hours' | 'w2_hours' | 'w3_hours' | 'w4_hours' | 'w5_hours';
+  const alloc = Number(assignment[allocKey] ?? 0);
+  const [hours, setHours] = useState(existing ? String(existing.hours_logged) : String(alloc));
+  const [desc, setDesc] = useState(existing?.work_description ?? '');
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState('');
+
+  const save = async () => {
+    const h = Number(hours);
+    if (Number.isNaN(h) || h < 0) { setError('Enter a valid number of hours.'); return; }
+    setSaving(true);
+    try {
+      if (existing) {
+        await api.editHourLog(existing.id, { hours_logged: h, work_description: desc });
+      } else {
+        await api.submitHourLog({
+          project_id: assignment.project_id,
+          employee_id: employeeId, employee_name: employeeName,
+          month: assignment.month, year: assignment.year, week_num: weekNum,
+          hours_logged: h, work_description: desc,
+        });
+      }
+      onSaved();
+    } catch (err: any) {
+      setError(err.message ?? 'Save failed.');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 backdrop-blur-sm p-4">
+      <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md">
+        <div className="flex items-center justify-between px-6 py-5 border-b border-gray-100">
+          <div>
+            <h3 className="text-lg font-semibold text-gray-900">{existing ? 'Edit hours' : 'Log hours'} · W{weekNum}</h3>
+            <p className="text-xs text-gray-500 mt-0.5">{assignment.project_name} · {MH_MONTHS[assignment.month-1]} {assignment.year}</p>
+          </div>
+          <button onClick={onClose} className="p-1.5 hover:bg-gray-100 rounded-lg"><X size={16} className="text-gray-500" /></button>
+        </div>
+        <div className="p-6 space-y-4">
+          <div className="bg-gray-50 rounded-lg p-3 text-xs flex items-center justify-between">
+            <span className="text-gray-500">Allocated for W{weekNum}</span>
+            <span className="font-semibold text-gray-900">{alloc} h</span>
+          </div>
+          <div>
+            <label className="text-xs font-medium text-gray-500 mb-1.5 block">Hours worked *</label>
+            <input type="number" step="0.5" min="0" value={hours} onChange={e => setHours(e.target.value)}
+              className="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-primary-200" />
+          </div>
+          <div>
+            <label className="text-xs font-medium text-gray-500 mb-1.5 block">What did you do? *</label>
+            <textarea value={desc} onChange={e => setDesc(e.target.value)} rows={4}
+              placeholder="Describe the work — keyword research, content draft, technical audit, etc."
+              className="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-primary-200 resize-none" />
+          </div>
+          {existing?.status === 'rejected' && existing.rejection_reason && (
+            <div className="text-xs bg-rose-50 border border-rose-100 rounded-lg p-3 text-rose-700">
+              <p className="font-semibold mb-0.5">Last rejection</p>
+              <p>{existing.rejection_reason}</p>
+            </div>
+          )}
+          {error && <p className="text-sm text-rose-600 bg-rose-50 px-3 py-2 rounded-lg">{error}</p>}
+        </div>
+        <div className="px-6 py-4 border-t border-gray-100 flex justify-end gap-2">
+          <button onClick={onClose} className="px-4 py-2 text-sm font-medium text-gray-600 hover:bg-gray-50 rounded-lg">Cancel</button>
+          <button onClick={save} disabled={saving || !desc.trim()}
+            className="px-4 py-2 text-sm font-semibold text-white rounded-lg disabled:opacity-50"
+            style={{ background: '#EE2770' }}>
+            {saving ? 'Saving…' : (existing ? 'Resubmit' : 'Submit')}
+          </button>
+        </div>
+      </div>
+    </div>
   );
 }

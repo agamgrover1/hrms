@@ -2,6 +2,7 @@ import { NavLink, useLocation } from 'react-router-dom';
 import {
   LayoutDashboard, Users, Clock, Calendar, DollarSign, Target,
   ChevronLeft, ChevronRight, UserCog, User, Settings, TrendingUp, ChevronDown, Wrench,
+  Briefcase, ClipboardCheck,
 } from 'lucide-react';
 import { useState, useEffect } from 'react';
 import { useAuth } from '../../context/AuthContext';
@@ -20,6 +21,12 @@ const adminNavItems = [
   { to: '/config', icon: Settings, label: 'Configuration' },
 ];
 
+const projectNavItems = [
+  { to: '/projects', icon: Briefcase, label: 'Projects' },
+  { to: '/hours', icon: Clock, label: 'Project Hours' },
+  { to: '/hours/approvals', icon: ClipboardCheck, label: 'Approvals' },
+];
+
 // My Team sub-items for managers (employee role)
 const teamSubItems = [
   { to: '/my-team', label: 'Leaves', icon: Calendar, search: '?tab=leaves' },
@@ -29,13 +36,18 @@ const teamSubItems = [
 export default function Sidebar() {
   const [collapsed, setCollapsed] = useState(false);
   const [teamOpen, setTeamOpen] = useState(true);
+  const [projectsOpen, setProjectsOpen] = useState(true);
   const [isManager, setIsManager] = useState(false);
+  const [isProjectReviewer, setIsProjectReviewer] = useState(false);
   const { user } = useAuth();
   const location = useLocation();
   const role = user?.role ?? 'employee';
 
   const isEmployee = role === 'employee';
+  const isCoord = role === 'project_coordinator';
+  const isAdminLike = role === 'admin' || role === 'hr_manager';
   const isOnTeam = location.pathname === '/my-team';
+  const isOnProjects = location.pathname.startsWith('/projects') || location.pathname.startsWith('/hours');
 
   // Determine if this employee manages anyone (has direct reports)
   useEffect(() => {
@@ -46,6 +58,10 @@ export default function Sidebar() {
         if (!emp) return;
         api.getTeamMembers(emp.id)
           .then((members: any[]) => setIsManager(members.length > 0))
+          .catch(() => {});
+        // Is this employee a project reporting person on any active project?
+        api.getProjects({ status: 'active' })
+          .then((projs: any[]) => setIsProjectReviewer(projs.some(p => p.project_reporting_id === emp.id)))
           .catch(() => {});
       })
       .catch(() => {});
@@ -84,7 +100,9 @@ export default function Sidebar() {
               background: role === 'admin' ? 'rgba(238,39,112,0.2)' : 'rgba(255,255,255,0.1)',
               color: role === 'admin' ? '#ff75b0' : 'rgba(255,255,255,0.6)',
             }}>
-            {role === 'hr_manager' ? 'HR Manager' : role.charAt(0).toUpperCase() + role.slice(1)}
+            {role === 'hr_manager' ? 'HR Manager'
+              : role === 'project_coordinator' ? 'Project Coordinator'
+              : role.charAt(0).toUpperCase() + role.slice(1)}
           </span>
         </div>
       )}
@@ -92,8 +110,8 @@ export default function Sidebar() {
       {/* Nav */}
       <nav className="flex-1 py-4 px-2 space-y-0.5 overflow-y-auto">
 
-        {/* Admin / HR routes */}
-        {!isEmployee && adminNavItems.map(({ to, icon: Icon, label }) => (
+        {/* Admin / HR routes (hidden for project_coordinator who only has Project Mgmt) */}
+        {isAdminLike && adminNavItems.map(({ to, icon: Icon, label }) => (
           <NavLink key={to} to={to} end={to === '/'}
             className={({ isActive }) => navLinkClass(isActive)}
             style={({ isActive }) => navLinkStyle(isActive)}>
@@ -105,6 +123,55 @@ export default function Sidebar() {
             )}
           </NavLink>
         ))}
+
+        {/* Project Mgmt — shown for admin / hr_manager / project_coordinator */}
+        {(isAdminLike || isCoord) && (
+          <div className="pt-2">
+            <button
+              onClick={() => !collapsed && setProjectsOpen(v => !v)}
+              className={`flex items-center w-full px-3 py-2.5 rounded-lg text-sm font-medium transition-all
+                ${collapsed ? 'justify-center' : 'justify-between'}
+                ${isOnProjects ? 'text-white' : 'text-white/55 hover:text-white/85'}`}
+              style={isOnProjects ? { background: 'rgba(238,39,112,0.12)' } : {}}>
+              <div className="flex items-center gap-3">
+                <Briefcase size={18} style={{ color: isOnProjects ? '#EE2770' : undefined }} />
+                {!collapsed && <span>Project Mgmt</span>}
+              </div>
+              {!collapsed && (
+                <ChevronDown size={14}
+                  className={`transition-transform text-white/40 ${projectsOpen ? 'rotate-180' : ''}`} />
+              )}
+            </button>
+            {!collapsed && projectsOpen && (
+              <div className="mt-0.5 ml-3 pl-5 space-y-0.5"
+                style={{ borderLeft: '1px solid rgba(255,255,255,0.1)' }}>
+                {projectNavItems.map(({ to, icon: Icon, label }) => (
+                  <NavLink key={to} to={to} end={to === '/hours'}
+                    className={({ isActive }) =>
+                      `flex items-center gap-2.5 px-3 py-2 rounded-lg text-xs font-semibold transition-all
+                       ${isActive ? 'text-white' : 'text-white/45 hover:text-white/75'}`}
+                    style={({ isActive }) => isActive ? { background: 'rgba(238,39,112,0.15)', color: '#ff75b0' } : {}}>
+                    <Icon size={13} /> {label}
+                  </NavLink>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Approvals shortcut for employees who are project_reporting on some project */}
+        {isEmployee && isProjectReviewer && (
+          <NavLink to="/hours/approvals" end
+            className={({ isActive }) => navLinkClass(isActive)}
+            style={({ isActive }) => navLinkStyle(isActive)}>
+            {({ isActive }) => (
+              <>
+                <ClipboardCheck size={18} style={{ color: isActive ? '#EE2770' : undefined }} />
+                {!collapsed && <span>Hour Approvals</span>}
+              </>
+            )}
+          </NavLink>
+        )}
 
         {/* Employee routes */}
         {isEmployee && (

@@ -63,6 +63,13 @@ async function notifyAdminsAndHR(type: string, title: string, body?: string) {
   } catch { /* non-fatal */ }
 }
 
+async function notifyCoordinators(type: string, title: string, body?: string) {
+  try {
+    const users = await sql`SELECT id FROM app_users WHERE role IN ('admin', 'hr_manager', 'project_coordinator') AND active = TRUE`;
+    await Promise.all((users as any[]).map((u: any) => notifyUser(u.id, type, title, body)));
+  } catch { /* non-fatal */ }
+}
+
 async function notifyEmployeeUser(employeeDbId: string, type: string, title: string, body?: string) {
   try {
     const users = await sql`SELECT u.id FROM app_users u JOIN employees e ON e.employee_id = u.employee_id_ref WHERE e.id = ${employeeDbId}`;
@@ -277,6 +284,67 @@ async function runStartupMigrations() {
       year INTEGER NOT NULL, created_at TIMESTAMPTZ DEFAULT NOW(),
       UNIQUE(date, year)
     )`;
+  // ── Project Hours module (replaces Google Sheet workflow) ────────────────
+  await sql`
+    CREATE TABLE IF NOT EXISTS projects (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      client_name TEXT,
+      project_type TEXT,
+      dashboard_url TEXT,
+      project_reporting_id TEXT,
+      project_reporting_name TEXT,
+      project_lead_id TEXT,
+      project_lead_name TEXT,
+      status TEXT DEFAULT 'active',
+      flag TEXT,
+      flag_reason TEXT,
+      notes TEXT,
+      created_at TIMESTAMPTZ DEFAULT NOW(),
+      created_by TEXT
+    )`;
+  await sql`
+    CREATE TABLE IF NOT EXISTS project_assignments (
+      id TEXT PRIMARY KEY,
+      project_id TEXT NOT NULL,
+      employee_id TEXT NOT NULL,
+      employee_name TEXT,
+      month INTEGER NOT NULL,
+      year INTEGER NOT NULL,
+      monthly_hours NUMERIC DEFAULT 0,
+      w1_hours NUMERIC DEFAULT 0,
+      w2_hours NUMERIC DEFAULT 0,
+      w3_hours NUMERIC DEFAULT 0,
+      w4_hours NUMERIC DEFAULT 0,
+      w5_hours NUMERIC DEFAULT 0,
+      notes TEXT,
+      created_at TIMESTAMPTZ DEFAULT NOW(),
+      updated_at TIMESTAMPTZ DEFAULT NOW(),
+      created_by TEXT,
+      UNIQUE(project_id, employee_id, month, year)
+    )`;
+  await sql`
+    CREATE TABLE IF NOT EXISTS hour_logs (
+      id TEXT PRIMARY KEY,
+      assignment_id TEXT NOT NULL,
+      project_id TEXT NOT NULL,
+      employee_id TEXT NOT NULL,
+      employee_name TEXT,
+      month INTEGER NOT NULL,
+      year INTEGER NOT NULL,
+      week_num INTEGER NOT NULL,
+      hours_logged NUMERIC NOT NULL,
+      work_description TEXT,
+      status TEXT DEFAULT 'pending',
+      rejection_reason TEXT,
+      reviewed_by_id TEXT,
+      reviewed_by_name TEXT,
+      reviewed_at TIMESTAMPTZ,
+      submitted_at TIMESTAMPTZ DEFAULT NOW(),
+      updated_at TIMESTAMPTZ DEFAULT NOW(),
+      UNIQUE(assignment_id, week_num)
+    )`;
+
   await sql`
     CREATE TABLE IF NOT EXISTS attendance_sync_log (
       id SERIAL PRIMARY KEY, sync_id TEXT UNIQUE, triggered TEXT,
@@ -2367,6 +2435,429 @@ app.delete('/api/users/:id', async (req, res) => {
     await sql`DELETE FROM app_users WHERE id=${req.params.id}`;
     res.json({ success: true });
   } catch (err) { res.status(500).json({ error: 'Server error' }); }
+});
+
+// ─────────────────────────────────────────────────────────────────────────
+// Project Hours module — projects, monthly assignments, weekly logs
+// ─────────────────────────────────────────────────────────────────────────
+
+function newId(prefix: string) {
+  return `${prefix}_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
+}
+
+// ── Projects ─────────────────────────────────────────────────────────────
+app.get('/api/projects', async (req, res) => {
+  try {
+    await runStartupMigrations();
+    const { status, type } = req.query;
+    let rows: any[];
+    if (status && type) {
+      rows = await sql`SELECT * FROM projects WHERE status=${status} AND project_type=${type} ORDER BY name ASC`;
+    } else if (status) {
+      rows = await sql`SELECT * FROM projects WHERE status=${status} ORDER BY name ASC`;
+    } else if (type) {
+      rows = await sql`SELECT * FROM projects WHERE project_type=${type} ORDER BY name ASC`;
+    } else {
+      rows = await sql`SELECT * FROM projects ORDER BY status='archived', name ASC`;
+    }
+    res.json(rows);
+  } catch (err: any) { res.status(500).json({ error: err.message || 'Server error' }); }
+});
+
+app.post('/api/projects', async (req, res) => {
+  try {
+    await runStartupMigrations();
+    const {
+      name, client_name, project_type, dashboard_url,
+      project_reporting_id, project_reporting_name,
+      project_lead_id, project_lead_name,
+      status, flag, flag_reason, notes, created_by,
+    } = req.body;
+    if (!name) return res.status(400).json({ error: 'name is required' });
+    const id = newId('proj');
+    const rows = await sql`
+      INSERT INTO projects (id, name, client_name, project_type, dashboard_url,
+        project_reporting_id, project_reporting_name, project_lead_id, project_lead_name,
+        status, flag, flag_reason, notes, created_by)
+      VALUES (${id}, ${name}, ${client_name ?? null}, ${project_type ?? null}, ${dashboard_url ?? null},
+        ${project_reporting_id ?? null}, ${project_reporting_name ?? null},
+        ${project_lead_id ?? null}, ${project_lead_name ?? null},
+        ${status ?? 'active'}, ${flag ?? null}, ${flag_reason ?? null}, ${notes ?? null}, ${created_by ?? null})
+      RETURNING *`;
+    res.status(201).json(rows[0]);
+  } catch (err: any) { res.status(500).json({ error: err.message || 'Server error' }); }
+});
+
+app.put('/api/projects/:id', async (req, res) => {
+  try {
+    const {
+      name, client_name, project_type, dashboard_url,
+      project_reporting_id, project_reporting_name,
+      project_lead_id, project_lead_name,
+      status, flag, flag_reason, notes,
+    } = req.body;
+    const rows = await sql`
+      UPDATE projects SET
+        name=${name}, client_name=${client_name ?? null}, project_type=${project_type ?? null},
+        dashboard_url=${dashboard_url ?? null},
+        project_reporting_id=${project_reporting_id ?? null}, project_reporting_name=${project_reporting_name ?? null},
+        project_lead_id=${project_lead_id ?? null}, project_lead_name=${project_lead_name ?? null},
+        status=${status ?? 'active'}, flag=${flag ?? null}, flag_reason=${flag_reason ?? null},
+        notes=${notes ?? null}
+      WHERE id=${req.params.id} RETURNING *`;
+    if (!rows.length) return res.status(404).json({ error: 'Project not found' });
+    res.json(rows[0]);
+  } catch (err: any) { res.status(500).json({ error: err.message || 'Server error' }); }
+});
+
+app.delete('/api/projects/:id', async (req, res) => {
+  try {
+    // Soft delete: mark archived; preserves history of hour logs
+    const rows = await sql`UPDATE projects SET status='archived' WHERE id=${req.params.id} RETURNING id, status`;
+    if (!rows.length) return res.status(404).json({ error: 'Project not found' });
+    res.json(rows[0]);
+  } catch (err: any) { res.status(500).json({ error: err.message || 'Server error' }); }
+});
+
+// ── Assignments ──────────────────────────────────────────────────────────
+app.get('/api/project-assignments', async (req, res) => {
+  try {
+    await runStartupMigrations();
+    const month = req.query.month ? Number(req.query.month) : null;
+    const year = req.query.year ? Number(req.query.year) : null;
+    const employee_id = (req.query.employee_id as string) || null;
+    const project_id = (req.query.project_id as string) || null;
+    const rows = await sql`
+      SELECT pa.*, p.name AS project_name, p.client_name AS project_client_name,
+             p.project_type, p.dashboard_url, p.flag AS project_flag,
+             p.project_reporting_id, p.project_reporting_name,
+             p.project_lead_id, p.project_lead_name, p.status AS project_status
+      FROM project_assignments pa
+      JOIN projects p ON p.id = pa.project_id
+      WHERE (${month}::int IS NULL OR pa.month=${month})
+        AND (${year}::int IS NULL  OR pa.year=${year})
+        AND (${employee_id}::text IS NULL OR pa.employee_id=${employee_id})
+        AND (${project_id}::text IS NULL OR pa.project_id=${project_id})
+      ORDER BY p.name ASC, pa.employee_name ASC`;
+    res.json(rows);
+  } catch (err: any) { res.status(500).json({ error: err.message || 'Server error' }); }
+});
+
+app.post('/api/project-assignments', async (req, res) => {
+  try {
+    await runStartupMigrations();
+    const {
+      project_id, employee_id, employee_name, month, year,
+      w1_hours, w2_hours, w3_hours, w4_hours, w5_hours, notes, created_by,
+    } = req.body;
+    if (!project_id || !employee_id || !month || !year)
+      return res.status(400).json({ error: 'project_id, employee_id, month, year are required' });
+    const w1 = Number(w1_hours) || 0;
+    const w2 = Number(w2_hours) || 0;
+    const w3 = Number(w3_hours) || 0;
+    const w4 = Number(w4_hours) || 0;
+    const w5 = Number(w5_hours) || 0;
+    const monthly = w1 + w2 + w3 + w4 + w5;
+    const id = newId('pa');
+    const rows = await sql`
+      INSERT INTO project_assignments (id, project_id, employee_id, employee_name,
+        month, year, monthly_hours, w1_hours, w2_hours, w3_hours, w4_hours, w5_hours,
+        notes, created_by)
+      VALUES (${id}, ${project_id}, ${employee_id}, ${employee_name ?? null},
+        ${month}, ${year}, ${monthly}, ${w1}, ${w2}, ${w3}, ${w4}, ${w5},
+        ${notes ?? null}, ${created_by ?? null})
+      ON CONFLICT (project_id, employee_id, month, year) DO UPDATE SET
+        w1_hours=EXCLUDED.w1_hours, w2_hours=EXCLUDED.w2_hours, w3_hours=EXCLUDED.w3_hours,
+        w4_hours=EXCLUDED.w4_hours, w5_hours=EXCLUDED.w5_hours,
+        monthly_hours=EXCLUDED.monthly_hours, notes=EXCLUDED.notes,
+        updated_at=NOW()
+      RETURNING *`;
+    const inserted = rows[0];
+    try {
+      const proj = await sql`SELECT name FROM projects WHERE id=${project_id}`;
+      const projectName = (proj as any[])[0]?.name || 'a project';
+      notifyEmployeeUser(employee_id, 'hours_assigned',
+        'Project Hours Assigned',
+        `${monthly}h on ${projectName} for ${month}/${year}`).catch(()=>{});
+    } catch {}
+    res.status(201).json(inserted);
+  } catch (err: any) { res.status(500).json({ error: err.message || 'Server error' }); }
+});
+
+app.put('/api/project-assignments/:id', async (req, res) => {
+  try {
+    const { w1_hours, w2_hours, w3_hours, w4_hours, w5_hours, notes } = req.body;
+    const w1 = Number(w1_hours) || 0;
+    const w2 = Number(w2_hours) || 0;
+    const w3 = Number(w3_hours) || 0;
+    const w4 = Number(w4_hours) || 0;
+    const w5 = Number(w5_hours) || 0;
+    const monthly = w1 + w2 + w3 + w4 + w5;
+    const rows = await sql`
+      UPDATE project_assignments SET
+        w1_hours=${w1}, w2_hours=${w2}, w3_hours=${w3}, w4_hours=${w4}, w5_hours=${w5},
+        monthly_hours=${monthly}, notes=${notes ?? null}, updated_at=NOW()
+      WHERE id=${req.params.id} RETURNING *`;
+    if (!rows.length) return res.status(404).json({ error: 'Assignment not found' });
+    const r = rows[0];
+    try {
+      const proj = await sql`SELECT name FROM projects WHERE id=${r.project_id}`;
+      const projectName = (proj as any[])[0]?.name || 'a project';
+      notifyEmployeeUser(r.employee_id, 'hours_updated',
+        'Project Hours Updated',
+        `${projectName} for ${r.month}/${r.year}: now ${monthly}h total`).catch(()=>{});
+    } catch {}
+    res.json(r);
+  } catch (err: any) { res.status(500).json({ error: err.message || 'Server error' }); }
+});
+
+app.delete('/api/project-assignments/:id', async (req, res) => {
+  try {
+    const rows = await sql`DELETE FROM project_assignments WHERE id=${req.params.id} RETURNING *`;
+    if (!rows.length) return res.status(404).json({ error: 'Assignment not found' });
+    const r = rows[0];
+    try {
+      const proj = await sql`SELECT name FROM projects WHERE id=${r.project_id}`;
+      const projectName = (proj as any[])[0]?.name || 'a project';
+      notifyEmployeeUser(r.employee_id, 'hours_removed',
+        'Project Hours Removed',
+        `${projectName} for ${r.month}/${r.year} was unassigned`).catch(()=>{});
+    } catch {}
+    res.json({ success: true });
+  } catch (err: any) { res.status(500).json({ error: err.message || 'Server error' }); }
+});
+
+app.post('/api/project-assignments/copy-month', async (req, res) => {
+  try {
+    const { from_month, from_year, to_month, to_year, created_by, blank_hours } = req.body;
+    if (!from_month || !from_year || !to_month || !to_year)
+      return res.status(400).json({ error: 'from_month, from_year, to_month, to_year are required' });
+    const src = await sql`SELECT * FROM project_assignments WHERE month=${from_month} AND year=${from_year}`;
+    let copied = 0;
+    for (const s of src as any[]) {
+      const id = newId('pa');
+      const w1 = blank_hours ? 0 : Number(s.w1_hours) || 0;
+      const w2 = blank_hours ? 0 : Number(s.w2_hours) || 0;
+      const w3 = blank_hours ? 0 : Number(s.w3_hours) || 0;
+      const w4 = blank_hours ? 0 : Number(s.w4_hours) || 0;
+      const w5 = blank_hours ? 0 : Number(s.w5_hours) || 0;
+      const monthly = w1 + w2 + w3 + w4 + w5;
+      try {
+        await sql`
+          INSERT INTO project_assignments (id, project_id, employee_id, employee_name,
+            month, year, monthly_hours, w1_hours, w2_hours, w3_hours, w4_hours, w5_hours,
+            notes, created_by)
+          VALUES (${id}, ${s.project_id}, ${s.employee_id}, ${s.employee_name},
+            ${to_month}, ${to_year}, ${monthly}, ${w1}, ${w2}, ${w3}, ${w4}, ${w5},
+            ${s.notes}, ${created_by ?? null})
+          ON CONFLICT (project_id, employee_id, month, year) DO NOTHING`;
+        copied++;
+      } catch {}
+    }
+    res.json({ success: true, copied });
+  } catch (err: any) { res.status(500).json({ error: err.message || 'Server error' }); }
+});
+
+// ── Hour logs ────────────────────────────────────────────────────────────
+app.get('/api/hour-logs', async (req, res) => {
+  try {
+    await runStartupMigrations();
+    const month = req.query.month ? Number(req.query.month) : null;
+    const year = req.query.year ? Number(req.query.year) : null;
+    const employee_id = (req.query.employee_id as string) || null;
+    const status = (req.query.status as string) || null;
+    const reviewer_id = (req.query.reviewer_id as string) || null;
+    const rows = await sql`
+      SELECT hl.*, p.name AS project_name, p.client_name AS project_client_name,
+             p.project_reporting_id, p.project_reporting_name,
+             pa.w1_hours, pa.w2_hours, pa.w3_hours, pa.w4_hours, pa.w5_hours,
+             pa.monthly_hours AS assignment_monthly_hours
+      FROM hour_logs hl
+      JOIN projects p ON p.id = hl.project_id
+      LEFT JOIN project_assignments pa ON pa.id = hl.assignment_id
+      WHERE (${month}::int IS NULL OR hl.month=${month})
+        AND (${year}::int IS NULL  OR hl.year=${year})
+        AND (${employee_id}::text IS NULL OR hl.employee_id=${employee_id})
+        AND (${status}::text IS NULL OR hl.status=${status})
+        AND (${reviewer_id}::text IS NULL OR p.project_reporting_id=${reviewer_id})
+      ORDER BY hl.submitted_at DESC`;
+    res.json(rows);
+  } catch (err: any) { res.status(500).json({ error: err.message || 'Server error' }); }
+});
+
+app.post('/api/hour-logs', async (req, res) => {
+  try {
+    await runStartupMigrations();
+    const { project_id, employee_id, employee_name, month, year, week_num, hours_logged, work_description } = req.body;
+    if (!project_id || !employee_id || !month || !year || !week_num)
+      return res.status(400).json({ error: 'project_id, employee_id, month, year, week_num are required' });
+    const aRows = await sql`
+      SELECT id FROM project_assignments
+      WHERE project_id=${project_id} AND employee_id=${employee_id}
+        AND month=${month} AND year=${year}`;
+    if (!(aRows as any[]).length)
+      return res.status(400).json({ error: 'No matching assignment exists for that project/month' });
+    const assignment_id = (aRows as any[])[0].id;
+    const id = newId('hl');
+    const rows = await sql`
+      INSERT INTO hour_logs (id, assignment_id, project_id, employee_id, employee_name,
+        month, year, week_num, hours_logged, work_description, status)
+      VALUES (${id}, ${assignment_id}, ${project_id}, ${employee_id}, ${employee_name ?? null},
+        ${month}, ${year}, ${week_num}, ${Number(hours_logged) || 0}, ${work_description ?? null}, 'pending')
+      ON CONFLICT (assignment_id, week_num) DO UPDATE SET
+        hours_logged=EXCLUDED.hours_logged,
+        work_description=EXCLUDED.work_description,
+        status='pending',
+        rejection_reason=NULL,
+        reviewed_by_id=NULL, reviewed_by_name=NULL, reviewed_at=NULL,
+        submitted_at=NOW(), updated_at=NOW()
+      RETURNING *`;
+    const log = (rows as any[])[0];
+    try {
+      const p = await sql`SELECT name, project_reporting_id FROM projects WHERE id=${project_id}`;
+      const projRow = (p as any[])[0];
+      if (projRow?.project_reporting_id) {
+        notifyEmployeeUser(projRow.project_reporting_id, 'hours_logged',
+          'Hours Submitted for Review',
+          `${req.body.employee_name || 'An employee'} logged ${hours_logged}h on ${projRow.name} (W${week_num})`).catch(()=>{});
+      } else {
+        notifyCoordinators('hours_logged',
+          'Hours Submitted (no reviewer set)',
+          `${req.body.employee_name || 'An employee'} logged ${hours_logged}h on ${projRow?.name || 'a project'} (W${week_num})`).catch(()=>{});
+      }
+    } catch {}
+    res.status(201).json(log);
+  } catch (err: any) { res.status(500).json({ error: err.message || 'Server error' }); }
+});
+
+app.put('/api/hour-logs/:id', async (req, res) => {
+  try {
+    const { hours_logged, work_description } = req.body;
+    const existing = await sql`SELECT status FROM hour_logs WHERE id=${req.params.id}`;
+    if (!(existing as any[]).length) return res.status(404).json({ error: 'Log not found' });
+    const cur = (existing as any[])[0];
+    if (cur.status === 'approved') return res.status(400).json({ error: 'Approved logs cannot be edited' });
+    const rows = await sql`
+      UPDATE hour_logs SET
+        hours_logged=${Number(hours_logged) || 0},
+        work_description=${work_description ?? null},
+        status='pending',
+        rejection_reason=NULL,
+        reviewed_by_id=NULL, reviewed_by_name=NULL, reviewed_at=NULL,
+        updated_at=NOW()
+      WHERE id=${req.params.id} RETURNING *`;
+    res.json(rows[0]);
+  } catch (err: any) { res.status(500).json({ error: err.message || 'Server error' }); }
+});
+
+app.patch('/api/hour-logs/:id/approve', async (req, res) => {
+  try {
+    const { reviewer_id, reviewer_name } = req.body;
+    const rows = await sql`
+      UPDATE hour_logs SET status='approved',
+        rejection_reason=NULL,
+        reviewed_by_id=${reviewer_id ?? null}, reviewed_by_name=${reviewer_name ?? null},
+        reviewed_at=NOW(), updated_at=NOW()
+      WHERE id=${req.params.id} RETURNING *`;
+    if (!rows.length) return res.status(404).json({ error: 'Log not found' });
+    const r = rows[0];
+    try {
+      const proj = await sql`SELECT name FROM projects WHERE id=${r.project_id}`;
+      const projectName = (proj as any[])[0]?.name || 'a project';
+      notifyEmployeeUser(r.employee_id, 'hours_approved',
+        'Hours Approved',
+        `Your ${r.hours_logged}h on ${projectName} (W${r.week_num}) was approved by ${reviewer_name || 'reviewer'}`).catch(()=>{});
+    } catch {}
+    res.json(r);
+  } catch (err: any) { res.status(500).json({ error: err.message || 'Server error' }); }
+});
+
+app.patch('/api/hour-logs/:id/reject', async (req, res) => {
+  try {
+    const { reviewer_id, reviewer_name, rejection_reason } = req.body;
+    if (!rejection_reason) return res.status(400).json({ error: 'rejection_reason is required' });
+    const rows = await sql`
+      UPDATE hour_logs SET status='rejected',
+        rejection_reason=${rejection_reason},
+        reviewed_by_id=${reviewer_id ?? null}, reviewed_by_name=${reviewer_name ?? null},
+        reviewed_at=NOW(), updated_at=NOW()
+      WHERE id=${req.params.id} RETURNING *`;
+    if (!rows.length) return res.status(404).json({ error: 'Log not found' });
+    const r = rows[0];
+    try {
+      const proj = await sql`SELECT name FROM projects WHERE id=${r.project_id}`;
+      const projectName = (proj as any[])[0]?.name || 'a project';
+      notifyEmployeeUser(r.employee_id, 'hours_rejected',
+        'Hours Rejected',
+        `Your ${r.hours_logged}h on ${projectName} (W${r.week_num}) was rejected: ${rejection_reason}`).catch(()=>{});
+    } catch {}
+    res.json(r);
+  } catch (err: any) { res.status(500).json({ error: err.message || 'Server error' }); }
+});
+
+// ── Aggregation: per-employee weekly totals + variance vs 35h target ─────
+app.get('/api/hours-summary', async (req, res) => {
+  try {
+    await runStartupMigrations();
+    const month = req.query.month ? Number(req.query.month) : null;
+    const year = req.query.year ? Number(req.query.year) : null;
+    if (!month || !year) return res.status(400).json({ error: 'month and year are required' });
+    const byEmployee = await sql`
+      SELECT employee_id, COALESCE(MAX(employee_name),'') AS employee_name,
+        SUM(COALESCE(w1_hours,0))::numeric AS w1,
+        SUM(COALESCE(w2_hours,0))::numeric AS w2,
+        SUM(COALESCE(w3_hours,0))::numeric AS w3,
+        SUM(COALESCE(w4_hours,0))::numeric AS w4,
+        SUM(COALESCE(w5_hours,0))::numeric AS w5,
+        SUM(COALESCE(monthly_hours,0))::numeric AS monthly
+      FROM project_assignments
+      WHERE month=${month} AND year=${year}
+      GROUP BY employee_id
+      ORDER BY employee_name ASC`;
+    const logSums = await sql`
+      SELECT employee_id,
+        SUM(CASE WHEN status='approved' THEN hours_logged ELSE 0 END)::numeric AS logged_approved,
+        SUM(CASE WHEN status='pending'  THEN hours_logged ELSE 0 END)::numeric AS logged_pending,
+        SUM(CASE WHEN status='rejected' THEN hours_logged ELSE 0 END)::numeric AS logged_rejected
+      FROM hour_logs WHERE month=${month} AND year=${year}
+      GROUP BY employee_id`;
+    const logsMap = new Map<string, any>();
+    for (const l of logSums as any[]) logsMap.set(l.employee_id, l);
+    const totals = await sql`
+      SELECT
+        COALESCE(SUM(COALESCE(monthly_hours,0)),0)::numeric AS total_allocated
+      FROM project_assignments WHERE month=${month} AND year=${year}`;
+    const logTotals = await sql`
+      SELECT
+        COALESCE(SUM(CASE WHEN status='approved' THEN hours_logged ELSE 0 END),0)::numeric AS total_approved,
+        COALESCE(SUM(CASE WHEN status='pending' THEN hours_logged ELSE 0 END),0)::numeric AS total_pending,
+        COUNT(*) FILTER (WHERE status='pending') AS pending_count
+      FROM hour_logs WHERE month=${month} AND year=${year}`;
+    const employeeRows = (byEmployee as any[]).map((e: any) => {
+      const log = logsMap.get(e.employee_id) || { logged_approved: 0, logged_pending: 0, logged_rejected: 0 };
+      const weeks = [Number(e.w1), Number(e.w2), Number(e.w3), Number(e.w4), Number(e.w5)];
+      const variance = weeks.map(w => w - 35);
+      return {
+        employee_id: e.employee_id,
+        employee_name: e.employee_name,
+        w1: Number(e.w1), w2: Number(e.w2), w3: Number(e.w3), w4: Number(e.w4), w5: Number(e.w5),
+        monthly: Number(e.monthly),
+        variance_w1: variance[0], variance_w2: variance[1],
+        variance_w3: variance[2], variance_w4: variance[3], variance_w5: variance[4],
+        logged_approved: Number(log.logged_approved),
+        logged_pending: Number(log.logged_pending),
+        logged_rejected: Number(log.logged_rejected),
+      };
+    });
+    res.json({
+      month, year,
+      employees: employeeRows,
+      total_allocated: Number((totals as any[])[0]?.total_allocated || 0),
+      total_logged_approved: Number((logTotals as any[])[0]?.total_approved || 0),
+      total_logged_pending: Number((logTotals as any[])[0]?.total_pending || 0),
+      pending_review_count: Number((logTotals as any[])[0]?.pending_count || 0),
+    });
+  } catch (err: any) { res.status(500).json({ error: err.message || 'Server error' }); }
 });
 
 // ── Global error handler — always return JSON, never Express HTML page ────

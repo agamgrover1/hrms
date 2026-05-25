@@ -1,4 +1,4 @@
-import { Bell, ChevronDown, LogOut, CheckCircle, Calendar, TrendingUp, FileText, Target, XCircle, Award, Check, Trash2, AlertTriangle, ShieldAlert, KeyRound, Eye, EyeOff, Wrench } from 'lucide-react';
+import { Bell, ChevronDown, LogOut, CheckCircle, Calendar, TrendingUp, FileText, Target, XCircle, Award, Check, Trash2, AlertTriangle, ShieldAlert, KeyRound, Eye, EyeOff, Wrench, Clock as ClockIcon } from 'lucide-react';
 import { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../../context/AuthContext';
@@ -96,6 +96,21 @@ function getNotifRoute(type: string, role: string): string {
     case 'repair_awaiting_approval':
       return isHR ? '/asset-repairs' : '/my?tab=device';
 
+    // ── Project Hours ──────────────────────────────────────────────────────────
+    case 'hours_assigned':
+    case 'hours_updated':
+    case 'hours_removed':
+      // Employee receives → My Hours tab
+      // Project coordinator / HR receive only as side-effect → Hours page
+      return isHR || role === 'project_coordinator' ? '/hours' : '/my?tab=my-hours';
+    case 'hours_logged':
+      // Reviewer receives → Approvals queue
+      return '/hours/approvals';
+    case 'hours_approved':
+    case 'hours_rejected':
+      // Employee receives → My Hours tab
+      return isHR || role === 'project_coordinator' ? '/hours' : '/my?tab=my-hours';
+
     // ── General ────────────────────────────────────────────────────────────────
     case 'info':
       return isHR ? '/' : '/my';
@@ -145,6 +160,13 @@ const TYPE_CONFIG: Record<string, { icon: any; color: string; bg: string }> = {
   repair_cancelled:        { icon: XCircle,        color: '#6b7280', bg: '#f3f4f6' },
   expense_rejected:        { icon: XCircle,        color: '#dc2626', bg: '#fef2f2' },
   expense_paid:            { icon: Award,          color: '#7c3aed', bg: '#f5f3ff' },
+  // Project Hours
+  hours_assigned:          { icon: ClockIcon,      color: '#2563eb', bg: '#eff6ff' },
+  hours_updated:           { icon: ClockIcon,      color: '#0891b2', bg: '#f0f9ff' },
+  hours_removed:           { icon: XCircle,        color: '#6b7280', bg: '#f3f4f6' },
+  hours_logged:            { icon: FileText,       color: '#7c3aed', bg: '#f5f3ff' },
+  hours_approved:          { icon: CheckCircle,    color: '#15803d', bg: '#f0fdf4' },
+  hours_rejected:          { icon: XCircle,        color: '#dc2626', bg: '#fef2f2' },
   // General
   info:                    { icon: CheckCircle,    color: '#15803d', bg: '#f0fdf4' },
 };

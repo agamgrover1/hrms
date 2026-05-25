@@ -248,4 +248,70 @@ export const api = {
   changePassword: (id: string, current_password: string, new_password: string) =>
     request<any>(`/users/${id}/change-password`, { method: 'PATCH', body: JSON.stringify({ current_password, new_password }) }),
   deleteUser: (id: string) => request<any>(`/users/${id}`, { method: 'DELETE' }),
+
+  // ── Project Hours module ────────────────────────────────────────────────
+  getProjects: (params?: { status?: string; type?: string }) => {
+    const qs = new URLSearchParams();
+    if (params?.status) qs.set('status', params.status);
+    if (params?.type) qs.set('type', params.type);
+    return request<any[]>(`/projects?${qs}`);
+  },
+  createProject: (data: any) => request<any>('/projects', { method: 'POST', body: JSON.stringify(data) }),
+  updateProject: (id: string, data: any) => request<any>(`/projects/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
+  deleteProject: (id: string) => request<any>(`/projects/${id}`, { method: 'DELETE' }),
+
+  getProjectAssignments: (params?: { month?: number; year?: number; employee_id?: string; project_id?: string }) => {
+    const qs = new URLSearchParams();
+    if (params?.month) qs.set('month', String(params.month));
+    if (params?.year) qs.set('year', String(params.year));
+    if (params?.employee_id) qs.set('employee_id', params.employee_id);
+    if (params?.project_id) qs.set('project_id', params.project_id);
+    return request<any[]>(`/project-assignments?${qs}`);
+  },
+  createProjectAssignment: (data: {
+    project_id: string; employee_id: string; employee_name?: string;
+    month: number; year: number;
+    w1_hours?: number; w2_hours?: number; w3_hours?: number; w4_hours?: number; w5_hours?: number;
+    notes?: string; created_by?: string;
+  }) => request<any>('/project-assignments', { method: 'POST', body: JSON.stringify(data) }),
+  updateProjectAssignment: (id: string, data: {
+    w1_hours?: number; w2_hours?: number; w3_hours?: number; w4_hours?: number; w5_hours?: number; notes?: string;
+  }) => request<any>(`/project-assignments/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
+  deleteProjectAssignment: (id: string) => request<any>(`/project-assignments/${id}`, { method: 'DELETE' }),
+  copyAssignmentsMonth: (data: { from_month: number; from_year: number; to_month: number; to_year: number; blank_hours?: boolean; created_by?: string }) =>
+    request<{ success: boolean; copied: number }>('/project-assignments/copy-month', { method: 'POST', body: JSON.stringify(data) }),
+
+  getHourLogs: (params?: { employee_id?: string; month?: number; year?: number; status?: string; reviewer_id?: string }) => {
+    const qs = new URLSearchParams();
+    if (params?.employee_id) qs.set('employee_id', params.employee_id);
+    if (params?.month) qs.set('month', String(params.month));
+    if (params?.year) qs.set('year', String(params.year));
+    if (params?.status) qs.set('status', params.status);
+    if (params?.reviewer_id) qs.set('reviewer_id', params.reviewer_id);
+    return request<any[]>(`/hour-logs?${qs}`);
+  },
+  submitHourLog: (data: {
+    project_id: string; employee_id: string; employee_name?: string;
+    month: number; year: number; week_num: number;
+    hours_logged: number; work_description?: string;
+  }) => request<any>('/hour-logs', { method: 'POST', body: JSON.stringify(data) }),
+  editHourLog: (id: string, data: { hours_logged: number; work_description?: string }) =>
+    request<any>(`/hour-logs/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
+  approveHourLog: (id: string, data: { reviewer_id?: string; reviewer_name?: string }) =>
+    request<any>(`/hour-logs/${id}/approve`, { method: 'PATCH', body: JSON.stringify(data) }),
+  rejectHourLog: (id: string, data: { reviewer_id?: string; reviewer_name?: string; rejection_reason: string }) =>
+    request<any>(`/hour-logs/${id}/reject`, { method: 'PATCH', body: JSON.stringify(data) }),
+
+  getHoursSummary: (month: number, year: number) =>
+    request<{
+      month: number; year: number;
+      employees: Array<{
+        employee_id: string; employee_name: string;
+        w1: number; w2: number; w3: number; w4: number; w5: number; monthly: number;
+        variance_w1: number; variance_w2: number; variance_w3: number; variance_w4: number; variance_w5: number;
+        logged_approved: number; logged_pending: number; logged_rejected: number;
+      }>;
+      total_allocated: number; total_logged_approved: number; total_logged_pending: number;
+      pending_review_count: number;
+    }>(`/hours-summary?month=${month}&year=${year}`),
 };

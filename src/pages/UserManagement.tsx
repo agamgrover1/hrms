@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { Plus, Edit2, Trash2, X, Eye, EyeOff, Shield, Users, UserCheck, Search, ToggleLeft, ToggleRight } from 'lucide-react';
+import { Plus, Edit2, Trash2, X, Eye, EyeOff, Shield, Users, UserCheck, Search, ToggleLeft, ToggleRight, Briefcase } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import type { AppUser, Role } from '../context/AuthContext';
 import { departments } from '../data/mockData';
@@ -8,6 +8,7 @@ import { api } from '../services/api';
 const roleConfig: Record<Role, { label: string; color: string; icon: typeof Shield }> = {
   admin: { label: 'Admin', color: 'bg-red-50 text-red-600 border-red-200', icon: Shield },
   hr_manager: { label: 'HR Manager', color: 'bg-primary-50 text-primary-600 border-primary-200', icon: UserCheck },
+  project_coordinator: { label: 'Project Coordinator', color: 'bg-indigo-50 text-indigo-600 border-indigo-200', icon: Briefcase },
   employee: { label: 'Employee', color: 'bg-gray-50 text-gray-600 border-gray-200', icon: Users },
 };
 
@@ -108,6 +109,7 @@ function UserModal({
                 className="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-primary-200 focus:border-primary-400 bg-white">
                 <option value="employee">Employee</option>
                 <option value="hr_manager">HR Manager</option>
+                <option value="project_coordinator">Project Coordinator</option>
                 <option value="admin">Admin</option>
               </select>
             </div>
@@ -201,6 +203,7 @@ export default function UserManagement() {
     total: users.length,
     admin: users.filter(u => u.role === 'admin').length,
     hr_manager: users.filter(u => u.role === 'hr_manager').length,
+    project_coordinator: users.filter(u => u.role === 'project_coordinator').length,
     employee: users.filter(u => u.role === 'employee').length,
   };
 
@@ -247,6 +250,7 @@ export default function UserManagement() {
           <option value="all">All Roles</option>
           <option value="admin">Admin</option>
           <option value="hr_manager">HR Manager</option>
+          <option value="project_coordinator">Project Coordinator</option>
           <option value="employee">Employee</option>
         </select>
         <button
