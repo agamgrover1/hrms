@@ -163,12 +163,6 @@ export default function Dashboard() {
     { label: 'Monthly Payroll',   value: totalNetPay ? <CountUp to={totalNetPay / 100000} decimals={1} prefix="₹" suffix="L" /> : '—', sub: `${currentMonthName} ${currentYear} · Net`, icon: DollarSign, iconBg: 'bg-accent-container', iconColor: 'text-on-accent-container' },
   ];
 
-  if (loading) return (
-    <div className="flex items-center justify-center h-64">
-      <div className="w-8 h-8 border-4 border-outline border-t-accent rounded-full animate-spin" />
-    </div>
-  );
-
   const greeting = (() => {
     const h = now.getHours();
     return h < 12 ? 'Good morning' : h < 17 ? 'Good afternoon' : 'Good evening';
@@ -182,6 +176,12 @@ export default function Dashboard() {
     const id = setTimeout(() => setRingOffset(ringTargetOffset), 120);
     return () => clearTimeout(id);
   }, [ringTargetOffset]);
+
+  if (loading) return (
+    <div className="flex items-center justify-center h-64">
+      <div className="w-8 h-8 border-4 border-outline border-t-accent rounded-full animate-spin" />
+    </div>
+  );
 
   return (
     <div className="space-y-6">
