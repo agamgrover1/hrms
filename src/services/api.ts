@@ -311,6 +311,8 @@ export const api = {
         variance_w1: number; variance_w2: number; variance_w3: number; variance_w4: number; variance_w5: number;
         logged_approved: number; logged_pending: number; logged_rejected: number;
         logged_within_plan: number; logged_over_plan: number; over_plan_log_count: number;
+        w1_logged: number; w2_logged: number; w3_logged: number; w4_logged: number; w5_logged: number;
+        w1_over: number;   w2_over: number;   w3_over: number;   w4_over: number;   w5_over: number;
       }>;
       total_allocated: number; total_logged_approved: number; total_logged_pending: number;
       total_logged_within_plan: number; total_logged_over_plan: number;

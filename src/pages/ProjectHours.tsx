@@ -2,6 +2,7 @@ import { useState, useEffect, useMemo, useCallback } from 'react';
 import { Plus, Trash2, X, Search, Copy, ExternalLink, Flag, ClipboardCheck } from 'lucide-react';
 import { api } from '../services/api';
 import { useAuth } from '../context/AuthContext';
+import EmployeeHoursDetailModal from '../components/EmployeeHoursDetailModal';
 
 interface Assignment {
   id: string;
@@ -37,6 +38,8 @@ interface SummaryEmployee {
   logged_within_plan?: number;
   logged_over_plan?: number;
   over_plan_log_count?: number;
+  w1_logged?: number; w2_logged?: number; w3_logged?: number; w4_logged?: number; w5_logged?: number;
+  w1_over?: number;   w2_over?: number;   w3_over?: number;   w4_over?: number;   w5_over?: number;
 }
 
 const MONTHS = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
@@ -72,6 +75,7 @@ export default function ProjectHours() {
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
   const [showAdd, setShowAdd] = useState(false);
+  const [detail, setDetail] = useState<{ employeeId: string; employeeName: string; focusWeek?: number } | null>(null);
   const [savingCell, setSavingCell] = useState<string | null>(null);
 
   const load = useCallback(() => {
@@ -291,32 +295,71 @@ export default function ProjectHours() {
               <tbody className="divide-y divide-outline">
                 {!summary || summary.employees.length === 0 ? (
                   <tr><td colSpan={8} className="px-3 py-6 text-center text-on-surface-subtle text-xs">No data yet.</td></tr>
-                ) : summary.employees.map(e => (
-                  <tr key={e.employee_id}>
-                    <td className="px-2 py-1.5 font-medium text-on-surface whitespace-nowrap">{e.employee_name || '—'}</td>
-                    {([e.w1, e.w2, e.w3, e.w4, e.w5] as number[]).map((w, i) => (
-                      <td key={i} className={`px-1 py-1.5 text-center font-medium ${varianceClass(w)}`}>
-                        <span className="num-mono">{w}</span>
+                ) : summary.employees.map(e => {
+                  const weekPlans = [e.w1, e.w2, e.w3, e.w4, e.w5];
+                  const weekOvers = [e.w1_over ?? 0, e.w2_over ?? 0, e.w3_over ?? 0, e.w4_over ?? 0, e.w5_over ?? 0];
+                  const weekDisplays = weekPlans.map((p, i) => Number(p) + Number(weekOvers[i]));
+                  const monthlyDisplay = Number(e.monthly) + Number(e.logged_over_plan ?? 0);
+                  const openDetail = (focusWeek?: number) => setDetail({ employeeId: e.employee_id, employeeName: e.employee_name || '—', focusWeek });
+                  return (
+                    <tr key={e.employee_id}>
+                      <td className="px-2 py-1.5 font-medium text-on-surface whitespace-nowrap">
+                        <button onClick={() => openDetail()} className="hover:text-accent transition-colors">
+                          {e.employee_name || '—'}
+                        </button>
                       </td>
-                    ))}
-                    <td className="px-1 py-1.5 text-center font-bold text-on-surface bg-surface-2">
-                      <span className="num-mono">{e.monthly}</span>
-                    </td>
-                    <td className="px-1 py-1.5 text-center" title={(e.over_plan_log_count ?? 0) > 0 ? `${e.over_plan_log_count} approved log(s) exceeded weekly allocation` : ''}>
-                      {(e.logged_over_plan ?? 0) > 0
-                        ? <span className="num-mono font-semibold text-warning">+{Math.round(e.logged_over_plan ?? 0)}</span>
-                        : <span className="num-mono text-on-surface-subtle">—</span>
-                      }
-                    </td>
-                  </tr>
-                ))}
+                      {weekDisplays.map((value, i) => {
+                        const over = Number(weekOvers[i]);
+                        return (
+                          <td key={i} className="px-1 py-1.5 text-center">
+                            <button
+                              onClick={() => openDetail(i + 1)}
+                              title={over > 0 ? `${weekPlans[i]}h planned + ${over}h over plan` : `${weekPlans[i]}h planned`}
+                              className={`num-mono inline-flex items-center justify-center w-full px-1 py-0.5 rounded-md font-medium transition-colors ${
+                                over > 0 ? 'text-warning hover:bg-warning-container' : `${varianceClass(value)} hover:opacity-80`
+                              }`}
+                            >
+                              {value}
+                              {over > 0 && <span className="text-[8px] ml-0.5 font-bold">+{Math.round(over)}</span>}
+                            </button>
+                          </td>
+                        );
+                      })}
+                      <td className="px-1 py-1.5 text-center font-bold bg-surface-2">
+                        <button
+                          onClick={() => openDetail()}
+                          className={`num-mono inline-flex items-center justify-center w-full px-1 py-0.5 rounded-md transition-colors ${
+                            (e.logged_over_plan ?? 0) > 0 ? 'text-warning hover:bg-warning-container' : 'text-on-surface hover:bg-surface-3'
+                          }`}
+                          title={(e.logged_over_plan ?? 0) > 0 ? `Plan ${e.monthly}h + ${Math.round(e.logged_over_plan ?? 0)}h over` : `Plan ${e.monthly}h`}
+                        >
+                          {monthlyDisplay}
+                          {(e.logged_over_plan ?? 0) > 0 && <span className="text-[8px] ml-0.5 font-bold">+{Math.round(e.logged_over_plan ?? 0)}</span>}
+                        </button>
+                      </td>
+                      <td className="px-1 py-1.5 text-center"
+                        title={(e.over_plan_log_count ?? 0) > 0 ? `${e.over_plan_log_count} approved log(s) exceeded weekly allocation` : ''}>
+                        {(e.logged_over_plan ?? 0) > 0 ? (
+                          <button onClick={() => openDetail()}
+                            className="num-mono font-semibold text-warning hover:bg-warning-container px-1.5 py-0.5 rounded transition-colors">
+                            +{Math.round(e.logged_over_plan ?? 0)}
+                          </button>
+                        ) : <span className="num-mono text-on-surface-subtle">—</span>}
+                      </td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           </div>
-          <div className="relative px-3 py-2 border-t border-outline bg-surface-2 text-[10px] text-on-surface-muted flex items-center gap-3">
-            <span className="inline-flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-success" />33–37</span>
-            <span className="inline-flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-warning" />28–32 / 38–40</span>
-            <span className="inline-flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-danger" />other</span>
+          <div className="relative px-3 py-2 border-t border-outline bg-surface-2 text-[10px] text-on-surface-muted">
+            <p className="mb-1">Cell value = plan + approved over-plan hours. Click any cell to drill in.</p>
+            <div className="flex items-center gap-3">
+              <span className="inline-flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-success" />33–37</span>
+              <span className="inline-flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-warning" />28–32 / 38–40</span>
+              <span className="inline-flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-danger" />other</span>
+              <span className="inline-flex items-center gap-1 ml-auto"><span className="text-warning font-bold text-[10px]">+</span> over plan</span>
+            </div>
           </div>
         </aside>
       </div>
@@ -330,6 +373,17 @@ export default function ProjectHours() {
           onClose={() => setShowAdd(false)}
           onSaved={() => { setShowAdd(false); load(); }}
           createdBy={user?.name}
+        />
+      )}
+
+      {detail && (
+        <EmployeeHoursDetailModal
+          employeeId={detail.employeeId}
+          employeeName={detail.employeeName}
+          month={month}
+          year={year}
+          focusWeek={detail.focusWeek}
+          onClose={() => setDetail(null)}
         />
       )}
     </div>

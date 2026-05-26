@@ -2839,7 +2839,17 @@ app.get('/api/hours-summary', async (req, res) => {
             CASE hl.week_num
               WHEN 1 THEN pa.w1_hours WHEN 2 THEN pa.w2_hours WHEN 3 THEN pa.w3_hours
               WHEN 4 THEN pa.w4_hours WHEN 5 THEN pa.w5_hours
-            END, 0)) AS over_plan_log_count
+            END, 0)) AS over_plan_log_count,
+        SUM(CASE WHEN hl.status='approved' AND hl.week_num=1 THEN hl.hours_logged ELSE 0 END)::numeric AS w1_logged,
+        SUM(CASE WHEN hl.status='approved' AND hl.week_num=2 THEN hl.hours_logged ELSE 0 END)::numeric AS w2_logged,
+        SUM(CASE WHEN hl.status='approved' AND hl.week_num=3 THEN hl.hours_logged ELSE 0 END)::numeric AS w3_logged,
+        SUM(CASE WHEN hl.status='approved' AND hl.week_num=4 THEN hl.hours_logged ELSE 0 END)::numeric AS w4_logged,
+        SUM(CASE WHEN hl.status='approved' AND hl.week_num=5 THEN hl.hours_logged ELSE 0 END)::numeric AS w5_logged,
+        SUM(CASE WHEN hl.status='approved' AND hl.week_num=1 THEN GREATEST(0, hl.hours_logged - COALESCE(pa.w1_hours, 0)) ELSE 0 END)::numeric AS w1_over,
+        SUM(CASE WHEN hl.status='approved' AND hl.week_num=2 THEN GREATEST(0, hl.hours_logged - COALESCE(pa.w2_hours, 0)) ELSE 0 END)::numeric AS w2_over,
+        SUM(CASE WHEN hl.status='approved' AND hl.week_num=3 THEN GREATEST(0, hl.hours_logged - COALESCE(pa.w3_hours, 0)) ELSE 0 END)::numeric AS w3_over,
+        SUM(CASE WHEN hl.status='approved' AND hl.week_num=4 THEN GREATEST(0, hl.hours_logged - COALESCE(pa.w4_hours, 0)) ELSE 0 END)::numeric AS w4_over,
+        SUM(CASE WHEN hl.status='approved' AND hl.week_num=5 THEN GREATEST(0, hl.hours_logged - COALESCE(pa.w5_hours, 0)) ELSE 0 END)::numeric AS w5_over
       FROM hour_logs hl
       LEFT JOIN project_assignments pa ON pa.id = hl.assignment_id
       WHERE hl.month=${month} AND hl.year=${year}
@@ -2878,7 +2888,7 @@ app.get('/api/hours-summary', async (req, res) => {
       LEFT JOIN project_assignments pa ON pa.id = hl.assignment_id
       WHERE hl.month=${month} AND hl.year=${year}`;
     const employeeRows = (byEmployee as any[]).map((e: any) => {
-      const log = logsMap.get(e.employee_id) || { logged_approved: 0, logged_pending: 0, logged_rejected: 0, logged_within_plan: 0, logged_over_plan: 0, over_plan_log_count: 0 };
+      const log = logsMap.get(e.employee_id) || {};
       const weeks = [Number(e.w1), Number(e.w2), Number(e.w3), Number(e.w4), Number(e.w5)];
       const variance = weeks.map(w => w - 35);
       return {
@@ -2888,12 +2898,18 @@ app.get('/api/hours-summary', async (req, res) => {
         monthly: Number(e.monthly),
         variance_w1: variance[0], variance_w2: variance[1],
         variance_w3: variance[2], variance_w4: variance[3], variance_w5: variance[4],
-        logged_approved: Number(log.logged_approved),
-        logged_pending: Number(log.logged_pending),
-        logged_rejected: Number(log.logged_rejected),
+        logged_approved: Number(log.logged_approved ?? 0),
+        logged_pending: Number(log.logged_pending ?? 0),
+        logged_rejected: Number(log.logged_rejected ?? 0),
         logged_within_plan: Number(log.logged_within_plan ?? 0),
         logged_over_plan: Number(log.logged_over_plan ?? 0),
         over_plan_log_count: Number(log.over_plan_log_count ?? 0),
+        w1_logged: Number(log.w1_logged ?? 0), w2_logged: Number(log.w2_logged ?? 0),
+        w3_logged: Number(log.w3_logged ?? 0), w4_logged: Number(log.w4_logged ?? 0),
+        w5_logged: Number(log.w5_logged ?? 0),
+        w1_over: Number(log.w1_over ?? 0), w2_over: Number(log.w2_over ?? 0),
+        w3_over: Number(log.w3_over ?? 0), w4_over: Number(log.w4_over ?? 0),
+        w5_over: Number(log.w5_over ?? 0),
       };
     });
     res.json({
