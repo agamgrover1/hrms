@@ -413,7 +413,11 @@ export default function EmployeeHoursDetailModal({ employeeId, employeeName, mon
                                               </p>
                                               <p className="text-[10px] text-on-surface-subtle font-mono whitespace-nowrap">{fmtTs(entry.created_at)}</p>
                                             </div>
-                                            {hoursChanged && (
+                                            {entry.action === 'deleted' ? (
+                                              <p className="text-[11px] text-danger mt-0.5">
+                                                Removed (was <span className="num-mono font-semibold">{Number(entry.before_hours)}h</span>)
+                                              </p>
+                                            ) : hoursChanged && (
                                               <p className="text-[11px] text-on-surface-muted mt-0.5">
                                                 Hours: <span className="num-mono text-on-surface-subtle line-through">{Number(entry.before_hours)}h</span> → <span className="num-mono font-semibold text-on-surface">{Number(entry.after_hours)}h</span>
                                               </p>
