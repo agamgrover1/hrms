@@ -57,6 +57,20 @@ function varianceClass(weeklyAlloc: number) {
 
 function num(v: any) { return Number(v ?? 0); }
 
+function formatAgo(ts: string | null | undefined): string {
+  if (!ts) return '';
+  const ms = Date.now() - new Date(ts).getTime();
+  if (Number.isNaN(ms)) return '';
+  const mins = Math.floor(ms / 60000);
+  if (mins < 1) return 'just now';
+  if (mins < 60) return `${mins}m ago`;
+  const hrs = Math.floor(mins / 60);
+  if (hrs < 24) return `${hrs}h ago`;
+  const days = Math.floor(hrs / 24);
+  if (days < 30) return `${days}d ago`;
+  return new Date(ts).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' });
+}
+
 export default function ProjectHours() {
   const { user } = useAuth();
   const today = new Date();
@@ -620,6 +634,8 @@ function CapacityView({ summary, loading, search, month, year, openDetail }: {
                     const over = Number(weekOvers[i]);
                     const logged = Number(weekLogged[i]);
                     const planN = Number(p);
+                    const edits = Number((e as any)[`w${i+1}_edits`] ?? 0);
+                    const lastEditAt = (e as any)[`w${i+1}_last_edit`] as string | null;
                     // Under = approved less than planned (only meaningful if employee actually logged something)
                     const under = (logged > 0 && logged < planN) ? planN - logged : 0;
                     const display = planN + over; // plan + overage; under doesn't change the visible total
@@ -628,12 +644,17 @@ function CapacityView({ summary, loading, search, month, year, openDetail }: {
                     else if (under > 0)  cellCls = 'bg-danger-container text-danger';
                     else                 cellCls = varianceClass(display);
                     return (
-                      <td key={i} className="px-2 py-2 text-center">
+                      <td key={i} className="px-2 py-2 text-center relative">
                         <button
                           onClick={() => openDetail(e.employee_id, e.employee_name || '—', i + 1)}
-                          title={`Plan ${planN}h · Logged ${logged}h${over > 0 ? ` (+${over} over)` : under > 0 ? ` (−${under} short of plan)` : ''}`}
-                          className={`group num-mono inline-flex flex-col items-center justify-center w-full px-2 py-2 rounded-lg font-semibold transition-all hover:shadow-elev-1 hover:scale-[1.04] ${cellCls}`}
+                          title={`Plan ${planN}h · Logged ${logged}h${over > 0 ? ` (+${over} over)` : under > 0 ? ` (−${under} short of plan)` : ''}${edits > 0 ? ` · admin-edited ${edits}× (last ${formatAgo(lastEditAt)})` : ''}`}
+                          className={`group relative num-mono inline-flex flex-col items-center justify-center w-full px-2 py-2 rounded-lg font-semibold transition-all hover:shadow-elev-1 hover:scale-[1.04] ${cellCls}`}
                         >
+                          {edits > 0 && (
+                            <span className="absolute top-0.5 right-0.5 inline-flex items-center justify-center w-3.5 h-3.5 rounded-full bg-warning text-on-accent text-[8px] font-bold">
+                              <Pencil size={7} strokeWidth={2.5} />
+                            </span>
+                          )}
                           <span className="text-base leading-none">{display}</span>
                           {over > 0 ? (
                             <span className="text-[10px] font-bold mt-1 inline-flex items-center gap-0.5"><AlertTriangle size={9} />+{Math.round(over)}</span>
@@ -643,6 +664,9 @@ function CapacityView({ summary, loading, search, month, year, openDetail }: {
                             <span className="text-[10px] font-normal mt-1 opacity-70">{logged}/{planN}</span>
                           ) : (
                             <span className="text-[10px] font-normal mt-1 opacity-0">·</span>
+                          )}
+                          {edits > 0 && (
+                            <span className="text-[9px] font-medium mt-0.5 text-on-surface-subtle">edited {formatAgo(lastEditAt)}</span>
                           )}
                         </button>
                       </td>

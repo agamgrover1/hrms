@@ -330,6 +330,9 @@ export const api = {
         logged_within_plan: number; logged_over_plan: number; over_plan_log_count: number;
         w1_logged: number; w2_logged: number; w3_logged: number; w4_logged: number; w5_logged: number;
         w1_over: number;   w2_over: number;   w3_over: number;   w4_over: number;   w5_over: number;
+        w1_edits: number;  w2_edits: number;  w3_edits: number;  w4_edits: number;  w5_edits: number;
+        w1_last_edit: string | null; w2_last_edit: string | null; w3_last_edit: string | null; w4_last_edit: string | null; w5_last_edit: string | null;
+        total_admin_edits: number;
       }>;
       total_allocated: number; total_logged_approved: number; total_logged_pending: number;
       total_logged_within_plan: number; total_logged_over_plan: number;

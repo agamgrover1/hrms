@@ -26,6 +26,9 @@ interface LogRow {
   reviewed_by_name: string | null;
   reviewed_at: string | null;
   w1_hours?: number; w2_hours?: number; w3_hours?: number; w4_hours?: number; w5_hours?: number;
+  admin_edit_count?: number;
+  last_admin_edit_at?: string | null;
+  last_admin_editor?: string | null;
 }
 
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
@@ -229,8 +232,19 @@ export default function EmployeeHoursDetailModal({ employeeId, employeeName, mon
                           <div key={log.id} className="px-4 py-3 hover:bg-surface-2/40 transition-colors">
                             <div className="flex items-start justify-between gap-3">
                               <div className="min-w-0 flex-1">
-                                <p className="text-sm font-semibold text-on-surface truncate">
-                                  {log.project_name}{log.project_client_name ? <span className="text-on-surface-muted font-normal"> · {log.project_client_name}</span> : null}
+                                <p className="text-sm font-semibold text-on-surface truncate flex items-center gap-2">
+                                  <span>{log.project_name}{log.project_client_name ? <span className="text-on-surface-muted font-normal"> · {log.project_client_name}</span> : null}</span>
+                                  {(log.admin_edit_count ?? 0) > 0 && (
+                                    <button
+                                      onClick={(ev) => { ev.stopPropagation(); toggleHistory(log.id); }}
+                                      title={`Edited ${log.admin_edit_count}× by admin${log.last_admin_editor ? ` (last: ${log.last_admin_editor})` : ''}`}
+                                      className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full text-[10px] font-bold bg-warning-container text-warning hover:opacity-80 transition-opacity"
+                                    >
+                                      <Pencil size={9} />
+                                      <span className="num-mono">{log.admin_edit_count}</span>
+                                      <span className="font-normal">{(log.admin_edit_count ?? 0) === 1 ? 'admin edit' : 'admin edits'}</span>
+                                    </button>
+                                  )}
                                 </p>
                                 {isEditing ? (
                                   <textarea

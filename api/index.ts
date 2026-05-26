@@ -2718,10 +2718,21 @@ app.get('/api/hour-logs', async (req, res) => {
       SELECT hl.*, p.name AS project_name, p.client_name AS project_client_name,
              p.project_reporting_id, p.project_reporting_name,
              pa.w1_hours, pa.w2_hours, pa.w3_hours, pa.w4_hours, pa.w5_hours,
-             pa.monthly_hours AS assignment_monthly_hours
+             pa.monthly_hours AS assignment_monthly_hours,
+             COALESCE(au.admin_edit_count, 0) AS admin_edit_count,
+             au.last_admin_edit_at,
+             au.last_admin_editor
       FROM hour_logs hl
       JOIN projects p ON p.id = hl.project_id
       LEFT JOIN project_assignments pa ON pa.id = hl.assignment_id
+      LEFT JOIN (
+        SELECT hour_log_id,
+          COUNT(*) FILTER (WHERE action='admin_edit') AS admin_edit_count,
+          MAX(created_at) FILTER (WHERE action='admin_edit') AS last_admin_edit_at,
+          (ARRAY_AGG(actor_name ORDER BY created_at DESC) FILTER (WHERE action='admin_edit'))[1] AS last_admin_editor
+        FROM hour_log_audit
+        GROUP BY hour_log_id
+      ) au ON au.hour_log_id = hl.id
       WHERE (${month}::int IS NULL OR hl.month=${month})
         AND (${year}::int IS NULL  OR hl.year=${year})
         AND (${employee_id}::text IS NULL OR hl.employee_id=${employee_id})
@@ -2992,6 +3003,26 @@ app.get('/api/hours-summary', async (req, res) => {
       LEFT JOIN project_assignments pa ON pa.id = hl.assignment_id
       WHERE hl.month=${month} AND hl.year=${year}
       GROUP BY hl.employee_id`;
+    // Per-employee per-week admin-edit counts + most recent timestamp
+    const editStats = await sql`
+      SELECT hl.employee_id,
+        SUM(CASE WHEN hl.week_num=1 AND au.action='admin_edit' THEN 1 ELSE 0 END)::int AS w1_edits,
+        SUM(CASE WHEN hl.week_num=2 AND au.action='admin_edit' THEN 1 ELSE 0 END)::int AS w2_edits,
+        SUM(CASE WHEN hl.week_num=3 AND au.action='admin_edit' THEN 1 ELSE 0 END)::int AS w3_edits,
+        SUM(CASE WHEN hl.week_num=4 AND au.action='admin_edit' THEN 1 ELSE 0 END)::int AS w4_edits,
+        SUM(CASE WHEN hl.week_num=5 AND au.action='admin_edit' THEN 1 ELSE 0 END)::int AS w5_edits,
+        MAX(CASE WHEN hl.week_num=1 AND au.action='admin_edit' THEN au.created_at END) AS w1_last_edit,
+        MAX(CASE WHEN hl.week_num=2 AND au.action='admin_edit' THEN au.created_at END) AS w2_last_edit,
+        MAX(CASE WHEN hl.week_num=3 AND au.action='admin_edit' THEN au.created_at END) AS w3_last_edit,
+        MAX(CASE WHEN hl.week_num=4 AND au.action='admin_edit' THEN au.created_at END) AS w4_last_edit,
+        MAX(CASE WHEN hl.week_num=5 AND au.action='admin_edit' THEN au.created_at END) AS w5_last_edit,
+        SUM(CASE WHEN au.action='admin_edit' THEN 1 ELSE 0 END)::int AS total_admin_edits
+      FROM hour_logs hl
+      LEFT JOIN hour_log_audit au ON au.hour_log_id = hl.id
+      WHERE hl.month=${month} AND hl.year=${year}
+      GROUP BY hl.employee_id`;
+    const editsMap = new Map<string, any>();
+    for (const e of editStats as any[]) editsMap.set(e.employee_id, e);
     const logsMap = new Map<string, any>();
     for (const l of logSums as any[]) logsMap.set(l.employee_id, l);
     const totals = await sql`
@@ -3027,6 +3058,7 @@ app.get('/api/hours-summary', async (req, res) => {
       WHERE hl.month=${month} AND hl.year=${year}`;
     const employeeRows = (byEmployee as any[]).map((e: any) => {
       const log = logsMap.get(e.employee_id) || {};
+      const edits = editsMap.get(e.employee_id) || {};
       const weeks = [Number(e.w1), Number(e.w2), Number(e.w3), Number(e.w4), Number(e.w5)];
       const variance = weeks.map(w => w - 35);
       return {
@@ -3048,6 +3080,13 @@ app.get('/api/hours-summary', async (req, res) => {
         w1_over: Number(log.w1_over ?? 0), w2_over: Number(log.w2_over ?? 0),
         w3_over: Number(log.w3_over ?? 0), w4_over: Number(log.w4_over ?? 0),
         w5_over: Number(log.w5_over ?? 0),
+        w1_edits: Number(edits.w1_edits ?? 0), w2_edits: Number(edits.w2_edits ?? 0),
+        w3_edits: Number(edits.w3_edits ?? 0), w4_edits: Number(edits.w4_edits ?? 0),
+        w5_edits: Number(edits.w5_edits ?? 0),
+        w1_last_edit: edits.w1_last_edit ?? null, w2_last_edit: edits.w2_last_edit ?? null,
+        w3_last_edit: edits.w3_last_edit ?? null, w4_last_edit: edits.w4_last_edit ?? null,
+        w5_last_edit: edits.w5_last_edit ?? null,
+        total_admin_edits: Number(edits.total_admin_edits ?? 0),
       };
     });
     res.json({
