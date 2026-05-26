@@ -39,10 +39,10 @@ class TabErrorBoundary extends Component<{ children: ReactNode }, { error: strin
   render() {
     if (this.state.error) {
       return (
-        <div className="bg-red-50 border border-red-100 rounded-xl p-6 text-center">
-          <p className="text-sm font-semibold text-red-600 mb-2">Something went wrong loading this tab</p>
-          <p className="text-xs text-red-400 mb-4 font-mono">{this.state.error}</p>
-          <button onClick={() => this.reset()} className="px-4 py-2 text-xs font-semibold bg-red-500 text-white rounded-lg hover:bg-red-600">
+        <div className="bg-danger-container border border-red-100 rounded-xl p-6 text-center">
+          <p className="text-sm font-semibold text-danger mb-2">Something went wrong loading this tab</p>
+          <p className="text-xs text-danger mb-4 font-mono">{this.state.error}</p>
+          <button onClick={() => this.reset()} className="px-4 py-2 text-xs font-semibold bg-danger text-white rounded-lg hover:bg-red-600">
             Retry
           </button>
         </div>
@@ -87,24 +87,24 @@ function perfColor(s: number) {
 }
 
 const statusConfig = {
-  present:      { label: 'Present',      color: 'bg-green-50 text-green-600',   dot: 'bg-green-500' },
-  absent:       { label: 'Absent',       color: 'bg-red-50 text-red-500',       dot: 'bg-red-500' },
-  late:         { label: 'Late',         color: 'bg-amber-50 text-amber-600',   dot: 'bg-amber-500' },
+  present:      { label: 'Present',      color: 'bg-success-container text-success',   dot: 'bg-success' },
+  absent:       { label: 'Absent',       color: 'bg-danger-container text-danger',       dot: 'bg-danger' },
+  late:         { label: 'Late',         color: 'bg-warning-container text-warning',   dot: 'bg-warning' },
   'half-day':   { label: 'Half Day',     color: 'bg-blue-50 text-blue-600',     dot: 'bg-blue-500' },
   short_leave:  { label: 'Short Leave',  color: 'bg-orange-50 text-orange-600', dot: 'bg-orange-400' },
   on_leave:     { label: 'On Leave',     color: 'bg-violet-50 text-violet-600', dot: 'bg-violet-400' },
-  unpaid_leave: { label: 'Unpaid Leave', color: 'bg-rose-50 text-rose-600',     dot: 'bg-rose-400' },
-  weekend:      { label: 'Weekend',      color: 'bg-gray-50 text-gray-400',     dot: 'bg-gray-300' },
+  unpaid_leave: { label: 'Unpaid Leave', color: 'bg-danger-container text-danger',     dot: 'bg-rose-400' },
+  weekend:      { label: 'Weekend',      color: 'bg-surface-2 text-on-surface-subtle',     dot: 'bg-gray-300' },
   holiday:      { label: 'Holiday',      color: 'bg-purple-50 text-purple-500', dot: 'bg-purple-400' },
   wfh:          { label: 'Work From Home',    color: 'bg-[#192250]/10 text-[#192250]',  dot: 'bg-[#192250]' },
   wfh_half:     { label: 'Half Day WFH',      color: 'bg-[#EE2770]/10 text-[#EE2770]', dot: 'bg-[#EE2770]' },
 };
 
 const leaveStatusConfig = {
-  pending:   { color: 'bg-amber-50 text-amber-600 border-amber-200',  icon: AlertCircle },
-  approved:  { color: 'bg-green-50 text-green-600 border-green-200',  icon: CheckCircle },
-  rejected:  { color: 'bg-red-50 text-red-500 border-red-200',        icon: XCircle },
-  cancelled: { color: 'bg-gray-100 text-gray-500 border-gray-200',    icon: XCircle },
+  pending:   { color: 'bg-warning-container text-warning border-amber-200',  icon: AlertCircle },
+  approved:  { color: 'bg-success-container text-success border-green-200',  icon: CheckCircle },
+  rejected:  { color: 'bg-danger-container text-danger border-red-200',        icon: XCircle },
+  cancelled: { color: 'bg-surface-2 text-on-surface-subtle border-outline',    icon: XCircle },
 };
 
 function ApplyLeaveModal({ onClose, onSubmit, balance }: { onClose: () => void; onSubmit: (d: any) => void; balance: any }) {
@@ -135,10 +135,10 @@ function ApplyLeaveModal({ onClose, onSubmit, balance }: { onClose: () => void; 
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 backdrop-blur-sm p-4">
-      <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md p-6">
+      <div className="bg-surface rounded-2xl shadow-2xl w-full max-w-md p-6">
         <div className="flex items-center justify-between mb-5">
-          <h3 className="text-lg font-semibold text-gray-900">Apply for Leave</h3>
-          <button onClick={onClose}><X size={18} className="text-gray-400" /></button>
+          <h3 className="text-lg font-semibold text-on-surface">Apply for Leave</h3>
+          <button onClick={onClose}><X size={18} className="text-on-surface-subtle" /></button>
         </div>
         {onProbation && (
           <div className="mb-4 px-3 py-2.5 rounded-xl text-xs font-medium" style={{ background: '#fef3c7', color: '#92400e' }}>
@@ -148,39 +148,39 @@ function ApplyLeaveModal({ onClose, onSubmit, balance }: { onClose: () => void; 
         )}
         <div className="space-y-3">
           <div>
-            <label className="text-xs font-medium text-gray-500 mb-1.5 block">Leave Type</label>
+            <label className="text-xs font-medium text-on-surface-subtle mb-1.5 block">Leave Type</label>
             <select value={form.type} onChange={e => setForm(f => ({ ...f, type: e.target.value }))}
-              className="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm focus:outline-none bg-white">
+              className="w-full border border-outline rounded-lg px-3 py-2.5 text-sm focus:outline-none bg-surface">
               {availableTypes.map(t => <option key={t.key} value={t.key}>{t.label}</option>)}
             </select>
             {form.type === 'full_day' && <p className="text-xs text-blue-600 mt-1">Balance: {balance?.full_day ?? 0} day(s) — carries forward</p>}
             {form.type === 'half_day' && <p className="text-xs text-purple-600 mt-1">Costs 2 short leave credits — this month: {balance?.short_leave ?? 0} remaining</p>}
-            {form.type === 'short_leave' && <p className="text-xs text-amber-600 mt-1">Costs 1 short leave credit — this month: {balance?.short_leave ?? 0} remaining</p>}
-            {form.type === 'unpaid' && <p className="text-xs text-rose-600 mt-1">No credits deducted — attendance will be marked as Unpaid Leave</p>}
+            {form.type === 'short_leave' && <p className="text-xs text-warning mt-1">Costs 1 short leave credit — this month: {balance?.short_leave ?? 0} remaining</p>}
+            {form.type === 'unpaid' && <p className="text-xs text-danger mt-1">No credits deducted — attendance will be marked as Unpaid Leave</p>}
           </div>
           <div className={isSingleDay ? '' : 'grid grid-cols-2 gap-3'}>
             <div>
-              <label className="text-xs font-medium text-gray-500 mb-1.5 block">{isSingleDay ? 'Date' : 'From'}</label>
+              <label className="text-xs font-medium text-on-surface-subtle mb-1.5 block">{isSingleDay ? 'Date' : 'From'}</label>
               <input type="date" value={form.from}
                 onChange={e => setForm(f => ({ ...f, from: e.target.value, to: isSingleDay ? e.target.value : f.to }))}
-                className="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm focus:outline-none" />
+                className="w-full border border-outline rounded-lg px-3 py-2.5 text-sm focus:outline-none" />
             </div>
             {!isSingleDay && (
               <div>
-                <label className="text-xs font-medium text-gray-500 mb-1.5 block">To</label>
+                <label className="text-xs font-medium text-on-surface-subtle mb-1.5 block">To</label>
                 <input type="date" value={form.to} onChange={e => setForm(f => ({ ...f, to: e.target.value }))}
-                  className="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm focus:outline-none" />
+                  className="w-full border border-outline rounded-lg px-3 py-2.5 text-sm focus:outline-none" />
               </div>
             )}
           </div>
           <div>
-            <label className="text-xs font-medium text-gray-500 mb-1.5 block">Reason</label>
+            <label className="text-xs font-medium text-on-surface-subtle mb-1.5 block">Reason</label>
             <textarea value={form.reason} onChange={e => setForm(f => ({ ...f, reason: e.target.value }))}
               rows={3} placeholder="Briefly describe the reason..."
-              className="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm focus:outline-none resize-none" />
+              className="w-full border border-outline rounded-lg px-3 py-2.5 text-sm focus:outline-none resize-none" />
           </div>
           <div className="flex gap-3 pt-1">
-            <button onClick={onClose} className="flex-1 py-2.5 border border-gray-200 rounded-lg text-sm font-medium text-gray-600 hover:bg-gray-50">Cancel</button>
+            <button onClick={onClose} className="flex-1 py-2.5 border border-outline rounded-lg text-sm font-medium text-on-surface-muted hover:bg-surface-2">Cancel</button>
             <button onClick={handleSubmit} className="flex-1 py-2.5 text-white rounded-lg text-sm font-medium" style={{ background: '#192250' }}>Submit</button>
           </div>
         </div>
@@ -415,8 +415,8 @@ export default function MyPortal() {
                   style={{ background: 'rgba(238,39,112,0.12)', color: '#EE2770' }}>{i + 1}</div>
                 <div className="flex-1 min-w-0">
                   <p className="font-semibold text-sm" style={{ color: '#192250' }}>{g.title}</p>
-                  {g.description && <p className="text-xs text-gray-500 mt-1">{g.description}</p>}
-                  {g.success_criteria && <p className="text-xs text-gray-400 mt-1 italic">Target: {g.success_criteria}</p>}
+                  {g.description && <p className="text-xs text-on-surface-subtle mt-1">{g.description}</p>}
+                  {g.success_criteria && <p className="text-xs text-on-surface-subtle mt-1 italic">Target: {g.success_criteria}</p>}
                 </div>
               </div>
               <div className="px-4 pb-3">
@@ -446,7 +446,7 @@ export default function MyPortal() {
                 <div className="px-4 pb-4 space-y-2">
                   {managerCfg && ManagerIcon && (
                     <div className="flex items-center gap-2">
-                      <span className="text-xs text-gray-400 font-semibold">Manager:</span>
+                      <span className="text-xs text-on-surface-subtle font-semibold">Manager:</span>
                       <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-xs font-semibold"
                         style={{ background: managerCfg.bg, color: managerCfg.color, border: `1px solid ${managerCfg.border}` }}>
                         <ManagerIcon size={10} /> {managerCfg.label}
@@ -587,7 +587,7 @@ export default function MyPortal() {
       </div>
 
       {/* Tabs */}
-      <div className="flex flex-wrap gap-1 bg-white rounded-xl p-1 border border-gray-100 shadow-sm w-fit">
+      <div className="flex flex-wrap gap-1 bg-surface rounded-xl p-1 border border-outline shadow-sm w-fit">
         {tabs.map(({ key, label, icon: Icon }) => (
           <button key={key} onClick={() => setTab(key)}
             className="flex items-center gap-2 px-4 py-2 text-sm font-semibold rounded-lg transition-all"
@@ -602,8 +602,8 @@ export default function MyPortal() {
       {/* ── Overview ── */}
       {tab === 'overview' && (
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-          <div className="bg-white rounded-xl p-5 border border-gray-100 shadow-sm">
-            <p className="text-xs font-semibold text-gray-400 uppercase tracking-wide mb-3">Personal Info</p>
+          <div className="bg-surface rounded-xl p-5 border border-outline shadow-sm">
+            <p className="text-xs font-semibold text-on-surface-subtle uppercase tracking-wide mb-3">Personal Info</p>
             {[
               { label: 'Email',       value: user?.email },
               { label: 'Department',  value: user?.department },
@@ -611,23 +611,23 @@ export default function MyPortal() {
               { label: 'Employee ID', value: user?.employee_id_ref },
             ].map(({ label, value }) => (
               <div key={label} className="flex justify-between py-2 border-b border-gray-50 last:border-0">
-                <span className="text-sm text-gray-500">{label}</span>
-                <span className="text-sm font-medium text-gray-800">{value ?? '—'}</span>
+                <span className="text-sm text-on-surface-subtle">{label}</span>
+                <span className="text-sm font-medium text-on-surface">{value ?? '—'}</span>
               </div>
             ))}
           </div>
           <div className="space-y-3">
-            <div className="bg-white rounded-xl p-5 border border-gray-100 shadow-sm">
-              <p className="text-xs font-semibold text-gray-400 uppercase tracking-wide mb-3">This Month</p>
+            <div className="bg-surface rounded-xl p-5 border border-outline shadow-sm">
+              <p className="text-xs font-semibold text-on-surface-subtle uppercase tracking-wide mb-3">This Month</p>
               <div className="grid grid-cols-3 gap-3">
-                <div className="text-center"><p className="text-2xl font-bold text-green-600">{presentDays}</p><p className="text-xs text-gray-400">Present</p></div>
-                <div className="text-center"><p className="text-2xl font-bold text-amber-500">{lateDays}</p><p className="text-xs text-gray-400">Late</p></div>
-                <div className="text-center"><p className="text-2xl font-bold text-red-500">{absentDays}</p><p className="text-xs text-gray-400">Absent</p></div>
+                <div className="text-center"><p className="text-2xl font-bold text-success">{presentDays}</p><p className="text-xs text-on-surface-subtle">Present</p></div>
+                <div className="text-center"><p className="text-2xl font-bold text-warning">{lateDays}</p><p className="text-xs text-on-surface-subtle">Late</p></div>
+                <div className="text-center"><p className="text-2xl font-bold text-danger">{absentDays}</p><p className="text-xs text-on-surface-subtle">Absent</p></div>
               </div>
             </div>
-            <div className="bg-white rounded-xl p-5 border border-gray-100 shadow-sm">
+            <div className="bg-surface rounded-xl p-5 border border-outline shadow-sm">
               <div className="flex items-center justify-between mb-3">
-                <p className="text-xs font-semibold text-gray-400 uppercase tracking-wide">Leave Balance</p>
+                <p className="text-xs font-semibold text-on-surface-subtle uppercase tracking-wide">Leave Balance</p>
                 {balance.on_probation && (
                   <span className="text-xs font-semibold px-2 py-0.5 rounded-full" style={{ background: '#fef3c7', color: '#92400e' }}>Probation</span>
                 )}
@@ -635,18 +635,18 @@ export default function MyPortal() {
               {balance.on_probation ? (
                 <div className="grid grid-cols-2 gap-3">
                   <div className="text-center">
-                    <p className="text-2xl font-bold text-amber-500">{balance.probation_short_remaining ?? 0}</p>
-                    <p className="text-xs text-gray-400">Short Leave Left</p>
+                    <p className="text-2xl font-bold text-warning">{balance.probation_short_remaining ?? 0}</p>
+                    <p className="text-xs text-on-surface-subtle">Short Leave Left</p>
                   </div>
                   <div className="text-center">
-                    <p className="text-2xl font-bold text-gray-300">0</p>
-                    <p className="text-xs text-gray-400">Full Day (locked)</p>
+                    <p className="text-2xl font-bold text-on-surface-subtle">0</p>
+                    <p className="text-xs text-on-surface-subtle">Full Day (locked)</p>
                   </div>
                 </div>
               ) : (
                 <div className="grid grid-cols-2 gap-3">
-                  <div className="text-center"><p className="text-2xl font-bold text-blue-600">{balance.full_day ?? 0}</p><p className="text-xs text-gray-400">Full Day</p></div>
-                  <div className="text-center"><p className="text-2xl font-bold text-purple-600">{balance.short_leave ?? 0}</p><p className="text-xs text-gray-400">Short / Half Day</p></div>
+                  <div className="text-center"><p className="text-2xl font-bold text-blue-600">{balance.full_day ?? 0}</p><p className="text-xs text-on-surface-subtle">Full Day</p></div>
+                  <div className="text-center"><p className="text-2xl font-bold text-purple-600">{balance.short_leave ?? 0}</p><p className="text-xs text-on-surface-subtle">Short / Half Day</p></div>
                 </div>
               )}
             </div>
@@ -656,9 +656,9 @@ export default function MyPortal() {
 
       {/* ── Attendance ── */}
       {tab === 'attendance' && (
-        <div className="bg-white rounded-xl border border-gray-100 shadow-sm overflow-hidden">
-          <div className="px-5 py-4 border-b border-gray-100">
-            <h3 className="font-semibold text-gray-800">My Attendance — {new Date().toLocaleString('default', { month: 'long', year: 'numeric' })}</h3>
+        <div className="bg-surface rounded-xl border border-outline shadow-sm overflow-hidden">
+          <div className="px-5 py-4 border-b border-outline">
+            <h3 className="font-semibold text-on-surface">My Attendance — {new Date().toLocaleString('default', { month: 'long', year: 'numeric' })}</h3>
           </div>
           <div className="divide-y divide-gray-50">
             {attendance.filter(r => r.status !== 'weekend').map(r => {
@@ -666,10 +666,10 @@ export default function MyPortal() {
               const isShortDay = (r.status === 'present' || r.status === 'late')
                 && r.check_out && Number(r.total_hours) > 0 && Number(r.total_hours) < 9;
               return (
-                <div key={r.date} className="flex items-center justify-between px-5 py-3 hover:bg-gray-50/50">
+                <div key={r.date} className="flex items-center justify-between px-5 py-3 hover:bg-surface-2/50">
                   <div className="flex items-center gap-3 flex-wrap">
                     <span className={`w-2 h-2 rounded-full ${cfg?.dot} flex-shrink-0`} />
-                    <span className="text-sm text-gray-700">
+                    <span className="text-sm text-on-surface-muted">
                       {parseLocalDate(r.date).toLocaleDateString('en-IN', { weekday: 'short', day: 'numeric', month: 'short' })}
                     </span>
                     <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${cfg?.color}`}>{cfg?.label}</span>
@@ -680,14 +680,14 @@ export default function MyPortal() {
                       </span>
                     )}
                   </div>
-                  <span className="text-sm text-gray-400 whitespace-nowrap">
+                  <span className="text-sm text-on-surface-subtle whitespace-nowrap">
                     {r.check_in ? `${r.check_in} – ${r.check_out ?? '—'} (${fmtHours(r.total_hours)})` : '—'}
                   </span>
                 </div>
               );
             })}
             {attendance.filter(r => r.status !== 'weekend').length === 0 && (
-              <p className="text-center text-gray-400 text-sm py-12">No records yet this month</p>
+              <p className="text-center text-on-surface-subtle text-sm py-12">No records yet this month</p>
             )}
           </div>
         </div>
@@ -701,15 +701,15 @@ export default function MyPortal() {
           <div className="grid grid-cols-3 gap-3">
             {balance.on_probation ? (
               <>
-                <div className="bg-amber-50 border border-amber-100 rounded-xl p-4 text-center">
-                  <p className="text-2xl font-bold text-amber-600">{balance.probation_short_remaining ?? 0}</p>
-                  <p className="text-xs text-amber-700 font-medium mt-1">Probation Credits Left</p>
+                <div className="bg-warning-container border border-amber-100 rounded-xl p-4 text-center">
+                  <p className="text-2xl font-bold text-warning">{balance.probation_short_remaining ?? 0}</p>
+                  <p className="text-xs text-warning font-medium mt-1">Probation Credits Left</p>
                 </div>
-                <div className="bg-gray-50 border border-gray-100 rounded-xl p-4 text-center col-span-2">
-                  <p className="text-xs font-semibold text-amber-700 mb-1">On Probation</p>
-                  <p className="text-xs text-gray-500">Full day leave available after probation ends</p>
+                <div className="bg-surface-2 border border-outline rounded-xl p-4 text-center col-span-2">
+                  <p className="text-xs font-semibold text-warning mb-1">On Probation</p>
+                  <p className="text-xs text-on-surface-subtle">Full day leave available after probation ends</p>
                   {balance.probation_end_date && (
-                    <p className="text-xs text-amber-600 mt-1 font-medium">Ends: {new Date(balance.probation_end_date).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' })}</p>
+                    <p className="text-xs text-warning mt-1 font-medium">Ends: {new Date(balance.probation_end_date).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' })}</p>
                   )}
                 </div>
               </>
@@ -728,18 +728,18 @@ export default function MyPortal() {
                       )}
                     </div>
                   ) : (
-                    <p className="text-xs text-gray-400">carries forward</p>
+                    <p className="text-xs text-on-surface-subtle">carries forward</p>
                   )}
                 </div>
                 <div className="bg-purple-50 border border-purple-100 rounded-xl p-4 text-center">
                   <p className="text-2xl font-bold text-purple-600">{balance.short_leave ?? 0}</p>
                   <p className="text-xs text-purple-700 font-medium mt-1">Short Leave / Half Day</p>
-                  <p className="text-xs text-gray-400">resets monthly</p>
+                  <p className="text-xs text-on-surface-subtle">resets monthly</p>
                 </div>
-                <div className="bg-green-50 border border-green-100 rounded-xl p-4 text-center">
-                  <p className="text-2xl font-bold text-green-600">✓</p>
-                  <p className="text-xs text-green-700 font-medium mt-1">Confirmed</p>
-                  <p className="text-xs text-gray-400">past probation</p>
+                <div className="bg-success-container border border-green-100 rounded-xl p-4 text-center">
+                  <p className="text-2xl font-bold text-success">✓</p>
+                  <p className="text-xs text-success font-medium mt-1">Confirmed</p>
+                  <p className="text-xs text-on-surface-subtle">past probation</p>
                 </div>
               </>
             )}
@@ -751,16 +751,16 @@ export default function MyPortal() {
               <Plus size={15} /> Apply Leave
             </button>
           </div>
-          <div className="bg-white rounded-xl border border-gray-100 shadow-sm overflow-hidden">
+          <div className="bg-surface rounded-xl border border-outline shadow-sm overflow-hidden">
             {leaves.length === 0 ? (
-              <p className="text-center text-gray-400 text-sm py-16">No leave requests found.</p>
+              <p className="text-center text-on-surface-subtle text-sm py-16">No leave requests found.</p>
             ) : (
               <div className="overflow-x-auto">
                 <table className="w-full">
                   <thead>
-                    <tr className="bg-gray-50 border-b border-gray-100">
+                    <tr className="bg-surface-2 border-b border-outline">
                       {['Type', 'Duration', 'Days', 'Reason', 'Applied On', 'Status', 'Action Trail'].map(h => (
-                        <th key={h} className="text-left text-xs font-semibold text-gray-500 px-4 py-3 uppercase tracking-wide whitespace-nowrap">{h}</th>
+                        <th key={h} className="text-left text-xs font-semibold text-on-surface-subtle px-4 py-3 uppercase tracking-wide whitespace-nowrap">{h}</th>
                       ))}
                     </tr>
                   </thead>
@@ -774,16 +774,16 @@ export default function MyPortal() {
                         : '—';
                       return (
                         <tr key={l.id} className="border-b border-gray-50">
-                          <td className="px-4 py-3 text-sm font-medium text-gray-800 capitalize">{(l.type ?? '').replace('_', ' ')}</td>
-                          <td className="px-4 py-3 text-sm text-gray-600 whitespace-nowrap">
+                          <td className="px-4 py-3 text-sm font-medium text-on-surface capitalize">{(l.type ?? '').replace('_', ' ')}</td>
+                          <td className="px-4 py-3 text-sm text-on-surface-muted whitespace-nowrap">
                             {parseLocalDate(l.from_date).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' })}
                             {l.from_date !== l.to_date && ` – ${parseLocalDate(l.to_date).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' })}`}
                           </td>
-                          <td className="px-4 py-3 text-sm font-medium text-gray-700">{l.days}d</td>
-                          <td className="px-4 py-3 text-sm text-gray-500 max-w-[140px] truncate">{l.reason}</td>
-                          <td className="px-4 py-3 text-xs text-gray-500 whitespace-nowrap">{appliedStr}</td>
+                          <td className="px-4 py-3 text-sm font-medium text-on-surface-muted">{l.days}d</td>
+                          <td className="px-4 py-3 text-sm text-on-surface-subtle max-w-[140px] truncate">{l.reason}</td>
+                          <td className="px-4 py-3 text-xs text-on-surface-subtle whitespace-nowrap">{appliedStr}</td>
                           <td className="px-4 py-3">
-                            <span className={`inline-flex items-center gap-1 text-xs px-2.5 py-1 rounded-full border font-medium ${cfg?.color ?? 'bg-gray-100 text-gray-500 border-gray-200'}`}>
+                            <span className={`inline-flex items-center gap-1 text-xs px-2.5 py-1 rounded-full border font-medium ${cfg?.color ?? 'bg-surface-2 text-on-surface-subtle border-outline'}`}>
                               {cfg && <cfg.icon size={11} />} {l.status.charAt(0).toUpperCase() + l.status.slice(1)}
                             </span>
                           </td>
@@ -791,33 +791,33 @@ export default function MyPortal() {
                             <div className="space-y-1">
                               {(l.manager_status === 'approved' || l.manager_status === 'rejected') && (
                                 <div className="text-xs leading-tight">
-                                  <span className={`font-semibold ${l.manager_status === 'approved' ? 'text-green-600' : 'text-red-500'}`}>
+                                  <span className={`font-semibold ${l.manager_status === 'approved' ? 'text-success' : 'text-danger'}`}>
                                     {l.manager_status === 'approved' ? 'Mgr Approved' : 'Mgr Rejected'}
                                   </span>
-                                  {l.manager_name && <span className="text-gray-500"> · {l.manager_name}</span>}
+                                  {l.manager_name && <span className="text-on-surface-subtle"> · {l.manager_name}</span>}
                                   {l.manager_approved_at && (
-                                    <span className="text-gray-400 block">
+                                    <span className="text-on-surface-subtle block">
                                       {new Date(l.manager_approved_at).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' })}
                                       {', '}{new Date(l.manager_approved_at).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', hour12: true })}
                                     </span>
                                   )}
-                                  {l.manager_rejection_reason && <span className="text-red-400 italic block">"{l.manager_rejection_reason}"</span>}
+                                  {l.manager_rejection_reason && <span className="text-danger italic block">"{l.manager_rejection_reason}"</span>}
                                 </div>
                               )}
                               {l.hr_actioned_at && (
                                 <div className="text-xs leading-tight">
-                                  <span className={`font-semibold ${l.status === 'approved' ? 'text-green-600' : 'text-red-500'}`}>
+                                  <span className={`font-semibold ${l.status === 'approved' ? 'text-success' : 'text-danger'}`}>
                                     {l.status === 'approved' ? 'HR Approved' : 'HR Rejected'}
                                   </span>
-                                  {l.hr_actioner_name && <span className="text-gray-500"> · {l.hr_actioner_name}</span>}
-                                  <span className="text-gray-400 block">
+                                  {l.hr_actioner_name && <span className="text-on-surface-subtle"> · {l.hr_actioner_name}</span>}
+                                  <span className="text-on-surface-subtle block">
                                     {new Date(l.hr_actioned_at).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' })}
                                     {', '}{new Date(l.hr_actioned_at).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', hour12: true })}
                                   </span>
-                                  {l.rejection_reason && <span className="text-red-400 italic block">"{l.rejection_reason}"</span>}
+                                  {l.rejection_reason && <span className="text-danger italic block">"{l.rejection_reason}"</span>}
                                 </div>
                               )}
-                              {!l.manager_approved_at && !l.hr_actioned_at && <span className="text-xs text-gray-400">Pending</span>}
+                              {!l.manager_approved_at && !l.hr_actioned_at && <span className="text-xs text-on-surface-subtle">Pending</span>}
                             </div>
                           </td>
                         </tr>
@@ -832,11 +832,11 @@ export default function MyPortal() {
 
           {/* ── Optional Leaves ── */}
           {optionalLeaveLoaded && optionalLeaveData && (
-            <div className="bg-white rounded-xl border border-gray-100 shadow-sm overflow-hidden">
+            <div className="bg-surface rounded-xl border border-outline shadow-sm overflow-hidden">
               <div className="px-5 py-4 border-b border-gray-50 flex items-center justify-between">
                 <div>
-                  <p className="font-semibold text-sm text-gray-800">Optional Leaves</p>
-                  <p className="text-xs text-gray-400 mt-0.5">Pick any {optionalLeaveData.remaining > 0 ? optionalLeaveData.remaining : 0} more date{optionalLeaveData.remaining !== 1 ? 's' : ''} from the pool below — {2 - optionalLeaveData.used_count > 0 ? `${2 - optionalLeaveData.used_count} of 2 remaining this year` : '0 of 2 remaining — quota used'}</p>
+                  <p className="font-semibold text-sm text-on-surface">Optional Leaves</p>
+                  <p className="text-xs text-on-surface-subtle mt-0.5">Pick any {optionalLeaveData.remaining > 0 ? optionalLeaveData.remaining : 0} more date{optionalLeaveData.remaining !== 1 ? 's' : ''} from the pool below — {2 - optionalLeaveData.used_count > 0 ? `${2 - optionalLeaveData.used_count} of 2 remaining this year` : '0 of 2 remaining — quota used'}</p>
                 </div>
                 <span className="text-xs font-bold px-2.5 py-1 rounded-full"
                   style={{ background: optionalLeaveData.remaining > 0 ? 'rgba(22,163,74,0.1)' : 'rgba(220,38,38,0.1)', color: optionalLeaveData.remaining > 0 ? '#15803d' : '#dc2626' }}>
@@ -851,7 +851,7 @@ export default function MyPortal() {
               )}
 
               {optionalLeaveData.dates.length === 0 ? (
-                <p className="text-sm text-gray-400 text-center py-8">No optional leave dates have been set by HR for this year yet.</p>
+                <p className="text-sm text-on-surface-subtle text-center py-8">No optional leave dates have been set by HR for this year yet.</p>
               ) : (
                 <div className="divide-y divide-gray-50">
                   {optionalLeaveData.dates.map(d => {
@@ -875,14 +875,14 @@ export default function MyPortal() {
                             </span>
                           </div>
                           <div className="flex-1 min-w-0">
-                            <p className={`text-sm font-semibold ${isPast ? 'text-gray-400' : 'text-gray-800'}`}>{d.label}</p>
-                            <p className="text-xs text-gray-400">{dateObj.toLocaleDateString('en-IN', { weekday: 'short', day: 'numeric', month: 'long' })}</p>
+                            <p className={`text-sm font-semibold ${isPast ? 'text-on-surface-subtle' : 'text-on-surface'}`}>{d.label}</p>
+                            <p className="text-xs text-on-surface-subtle">{dateObj.toLocaleDateString('en-IN', { weekday: 'short', day: 'numeric', month: 'long' })}</p>
                           </div>
                           <div className="flex-shrink-0 flex items-center gap-2">
                             {d.already_applied ? (
-                              <span className="text-xs font-semibold px-2.5 py-1 rounded-full bg-amber-50 text-amber-600 border border-amber-100">Applied</span>
+                              <span className="text-xs font-semibold px-2.5 py-1 rounded-full bg-warning-container text-warning border border-amber-100">Applied</span>
                             ) : isPast ? (
-                              <span className="text-xs font-semibold px-2.5 py-1 rounded-full bg-gray-100 text-gray-400">Past</span>
+                              <span className="text-xs font-semibold px-2.5 py-1 rounded-full bg-surface-2 text-on-surface-subtle">Past</span>
                             ) : canApply ? (
                               <button
                                 onClick={() => { setApplyingOptional(d.date); setOptionalReason(''); setOptionalError(''); }}
@@ -891,25 +891,25 @@ export default function MyPortal() {
                                 Apply
                               </button>
                             ) : (
-                              <span className="text-xs text-gray-300 italic">{balance?.on_probation ? 'On probation' : 'Quota used'}</span>
+                              <span className="text-xs text-on-surface-subtle italic">{balance?.on_probation ? 'On probation' : 'Quota used'}</span>
                             )}
                           </div>
                         </div>
 
                         {/* Inline apply form */}
                         {applyingOptional === d.date && (
-                          <div className="mx-5 mb-3 p-4 bg-gray-50 border border-gray-100 rounded-xl space-y-3">
-                            <p className="text-xs font-semibold text-gray-600">Applying optional leave for: <strong>{d.label}</strong> ({d.date})</p>
+                          <div className="mx-5 mb-3 p-4 bg-surface-2 border border-outline rounded-xl space-y-3">
+                            <p className="text-xs font-semibold text-on-surface-muted">Applying optional leave for: <strong>{d.label}</strong> ({d.date})</p>
                             <div>
-                              <label className="text-xs font-medium text-gray-500 mb-1 block">Reason <span className="text-red-400">*</span></label>
+                              <label className="text-xs font-medium text-on-surface-subtle mb-1 block">Reason <span className="text-danger">*</span></label>
                               <textarea value={optionalReason} onChange={e => { setOptionalReason(e.target.value); setOptionalError(''); }}
                                 rows={2} placeholder="Why are you taking this optional leave?"
-                                className="w-full text-sm border border-gray-200 rounded-lg px-3 py-2 resize-none focus:outline-none focus:ring-2 focus:ring-primary-200"/>
+                                className="w-full text-sm border border-outline rounded-lg px-3 py-2 resize-none focus:outline-none focus:ring-2 focus:ring-primary-200"/>
                             </div>
-                            {optionalError && <p className="text-xs text-red-500 font-medium">{optionalError}</p>}
+                            {optionalError && <p className="text-xs text-danger font-medium">{optionalError}</p>}
                             <div className="flex gap-2">
                               <button onClick={() => { setApplyingOptional(null); setOptionalError(''); }}
-                                className="flex-1 py-2 border border-gray-200 rounded-lg text-xs font-medium text-gray-600 hover:bg-white">
+                                className="flex-1 py-2 border border-outline rounded-lg text-xs font-medium text-on-surface-muted hover:bg-surface">
                                 Cancel
                               </button>
                               <button
@@ -968,19 +968,19 @@ export default function MyPortal() {
           </div>
 
           {/* WFH request list */}
-          <div className="bg-white rounded-xl border border-gray-100 shadow-sm overflow-hidden">
+          <div className="bg-surface rounded-xl border border-outline shadow-sm overflow-hidden">
             {wfhRequests.length === 0 ? (
               <div className="flex flex-col items-center justify-center py-16 gap-2">
                 <Monitor size={32} className="text-gray-200" />
-                <p className="text-sm text-gray-400">No WFH requests yet</p>
+                <p className="text-sm text-on-surface-subtle">No WFH requests yet</p>
               </div>
             ) : (
               <div className="overflow-x-auto">
                 <table className="w-full text-sm">
                   <thead>
-                    <tr className="bg-gray-50 border-b border-gray-100">
+                    <tr className="bg-surface-2 border-b border-outline">
                       {['Date', 'Type', 'Reason', 'Applied On', 'Status', 'Action'].map(h => (
-                        <th key={h} className="text-left text-xs font-semibold text-gray-500 px-4 py-3 uppercase tracking-wide whitespace-nowrap">{h}</th>
+                        <th key={h} className="text-left text-xs font-semibold text-on-surface-subtle px-4 py-3 uppercase tracking-wide whitespace-nowrap">{h}</th>
                       ))}
                     </tr>
                   </thead>
@@ -988,13 +988,13 @@ export default function MyPortal() {
                     {wfhRequests.map(w => {
                       const statusColor: Record<string,string> = {
                         approved: 'bg-teal-50 text-teal-700 border-teal-200',
-                        rejected: 'bg-red-50 text-red-600 border-red-200',
-                        pending:  'bg-amber-50 text-amber-600 border-amber-200',
-                        cancelled:'bg-gray-100 text-gray-500 border-gray-200',
+                        rejected: 'bg-danger-container text-danger border-red-200',
+                        pending:  'bg-warning-container text-warning border-amber-200',
+                        cancelled:'bg-surface-2 text-on-surface-subtle border-outline',
                       };
                       return (
                         <tr key={w.id} className="border-b border-gray-50 last:border-0">
-                          <td className="px-4 py-3 font-medium text-gray-800 whitespace-nowrap">
+                          <td className="px-4 py-3 font-medium text-on-surface whitespace-nowrap">
                             {parseLocalDate(w.date).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' })}
                           </td>
                           <td className="px-4 py-3 whitespace-nowrap">
@@ -1002,20 +1002,20 @@ export default function MyPortal() {
                               {w.type === 'half_day' ? 'Half Day' : 'Full Day'}
                             </span>
                           </td>
-                          <td className="px-4 py-3 text-gray-500 max-w-[160px] truncate">{w.reason}</td>
-                          <td className="px-4 py-3 text-xs text-gray-400 whitespace-nowrap">
+                          <td className="px-4 py-3 text-on-surface-subtle max-w-[160px] truncate">{w.reason}</td>
+                          <td className="px-4 py-3 text-xs text-on-surface-subtle whitespace-nowrap">
                             {new Date(w.created_at).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' })}
                           </td>
                           <td className="px-4 py-3">
                             <div className="space-y-1">
-                              <span className={`inline-flex items-center text-xs px-2.5 py-0.5 rounded-full border font-medium ${statusColor[w.status] ?? 'bg-gray-50 text-gray-500 border-gray-200'}`}>
+                              <span className={`inline-flex items-center text-xs px-2.5 py-0.5 rounded-full border font-medium ${statusColor[w.status] ?? 'bg-surface-2 text-on-surface-subtle border-outline'}`}>
                                 {w.status.charAt(0).toUpperCase() + w.status.slice(1)}
                               </span>
                               {w.manager_status === 'approved' && w.status === 'pending' && (
-                                <p className="text-xs text-green-600">✓ Manager approved</p>
+                                <p className="text-xs text-success">✓ Manager approved</p>
                               )}
                               {w.manager_status === 'rejected' && (
-                                <p className="text-xs text-red-500">✕ Manager rejected</p>
+                                <p className="text-xs text-danger">✕ Manager rejected</p>
                               )}
                             </div>
                           </td>
@@ -1028,7 +1028,7 @@ export default function MyPortal() {
                                   await api.cancelWfh(w.id, user?.name ?? 'Employee', reason.trim());
                                   setWfhRequests(prev => prev.map(x => x.id === w.id ? { ...x, status: 'cancelled' } : x));
                                 }}
-                                className="text-xs px-2.5 py-1 bg-gray-100 text-gray-600 rounded-md hover:bg-gray-200 font-medium whitespace-nowrap">
+                                className="text-xs px-2.5 py-1 bg-surface-2 text-on-surface-muted rounded-md hover:bg-surface-3 font-medium whitespace-nowrap">
                                 Cancel
                               </button>
                             )}
@@ -1045,46 +1045,46 @@ export default function MyPortal() {
           {/* Apply WFH modal */}
           {applyWfh && (
             <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 backdrop-blur-sm p-4">
-              <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md">
-                <div className="flex items-center justify-between px-6 py-4 border-b border-gray-100">
+              <div className="bg-surface rounded-2xl shadow-2xl w-full max-w-md">
+                <div className="flex items-center justify-between px-6 py-4 border-b border-outline">
                   <div className="flex items-center gap-3">
                     <div className="w-9 h-9 rounded-lg flex items-center justify-center" style={{ background: 'rgba(25,34,80,0.08)' }}>
                       <Monitor size={17} style={{ color: '#192250' }} />
                     </div>
-                    <h2 className="text-base font-semibold text-gray-900">Apply Work From Home</h2>
+                    <h2 className="text-base font-semibold text-on-surface">Apply Work From Home</h2>
                   </div>
-                  <button onClick={() => setApplyWfh(false)} className="p-1.5 hover:bg-gray-100 rounded-lg">
-                    <X size={16} className="text-gray-400" />
+                  <button onClick={() => setApplyWfh(false)} className="p-1.5 hover:bg-surface-2 rounded-lg">
+                    <X size={16} className="text-on-surface-subtle" />
                   </button>
                 </div>
                 <div className="p-6 space-y-4">
                   <div>
-                    <label className="text-xs font-medium text-gray-600 mb-1 block">Date <span className="text-red-400">*</span></label>
+                    <label className="text-xs font-medium text-on-surface-muted mb-1 block">Date <span className="text-danger">*</span></label>
                     <input type="date" value={wfhForm.date}
                       onChange={e => setWfhForm(f => ({ ...f, date: e.target.value }))}
-                      className="w-full text-sm border border-gray-200 rounded-lg px-3 py-2.5 focus:outline-none focus:ring-2 focus:ring-teal-200" />
+                      className="w-full text-sm border border-outline rounded-lg px-3 py-2.5 focus:outline-none focus:ring-2 focus:ring-teal-200" />
                   </div>
                   <div>
-                    <label className="text-xs font-medium text-gray-600 mb-1 block">Type</label>
+                    <label className="text-xs font-medium text-on-surface-muted mb-1 block">Type</label>
                     <div className="flex gap-3">
                       {[{ key: 'full_day', label: 'Full Day' }, { key: 'half_day', label: 'Half Day' }].map(t => (
                         <button key={t.key} type="button"
                           onClick={() => setWfhForm(f => ({ ...f, type: t.key }))}
-                          className={`flex-1 py-2.5 rounded-lg border text-sm font-medium transition-all ${wfhForm.type === t.key ? 'border-[#192250] bg-[#192250]/10 text-[#192250] font-semibold' : 'border-gray-200 text-gray-600 hover:border-gray-300'}`}>
+                          className={`flex-1 py-2.5 rounded-lg border text-sm font-medium transition-all ${wfhForm.type === t.key ? 'border-[#192250] bg-[#192250]/10 text-[#192250] font-semibold' : 'border-outline text-on-surface-muted hover:border-outline-strong'}`}>
                           {t.label}
                         </button>
                       ))}
                     </div>
                   </div>
                   <div>
-                    <label className="text-xs font-medium text-gray-600 mb-1 block">Reason <span className="text-red-400">*</span></label>
+                    <label className="text-xs font-medium text-on-surface-muted mb-1 block">Reason <span className="text-danger">*</span></label>
                     <textarea value={wfhForm.reason} onChange={e => setWfhForm(f => ({ ...f, reason: e.target.value }))}
                       rows={3} placeholder="Briefly describe the reason for WFH..."
-                      className="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm focus:outline-none resize-none" />
+                      className="w-full border border-outline rounded-lg px-3 py-2.5 text-sm focus:outline-none resize-none" />
                   </div>
                   <div className="flex gap-3 pt-1">
                     <button onClick={() => setApplyWfh(false)}
-                      className="flex-1 py-2.5 border border-gray-200 rounded-lg text-sm font-medium text-gray-600 hover:bg-gray-50">
+                      className="flex-1 py-2.5 border border-outline rounded-lg text-sm font-medium text-on-surface-muted hover:bg-surface-2">
                       Cancel
                     </button>
                     <button
@@ -1136,12 +1136,12 @@ export default function MyPortal() {
             </div>
 
             {/* Incentive list */}
-            <div className="bg-white rounded-xl border border-gray-100 shadow-sm overflow-hidden">
+            <div className="bg-surface rounded-xl border border-outline shadow-sm overflow-hidden">
               {myIncentives.length === 0 ? (
                 <div className="flex flex-col items-center py-16 gap-2">
                   <Target size={32} className="text-gray-200" />
-                  <p className="text-sm text-gray-400">No incentive requests yet</p>
-                  <p className="text-xs text-gray-300">Submit a request when you upsell a service to a client</p>
+                  <p className="text-sm text-on-surface-subtle">No incentive requests yet</p>
+                  <p className="text-xs text-on-surface-subtle">Submit a request when you upsell a service to a client</p>
                 </div>
               ) : (
                 <div className="divide-y divide-gray-50">
@@ -1151,20 +1151,20 @@ export default function MyPortal() {
                       <div key={r.id} className="px-5 py-4">
                         <div className="flex items-start justify-between gap-3">
                           <div className="flex-1 min-w-0">
-                            <p className="font-semibold text-gray-800">{r.client_name}</p>
-                            <p className="text-xs text-gray-500 mt-0.5">{r.service_description}</p>
+                            <p className="font-semibold text-on-surface">{r.client_name}</p>
+                            <p className="text-xs text-on-surface-subtle mt-0.5">{r.service_description}</p>
                             <div className="flex items-center gap-3 mt-2 flex-wrap">
-                              {r.deal_value && <span className="text-xs text-gray-400">Deal: <strong style={{ color: '#192250' }}>{fmtAmt(r.deal_value)}</strong></span>}
+                              {r.deal_value && <span className="text-xs text-on-surface-subtle">Deal: <strong style={{ color: '#192250' }}>{fmtAmt(r.deal_value)}</strong></span>}
                               {r.approved_amount
                                 ? <span className="text-xs font-semibold" style={{ color: '#15803d' }}>Incentive: {fmtAmt(r.approved_amount)}</span>
-                                : <span className="text-xs text-gray-300 italic">Incentive amount to be set by HR</span>}
+                                : <span className="text-xs text-on-surface-subtle italic">Incentive amount to be set by HR</span>}
                             </div>
-                            {r.rejection_reason && <p className="text-xs text-red-500 mt-1 italic">"{r.rejection_reason}"</p>}
+                            {r.rejection_reason && <p className="text-xs text-danger mt-1 italic">"{r.rejection_reason}"</p>}
                             {r.payment_note && <p className="text-xs text-purple-500 mt-1">{r.payment_note}</p>}
                           </div>
                           <div className="flex flex-col items-end gap-1 flex-shrink-0">
                             <span className="text-xs px-2.5 py-1 rounded-full font-semibold" style={{ background: cfg.bg, color: cfg.color }}>{cfg.label}</span>
-                            <span className="text-[10px] text-gray-300">
+                            <span className="text-[10px] text-on-surface-subtle">
                               {new Date(r.created_at).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' })}
                             </span>
                           </div>
@@ -1179,10 +1179,10 @@ export default function MyPortal() {
             {/* Submit form modal */}
             {showUpsellForm && (
               <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 backdrop-blur-sm p-4">
-                <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md overflow-hidden">
-                  <div className="flex items-center justify-between px-6 py-4 border-b border-gray-100">
+                <div className="bg-surface rounded-2xl shadow-2xl w-full max-w-md overflow-hidden">
+                  <div className="flex items-center justify-between px-6 py-4 border-b border-outline">
                     <h2 className="font-bold text-base" style={{ color: '#192250' }}>Request Upsell Incentive</h2>
-                    <button onClick={() => setShowUpsellForm(false)}><X size={16} className="text-gray-400" /></button>
+                    <button onClick={() => setShowUpsellForm(false)}><X size={16} className="text-on-surface-subtle" /></button>
                   </div>
                   <div className="p-6 space-y-4">
                     {[
@@ -1190,33 +1190,33 @@ export default function MyPortal() {
                       { key: 'service_description', label: 'Service Upsold', placeholder: 'e.g. SEO Package upgraded to Premium', required: true },
                     ].map(({ key, label, placeholder, required }) => (
                       <div key={key}>
-                        <label className="text-xs font-medium text-gray-600 mb-1 block">{label} {required && <span className="text-red-400">*</span>}</label>
+                        <label className="text-xs font-medium text-on-surface-muted mb-1 block">{label} {required && <span className="text-danger">*</span>}</label>
                         <input value={upsellForm[key as keyof typeof upsellForm]}
                           onChange={e => setUpsellForm(f => ({ ...f, [key]: e.target.value }))}
                           placeholder={placeholder}
-                          className="w-full text-sm border border-gray-200 rounded-lg px-3 py-2.5 focus:outline-none focus:ring-2 focus:ring-primary-200" />
+                          className="w-full text-sm border border-outline rounded-lg px-3 py-2.5 focus:outline-none focus:ring-2 focus:ring-primary-200" />
                       </div>
                     ))}
                     <div className="grid grid-cols-2 gap-3">
                       <div className="col-span-2">
-                        <label className="text-xs font-medium text-gray-600 mb-1 block">Total Deal Value (₹) <span className="text-red-400">*</span></label>
+                        <label className="text-xs font-medium text-on-surface-muted mb-1 block">Total Deal Value (₹) <span className="text-danger">*</span></label>
                         <input type="number" value={upsellForm.deal_value}
                           onChange={e => setUpsellForm(f => ({ ...f, deal_value: e.target.value }))}
                           placeholder="e.g. 50000 — total value of the upsell"
-                          className="w-full text-sm border border-gray-200 rounded-lg px-3 py-2.5 focus:outline-none" />
-                        <p className="text-xs text-gray-400 mt-1">HR will review and set your incentive amount.</p>
+                          className="w-full text-sm border border-outline rounded-lg px-3 py-2.5 focus:outline-none" />
+                        <p className="text-xs text-on-surface-subtle mt-1">HR will review and set your incentive amount.</p>
                       </div>
                     </div>
                     <div>
-                      <label className="text-xs font-medium text-gray-600 mb-1 block">Additional Notes</label>
+                      <label className="text-xs font-medium text-on-surface-muted mb-1 block">Additional Notes</label>
                       <textarea value={upsellForm.notes} onChange={e => setUpsellForm(f => ({ ...f, notes: e.target.value }))}
                         rows={3} placeholder="Describe your contribution to the upsell…"
-                        className="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm focus:outline-none resize-none" />
+                        className="w-full border border-outline rounded-lg px-3 py-2.5 text-sm focus:outline-none resize-none" />
                     </div>
-                    {upsellError && <p className="text-xs font-medium text-red-500 bg-red-50 border border-red-100 rounded-lg px-3 py-2">{upsellError}</p>}
+                    {upsellError && <p className="text-xs font-medium text-danger bg-danger-container border border-red-100 rounded-lg px-3 py-2">{upsellError}</p>}
                     <div className="flex gap-3 pt-1">
                       <button onClick={() => { setShowUpsellForm(false); setUpsellError(''); }}
-                        className="flex-1 py-2.5 border border-gray-200 rounded-lg text-sm font-medium text-gray-600 hover:bg-gray-50">Cancel</button>
+                        className="flex-1 py-2.5 border border-outline rounded-lg text-sm font-medium text-on-surface-muted hover:bg-surface-2">Cancel</button>
                       <button
                         disabled={submittingUpsell || !upsellForm.client_name.trim() || !upsellForm.service_description.trim() || !upsellForm.deal_value || Number(upsellForm.deal_value) <= 0}
                         onClick={async () => {
@@ -1266,11 +1266,11 @@ export default function MyPortal() {
                 <Plus size={15} /> Submit Expense
               </button>
             </div>
-            <div className="bg-white rounded-xl border border-gray-100 shadow-sm overflow-hidden">
+            <div className="bg-surface rounded-xl border border-outline shadow-sm overflow-hidden">
               {myExpenses.length === 0 ? (
                 <div className="flex flex-col items-center py-16 gap-2">
                   <DollarSign size={32} className="text-gray-200" />
-                  <p className="text-sm text-gray-400">No expense claims yet</p>
+                  <p className="text-sm text-on-surface-subtle">No expense claims yet</p>
                 </div>
               ) : (
                 <div className="divide-y divide-gray-50">
@@ -1281,15 +1281,15 @@ export default function MyPortal() {
                         <div className="flex-1 min-w-0">
                           <div className="flex items-center gap-2 flex-wrap">
                             <span className="text-xs font-bold px-2 py-0.5 rounded-full" style={{ background: 'rgba(25,34,80,0.08)', color: '#192250' }}>{e.category}</span>
-                            <span className="font-semibold text-gray-800">{fmtAmt2(e.amount)}</span>
+                            <span className="font-semibold text-on-surface">{fmtAmt2(e.amount)}</span>
                           </div>
-                          <p className="text-xs text-gray-500 mt-0.5">{e.description}</p>
+                          <p className="text-xs text-on-surface-subtle mt-0.5">{e.description}</p>
                           {e.approved_amount && <p className="text-xs font-semibold mt-1" style={{ color: '#15803d' }}>Approved: {fmtAmt2(e.approved_amount)}</p>}
-                          {e.rejection_reason && <p className="text-xs text-red-500 mt-1 italic">"{e.rejection_reason}"</p>}
+                          {e.rejection_reason && <p className="text-xs text-danger mt-1 italic">"{e.rejection_reason}"</p>}
                         </div>
                         <div className="flex flex-col items-end gap-1 flex-shrink-0">
                           <span className="text-xs px-2.5 py-1 rounded-full font-semibold" style={{ background: cfg.bg, color: cfg.color }}>{cfg.label}</span>
-                          <span className="text-[10px] text-gray-300">
+                          <span className="text-[10px] text-on-surface-subtle">
                             {new Date(e.created_at).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' })}
                           </span>
                         </div>
@@ -1301,50 +1301,50 @@ export default function MyPortal() {
             </div>
             {showExpenseForm && (
               <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 backdrop-blur-sm p-4">
-                <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md overflow-hidden">
-                  <div className="flex items-center justify-between px-6 py-4 border-b border-gray-100">
+                <div className="bg-surface rounded-2xl shadow-2xl w-full max-w-md overflow-hidden">
+                  <div className="flex items-center justify-between px-6 py-4 border-b border-outline">
                     <h2 className="font-bold text-base" style={{ color: '#192250' }}>Submit Expense Claim</h2>
-                    <button onClick={() => setShowExpenseForm(false)}><X size={16} className="text-gray-400" /></button>
+                    <button onClick={() => setShowExpenseForm(false)}><X size={16} className="text-on-surface-subtle" /></button>
                   </div>
                   <div className="p-6 space-y-4">
                     <div className="grid grid-cols-2 gap-3">
                       <div>
-                        <label className="text-xs font-medium text-gray-600 mb-1 block">Category <span className="text-red-400">*</span></label>
+                        <label className="text-xs font-medium text-on-surface-muted mb-1 block">Category <span className="text-danger">*</span></label>
                         <select value={expenseForm.category} onChange={e => setExpenseForm(f => ({ ...f, category: e.target.value }))}
-                          className="w-full text-sm border border-gray-200 rounded-lg px-3 py-2.5 focus:outline-none bg-white">
+                          className="w-full text-sm border border-outline rounded-lg px-3 py-2.5 focus:outline-none bg-surface">
                           {expCategories.map(c => <option key={c}>{c}</option>)}
                         </select>
                       </div>
                       <div>
-                        <label className="text-xs font-medium text-gray-600 mb-1 block">Amount (₹) <span className="text-red-400">*</span></label>
+                        <label className="text-xs font-medium text-on-surface-muted mb-1 block">Amount (₹) <span className="text-danger">*</span></label>
                         <input type="number" value={expenseForm.amount} onChange={e => setExpenseForm(f => ({ ...f, amount: e.target.value }))}
                           placeholder="e.g. 2500"
-                          className="w-full text-sm border border-gray-200 rounded-lg px-3 py-2.5 focus:outline-none" />
+                          className="w-full text-sm border border-outline rounded-lg px-3 py-2.5 focus:outline-none" />
                       </div>
                     </div>
                     <div>
-                      <label className="text-xs font-medium text-gray-600 mb-1 block">Description <span className="text-red-400">*</span></label>
+                      <label className="text-xs font-medium text-on-surface-muted mb-1 block">Description <span className="text-danger">*</span></label>
                       <input value={expenseForm.description} onChange={e => setExpenseForm(f => ({ ...f, description: e.target.value }))}
                         placeholder="e.g. Cab to client meeting at Connaught Place"
-                        className="w-full text-sm border border-gray-200 rounded-lg px-3 py-2.5 focus:outline-none" />
+                        className="w-full text-sm border border-outline rounded-lg px-3 py-2.5 focus:outline-none" />
                     </div>
                     <div className="grid grid-cols-2 gap-3">
                       <div>
-                        <label className="text-xs font-medium text-gray-600 mb-1 block">Expense Date</label>
+                        <label className="text-xs font-medium text-on-surface-muted mb-1 block">Expense Date</label>
                         <input type="date" value={expenseForm.expense_date} max={todayLocal()} onChange={e => setExpenseForm(f => ({ ...f, expense_date: e.target.value }))}
-                          className="w-full text-sm border border-gray-200 rounded-lg px-3 py-2.5 focus:outline-none" />
+                          className="w-full text-sm border border-outline rounded-lg px-3 py-2.5 focus:outline-none" />
                       </div>
                       <div>
-                        <label className="text-xs font-medium text-gray-600 mb-1 block">Receipt / Reference</label>
+                        <label className="text-xs font-medium text-on-surface-muted mb-1 block">Receipt / Reference</label>
                         <input value={expenseForm.receipt_note} onChange={e => setExpenseForm(f => ({ ...f, receipt_note: e.target.value }))}
                           placeholder="Bill no. / reference"
-                          className="w-full text-sm border border-gray-200 rounded-lg px-3 py-2.5 focus:outline-none" />
+                          className="w-full text-sm border border-outline rounded-lg px-3 py-2.5 focus:outline-none" />
                       </div>
                     </div>
-                    {expenseError && <p className="text-xs font-medium text-red-500 bg-red-50 border border-red-100 rounded-lg px-3 py-2">{expenseError}</p>}
+                    {expenseError && <p className="text-xs font-medium text-danger bg-danger-container border border-red-100 rounded-lg px-3 py-2">{expenseError}</p>}
                     <div className="flex gap-3 pt-1">
                       <button onClick={() => { setShowExpenseForm(false); setExpenseError(''); }}
-                        className="flex-1 py-2.5 border border-gray-200 rounded-lg text-sm font-medium text-gray-600 hover:bg-gray-50">Cancel</button>
+                        className="flex-1 py-2.5 border border-outline rounded-lg text-sm font-medium text-on-surface-muted hover:bg-surface-2">Cancel</button>
                       <button
                         disabled={submittingExp || !expenseForm.category || !expenseForm.description.trim() || !expenseForm.amount || Number(expenseForm.amount) <= 0}
                         onClick={async () => {
@@ -1396,33 +1396,33 @@ export default function MyPortal() {
           <div className="space-y-5">
             {/* Assigned laptops */}
             <div>
-              <p className="text-xs font-bold text-gray-400 uppercase tracking-wider mb-3">My Assigned Devices</p>
+              <p className="text-xs font-bold text-on-surface-subtle uppercase tracking-wider mb-3">My Assigned Devices</p>
               {myAssets.length === 0 ? (
-                <div className="bg-white rounded-2xl border border-gray-100 shadow-sm p-8 text-center">
+                <div className="bg-surface rounded-2xl border border-outline shadow-sm p-8 text-center">
                   <Monitor size={28} className="text-gray-200 mx-auto mb-2"/>
-                  <p className="text-sm text-gray-400">No device assigned yet</p>
-                  <p className="text-xs text-gray-300 mt-1">If you've been issued a laptop, ask HR to add it to the registry.</p>
+                  <p className="text-sm text-on-surface-subtle">No device assigned yet</p>
+                  <p className="text-xs text-on-surface-subtle mt-1">If you've been issued a laptop, ask HR to add it to the registry.</p>
                 </div>
               ) : (
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                   {myAssets.map(a => (
-                    <div key={a.id} className="bg-white rounded-xl border border-gray-100 shadow-sm p-4">
+                    <div key={a.id} className="bg-surface rounded-xl border border-outline shadow-sm p-4">
                       <div className="flex items-center gap-3">
                         <div className="w-10 h-10 rounded-xl bg-primary-50 flex items-center justify-center">
                           <Monitor size={18} className="text-primary-600"/>
                         </div>
                         <div className="flex-1 min-w-0">
-                          <p className="font-mono text-sm font-bold text-gray-800">{a.asset_tag}</p>
-                          <p className="text-xs text-gray-500 truncate">{a.model ?? 'Unknown model'}</p>
+                          <p className="font-mono text-sm font-bold text-on-surface">{a.asset_tag}</p>
+                          <p className="text-xs text-on-surface-subtle truncate">{a.model ?? 'Unknown model'}</p>
                         </div>
                         <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${
-                          a.status === 'active' ? 'bg-green-50 text-green-700' :
-                          a.status === 'in_repair' ? 'bg-amber-50 text-amber-700' :
-                                                     'bg-gray-100 text-gray-500'}`}>
+                          a.status === 'active' ? 'bg-success-container text-success' :
+                          a.status === 'in_repair' ? 'bg-warning-container text-warning' :
+                                                     'bg-surface-2 text-on-surface-subtle'}`}>
                           {(a.status ?? '').replace('_',' ')}
                         </span>
                       </div>
-                      {a.serial_no && <p className="text-[10px] text-gray-400 font-mono mt-2">SN: {a.serial_no}</p>}
+                      {a.serial_no && <p className="text-[10px] text-on-surface-subtle font-mono mt-2">SN: {a.serial_no}</p>}
                     </div>
                   ))}
                 </div>
@@ -1431,13 +1431,13 @@ export default function MyPortal() {
 
             {/* Repair tickets */}
             <div>
-              <p className="text-xs font-bold text-gray-400 uppercase tracking-wider mb-3">Repair History</p>
+              <p className="text-xs font-bold text-on-surface-subtle uppercase tracking-wider mb-3">Repair History</p>
               {myRepairTickets.length === 0 ? (
-                <div className="bg-white rounded-2xl border border-gray-100 shadow-sm p-8 text-center">
-                  <p className="text-sm text-gray-400">No repair tickets — your device hasn't needed any repairs</p>
+                <div className="bg-surface rounded-2xl border border-outline shadow-sm p-8 text-center">
+                  <p className="text-sm text-on-surface-subtle">No repair tickets — your device hasn't needed any repairs</p>
                 </div>
               ) : (
-                <div className="bg-white rounded-2xl border border-gray-100 shadow-sm overflow-hidden">
+                <div className="bg-surface rounded-2xl border border-outline shadow-sm overflow-hidden">
                   <div className="divide-y divide-gray-50">
                     {myRepairTickets.map(t => {
                       const cfg = STATUS[t.status] ?? STATUS.reported;
@@ -1445,20 +1445,20 @@ export default function MyPortal() {
                         <div key={t.id} className="p-4">
                           <div className="flex items-start justify-between gap-3 mb-2">
                             <div className="flex-1 min-w-0">
-                              <p className="text-sm font-semibold text-gray-800">{t.issue}</p>
-                              <p className="text-[11px] text-gray-400 mt-0.5">Reported {new Date(t.reported_at).toLocaleDateString('en-IN', { day:'numeric',month:'short',year:'numeric' })}</p>
+                              <p className="text-sm font-semibold text-on-surface">{t.issue}</p>
+                              <p className="text-[11px] text-on-surface-subtle mt-0.5">Reported {new Date(t.reported_at).toLocaleDateString('en-IN', { day:'numeric',month:'short',year:'numeric' })}</p>
                             </div>
                             <span className="text-[10px] font-bold px-2.5 py-1 rounded-full flex-shrink-0" style={{ background: cfg.bg, color: cfg.color }}>{cfg.label}</span>
                           </div>
                           {(t.picked_up_at || t.returned_at || t.paid_at) && (
-                            <div className="flex flex-wrap gap-3 text-[11px] text-gray-500 mt-2">
+                            <div className="flex flex-wrap gap-3 text-[11px] text-on-surface-subtle mt-2">
                               {t.picked_up_at && <span>📦 Picked up: {new Date(t.picked_up_at).toLocaleDateString('en-IN',{day:'numeric',month:'short'})}</span>}
                               {t.returned_at && <span>✓ Returned: {new Date(t.returned_at).toLocaleDateString('en-IN',{day:'numeric',month:'short'})}</span>}
                               {t.paid_at && <span>💰 Paid: {new Date(t.paid_at).toLocaleDateString('en-IN',{day:'numeric',month:'short'})}</span>}
                             </div>
                           )}
                           {t.final_cost != null && (
-                            <div className="text-xs text-gray-600 mt-2 pt-2 border-t border-gray-100">
+                            <div className="text-xs text-on-surface-muted mt-2 pt-2 border-t border-outline">
                               Cost: <span className="font-bold">{fmtINR(t.final_cost)}</span>
                             </div>
                           )}
@@ -1477,47 +1477,47 @@ export default function MyPortal() {
       {tab === 'payslip' && (
         <div className="max-w-lg">
           {payroll ? (
-            <div className="bg-white rounded-2xl border border-gray-100 shadow-sm overflow-hidden">
+            <div className="bg-surface rounded-2xl border border-outline shadow-sm overflow-hidden">
               <div className="px-6 py-5 text-white" style={{ background: 'linear-gradient(135deg, #192250 0%, #141c43 100%)' }}>
                 <h3 className="font-bold text-lg">Salary Slip</h3>
                 <p className="text-sm mt-0.5" style={{ color: 'rgba(255,255,255,0.65)' }}>{payroll.month} {payroll.year}</p>
                 <p className="text-xs mt-1" style={{ color: '#EE2770' }}>{user?.employee_id_ref} · {user?.designation}</p>
               </div>
               <div className="p-6 space-y-2.5">
-                <p className="text-xs font-semibold text-gray-400 uppercase tracking-wide mb-2">Earnings</p>
+                <p className="text-xs font-semibold text-on-surface-subtle uppercase tracking-wide mb-2">Earnings</p>
                 {[
                   { label: 'Basic Pay', value: payroll.basic },
                   { label: 'HRA', value: payroll.hra },
                   { label: 'Special Allowance', value: payroll.special_allowance },
                 ].map(({ label, value }) => (
                   <div key={label} className="flex justify-between text-sm border-b border-gray-50 pb-2">
-                    <span className="text-gray-600">{label}</span>
-                    <span className="font-medium text-gray-800">₹{Number(value).toLocaleString('en-IN')}</span>
+                    <span className="text-on-surface-muted">{label}</span>
+                    <span className="font-medium text-on-surface">₹{Number(value).toLocaleString('en-IN')}</span>
                   </div>
                 ))}
-                <div className="flex justify-between text-sm font-semibold pt-1 pb-3 border-b border-dashed border-gray-200">
+                <div className="flex justify-between text-sm font-semibold pt-1 pb-3 border-b border-dashed border-outline">
                   <span>Gross Pay</span>
                   <span>₹{Number(payroll.gross_pay).toLocaleString('en-IN')}</span>
                 </div>
-                <p className="text-xs font-semibold text-gray-400 uppercase tracking-wide mb-2 pt-1">Deductions</p>
+                <p className="text-xs font-semibold text-on-surface-subtle uppercase tracking-wide mb-2 pt-1">Deductions</p>
                 {[
                   { label: 'Provident Fund', value: payroll.provident_fund },
                   { label: 'Professional Tax', value: payroll.professional_tax },
                   { label: 'Income Tax (TDS)', value: payroll.income_tax },
                 ].map(({ label, value }) => (
                   <div key={label} className="flex justify-between text-sm border-b border-gray-50 pb-2">
-                    <span className="text-gray-600">{label}</span>
-                    <span className="font-medium text-red-500">−₹{Number(value).toLocaleString('en-IN')}</span>
+                    <span className="text-on-surface-muted">{label}</span>
+                    <span className="font-medium text-danger">−₹{Number(value).toLocaleString('en-IN')}</span>
                   </div>
                 ))}
                 <div className="mt-4 rounded-xl p-4 flex justify-between items-center" style={{ background: 'rgba(25,34,80,0.06)' }}>
-                  <span className="font-bold text-gray-800">Net Pay</span>
+                  <span className="font-bold text-on-surface">Net Pay</span>
                   <span className="text-xl font-bold" style={{ color: '#192250' }}>₹{Number(payroll.net_pay).toLocaleString('en-IN')}</span>
                 </div>
               </div>
             </div>
           ) : (
-            <p className="text-center text-gray-400 text-sm py-16">No payroll data available</p>
+            <p className="text-center text-on-surface-subtle text-sm py-16">No payroll data available</p>
           )}
         </div>
       )}
@@ -1530,18 +1530,18 @@ export default function MyPortal() {
           {myPip && (
             <div className="rounded-2xl p-4 border border-red-200" style={{ background: '#fff1f2' }}>
               <div className="flex items-start gap-3">
-                <div className="w-9 h-9 rounded-xl bg-red-100 flex items-center justify-center flex-shrink-0">
-                  <AlertCircle size={18} className="text-red-600" />
+                <div className="w-9 h-9 rounded-xl bg-danger-container flex items-center justify-center flex-shrink-0">
+                  <AlertCircle size={18} className="text-danger" />
                 </div>
                 <div>
                   <p className="font-bold text-sm text-red-800">You are on a Performance Improvement Plan (PIP)</p>
-                  <p className="text-xs text-red-600 mt-1">
+                  <p className="text-xs text-danger mt-1">
                     Active from {new Date(myPip.start_date + 'T12:00:00Z').toLocaleDateString('en-IN', { day: 'numeric', month: 'long', year: 'numeric' })}
                     {' '}until{' '}
                     {new Date(myPip.end_date + 'T12:00:00Z').toLocaleDateString('en-IN', { day: 'numeric', month: 'long', year: 'numeric' })}
                   </p>
-                  {myPip.goals && <p className="text-xs text-red-500 mt-1 italic">Goals: {myPip.goals}</p>}
-                  <p className="text-xs text-red-500 mt-1">Please speak to your HR manager for guidance.</p>
+                  {myPip.goals && <p className="text-xs text-danger mt-1 italic">Goals: {myPip.goals}</p>}
+                  <p className="text-xs text-danger mt-1">Please speak to your HR manager for guidance.</p>
                 </div>
               </div>
             </div>
@@ -1549,21 +1549,21 @@ export default function MyPortal() {
 
           {/* Warnings */}
           {myWarnings.length > 0 && (
-            <div className="bg-white rounded-2xl border border-gray-100 shadow-sm overflow-hidden">
-              <div className="px-5 py-4 border-b border-gray-100 flex items-center gap-2">
-                <AlertCircle size={15} className="text-amber-500" />
+            <div className="bg-surface rounded-2xl border border-outline shadow-sm overflow-hidden">
+              <div className="px-5 py-4 border-b border-outline flex items-center gap-2">
+                <AlertCircle size={15} className="text-warning" />
                 <h3 className="font-bold text-sm" style={{ color: '#192250' }}>Warnings on Record</h3>
-                <span className={`text-xs font-bold px-2 py-0.5 rounded-full ml-auto ${myWarnings.length >= 3 ? 'bg-red-100 text-red-700' : myWarnings.length === 2 ? 'bg-orange-100 text-orange-700' : 'bg-amber-100 text-amber-700'}`}>
+                <span className={`text-xs font-bold px-2 py-0.5 rounded-full ml-auto ${myWarnings.length >= 3 ? 'bg-danger-container text-danger' : myWarnings.length === 2 ? 'bg-orange-100 text-orange-700' : 'bg-warning-container text-warning'}`}>
                   {myWarnings.length} {myWarnings.length === 1 ? 'warning' : 'warnings'}
                 </span>
               </div>
               <div className="divide-y divide-gray-50">
                 {myWarnings.map((w, i) => (
                   <div key={w.id} className="flex items-start gap-3 px-5 py-3">
-                    <div className={`w-6 h-6 rounded-full flex items-center justify-center text-xs font-black flex-shrink-0 mt-0.5 ${w.severity === 'final' ? 'bg-red-500 text-white' : w.severity === 'serious' ? 'bg-orange-500 text-white' : 'bg-amber-400 text-white'}`}>{i+1}</div>
+                    <div className={`w-6 h-6 rounded-full flex items-center justify-center text-xs font-black flex-shrink-0 mt-0.5 ${w.severity === 'final' ? 'bg-danger text-white' : w.severity === 'serious' ? 'bg-orange-500 text-white' : 'bg-amber-400 text-white'}`}>{i+1}</div>
                     <div className="flex-1 min-w-0">
-                      <p className="text-sm text-gray-700">{w.reason}</p>
-                      <p className="text-xs text-gray-400 mt-0.5 capitalize">
+                      <p className="text-sm text-on-surface-muted">{w.reason}</p>
+                      <p className="text-xs text-on-surface-subtle mt-0.5 capitalize">
                         {w.severity} · {w.issued_by ? `Issued by ${w.issued_by} · ` : ''}
                         {new Date(w.created_at).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' })}
                       </p>
@@ -1585,16 +1585,16 @@ export default function MyPortal() {
                 { label: 'Reviews Done', value: `${reviewed}/12`, color: '#192250' },
                 { label: 'Best Month', value: best ? MONTHS_SHORT[best.month - 1] : '—', color: '#16a34a' },
               ].map(({ label, value, color }) => (
-                <div key={label} className="bg-white rounded-xl p-4 border border-gray-100 shadow-sm text-center">
+                <div key={label} className="bg-surface rounded-xl p-4 border border-outline shadow-sm text-center">
                   <p className="text-2xl font-black" style={{ color }}>{value}</p>
-                  <p className="text-xs text-gray-400 mt-1">{label}</p>
+                  <p className="text-xs text-on-surface-subtle mt-1">{label}</p>
                 </div>
               ));
             })()}
           </div>
 
           {/* Bar chart */}
-          <div className="bg-white rounded-xl border border-gray-100 shadow-sm p-5">
+          <div className="bg-surface rounded-xl border border-outline shadow-sm p-5">
             <h3 className="font-bold text-sm mb-4" style={{ color: '#192250' }}>Monthly Performance — {currentYear}</h3>
             <ResponsiveContainer width="100%" height={180}>
               <BarChart data={chartData} barSize={22}>
@@ -1615,26 +1615,26 @@ export default function MyPortal() {
           </div>
 
           {/* Score breakdown table */}
-          <div className="bg-white rounded-xl border border-gray-100 shadow-sm overflow-hidden">
-            <div className="px-5 py-3 border-b border-gray-100">
+          <div className="bg-surface rounded-xl border border-outline shadow-sm overflow-hidden">
+            <div className="px-5 py-3 border-b border-outline">
               <h3 className="font-bold text-sm" style={{ color: '#192250' }}>Score Breakdown</h3>
             </div>
             <div className="overflow-x-auto">
               <table className="w-full text-sm">
                 <thead>
                   <tr style={{ background: '#f8f9fc' }}>
-                    <th className="text-left px-4 py-2.5 text-xs font-semibold text-gray-400 uppercase tracking-wide">Month</th>
+                    <th className="text-left px-4 py-2.5 text-xs font-semibold text-on-surface-subtle uppercase tracking-wide">Month</th>
                     {PERF_COLS.map(h => (
-                      <th key={h} className="text-center px-2 py-2.5 text-xs font-semibold text-gray-400 uppercase tracking-wide whitespace-nowrap">{h}</th>
+                      <th key={h} className="text-center px-2 py-2.5 text-xs font-semibold text-on-surface-subtle uppercase tracking-wide whitespace-nowrap">{h}</th>
                     ))}
-                    <th className="text-center px-3 py-2.5 text-xs font-semibold text-gray-400 uppercase tracking-wide">Overall</th>
+                    <th className="text-center px-3 py-2.5 text-xs font-semibold text-on-surface-subtle uppercase tracking-wide">Overall</th>
                   </tr>
                 </thead>
                 <tbody>
                   {monthlyPerf.length === 0 ? (
-                    <tr><td colSpan={8} className="text-center text-gray-400 text-sm py-10">No reviews yet for {currentYear}</td></tr>
+                    <tr><td colSpan={8} className="text-center text-on-surface-subtle text-sm py-10">No reviews yet for {currentYear}</td></tr>
                   ) : monthlyPerf.map(r => (
-                    <tr key={r.id} className="border-t border-gray-50 hover:bg-gray-50/50">
+                    <tr key={r.id} className="border-t border-gray-50 hover:bg-surface-2/50">
                       <td className="px-4 py-3 font-semibold" style={{ color: '#192250' }}>{MONTHS_SHORT[r.month - 1]}</td>
                       {PERF_KEYS.map((k, i) => (
                         <td key={i} className="px-2 py-3 text-center font-bold tabular-nums" style={{ color: perfColor(r[k] ?? 0) }}>{r[k] ?? 0}</td>
@@ -1656,14 +1656,14 @@ export default function MyPortal() {
 
           {/* Current appraisal window — only shown when admin has opened it */}
           {appraisalWindowOpen && (
-            <div className="bg-white rounded-2xl border shadow-sm overflow-hidden" style={{ borderColor: '#ffd6e8' }}>
+            <div className="bg-surface rounded-2xl border shadow-sm overflow-hidden" style={{ borderColor: '#ffd6e8' }}>
               <div className="flex items-center justify-between px-5 py-4 border-b" style={{ borderColor: '#ffd6e8', background: 'rgba(238,39,112,0.04)' }}>
                 <div>
                   <h3 className="font-bold text-sm flex items-center gap-2" style={{ color: '#192250' }}>
                     <FileText size={15} style={{ color: '#EE2770' }} />
                     Appraisal Goals — {MONTHS_SHORT[currentMonth - 1]} {currentYear}
                   </h3>
-                  <p className="text-xs text-gray-400 mt-0.5">Your appraisal window is open. Fill and submit your goals.</p>
+                  <p className="text-xs text-on-surface-subtle mt-0.5">Your appraisal window is open. Fill and submit your goals.</p>
                 </div>
                 {isSubmitted ? (
                   <span className="flex items-center gap-1.5 text-xs font-semibold px-3 py-1.5 rounded-full" style={{ background: '#dcfce7', color: '#15803d' }}>
@@ -1687,14 +1687,14 @@ export default function MyPortal() {
                   </div>
                 ) : (
                   <div className="space-y-4">
-                    <p className="text-xs text-gray-400">Add up to 6 goals. Save draft to continue later. Submit to lock for review.</p>
+                    <p className="text-xs text-on-surface-subtle">Add up to 6 goals. Save draft to continue later. Submit to lock for review.</p>
                     {goalsDraft.map((g, i) => (
                       <div key={i} className="border rounded-xl p-4 space-y-3" style={{ borderColor: '#e2e4ed' }}>
                         <div className="flex items-center justify-between">
                           <span className="text-xs font-bold uppercase tracking-wide" style={{ color: '#EE2770' }}>Goal {i + 1}</span>
                           {goalsDraft.length > 1 && (
-                            <button onClick={() => setGoalsDraft(g => g.filter((_, j) => j !== i))} className="p-1 hover:bg-red-50 rounded">
-                              <Trash2 size={13} className="text-red-400" />
+                            <button onClick={() => setGoalsDraft(g => g.filter((_, j) => j !== i))} className="p-1 hover:bg-danger-container rounded">
+                              <Trash2 size={13} className="text-danger" />
                             </button>
                           )}
                         </div>
@@ -1721,18 +1721,18 @@ export default function MyPortal() {
                     {goalsDraft.length < 6 && (
                       <button
                         onClick={() => setGoalsDraft(g => [...g, { title: '', description: '', success_criteria: '' }])}
-                        className="w-full py-2.5 border-2 border-dashed rounded-xl text-sm font-semibold text-gray-400 transition-colors"
+                        className="w-full py-2.5 border-2 border-dashed rounded-xl text-sm font-semibold text-on-surface-subtle transition-colors"
                         style={{ borderColor: '#e2e4ed' }}
                         onMouseEnter={e => { (e.currentTarget as HTMLElement).style.borderColor = '#EE2770'; (e.currentTarget as HTMLElement).style.color = '#EE2770'; }}
                         onMouseLeave={e => { (e.currentTarget as HTMLElement).style.borderColor = '#e2e4ed'; (e.currentTarget as HTMLElement).style.color = '#9ca3af'; }}
                       >+ Add Another Goal</button>
                     )}
                     {goalsError && (
-                      <p className="text-xs text-red-500 flex items-center gap-1.5"><AlertCircle size={13} /> {goalsError}</p>
+                      <p className="text-xs text-danger flex items-center gap-1.5"><AlertCircle size={13} /> {goalsError}</p>
                     )}
                     <div className="flex gap-3 pt-2">
                       <button onClick={handleSaveDraft} disabled={savingGoals}
-                        className="flex items-center gap-2 px-4 py-2.5 border rounded-xl text-sm font-semibold hover:bg-gray-50 disabled:opacity-60"
+                        className="flex items-center gap-2 px-4 py-2.5 border rounded-xl text-sm font-semibold hover:bg-surface-2 disabled:opacity-60"
                         style={{ color: '#192250', borderColor: '#e2e4ed' }}>
                         <Save size={14} /> {savingGoals ? 'Saving…' : 'Save Draft'}
                       </button>
@@ -1750,8 +1750,8 @@ export default function MyPortal() {
 
           {/* Past Appraisal Submissions */}
           {(pastAppraisals.length > 0 || (!appraisalWindowOpen && allAppraisals.length > 0)) && (
-            <div className="bg-white rounded-2xl border border-gray-100 shadow-sm overflow-hidden">
-              <div className="px-5 py-4 border-b border-gray-100">
+            <div className="bg-surface rounded-2xl border border-outline shadow-sm overflow-hidden">
+              <div className="px-5 py-4 border-b border-outline">
                 <h3 className="font-bold text-sm flex items-center gap-2" style={{ color: '#192250' }}>
                   <FileText size={15} /> Past Appraisal Submissions
                 </h3>
@@ -1759,7 +1759,7 @@ export default function MyPortal() {
               <div className="divide-y divide-gray-50">
                 {(appraisalWindowOpen ? pastAppraisals : allAppraisals).map((appraisal: any) => (
                   <details key={`${appraisal.year}-${appraisal.month}`} className="group">
-                    <summary className="flex items-center gap-3 px-5 py-3.5 cursor-pointer hover:bg-gray-50/50 list-none">
+                    <summary className="flex items-center gap-3 px-5 py-3.5 cursor-pointer hover:bg-surface-2/50 list-none">
                       <div className="flex-1 flex items-center gap-3">
                         <span className="font-semibold text-sm" style={{ color: '#192250' }}>
                           {MONTHS_SHORT[appraisal.month - 1]} {appraisal.year}
@@ -1770,10 +1770,10 @@ export default function MyPortal() {
                             : { background: '#fef3c7', color: '#92400e' }}>
                           {appraisal.submitted ? '✓ Submitted' : 'Draft'}
                         </span>
-                        <span className="text-xs text-gray-400">{appraisal.goals?.length ?? 0} goals</span>
+                        <span className="text-xs text-on-surface-subtle">{appraisal.goals?.length ?? 0} goals</span>
                       </div>
                       {appraisal.submitted_at && (
-                        <span className="text-xs text-gray-400">
+                        <span className="text-xs text-on-surface-subtle">
                           {new Date(appraisal.submitted_at).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' })}
                         </span>
                       )}
@@ -1792,10 +1792,10 @@ export default function MyPortal() {
 
           {/* No appraisal window open and no past records */}
           {!appraisalWindowOpen && allAppraisals.length === 0 && (
-            <div className="bg-white rounded-2xl border border-gray-100 shadow-sm p-8 text-center">
+            <div className="bg-surface rounded-2xl border border-outline shadow-sm p-8 text-center">
               <FileText size={28} className="mx-auto text-gray-200 mb-3" />
-              <p className="font-medium text-gray-400 text-sm">No appraisal scheduled</p>
-              <p className="text-xs text-gray-300 mt-1">Your manager will open the appraisal window when it's time</p>
+              <p className="font-medium text-on-surface-subtle text-sm">No appraisal scheduled</p>
+              <p className="text-xs text-on-surface-subtle mt-1">Your manager will open the appraisal window when it's time</p>
             </div>
           )}
         </div>
@@ -1813,8 +1813,8 @@ export default function MyPortal() {
         <div className="space-y-5">
 
           {/* Pending leave approvals */}
-          <div className="bg-white rounded-2xl border border-gray-100 shadow-sm overflow-hidden">
-            <div className="px-5 py-4 border-b border-gray-100 flex items-center justify-between">
+          <div className="bg-surface rounded-2xl border border-outline shadow-sm overflow-hidden">
+            <div className="px-5 py-4 border-b border-outline flex items-center justify-between">
               <h3 className="font-bold text-sm flex items-center gap-2" style={{ color: '#192250' }}>
                 <Calendar size={15} style={{ color: '#EE2770' }} /> Pending Leave Requests
               </h3>
@@ -1825,7 +1825,7 @@ export default function MyPortal() {
               )}
             </div>
             {teamPendingLeaves.length === 0 ? (
-              <p className="text-center text-gray-400 text-sm py-10">No pending leave requests from your team.</p>
+              <p className="text-center text-on-surface-subtle text-sm py-10">No pending leave requests from your team.</p>
             ) : (
               <div className="divide-y divide-gray-50">
                 {teamPendingLeaves.map(l => (
@@ -1836,15 +1836,15 @@ export default function MyPortal() {
                         {l.employee_name?.split(' ').map((n: string) => n[0]).join('').slice(0, 2)}
                       </div>
                       <div>
-                        <p className="text-sm font-semibold text-gray-800">{l.employee_name}</p>
-                        <p className="text-xs text-gray-400 mt-0.5 capitalize">
+                        <p className="text-sm font-semibold text-on-surface">{l.employee_name}</p>
+                        <p className="text-xs text-on-surface-subtle mt-0.5 capitalize">
                           {l.type.replace('_', ' ')} leave · {l.days}d ·{' '}
                           {parseLocalDate(l.from_date).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' })}
                           {l.from_date !== l.to_date && ` – ${parseLocalDate(l.to_date).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' })}`}
                         </p>
-                        {l.reason && <p className="text-xs text-gray-400 mt-0.5 italic">"{l.reason}"</p>}
+                        {l.reason && <p className="text-xs text-on-surface-subtle mt-0.5 italic">"{l.reason}"</p>}
                         {l.created_at && (
-                          <p className="text-xs text-gray-400 mt-0.5">
+                          <p className="text-xs text-on-surface-subtle mt-0.5">
                             Applied: {new Date(l.created_at).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' })}
                             {', '}{new Date(l.created_at).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', hour12: true })}
                           </p>
@@ -1874,8 +1874,8 @@ export default function MyPortal() {
           </div>
 
           {/* Team members + performance */}
-          <div className="bg-white rounded-2xl border border-gray-100 shadow-sm overflow-hidden">
-            <div className="px-5 py-4 border-b border-gray-100">
+          <div className="bg-surface rounded-2xl border border-outline shadow-sm overflow-hidden">
+            <div className="px-5 py-4 border-b border-outline">
               <h3 className="font-bold text-sm flex items-center gap-2" style={{ color: '#192250' }}>
                 <Users size={15} style={{ color: '#EE2770' }} /> Team Members
               </h3>
@@ -1894,8 +1894,8 @@ export default function MyPortal() {
                           {member.name?.split(' ').map((n: string) => n[0]).join('').slice(0, 2)}
                         </div>
                         <div>
-                          <p className="text-sm font-semibold text-gray-800">{member.name}</p>
-                          <p className="text-xs text-gray-400 mt-0.5">{member.designation} · {member.department}</p>
+                          <p className="text-sm font-semibold text-on-surface">{member.name}</p>
+                          <p className="text-xs text-on-surface-subtle mt-0.5">{member.designation} · {member.department}</p>
                         </div>
                       </div>
                       <div className="flex items-center gap-2">
@@ -1904,10 +1904,10 @@ export default function MyPortal() {
                             <p className="text-lg font-black" style={{ color: perfColor(latest.overall_score) }}>
                               {latest.overall_score}
                             </p>
-                            <p className="text-xs text-gray-400">{MONTHS_SHORT[latest.month - 1]} score</p>
+                            <p className="text-xs text-on-surface-subtle">{MONTHS_SHORT[latest.month - 1]} score</p>
                           </div>
                         ) : (
-                          <p className="text-xs text-gray-300 mr-2">No review yet</p>
+                          <p className="text-xs text-on-surface-subtle mr-2">No review yet</p>
                         )}
                         <button
                           onClick={() => handleViewMemberLeaves(member)}
@@ -1932,10 +1932,10 @@ export default function MyPortal() {
 
                     {/* Expanded leave view for this team member */}
                     {isViewingLeaves && (
-                      <div className="border-t border-gray-100 bg-gray-50/60 px-5 py-4">
+                      <div className="border-t border-outline bg-surface-2/60 px-5 py-4">
                         {loadingMemberLeaves ? (
-                          <div className="flex items-center gap-2 text-sm text-gray-400 py-4">
-                            <div className="w-4 h-4 border-2 border-gray-200 border-t-primary-400 rounded-full animate-spin" />
+                          <div className="flex items-center gap-2 text-sm text-on-surface-subtle py-4">
+                            <div className="w-4 h-4 border-2 border-outline border-t-primary-400 rounded-full animate-spin" />
                             Loading leaves…
                           </div>
                         ) : (
@@ -1945,7 +1945,7 @@ export default function MyPortal() {
                               <div className="flex flex-wrap gap-2 mb-4">
                                 {teamMemberBalance.on_probation ? (
                                   <>
-                                    <span className="inline-flex items-center gap-1.5 text-xs font-semibold px-3 py-1.5 rounded-lg bg-amber-100 text-amber-700">
+                                    <span className="inline-flex items-center gap-1.5 text-xs font-semibold px-3 py-1.5 rounded-lg bg-warning-container text-warning">
                                       On Probation · {teamMemberBalance.probation_short_remaining ?? 0} credits left
                                     </span>
                                   </>
@@ -1957,7 +1957,7 @@ export default function MyPortal() {
                                     <span className="inline-flex items-center gap-1.5 text-xs font-semibold px-3 py-1.5 rounded-lg bg-purple-100 text-purple-700">
                                       Short/Half: {teamMemberBalance.short_leave ?? 0} credits
                                     </span>
-                                    <span className="inline-flex items-center gap-1.5 text-xs font-semibold px-3 py-1.5 rounded-lg bg-green-100 text-green-700">
+                                    <span className="inline-flex items-center gap-1.5 text-xs font-semibold px-3 py-1.5 rounded-lg bg-success-container text-success">
                                       Confirmed
                                     </span>
                                   </>
@@ -1967,24 +1967,24 @@ export default function MyPortal() {
 
                             {/* Leave history table */}
                             {teamMemberLeaves.length === 0 ? (
-                              <p className="text-sm text-gray-400 py-2">No leave history found.</p>
+                              <p className="text-sm text-on-surface-subtle py-2">No leave history found.</p>
                             ) : (
-                              <div className="overflow-x-auto rounded-xl border border-gray-100 bg-white">
+                              <div className="overflow-x-auto rounded-xl border border-outline bg-surface">
                                 <table className="w-full text-sm">
                                   <thead>
-                                    <tr className="bg-gray-50 border-b border-gray-100">
+                                    <tr className="bg-surface-2 border-b border-outline">
                                       {['Type', 'Duration', 'Days', 'Reason', 'Applied On', 'Status', 'Action Trail', ''].map(h => (
-                                        <th key={h} className="text-left text-xs font-semibold text-gray-500 px-3 py-2.5 uppercase tracking-wide whitespace-nowrap">{h}</th>
+                                        <th key={h} className="text-left text-xs font-semibold text-on-surface-subtle px-3 py-2.5 uppercase tracking-wide whitespace-nowrap">{h}</th>
                                       ))}
                                     </tr>
                                   </thead>
                                   <tbody>
                                     {teamMemberLeaves.map(l => {
                                       const statusColors: Record<string, string> = {
-                                        approved: 'bg-green-50 text-green-700 border-green-200',
-                                        rejected: 'bg-red-50 text-red-600 border-red-200',
-                                        pending: 'bg-amber-50 text-amber-600 border-amber-200',
-                                        cancelled: 'bg-gray-100 text-gray-500 border-gray-200',
+                                        approved: 'bg-success-container text-success border-green-200',
+                                        rejected: 'bg-danger-container text-danger border-red-200',
+                                        pending: 'bg-warning-container text-warning border-amber-200',
+                                        cancelled: 'bg-surface-2 text-on-surface-subtle border-outline',
                                       };
                                       const appliedAt = l.created_at ? new Date(l.created_at) : null;
                                       const appliedStr = appliedAt
@@ -1993,16 +1993,16 @@ export default function MyPortal() {
                                         : '—';
                                       return (
                                         <tr key={l.id} className="border-b border-gray-50 last:border-0">
-                                          <td className="px-3 py-2.5 capitalize text-gray-700 font-medium">{l.type.replace('_', ' ')}</td>
-                                          <td className="px-3 py-2.5 text-gray-600 whitespace-nowrap">
+                                          <td className="px-3 py-2.5 capitalize text-on-surface-muted font-medium">{l.type.replace('_', ' ')}</td>
+                                          <td className="px-3 py-2.5 text-on-surface-muted whitespace-nowrap">
                                             {parseLocalDate(l.from_date).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' })}
                                             {l.from_date !== l.to_date && ` – ${parseLocalDate(l.to_date).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' })}`}
                                           </td>
-                                          <td className="px-3 py-2.5 text-gray-700 font-medium">{l.days}d</td>
-                                          <td className="px-3 py-2.5 text-gray-500 max-w-[140px] truncate">{l.reason}</td>
-                                          <td className="px-3 py-2.5 text-xs text-gray-400 whitespace-nowrap">{appliedStr}</td>
+                                          <td className="px-3 py-2.5 text-on-surface-muted font-medium">{l.days}d</td>
+                                          <td className="px-3 py-2.5 text-on-surface-subtle max-w-[140px] truncate">{l.reason}</td>
+                                          <td className="px-3 py-2.5 text-xs text-on-surface-subtle whitespace-nowrap">{appliedStr}</td>
                                           <td className="px-3 py-2.5">
-                                            <span className={`text-xs px-2 py-1 rounded-full border font-medium ${statusColors[l.status] ?? 'bg-gray-50 text-gray-500 border-gray-200'}`}>
+                                            <span className={`text-xs px-2 py-1 rounded-full border font-medium ${statusColors[l.status] ?? 'bg-surface-2 text-on-surface-subtle border-outline'}`}>
                                               {l.status.charAt(0).toUpperCase() + l.status.slice(1)}
                                             </span>
                                           </td>
@@ -2010,45 +2010,45 @@ export default function MyPortal() {
                                             <div className="space-y-1">
                                               {(l.manager_status === 'approved' || l.manager_status === 'rejected') && (
                                                 <div className="text-xs leading-tight">
-                                                  <span className={`font-semibold ${l.manager_status === 'approved' ? 'text-green-600' : 'text-red-500'}`}>
+                                                  <span className={`font-semibold ${l.manager_status === 'approved' ? 'text-success' : 'text-danger'}`}>
                                                     {l.manager_status === 'approved' ? 'Mgr Approved' : 'Mgr Rejected'}
                                                   </span>
-                                                  {l.manager_name && <span className="text-gray-500"> · {l.manager_name}</span>}
+                                                  {l.manager_name && <span className="text-on-surface-subtle"> · {l.manager_name}</span>}
                                                   {l.manager_approved_at && (
-                                                    <span className="text-gray-400 block">
+                                                    <span className="text-on-surface-subtle block">
                                                       {new Date(l.manager_approved_at).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' })}
                                                       {', '}{new Date(l.manager_approved_at).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', hour12: true })}
                                                     </span>
                                                   )}
-                                                  {l.manager_rejection_reason && <span className="text-red-400 italic block">"{l.manager_rejection_reason}"</span>}
+                                                  {l.manager_rejection_reason && <span className="text-danger italic block">"{l.manager_rejection_reason}"</span>}
                                                 </div>
                                               )}
                                               {l.hr_actioned_at && (
                                                 <div className="text-xs leading-tight">
-                                                  <span className={`font-semibold ${l.status === 'approved' || l.status === 'cancelled' ? 'text-green-600' : 'text-red-500'}`}>
+                                                  <span className={`font-semibold ${l.status === 'approved' || l.status === 'cancelled' ? 'text-success' : 'text-danger'}`}>
                                                     {l.status === 'cancelled' ? 'HR Approved' : l.status === 'approved' ? 'HR Approved' : 'HR Rejected'}
                                                   </span>
-                                                  {l.hr_actioner_name && <span className="text-gray-500"> · {l.hr_actioner_name}</span>}
-                                                  <span className="text-gray-400 block">
+                                                  {l.hr_actioner_name && <span className="text-on-surface-subtle"> · {l.hr_actioner_name}</span>}
+                                                  <span className="text-on-surface-subtle block">
                                                     {new Date(l.hr_actioned_at).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' })}
                                                     {', '}{new Date(l.hr_actioned_at).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', hour12: true })}
                                                   </span>
-                                                  {l.rejection_reason && <span className="text-red-400 italic block">"{l.rejection_reason}"</span>}
+                                                  {l.rejection_reason && <span className="text-danger italic block">"{l.rejection_reason}"</span>}
                                                 </div>
                                               )}
                                               {l.cancelled_at && (
                                                 <div className="text-xs leading-tight">
-                                                  <span className="font-semibold text-gray-500">Cancelled</span>
-                                                  {l.cancelled_by && <span className="text-gray-500"> · {l.cancelled_by}</span>}
-                                                  <span className="text-gray-400 block">
+                                                  <span className="font-semibold text-on-surface-subtle">Cancelled</span>
+                                                  {l.cancelled_by && <span className="text-on-surface-subtle"> · {l.cancelled_by}</span>}
+                                                  <span className="text-on-surface-subtle block">
                                                     {new Date(l.cancelled_at).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' })}
                                                     {', '}{new Date(l.cancelled_at).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', hour12: true })}
                                                   </span>
-                                                  {l.cancellation_reason && <span className="text-gray-400 italic block">"{l.cancellation_reason}"</span>}
+                                                  {l.cancellation_reason && <span className="text-on-surface-subtle italic block">"{l.cancellation_reason}"</span>}
                                                 </div>
                                               )}
                                               {!l.manager_approved_at && !l.hr_actioned_at && !l.cancelled_at && (
-                                                <span className="text-xs text-gray-400">Pending</span>
+                                                <span className="text-xs text-on-surface-subtle">Pending</span>
                                               )}
                                             </div>
                                           </td>
@@ -2056,7 +2056,7 @@ export default function MyPortal() {
                                             {l.status === 'approved' && (
                                               <button
                                                 onClick={() => setCancelLeaveTarget(l.id)}
-                                                className="px-2.5 py-1 text-xs bg-gray-100 text-gray-600 rounded-md hover:bg-gray-200 font-medium whitespace-nowrap">
+                                                className="px-2.5 py-1 text-xs bg-surface-2 text-on-surface-muted rounded-md hover:bg-surface-3 font-medium whitespace-nowrap">
                                                 Cancel Leave
                                               </button>
                                             )}
@@ -2083,7 +2083,7 @@ export default function MyPortal() {
       {/* Team Review Modal */}
       {showTeamReview && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 backdrop-blur-sm p-4">
-          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-lg overflow-hidden">
+          <div className="bg-surface rounded-2xl shadow-2xl w-full max-w-lg overflow-hidden">
             <div className="px-6 py-5 text-white flex items-center justify-between"
               style={{ background: 'linear-gradient(135deg, #192250 0%, #141c43 100%)' }}>
               <div>
@@ -2100,7 +2100,7 @@ export default function MyPortal() {
               {SCORE_CATEGORIES.map(({ key, label }) => (
                 <div key={key}>
                   <div className="flex justify-between mb-1.5">
-                    <label className="text-xs font-semibold text-gray-600">{label}</label>
+                    <label className="text-xs font-semibold text-on-surface-muted">{label}</label>
                     <span className="text-xs font-bold" style={{ color: perfColor(teamReviewScores[key]) }}>
                       {teamReviewScores[key]}
                     </span>
@@ -2114,20 +2114,20 @@ export default function MyPortal() {
                 </div>
               ))}
               <div>
-                <label className="text-xs font-semibold text-gray-600 block mb-1.5">Overall Score</label>
+                <label className="text-xs font-semibold text-on-surface-muted block mb-1.5">Overall Score</label>
                 <div className="text-2xl font-black" style={{ color: perfColor(Math.round(Object.values(teamReviewScores).reduce((a, b) => a + b, 0) / SCORE_CATEGORIES.length)) }}>
                   {Math.round(Object.values(teamReviewScores).reduce((a, b) => a + b, 0) / SCORE_CATEGORIES.length)}
                 </div>
               </div>
               <div>
-                <label className="text-xs font-semibold text-gray-600 block mb-1.5">Comments (optional)</label>
+                <label className="text-xs font-semibold text-on-surface-muted block mb-1.5">Comments (optional)</label>
                 <textarea value={teamReviewComment} onChange={e => setTeamReviewComment(e.target.value)}
                   rows={3} placeholder="Add feedback for this team member..."
-                  className="w-full border border-gray-200 rounded-xl px-3 py-2.5 text-sm resize-none focus:outline-none focus:border-gray-300" />
+                  className="w-full border border-outline rounded-xl px-3 py-2.5 text-sm resize-none focus:outline-none focus:border-outline-strong" />
               </div>
               <div className="flex gap-3 pt-2">
                 <button onClick={() => setShowTeamReview(null)}
-                  className="flex-1 py-2.5 border border-gray-200 rounded-xl text-sm font-semibold text-gray-600 hover:bg-gray-50">
+                  className="flex-1 py-2.5 border border-outline rounded-xl text-sm font-semibold text-on-surface-muted hover:bg-surface-2">
                   Cancel
                 </button>
                 <button onClick={handleSaveTeamReview} disabled={savingTeamReview}
@@ -2143,10 +2143,10 @@ export default function MyPortal() {
 
       {rejectLeaveTarget && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 backdrop-blur-sm p-4">
-          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-sm p-6">
+          <div className="bg-surface rounded-2xl shadow-2xl w-full max-w-sm p-6">
             <div className="flex items-center justify-between mb-4">
-              <h3 className="text-base font-semibold text-gray-900">Reason for Rejection</h3>
-              <button onClick={() => setRejectLeaveTarget(null)}><X size={16} className="text-gray-400" /></button>
+              <h3 className="text-base font-semibold text-on-surface">Reason for Rejection</h3>
+              <button onClick={() => setRejectLeaveTarget(null)}><X size={16} className="text-on-surface-subtle" /></button>
             </div>
             <RejectReasonInput
               onClose={() => setRejectLeaveTarget(null)}
@@ -2160,10 +2160,10 @@ export default function MyPortal() {
       )}
       {cancelLeaveTarget && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 backdrop-blur-sm p-4">
-          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-sm p-6">
+          <div className="bg-surface rounded-2xl shadow-2xl w-full max-w-sm p-6">
             <div className="flex items-center justify-between mb-4">
-              <h3 className="text-base font-semibold text-gray-900">Reason for Cancellation</h3>
-              <button onClick={() => setCancelLeaveTarget(null)}><X size={16} className="text-gray-400" /></button>
+              <h3 className="text-base font-semibold text-on-surface">Reason for Cancellation</h3>
+              <button onClick={() => setCancelLeaveTarget(null)}><X size={16} className="text-on-surface-subtle" /></button>
             </div>
             <RejectReasonInput
               placeholder="Enter reason for cancelling this approved leave..."
@@ -2186,7 +2186,7 @@ function RejectReasonInput({
   onClose, onConfirm,
   placeholder = 'Enter reason (required)...',
   confirmLabel = 'Confirm Reject',
-  confirmClass = 'bg-red-500 hover:bg-red-600',
+  confirmClass = 'bg-danger hover:bg-red-600',
 }: {
   onClose: () => void;
   onConfirm: (reason: string) => void;
@@ -2202,11 +2202,11 @@ function RejectReasonInput({
         onChange={e => setReason(e.target.value)}
         rows={3}
         placeholder={placeholder}
-        className="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-gray-200 resize-none mb-4"
+        className="w-full border border-outline rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-gray-200 resize-none mb-4"
         autoFocus
       />
       <div className="flex gap-3">
-        <button onClick={onClose} className="flex-1 py-2.5 border border-gray-200 text-gray-600 rounded-lg text-sm font-medium hover:bg-gray-50">Cancel</button>
+        <button onClick={onClose} className="flex-1 py-2.5 border border-outline text-on-surface-muted rounded-lg text-sm font-medium hover:bg-surface-2">Cancel</button>
         <button
           onClick={() => { if (reason.trim()) onConfirm(reason.trim()); }}
           disabled={!reason.trim()}
@@ -2273,7 +2273,7 @@ function MyHoursTab({ employeeId, employeeName }: { employeeId: string; employee
     <div className="space-y-5">
       {/* Header */}
       <div className="flex flex-wrap items-center gap-3">
-        <div className="flex items-center gap-2 bg-white rounded-lg border border-gray-200 px-2 py-1">
+        <div className="flex items-center gap-2 bg-surface rounded-lg border border-outline px-2 py-1">
           <select value={month} onChange={e => setMonth(Number(e.target.value))} className="text-sm bg-transparent focus:outline-none px-1 py-1">
             {MH_MONTHS.map((m, i) => <option key={m} value={i+1}>{m}</option>)}
           </select>
@@ -2292,23 +2292,23 @@ function MyHoursTab({ employeeId, employeeName }: { employeeId: string; employee
       </div>
 
       {/* Project rows */}
-      <div className="bg-white rounded-xl border border-gray-100 shadow-sm overflow-x-auto">
+      <div className="bg-surface rounded-xl border border-outline shadow-sm overflow-x-auto">
         <table className="w-full text-sm">
-          <thead className="bg-gray-50 border-b border-gray-100">
-            <tr className="text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">
+          <thead className="bg-surface-2 border-b border-outline">
+            <tr className="text-left text-xs font-semibold text-on-surface-subtle uppercase tracking-wider">
               <th className="px-3 py-3">Project</th>
               {[1,2,3,4,5].map(w => <th key={w} className="px-3 py-3 text-center">W{w}</th>)}
-              <th className="px-3 py-3 text-center bg-gray-100">M total</th>
+              <th className="px-3 py-3 text-center bg-surface-2">M total</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-gray-100">
             {loading ? (
-              <tr><td colSpan={7} className="px-3 py-8 text-center text-gray-400">Loading…</td></tr>
+              <tr><td colSpan={7} className="px-3 py-8 text-center text-on-surface-subtle">Loading…</td></tr>
             ) : assignments.length === 0 ? (
               <tr><td colSpan={7} className="px-3 py-12 text-center">
-                <Briefcase size={28} className="mx-auto text-gray-300 mb-2" />
-                <p className="text-sm text-gray-500">No projects assigned for {MH_MONTHS[month-1]} {year}.</p>
-                <p className="text-xs text-gray-400 mt-0.5">Your coordinator hasn't planned this month yet.</p>
+                <Briefcase size={28} className="mx-auto text-on-surface-subtle mb-2" />
+                <p className="text-sm text-on-surface-subtle">No projects assigned for {MH_MONTHS[month-1]} {year}.</p>
+                <p className="text-xs text-on-surface-subtle mt-0.5">Your coordinator hasn't planned this month yet.</p>
               </td></tr>
             ) : assignments.map(a => {
               const weekAllocs = [a.w1_hours, a.w2_hours, a.w3_hours, a.w4_hours, a.w5_hours];
@@ -2319,22 +2319,22 @@ function MyHoursTab({ employeeId, employeeName }: { employeeId: string; employee
               return (
                 <tr key={a.id}>
                   <td className="px-3 py-3">
-                    <p className="font-semibold text-gray-900">{a.project_name}</p>
-                    {a.project_client_name && <p className="text-xs text-gray-500">{a.project_client_name}</p>}
+                    <p className="font-semibold text-on-surface">{a.project_name}</p>
+                    {a.project_client_name && <p className="text-xs text-on-surface-subtle">{a.project_client_name}</p>}
                   </td>
                   {weekAllocs.map((alloc, i) => {
                     const weekNum = i + 1;
                     const log = logByKey.get(`${a.project_id}_${weekNum}`);
                     const allocN = Number(alloc);
                     const showCell = allocN > 0 || !!log;
-                    if (!showCell) return <td key={i} className="px-3 py-3 text-center text-gray-300">—</td>;
+                    if (!showCell) return <td key={i} className="px-3 py-3 text-center text-on-surface-subtle">—</td>;
                     return (
                       <td key={i} className="px-3 py-3 text-center">
                         <WeekCell alloc={allocN} log={log} onClick={() => setLogging({ assignment: a, weekNum, existing: log })} />
                       </td>
                     );
                   })}
-                  <td className="px-3 py-3 text-center font-bold text-gray-900 bg-gray-50">
+                  <td className="px-3 py-3 text-center font-bold text-on-surface bg-surface-2">
                     {totalLogged} / {Number(a.monthly_hours)}
                   </td>
                 </tr>
@@ -2346,16 +2346,16 @@ function MyHoursTab({ employeeId, employeeName }: { employeeId: string; employee
 
       {/* Rejected logs surfaced */}
       {logs.filter(l => l.status === 'rejected').length > 0 && (
-        <div className="bg-rose-50 border border-rose-100 rounded-xl p-4">
-          <p className="text-sm font-bold text-rose-700 mb-2">Rejected logs need your attention</p>
+        <div className="bg-danger-container border border-outline rounded-xl p-4">
+          <p className="text-sm font-bold text-danger mb-2">Rejected logs need your attention</p>
           <div className="space-y-1.5">
             {logs.filter(l => l.status === 'rejected').map(l => {
               const a = assignments.find(x => x.project_id === l.project_id);
               return (
-                <div key={l.id} className="flex items-start justify-between gap-3 text-sm bg-white rounded-lg p-3 border border-rose-100">
+                <div key={l.id} className="flex items-start justify-between gap-3 text-sm bg-surface rounded-lg p-3 border border-outline">
                   <div>
-                    <p className="font-medium text-gray-900">{a?.project_name ?? 'Project'} · W{l.week_num}</p>
-                    <p className="text-xs text-rose-600 mt-0.5">{l.rejection_reason || 'No reason given'}</p>
+                    <p className="font-medium text-on-surface">{a?.project_name ?? 'Project'} · W{l.week_num}</p>
+                    <p className="text-xs text-danger mt-0.5">{l.rejection_reason || 'No reason given'}</p>
                   </div>
                   {a && (
                     <button onClick={() => setLogging({ assignment: a, weekNum: l.week_num, existing: l })}
@@ -2385,9 +2385,9 @@ function MyHoursTab({ employeeId, employeeName }: { employeeId: string; employee
 
 function Tile({ label, value, color }: { label: string; value: string; color?: string }) {
   return (
-    <div className="bg-white rounded-xl p-4 border border-gray-100 shadow-sm">
+    <div className="bg-surface rounded-xl p-4 border border-outline shadow-sm">
       <p className="text-2xl font-bold" style={{ color: color ?? '#0f172a' }}>{value}</p>
-      <p className="text-xs text-gray-500 mt-0.5">{label}</p>
+      <p className="text-xs text-on-surface-subtle mt-0.5">{label}</p>
     </div>
   );
 }
@@ -2397,19 +2397,19 @@ function WeekCell({ alloc, log, onClick }: { alloc: number; log?: MHLog; onClick
     return (
       <button onClick={onClick}
         className="inline-flex flex-col items-center px-2 py-1 rounded-md text-xs hover:bg-primary-50 group">
-        <span className="font-semibold text-gray-300">— / {alloc}</span>
+        <span className="font-semibold text-on-surface-subtle">— / {alloc}</span>
         <span className="text-[10px] text-primary-600 opacity-0 group-hover:opacity-100">Log hours</span>
       </button>
     );
   }
   const pillCfg = log.status === 'approved'
-    ? { dot: '#15803d', text: 'text-emerald-700' }
+    ? { dot: '#15803d', text: 'text-success' }
     : log.status === 'rejected'
-    ? { dot: '#dc2626', text: 'text-rose-700' }
-    : { dot: '#d97706', text: 'text-amber-700' };
+    ? { dot: '#dc2626', text: 'text-danger' }
+    : { dot: '#d97706', text: 'text-warning' };
   return (
     <button onClick={onClick}
-      className={`inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-md text-xs hover:bg-gray-100 ${pillCfg.text} font-semibold`}>
+      className={`inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-md text-xs hover:bg-surface-2 ${pillCfg.text} font-semibold`}>
       <span className="w-1.5 h-1.5 rounded-full" style={{ background: pillCfg.dot }} />
       {Number(log.hours_logged)} / {alloc}
       <Edit2 size={10} className="opacity-50" />
@@ -2460,40 +2460,40 @@ function HourLogModal({
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 backdrop-blur-sm p-4">
-      <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md">
-        <div className="flex items-center justify-between px-6 py-5 border-b border-gray-100">
+      <div className="bg-surface rounded-2xl shadow-2xl w-full max-w-md">
+        <div className="flex items-center justify-between px-6 py-5 border-b border-outline">
           <div>
-            <h3 className="text-lg font-semibold text-gray-900">{existing ? 'Edit hours' : 'Log hours'} · W{weekNum}</h3>
-            <p className="text-xs text-gray-500 mt-0.5">{assignment.project_name} · {MH_MONTHS[assignment.month-1]} {assignment.year}</p>
+            <h3 className="text-lg font-semibold text-on-surface">{existing ? 'Edit hours' : 'Log hours'} · W{weekNum}</h3>
+            <p className="text-xs text-on-surface-subtle mt-0.5">{assignment.project_name} · {MH_MONTHS[assignment.month-1]} {assignment.year}</p>
           </div>
-          <button onClick={onClose} className="p-1.5 hover:bg-gray-100 rounded-lg"><X size={16} className="text-gray-500" /></button>
+          <button onClick={onClose} className="p-1.5 hover:bg-surface-2 rounded-lg"><X size={16} className="text-on-surface-subtle" /></button>
         </div>
         <div className="p-6 space-y-4">
-          <div className="bg-gray-50 rounded-lg p-3 text-xs flex items-center justify-between">
-            <span className="text-gray-500">Allocated for W{weekNum}</span>
-            <span className="font-semibold text-gray-900">{alloc} h</span>
+          <div className="bg-surface-2 rounded-lg p-3 text-xs flex items-center justify-between">
+            <span className="text-on-surface-subtle">Allocated for W{weekNum}</span>
+            <span className="font-semibold text-on-surface">{alloc} h</span>
           </div>
           <div>
-            <label className="text-xs font-medium text-gray-500 mb-1.5 block">Hours worked *</label>
+            <label className="text-xs font-medium text-on-surface-subtle mb-1.5 block">Hours worked *</label>
             <input type="number" step="0.5" min="0" value={hours} onChange={e => setHours(e.target.value)}
-              className="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-primary-200" />
+              className="w-full border border-outline rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-primary-200" />
           </div>
           <div>
-            <label className="text-xs font-medium text-gray-500 mb-1.5 block">What did you do? *</label>
+            <label className="text-xs font-medium text-on-surface-subtle mb-1.5 block">What did you do? *</label>
             <textarea value={desc} onChange={e => setDesc(e.target.value)} rows={4}
               placeholder="Describe the work — keyword research, content draft, technical audit, etc."
-              className="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-primary-200 resize-none" />
+              className="w-full border border-outline rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-primary-200 resize-none" />
           </div>
           {existing?.status === 'rejected' && existing.rejection_reason && (
-            <div className="text-xs bg-rose-50 border border-rose-100 rounded-lg p-3 text-rose-700">
+            <div className="text-xs bg-danger-container border border-outline rounded-lg p-3 text-danger">
               <p className="font-semibold mb-0.5">Last rejection</p>
               <p>{existing.rejection_reason}</p>
             </div>
           )}
-          {error && <p className="text-sm text-rose-600 bg-rose-50 px-3 py-2 rounded-lg">{error}</p>}
+          {error && <p className="text-sm text-danger bg-danger-container px-3 py-2 rounded-lg">{error}</p>}
         </div>
-        <div className="px-6 py-4 border-t border-gray-100 flex justify-end gap-2">
-          <button onClick={onClose} className="px-4 py-2 text-sm font-medium text-gray-600 hover:bg-gray-50 rounded-lg">Cancel</button>
+        <div className="px-6 py-4 border-t border-outline flex justify-end gap-2">
+          <button onClick={onClose} className="px-4 py-2 text-sm font-medium text-on-surface-muted hover:bg-surface-2 rounded-lg">Cancel</button>
           <button onClick={save} disabled={saving || !desc.trim()}
             className="px-4 py-2 text-sm font-semibold text-white rounded-lg disabled:opacity-50"
             style={{ background: '#EE2770' }}>
