@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { X, AlertTriangle, CheckCircle, XCircle, Clock as ClockIcon, Pencil, Save, History, ChevronDown } from 'lucide-react';
+import { X, AlertTriangle, CheckCircle, XCircle, Clock as ClockIcon, Pencil, Save, History, ChevronDown, Trash2 } from 'lucide-react';
 import { api } from '../services/api';
 import { useAuth } from '../context/AuthContext';
 
@@ -101,6 +101,28 @@ export default function EmployeeHoursDetailModal({ employeeId, employeeName, mon
     }
   };
 
+  const deleteLog = async (log: LogRow) => {
+    const reason = log.status === 'approved'
+      ? window.prompt(`Delete this approved ${log.hours_logged}h log for W${log.week_num}?\nA reason is required (visible to ${employeeName} in the notification and audit trail).`)
+      : (window.confirm(`Delete the ${log.hours_logged}h log for W${log.week_num}?`) ? '' : null);
+    if (reason === null) return; // cancelled
+    if (log.status === 'approved' && !reason.trim()) {
+      alert('Reason is required for deleting an approved log.');
+      return;
+    }
+    try {
+      await api.deleteHourLog(log.id, {
+        actor_id: user?.id,
+        actor_name: user?.name,
+        actor_role: user?.role,
+        reason: reason.trim() || undefined,
+      });
+      reload();
+    } catch (err: any) {
+      alert(err.message ?? 'Failed to delete.');
+    }
+  };
+
   const loadHistory = async (logId: string) => {
     setHistoryLoading(prev => ({ ...prev, [logId]: true }));
     try {
@@ -132,6 +154,7 @@ export default function EmployeeHoursDetailModal({ employeeId, employeeName, mon
     approved:    { label: 'Approved',        cls: 'bg-success-container text-success', Icon: CheckCircle },
     rejected:    { label: 'Rejected',        cls: 'bg-danger-container text-danger', Icon: XCircle },
     admin_edit:  { label: 'Admin override',  cls: 'bg-warning-container text-warning', Icon: AlertTriangle },
+    deleted:     { label: 'Deleted',         cls: 'bg-danger-container text-danger', Icon: XCircle },
   };
 
   // Group by week_num, preserve sort order
@@ -293,6 +316,13 @@ export default function EmployeeHoursDetailModal({ employeeId, employeeName, mon
                                     title="Edit (admin override)"
                                     className="p-1.5 rounded-md text-on-surface-muted hover:text-accent hover:bg-surface-2 transition-colors">
                                     <Pencil size={13} />
+                                  </button>
+                                )}
+                                {canEditAny && !isEditing && (
+                                  <button onClick={() => deleteLog(log)}
+                                    title={log.status === 'approved' ? 'Delete (requires reason)' : 'Delete log'}
+                                    className="p-1.5 rounded-md text-on-surface-muted hover:text-danger hover:bg-danger-container transition-colors">
+                                    <Trash2 size={13} />
                                   </button>
                                 )}
                                 {isEditing && (

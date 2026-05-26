@@ -73,7 +73,7 @@ async function notifyCoordinators(type: string, title: string, body?: string) {
 // Capture every change to an hour_log so partial / unilateral admin edits are visible
 async function recordHourLogAudit(p: {
   hour_log_id: string;
-  action: 'created' | 'edited' | 'approved' | 'rejected' | 'admin_edit' | 'resubmitted';
+  action: 'created' | 'edited' | 'approved' | 'rejected' | 'admin_edit' | 'resubmitted' | 'deleted';
   actor_id?: string | null;
   actor_name?: string | null;
   actor_role?: string | null;
@@ -2838,8 +2838,11 @@ app.put('/api/hour-logs/:id', async (req, res) => {
           updated_at=NOW()
         WHERE id=${req.params.id} RETURNING *`;
     const updated = (rows as any[])[0];
-    // Audit
-    const auditAction: 'admin_edit' | 'edited' = isPrivileged ? 'admin_edit' : 'edited';
+    // Audit — 'admin_edit' is reserved for a privileged actor overriding an
+    // already-approved log. Any edit on a pending/rejected log is just 'edited'
+    // (the actor's role still appears in the audit entry's actor_role badge).
+    const auditAction: 'admin_edit' | 'edited' =
+      isPrivileged && cur.status === 'approved' ? 'admin_edit' : 'edited';
     await recordHourLogAudit({
       hour_log_id: updated.id,
       action: auditAction,
@@ -2873,6 +2876,56 @@ app.get('/api/hour-logs/:id/audit', async (req, res) => {
       WHERE hour_log_id=${req.params.id}
       ORDER BY created_at ASC`;
     res.json(rows);
+  } catch (err: any) { res.status(500).json({ error: err.message || 'Server error' }); }
+});
+
+// Delete an hour log. Employees can only delete their own pending or rejected log.
+// Admin / HR / Coord can delete any log; if it was already approved, a `reason` is required.
+// The audit trail is preserved (entries stay in hour_log_audit referencing the gone log_id),
+// and we add one final 'deleted' entry too.
+app.delete('/api/hour-logs/:id', async (req, res) => {
+  try {
+    await runStartupMigrations();
+    const { actor_id, actor_name, actor_role, reason } = req.body ?? {};
+    const existing = await sql`SELECT * FROM hour_logs WHERE id=${req.params.id}`;
+    if (!(existing as any[]).length) return res.status(404).json({ error: 'Log not found' });
+    const cur = (existing as any[])[0];
+    const isPrivileged = actor_role === 'admin' || actor_role === 'hr_manager' || actor_role === 'project_coordinator';
+    if (!isPrivileged) {
+      // Employees can only delete their OWN log AND only if it's not approved
+      if (cur.employee_id !== actor_id) {
+        return res.status(403).json({ error: 'You can only delete your own logs.' });
+      }
+      if (cur.status === 'approved') {
+        return res.status(400).json({ error: 'Approved logs cannot be deleted. Contact your coordinator.' });
+      }
+    } else if (cur.status === 'approved' && (!reason || !String(reason).trim())) {
+      return res.status(400).json({ error: 'A reason is required when deleting an approved log.' });
+    }
+
+    // Record audit BEFORE the row goes away — the audit table doesn't cascade.
+    await recordHourLogAudit({
+      hour_log_id: cur.id,
+      action: 'deleted',
+      actor_id: actor_id ?? null,
+      actor_name: actor_name ?? null,
+      actor_role: actor_role ?? 'employee',
+      before: { hours_logged: cur.hours_logged, status: cur.status, work_description: cur.work_description },
+      after: null,
+      reason: reason ?? null,
+    });
+    await sql`DELETE FROM hour_logs WHERE id=${req.params.id}`;
+    // Notify the employee if someone else deleted their (approved) log
+    if (isPrivileged && cur.status === 'approved' && cur.employee_id !== actor_id) {
+      try {
+        const proj = await sql`SELECT name FROM projects WHERE id=${cur.project_id}`;
+        const projectName = (proj as any[])[0]?.name || 'a project';
+        notifyEmployeeUser(cur.employee_id, 'hours_admin_edited',
+          'Hours record deleted',
+          `${actor_name || 'An admin'} deleted your ${cur.hours_logged}h on ${projectName} (W${cur.week_num})${reason ? ` — ${reason}` : ''}`).catch(()=>{});
+      } catch {}
+    }
+    res.json({ success: true });
   } catch (err: any) { res.status(500).json({ error: err.message || 'Server error' }); }
 });
 

@@ -297,11 +297,13 @@ export const api = {
   }) => request<any>('/hour-logs', { method: 'POST', body: JSON.stringify(data) }),
   editHourLog: (id: string, data: { hours_logged: number; work_description?: string; actor_id?: string; actor_name?: string; actor_role?: string; keep_status?: boolean; reason?: string }) =>
     request<any>(`/hour-logs/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
+  deleteHourLog: (id: string, data: { actor_id?: string; actor_name?: string; actor_role?: string; reason?: string }) =>
+    request<{ success: boolean }>(`/hour-logs/${id}`, { method: 'DELETE', body: JSON.stringify(data) }),
   getHourLogAudit: (id: string) =>
     request<Array<{
       id: number;
       hour_log_id: string;
-      action: 'created' | 'edited' | 'approved' | 'rejected' | 'admin_edit' | 'resubmitted';
+      action: 'created' | 'edited' | 'approved' | 'rejected' | 'admin_edit' | 'resubmitted' | 'deleted';
       actor_id: string | null;
       actor_name: string | null;
       actor_role: string | null;
