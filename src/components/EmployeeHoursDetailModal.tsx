@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
-import { X, AlertTriangle, CheckCircle, XCircle, Clock as ClockIcon } from 'lucide-react';
+import { X, AlertTriangle, CheckCircle, XCircle, Clock as ClockIcon, Pencil, Save } from 'lucide-react';
 import { api } from '../services/api';
+import { useAuth } from '../context/AuthContext';
 
 interface Props {
   employeeId: string;
@@ -35,16 +36,54 @@ function allocFor(log: LogRow): number {
 }
 
 export default function EmployeeHoursDetailModal({ employeeId, employeeName, month, year, focusWeek, onClose }: Props) {
+  const { user } = useAuth();
+  const canEditAny = user?.role === 'admin' || user?.role === 'hr_manager' || user?.role === 'project_coordinator';
   const [logs, setLogs] = useState<LogRow[]>([]);
   const [loading, setLoading] = useState(true);
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editDraft, setEditDraft] = useState<{ hours: string; desc: string }>({ hours: '', desc: '' });
+  const [saving, setSaving] = useState(false);
 
-  useEffect(() => {
+  const reload = () => {
     setLoading(true);
     api.getHourLogs({ employee_id: employeeId, month, year })
       .then(d => setLogs(d as LogRow[]))
       .catch(() => {})
       .finally(() => setLoading(false));
+  };
+
+  useEffect(() => {
+    reload();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [employeeId, month, year]);
+
+  const startEdit = (log: LogRow) => {
+    setEditingId(log.id);
+    setEditDraft({ hours: String(log.hours_logged), desc: log.work_description ?? '' });
+  };
+
+  const cancelEdit = () => { setEditingId(null); setEditDraft({ hours: '', desc: '' }); };
+
+  const saveEdit = async (log: LogRow) => {
+    const h = Number(editDraft.hours);
+    if (Number.isNaN(h) || h < 0) return;
+    setSaving(true);
+    try {
+      await api.editHourLog(log.id, {
+        hours_logged: h,
+        work_description: editDraft.desc,
+        actor_role: user?.role,
+        // Privileged edit: keep whatever status the log already has (don't reset approved → pending)
+        keep_status: canEditAny,
+      });
+      setEditingId(null);
+      reload();
+    } catch (err: any) {
+      alert(err.message ?? 'Failed to save.');
+    } finally {
+      setSaving(false);
+    }
+  };
 
   // Group by week_num, preserve sort order
   const grouped: Record<number, LogRow[]> = {};
@@ -139,6 +178,7 @@ export default function EmployeeHoursDetailModal({ employeeId, employeeName, mon
                       {rows.map(log => {
                         const alloc = allocFor(log);
                         const over = log.status === 'approved' ? Math.max(0, Number(log.hours_logged) - alloc) : 0;
+                        const isEditing = editingId === log.id;
                         return (
                           <div key={log.id} className="px-4 py-3 hover:bg-surface-2/40 transition-colors">
                             <div className="flex items-start justify-between gap-3">
@@ -146,29 +186,77 @@ export default function EmployeeHoursDetailModal({ employeeId, employeeName, mon
                                 <p className="text-sm font-semibold text-on-surface truncate">
                                   {log.project_name}{log.project_client_name ? <span className="text-on-surface-muted font-normal"> · {log.project_client_name}</span> : null}
                                 </p>
-                                {log.work_description && (
-                                  <p className="text-xs text-on-surface-muted mt-1 leading-relaxed line-clamp-2">{log.work_description}</p>
-                                )}
-                                {log.status === 'rejected' && log.rejection_reason && (
-                                  <p className="text-xs text-danger mt-1 flex items-center gap-1">
-                                    <XCircle size={11} /> {log.rejection_reason}
-                                  </p>
+                                {isEditing ? (
+                                  <textarea
+                                    value={editDraft.desc}
+                                    onChange={e => setEditDraft(d => ({ ...d, desc: e.target.value }))}
+                                    rows={2}
+                                    placeholder="What did the employee work on?"
+                                    className="w-full mt-2 bg-surface border border-outline rounded-lg px-2.5 py-1.5 text-xs text-on-surface focus:outline-none focus:ring-2 focus:ring-accent/30 resize-none"
+                                  />
+                                ) : (
+                                  <>
+                                    {log.work_description && (
+                                      <p className="text-xs text-on-surface-muted mt-1 leading-relaxed line-clamp-2">{log.work_description}</p>
+                                    )}
+                                    {log.status === 'rejected' && log.rejection_reason && (
+                                      <p className="text-xs text-danger mt-1 flex items-center gap-1">
+                                        <XCircle size={11} /> {log.rejection_reason}
+                                      </p>
+                                    )}
+                                  </>
                                 )}
                               </div>
                               <div className="flex items-center gap-3 flex-shrink-0">
                                 <div className="text-right">
                                   <p className="text-[9px] uppercase tracking-[0.16em] font-semibold text-on-surface-subtle">Logged / Plan</p>
-                                  <p className={`num-mono text-sm font-bold ${over > 0 ? 'text-warning' : 'text-on-surface'}`}>
-                                    {log.hours_logged}<span className="text-on-surface-subtle font-normal">/{alloc}</span>
-                                    {over > 0 && <span className="ml-1 inline-flex items-center gap-0.5 text-[10px] text-warning"><AlertTriangle size={10} />+{over}</span>}
-                                  </p>
+                                  {isEditing ? (
+                                    <div className="flex items-center gap-1 mt-0.5">
+                                      <input
+                                        type="number" step="0.5" min="0"
+                                        value={editDraft.hours}
+                                        onChange={e => setEditDraft(d => ({ ...d, hours: e.target.value }))}
+                                        className="num-mono w-16 text-sm text-right bg-surface border border-accent rounded px-1.5 py-0.5 focus:outline-none focus:ring-2 focus:ring-accent/30"
+                                      />
+                                      <span className="text-on-surface-subtle text-sm">/ {alloc}</span>
+                                    </div>
+                                  ) : (
+                                    <p className={`num-mono text-sm font-bold ${over > 0 ? 'text-warning' : 'text-on-surface'}`}>
+                                      {log.hours_logged}<span className="text-on-surface-subtle font-normal">/{alloc}</span>
+                                      {over > 0 && <span className="ml-1 inline-flex items-center gap-0.5 text-[10px] text-warning"><AlertTriangle size={10} />+{over}</span>}
+                                    </p>
+                                  )}
                                 </div>
                                 <StatusPill status={log.status} />
+                                {canEditAny && !isEditing && (
+                                  <button onClick={() => startEdit(log)}
+                                    title="Edit (admin override)"
+                                    className="p-1.5 rounded-md text-on-surface-muted hover:text-accent hover:bg-surface-2 transition-colors">
+                                    <Pencil size={13} />
+                                  </button>
+                                )}
+                                {isEditing && (
+                                  <div className="flex items-center gap-1">
+                                    <button onClick={() => saveEdit(log)} disabled={saving}
+                                      className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-md text-xs font-semibold bg-accent text-on-accent hover:opacity-90 disabled:opacity-50">
+                                      <Save size={11} /> {saving ? 'Saving…' : 'Save'}
+                                    </button>
+                                    <button onClick={cancelEdit}
+                                      className="px-2 py-1.5 rounded-md text-xs text-on-surface-muted hover:bg-surface-2 transition-colors">
+                                      Cancel
+                                    </button>
+                                  </div>
+                                )}
                               </div>
                             </div>
-                            {log.reviewed_by_name && (
+                            {log.reviewed_by_name && !isEditing && (
                               <p className="text-[10px] text-on-surface-subtle mt-1.5">
                                 {log.status === 'approved' ? 'Approved' : log.status === 'rejected' ? 'Rejected' : 'Reviewed'} by {log.reviewed_by_name}
+                              </p>
+                            )}
+                            {isEditing && (
+                              <p className="text-[10px] text-warning mt-1.5 flex items-center gap-1">
+                                <AlertTriangle size={10} /> Editing as {user?.role?.replace('_', ' ')}. Status will be preserved.
                               </p>
                             )}
                           </div>

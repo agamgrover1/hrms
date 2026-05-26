@@ -295,7 +295,7 @@ export const api = {
     month: number; year: number; week_num: number;
     hours_logged: number; work_description?: string;
   }) => request<any>('/hour-logs', { method: 'POST', body: JSON.stringify(data) }),
-  editHourLog: (id: string, data: { hours_logged: number; work_description?: string }) =>
+  editHourLog: (id: string, data: { hours_logged: number; work_description?: string; actor_role?: string; keep_status?: boolean }) =>
     request<any>(`/hour-logs/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
   approveHourLog: (id: string, data: { reviewer_id?: string; reviewer_name?: string }) =>
     request<any>(`/hour-logs/${id}/approve`, { method: 'PATCH', body: JSON.stringify(data) }),

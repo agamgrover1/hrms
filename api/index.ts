@@ -2732,20 +2732,34 @@ app.post('/api/hour-logs', async (req, res) => {
 
 app.put('/api/hour-logs/:id', async (req, res) => {
   try {
-    const { hours_logged, work_description } = req.body;
+    const { hours_logged, work_description, actor_role, keep_status } = req.body;
     const existing = await sql`SELECT status FROM hour_logs WHERE id=${req.params.id}`;
     if (!(existing as any[]).length) return res.status(404).json({ error: 'Log not found' });
     const cur = (existing as any[])[0];
-    if (cur.status === 'approved') return res.status(400).json({ error: 'Approved logs cannot be edited' });
-    const rows = await sql`
-      UPDATE hour_logs SET
-        hours_logged=${Number(hours_logged) || 0},
-        work_description=${work_description ?? null},
-        status='pending',
-        rejection_reason=NULL,
-        reviewed_by_id=NULL, reviewed_by_name=NULL, reviewed_at=NULL,
-        updated_at=NOW()
-      WHERE id=${req.params.id} RETURNING *`;
+    const isPrivileged = actor_role === 'admin' || actor_role === 'hr_manager' || actor_role === 'project_coordinator';
+    // Only privileged actors can touch an already-approved log
+    if (cur.status === 'approved' && !isPrivileged) {
+      return res.status(400).json({ error: 'Approved logs cannot be edited' });
+    }
+    // Privileged + keep_status preserves the existing status (admin override on an approved log).
+    // Default behaviour for an employee self-edit: reset to pending so it goes back through review.
+    const preserve = isPrivileged && keep_status;
+    const rows = preserve
+      ? await sql`
+        UPDATE hour_logs SET
+          hours_logged=${Number(hours_logged) || 0},
+          work_description=${work_description ?? null},
+          updated_at=NOW()
+        WHERE id=${req.params.id} RETURNING *`
+      : await sql`
+        UPDATE hour_logs SET
+          hours_logged=${Number(hours_logged) || 0},
+          work_description=${work_description ?? null},
+          status='pending',
+          rejection_reason=NULL,
+          reviewed_by_id=NULL, reviewed_by_name=NULL, reviewed_at=NULL,
+          updated_at=NOW()
+        WHERE id=${req.params.id} RETURNING *`;
     res.json(rows[0]);
   } catch (err: any) { res.status(500).json({ error: err.message || 'Server error' }); }
 });

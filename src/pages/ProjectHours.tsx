@@ -582,11 +582,12 @@ function CapacityView({ summary, loading, search, month, year, openDetail }: {
             Cells show <span className="font-semibold">plan + approved over-plan</span>. Click any cell to drill into the actual logs. Target: <span className="num-mono">{TARGET_WEEKLY}h</span>/week.
           </p>
         </div>
-        <div className="flex items-center gap-3 text-[11px] text-on-surface-muted">
+        <div className="flex items-center gap-3 text-[11px] text-on-surface-muted flex-wrap">
           <span className="inline-flex items-center gap-1.5"><span className="w-2.5 h-2.5 rounded-full bg-success" />33–37h band</span>
           <span className="inline-flex items-center gap-1.5"><span className="w-2.5 h-2.5 rounded-full bg-warning" />28–32 / 38–40</span>
           <span className="inline-flex items-center gap-1.5"><span className="w-2.5 h-2.5 rounded-full bg-danger" />outside</span>
-          <span className="inline-flex items-center gap-1.5 text-warning"><AlertTriangle size={11} /> over plan</span>
+          <span className="inline-flex items-center gap-1.5 text-warning"><AlertTriangle size={11} /> +over plan</span>
+          <span className="inline-flex items-center gap-1.5 text-danger"><AlertTriangle size={11} /> −under plan</span>
         </div>
       </div>
 
@@ -617,26 +618,32 @@ function CapacityView({ summary, loading, search, month, year, openDetail }: {
                   </td>
                   {weekPlans.map((p: number, i: number) => {
                     const over = Number(weekOvers[i]);
-                    const display = Number(p) + over;
                     const logged = Number(weekLogged[i]);
+                    const planN = Number(p);
+                    // Under = approved less than planned (only meaningful if employee actually logged something)
+                    const under = (logged > 0 && logged < planN) ? planN - logged : 0;
+                    const display = planN + over; // plan + overage; under doesn't change the visible total
+                    let cellCls: string;
+                    if (over > 0)        cellCls = 'bg-warning-container text-warning';
+                    else if (under > 0)  cellCls = 'bg-danger-container text-danger';
+                    else                 cellCls = varianceClass(display);
                     return (
                       <td key={i} className="px-2 py-2 text-center">
                         <button
                           onClick={() => openDetail(e.employee_id, e.employee_name || '—', i + 1)}
-                          title={`Plan ${p}h · Logged ${logged}h${over > 0 ? ` (+${over} over)` : ''}`}
-                          className={`group num-mono inline-flex flex-col items-center justify-center w-full px-2 py-2 rounded-lg font-semibold transition-all ${
-                            over > 0
-                              ? 'bg-warning-container text-warning hover:shadow-elev-1 hover:scale-[1.04]'
-                              : `${varianceClass(display)} hover:shadow-elev-1 hover:scale-[1.04]`
-                          }`}
+                          title={`Plan ${planN}h · Logged ${logged}h${over > 0 ? ` (+${over} over)` : under > 0 ? ` (−${under} short of plan)` : ''}`}
+                          className={`group num-mono inline-flex flex-col items-center justify-center w-full px-2 py-2 rounded-lg font-semibold transition-all hover:shadow-elev-1 hover:scale-[1.04] ${cellCls}`}
                         >
                           <span className="text-base leading-none">{display}</span>
-                          {over > 0
-                            ? <span className="text-[10px] font-bold mt-1 inline-flex items-center gap-0.5"><AlertTriangle size={9} />+{Math.round(over)}</span>
-                            : logged > 0 && logged !== Number(p)
-                              ? <span className="text-[10px] font-normal mt-1 opacity-70">{logged}/{p}</span>
-                              : <span className="text-[10px] font-normal mt-1 opacity-0">·</span>
-                          }
+                          {over > 0 ? (
+                            <span className="text-[10px] font-bold mt-1 inline-flex items-center gap-0.5"><AlertTriangle size={9} />+{Math.round(over)}</span>
+                          ) : under > 0 ? (
+                            <span className="text-[10px] font-bold mt-1 inline-flex items-center gap-0.5"><AlertTriangle size={9} />−{Math.round(under)}</span>
+                          ) : logged > 0 && logged !== planN ? (
+                            <span className="text-[10px] font-normal mt-1 opacity-70">{logged}/{planN}</span>
+                          ) : (
+                            <span className="text-[10px] font-normal mt-1 opacity-0">·</span>
+                          )}
                         </button>
                       </td>
                     );
@@ -751,15 +758,24 @@ function MineView({ summary, assignments, myProjects, reportsToIds, loading, mon
                       </td>
                       {weekPlans.map((p: number, i: number) => {
                         const over = Number(weekOvers[i]);
-                        const display = Number(p) + over;
+                        const planN = Number(p);
+                        // Approved logged for this week (from summary, fallback 0). We may not have it
+                        // for Mine view if not joined, but employee row from summary always carries it.
+                        const logged = Number((e as any)[`w${i+1}_logged`] ?? 0);
+                        const under = (logged > 0 && logged < planN) ? planN - logged : 0;
+                        const display = planN + over;
+                        let cls: string;
+                        if (over > 0)        cls = 'bg-warning-container text-warning';
+                        else if (under > 0)  cls = 'bg-danger-container text-danger';
+                        else                 cls = varianceClass(display);
                         return (
                           <td key={i} className="px-2 py-2 text-center">
                             <button onClick={() => openDetail(e.employee_id, e.employee_name || '—', i + 1)}
-                              className={`num-mono inline-flex items-center justify-center w-full px-2 py-1.5 rounded-md font-semibold transition-colors ${
-                                over > 0 ? 'bg-warning-container text-warning' : varianceClass(display)
-                              }`}>
+                              title={`Plan ${planN}h · Logged ${logged}h${over > 0 ? ` (+${over} over)` : under > 0 ? ` (−${under} short)` : ''}`}
+                              className={`num-mono inline-flex items-center justify-center w-full px-2 py-1.5 rounded-md font-semibold transition-colors ${cls}`}>
                               {display}
                               {over > 0 && <span className="text-[9px] ml-0.5 font-bold">+{Math.round(over)}</span>}
+                              {under > 0 && <span className="text-[9px] ml-0.5 font-bold">−{Math.round(under)}</span>}
                             </button>
                           </td>
                         );
