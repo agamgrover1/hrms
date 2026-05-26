@@ -206,6 +206,7 @@ export default function EmployeeProfile() {
   const [perf, setPerf]         = useState<any[]>([]);
   const [perfLoading, setPerfLoading] = useState(false);
   const [perfYear, setPerfYear] = useState(now.getFullYear());
+  const [hoursYTD, setHoursYTD] = useState<{ approved: number; within: number; over: number; overCount: number } | null>(null);
 
   // Incentives
   const [incentives, setIncentives] = useState<any[]>([]);
@@ -274,6 +275,23 @@ export default function EmployeeProfile() {
       .then(data => { setPerf(data); setLoaded(prev => new Set(prev).add('Performance')); })
       .catch(() => setTabError(prev => ({ ...prev, Performance: 'Failed to load performance data.' })))
       .finally(() => setPerfLoading(false));
+    // YTD hours overage — compute from approved logs joined with assignment alloc
+    api.getHourLogs({ employee_id: emp.id, year: perfYear })
+      .then((logs: any[]) => {
+        let approved = 0, within = 0, over = 0, overCount = 0;
+        for (const l of logs) {
+          if (l.status !== 'approved') continue;
+          const h = Number(l.hours_logged) || 0;
+          const w = Number(l[`w${l.week_num}_hours`] ?? 0);
+          const o = Math.max(0, h - w);
+          approved += h;
+          within  += Math.min(h, w);
+          over    += o;
+          if (o > 0) overCount += 1;
+        }
+        setHoursYTD({ approved, within, over, overCount });
+      })
+      .catch(() => setHoursYTD(null));
   }, [emp?.id, perfYear]);
 
   // ── Tab lazy-load — use explicit loaded Set instead of .length check ───────
@@ -908,6 +926,46 @@ export default function EmployeeProfile() {
               <RefreshCw size={13}/> Refresh
             </button>
           </div>
+
+          {/* YTD project hours overage */}
+          {hoursYTD && hoursYTD.approved > 0 && (
+            <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+              <div className="group relative bg-surface rounded-xl-2 border border-outline shadow-elev-1 p-4 overflow-hidden animate-fade-up stagger-1">
+                <div className="absolute -top-8 -right-8 w-24 h-24 rounded-full bg-brand/15 blur-2xl opacity-50" />
+                <div className="relative">
+                  <p className="text-[10px] uppercase tracking-[0.16em] font-bold text-on-surface-muted">Approved YTD</p>
+                  <p className="num-mono text-2xl font-bold text-on-surface mt-1.5"><span>{Math.round(hoursYTD.approved)}</span><span className="text-base text-on-surface-muted ml-0.5">h</span></p>
+                  <p className="text-[11px] text-on-surface-subtle mt-1">All approved project hours · {perfYear}</p>
+                </div>
+              </div>
+              <div className="group relative bg-surface rounded-xl-2 border border-outline shadow-elev-1 p-4 overflow-hidden animate-fade-up stagger-2">
+                <div className="absolute -top-8 -right-8 w-24 h-24 rounded-full bg-success/15 blur-2xl opacity-50" />
+                <div className="relative">
+                  <p className="text-[10px] uppercase tracking-[0.16em] font-bold text-on-surface-muted">Within plan</p>
+                  <p className="num-mono text-2xl font-bold text-success mt-1.5"><span>{Math.round(hoursYTD.within)}</span><span className="text-base text-on-surface-muted ml-0.5">h</span></p>
+                  <p className="text-[11px] text-on-surface-subtle mt-1">Hours that stayed within the coordinator's plan</p>
+                </div>
+              </div>
+              <div className="group relative bg-surface rounded-xl-2 border border-outline shadow-elev-1 p-4 overflow-hidden animate-fade-up stagger-3">
+                <div className={`absolute -top-8 -right-8 w-24 h-24 rounded-full ${hoursYTD.over > 0 ? 'bg-warning/25' : 'bg-surface-3'} blur-2xl opacity-60`} />
+                <div className="relative">
+                  <p className="text-[10px] uppercase tracking-[0.16em] font-bold text-on-surface-muted">Over plan</p>
+                  <p className={`num-mono text-2xl font-bold mt-1.5 ${hoursYTD.over > 0 ? 'text-warning' : 'text-on-surface-subtle'}`}>
+                    {hoursYTD.over > 0 ? '+' : ''}<span>{Math.round(hoursYTD.over)}</span><span className={`text-base ml-0.5 ${hoursYTD.over > 0 ? 'text-on-surface-muted' : 'text-on-surface-subtle'}`}>h</span>
+                  </p>
+                  <p className="text-[11px] text-on-surface-subtle mt-1">Approved hours logged beyond weekly allocation</p>
+                </div>
+              </div>
+              <div className="group relative bg-surface rounded-xl-2 border border-outline shadow-elev-1 p-4 overflow-hidden animate-fade-up stagger-4">
+                <div className="absolute -top-8 -right-8 w-24 h-24 rounded-full bg-accent/15 blur-2xl opacity-50" />
+                <div className="relative">
+                  <p className="text-[10px] uppercase tracking-[0.16em] font-bold text-on-surface-muted">Over-plan logs</p>
+                  <p className="num-mono text-2xl font-bold text-on-surface mt-1.5">{hoursYTD.overCount}</p>
+                  <p className="text-[11px] text-on-surface-subtle mt-1">Count of weeks that ran over plan</p>
+                </div>
+              </div>
+            </div>
+          )}
 
           {perfLoading ? (
             <div className="flex items-center justify-center py-12">

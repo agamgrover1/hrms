@@ -2814,13 +2814,36 @@ app.get('/api/hours-summary', async (req, res) => {
       WHERE month=${month} AND year=${year}
       GROUP BY employee_id
       ORDER BY employee_name ASC`;
+    // Per-employee log sums, with approved hours split into "within plan" and "over plan"
+    // by joining to the assignment so we know the weekly allocation for that log's week.
     const logSums = await sql`
-      SELECT employee_id,
-        SUM(CASE WHEN status='approved' THEN hours_logged ELSE 0 END)::numeric AS logged_approved,
-        SUM(CASE WHEN status='pending'  THEN hours_logged ELSE 0 END)::numeric AS logged_pending,
-        SUM(CASE WHEN status='rejected' THEN hours_logged ELSE 0 END)::numeric AS logged_rejected
-      FROM hour_logs WHERE month=${month} AND year=${year}
-      GROUP BY employee_id`;
+      SELECT hl.employee_id,
+        SUM(CASE WHEN hl.status='approved' THEN hl.hours_logged ELSE 0 END)::numeric AS logged_approved,
+        SUM(CASE WHEN hl.status='pending'  THEN hl.hours_logged ELSE 0 END)::numeric AS logged_pending,
+        SUM(CASE WHEN hl.status='rejected' THEN hl.hours_logged ELSE 0 END)::numeric AS logged_rejected,
+        SUM(CASE WHEN hl.status='approved' THEN
+          LEAST(hl.hours_logged, COALESCE(
+            CASE hl.week_num
+              WHEN 1 THEN pa.w1_hours WHEN 2 THEN pa.w2_hours WHEN 3 THEN pa.w3_hours
+              WHEN 4 THEN pa.w4_hours WHEN 5 THEN pa.w5_hours
+            END, 0))
+        ELSE 0 END)::numeric AS logged_within_plan,
+        SUM(CASE WHEN hl.status='approved' THEN
+          GREATEST(0, hl.hours_logged - COALESCE(
+            CASE hl.week_num
+              WHEN 1 THEN pa.w1_hours WHEN 2 THEN pa.w2_hours WHEN 3 THEN pa.w3_hours
+              WHEN 4 THEN pa.w4_hours WHEN 5 THEN pa.w5_hours
+            END, 0))
+        ELSE 0 END)::numeric AS logged_over_plan,
+        COUNT(*) FILTER (WHERE hl.status='approved' AND hl.hours_logged > COALESCE(
+            CASE hl.week_num
+              WHEN 1 THEN pa.w1_hours WHEN 2 THEN pa.w2_hours WHEN 3 THEN pa.w3_hours
+              WHEN 4 THEN pa.w4_hours WHEN 5 THEN pa.w5_hours
+            END, 0)) AS over_plan_log_count
+      FROM hour_logs hl
+      LEFT JOIN project_assignments pa ON pa.id = hl.assignment_id
+      WHERE hl.month=${month} AND hl.year=${year}
+      GROUP BY hl.employee_id`;
     const logsMap = new Map<string, any>();
     for (const l of logSums as any[]) logsMap.set(l.employee_id, l);
     const totals = await sql`
@@ -2829,12 +2852,33 @@ app.get('/api/hours-summary', async (req, res) => {
       FROM project_assignments WHERE month=${month} AND year=${year}`;
     const logTotals = await sql`
       SELECT
-        COALESCE(SUM(CASE WHEN status='approved' THEN hours_logged ELSE 0 END),0)::numeric AS total_approved,
-        COALESCE(SUM(CASE WHEN status='pending' THEN hours_logged ELSE 0 END),0)::numeric AS total_pending,
-        COUNT(*) FILTER (WHERE status='pending') AS pending_count
-      FROM hour_logs WHERE month=${month} AND year=${year}`;
+        COALESCE(SUM(CASE WHEN hl.status='approved' THEN hl.hours_logged ELSE 0 END),0)::numeric AS total_approved,
+        COALESCE(SUM(CASE WHEN hl.status='pending'  THEN hl.hours_logged ELSE 0 END),0)::numeric AS total_pending,
+        COALESCE(SUM(CASE WHEN hl.status='approved' THEN
+          LEAST(hl.hours_logged, COALESCE(
+            CASE hl.week_num
+              WHEN 1 THEN pa.w1_hours WHEN 2 THEN pa.w2_hours WHEN 3 THEN pa.w3_hours
+              WHEN 4 THEN pa.w4_hours WHEN 5 THEN pa.w5_hours
+            END, 0))
+        ELSE 0 END),0)::numeric AS total_within_plan,
+        COALESCE(SUM(CASE WHEN hl.status='approved' THEN
+          GREATEST(0, hl.hours_logged - COALESCE(
+            CASE hl.week_num
+              WHEN 1 THEN pa.w1_hours WHEN 2 THEN pa.w2_hours WHEN 3 THEN pa.w3_hours
+              WHEN 4 THEN pa.w4_hours WHEN 5 THEN pa.w5_hours
+            END, 0))
+        ELSE 0 END),0)::numeric AS total_over_plan,
+        COUNT(*) FILTER (WHERE hl.status='pending') AS pending_count,
+        COUNT(*) FILTER (WHERE hl.status='approved' AND hl.hours_logged > COALESCE(
+            CASE hl.week_num
+              WHEN 1 THEN pa.w1_hours WHEN 2 THEN pa.w2_hours WHEN 3 THEN pa.w3_hours
+              WHEN 4 THEN pa.w4_hours WHEN 5 THEN pa.w5_hours
+            END, 0)) AS over_plan_log_count
+      FROM hour_logs hl
+      LEFT JOIN project_assignments pa ON pa.id = hl.assignment_id
+      WHERE hl.month=${month} AND hl.year=${year}`;
     const employeeRows = (byEmployee as any[]).map((e: any) => {
-      const log = logsMap.get(e.employee_id) || { logged_approved: 0, logged_pending: 0, logged_rejected: 0 };
+      const log = logsMap.get(e.employee_id) || { logged_approved: 0, logged_pending: 0, logged_rejected: 0, logged_within_plan: 0, logged_over_plan: 0, over_plan_log_count: 0 };
       const weeks = [Number(e.w1), Number(e.w2), Number(e.w3), Number(e.w4), Number(e.w5)];
       const variance = weeks.map(w => w - 35);
       return {
@@ -2847,6 +2891,9 @@ app.get('/api/hours-summary', async (req, res) => {
         logged_approved: Number(log.logged_approved),
         logged_pending: Number(log.logged_pending),
         logged_rejected: Number(log.logged_rejected),
+        logged_within_plan: Number(log.logged_within_plan ?? 0),
+        logged_over_plan: Number(log.logged_over_plan ?? 0),
+        over_plan_log_count: Number(log.over_plan_log_count ?? 0),
       };
     });
     res.json({
@@ -2855,6 +2902,9 @@ app.get('/api/hours-summary', async (req, res) => {
       total_allocated: Number((totals as any[])[0]?.total_allocated || 0),
       total_logged_approved: Number((logTotals as any[])[0]?.total_approved || 0),
       total_logged_pending: Number((logTotals as any[])[0]?.total_pending || 0),
+      total_logged_within_plan: Number((logTotals as any[])[0]?.total_within_plan || 0),
+      total_logged_over_plan: Number((logTotals as any[])[0]?.total_over_plan || 0),
+      over_plan_log_count: Number((logTotals as any[])[0]?.over_plan_log_count || 0),
       pending_review_count: Number((logTotals as any[])[0]?.pending_count || 0),
     });
   } catch (err: any) { res.status(500).json({ error: err.message || 'Server error' }); }

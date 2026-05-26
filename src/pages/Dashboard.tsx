@@ -326,6 +326,13 @@ export default function Dashboard() {
             <span className="text-sm text-on-surface">
               <strong className="font-bold">{Math.round(Number(hoursSummary.total_logged_approved))}h</strong> logged
             </span>
+            {Number(hoursSummary.total_logged_over_plan ?? 0) > 0 && (
+              <span className="text-sm text-warning inline-flex items-center gap-1">
+                <AlertCircle size={12} />
+                <strong className="font-bold">+{Math.round(Number(hoursSummary.total_logged_over_plan))}h</strong> over plan
+                <span className="text-xs text-on-surface-muted">({hoursSummary.over_plan_log_count} logs)</span>
+              </span>
+            )}
             {hoursSummary.pending_review_count > 0 && (
               <span className="text-sm text-danger">
                 <strong className="font-bold">{hoursSummary.pending_review_count}</strong> pending review

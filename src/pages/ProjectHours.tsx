@@ -32,6 +32,11 @@ interface SummaryEmployee {
   employee_name: string;
   w1: number; w2: number; w3: number; w4: number; w5: number; monthly: number;
   variance_w1: number; variance_w2: number; variance_w3: number; variance_w4: number; variance_w5: number;
+  logged_approved?: number;
+  logged_pending?: number;
+  logged_within_plan?: number;
+  logged_over_plan?: number;
+  over_plan_log_count?: number;
 }
 
 const MONTHS = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
@@ -56,7 +61,14 @@ export default function ProjectHours() {
   const [assignments, setAssignments] = useState<Assignment[]>([]);
   const [projects, setProjects] = useState<any[]>([]);
   const [employees, setEmployees] = useState<any[]>([]);
-  const [summary, setSummary] = useState<{ employees: SummaryEmployee[]; total_allocated: number; pending_review_count: number } | null>(null);
+  const [summary, setSummary] = useState<{
+    employees: SummaryEmployee[];
+    total_allocated: number;
+    pending_review_count: number;
+    total_logged_within_plan?: number;
+    total_logged_over_plan?: number;
+    over_plan_log_count?: number;
+  } | null>(null);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
   const [showAdd, setShowAdd] = useState(false);
@@ -170,7 +182,13 @@ export default function ProjectHours() {
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
           <SummaryTile label="Allocated this month" value={`${summary.total_allocated} h`} blobClass="bg-brand/15" stagger={1} />
           <SummaryTile label="Pending review" value={String(summary.pending_review_count)} blobClass="bg-warning/20" stagger={2} accentClass={summary.pending_review_count > 0 ? 'text-danger' : undefined} />
-          <SummaryTile label="Active assignments" value={String(filtered.length)} blobClass="bg-brand-container" stagger={3} />
+          <SummaryTile
+            label={Number(summary.total_logged_over_plan ?? 0) > 0 ? `Over plan · ${summary.over_plan_log_count ?? 0} logs` : 'Over plan'}
+            value={`+${Math.round(Number(summary.total_logged_over_plan ?? 0))} h`}
+            blobClass={Number(summary.total_logged_over_plan ?? 0) > 0 ? 'bg-danger/20' : 'bg-success/15'}
+            stagger={3}
+            accentClass={Number(summary.total_logged_over_plan ?? 0) > 0 ? 'text-warning' : 'text-on-surface-muted'}
+          />
           <SummaryTile label="Employees on plan" value={String(summary.employees.length)} blobClass="bg-accent-container" stagger={4} />
         </div>
       )}
@@ -267,11 +285,12 @@ export default function ProjectHours() {
                   <th className="px-1 py-2 text-center">W4</th>
                   <th className="px-1 py-2 text-center">W5</th>
                   <th className="px-1 py-2 text-center bg-surface-3">M</th>
+                  <th className="px-1 py-2 text-center" title="Approved hours logged above allocation this month">Over</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-outline">
                 {!summary || summary.employees.length === 0 ? (
-                  <tr><td colSpan={7} className="px-3 py-6 text-center text-on-surface-subtle text-xs">No data yet.</td></tr>
+                  <tr><td colSpan={8} className="px-3 py-6 text-center text-on-surface-subtle text-xs">No data yet.</td></tr>
                 ) : summary.employees.map(e => (
                   <tr key={e.employee_id}>
                     <td className="px-2 py-1.5 font-medium text-on-surface whitespace-nowrap">{e.employee_name || '—'}</td>
@@ -282,6 +301,12 @@ export default function ProjectHours() {
                     ))}
                     <td className="px-1 py-1.5 text-center font-bold text-on-surface bg-surface-2">
                       <span className="num-mono">{e.monthly}</span>
+                    </td>
+                    <td className="px-1 py-1.5 text-center" title={(e.over_plan_log_count ?? 0) > 0 ? `${e.over_plan_log_count} approved log(s) exceeded weekly allocation` : ''}>
+                      {(e.logged_over_plan ?? 0) > 0
+                        ? <span className="num-mono font-semibold text-warning">+{Math.round(e.logged_over_plan ?? 0)}</span>
+                        : <span className="num-mono text-on-surface-subtle">—</span>
+                      }
                     </td>
                   </tr>
                 ))}

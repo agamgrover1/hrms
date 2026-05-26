@@ -310,8 +310,11 @@ export const api = {
         w1: number; w2: number; w3: number; w4: number; w5: number; monthly: number;
         variance_w1: number; variance_w2: number; variance_w3: number; variance_w4: number; variance_w5: number;
         logged_approved: number; logged_pending: number; logged_rejected: number;
+        logged_within_plan: number; logged_over_plan: number; over_plan_log_count: number;
       }>;
       total_allocated: number; total_logged_approved: number; total_logged_pending: number;
+      total_logged_within_plan: number; total_logged_over_plan: number;
+      over_plan_log_count: number;
       pending_review_count: number;
     }>(`/hours-summary?month=${month}&year=${year}`),
 };
