@@ -1,5 +1,6 @@
 import { useState, useEffect, useMemo, useCallback } from 'react';
-import { Plus, Trash2, X, Search, Copy, ExternalLink, Flag, ClipboardCheck } from 'lucide-react';
+import { Plus, Trash2, X, Search, Copy, ExternalLink, Flag, ClipboardCheck, LayoutGrid, Pencil, Users as UsersIcon, ChevronRight, AlertTriangle } from 'lucide-react';
+import { Link } from 'react-router-dom';
 import { api } from '../services/api';
 import { useAuth } from '../context/AuthContext';
 import EmployeeHoursDetailModal from '../components/EmployeeHoursDetailModal';
@@ -77,6 +78,29 @@ export default function ProjectHours() {
   const [showAdd, setShowAdd] = useState(false);
   const [detail, setDetail] = useState<{ employeeId: string; employeeName: string; focusWeek?: number } | null>(null);
   const [savingCell, setSavingCell] = useState<string | null>(null);
+  const [view, setView] = useState<'capacity' | 'plan' | 'mine'>('capacity');
+
+  // Determine viewer's identity for the "Mine" tab — direct reports + projects they review
+  const [me, setMe] = useState<{ id: string; name: string } | null>(null);
+  useEffect(() => {
+    if (!user?.employee_id_ref) return;
+    api.getEmployees()
+      .then(emps => {
+        const found = (emps as any[]).find(e => e.employee_id === user.employee_id_ref);
+        if (found) setMe({ id: found.id, name: found.name });
+      })
+      .catch(() => {});
+  }, [user?.employee_id_ref]);
+
+  const reportsTo = useMemo(() => {
+    if (!me) return new Set<string>();
+    return new Set((employees as any[]).filter(e => e.reporting_manager_id === me.id).map(e => e.id));
+  }, [employees, me]);
+  const myProjects = useMemo(() => {
+    if (!me) return [] as any[];
+    return (projects as any[]).filter(p => p.project_reporting_id === me.id);
+  }, [projects, me]);
+  const hasMine = (reportsTo.size > 0) || (myProjects.length > 0);
 
   const load = useCallback(() => {
     setLoading(true);
@@ -197,8 +221,35 @@ export default function ProjectHours() {
         </div>
       )}
 
-      <div className="grid grid-cols-1 lg:grid-cols-[1fr_320px] gap-5">
-        {/* Main grid */}
+      {/* Tab bar */}
+      <div className="inline-flex items-center gap-1 bg-surface rounded-xl-2 border border-outline shadow-elev-1 p-1">
+        <TabButton active={view === 'capacity'} onClick={() => setView('capacity')} icon={LayoutGrid} label="Capacity"
+          sub="Who's working how much" />
+        <TabButton active={view === 'plan'} onClick={() => setView('plan')} icon={Pencil} label="Plan"
+          sub="Edit allocations" />
+        {hasMine && (
+          <TabButton active={view === 'mine'} onClick={() => setView('mine')} icon={UsersIcon} label="Mine"
+            sub="My team & projects"
+            badge={(reportsTo.size > 0 || myProjects.length > 0) ? (reportsTo.size + myProjects.length) : undefined} />
+        )}
+      </div>
+
+      {/* ── Capacity view: full-width per-employee weekly table ─────────────── */}
+      {view === 'capacity' && (
+        <CapacityView
+          summary={summary}
+          loading={loading}
+          search={search}
+          month={month}
+          year={year}
+          openDetail={(employeeId, employeeName, focusWeek) =>
+            setDetail({ employeeId, employeeName, focusWeek })
+          }
+        />
+      )}
+
+      {/* ── Plan view: inline-edit spreadsheet (the original grid, no rail) ── */}
+      {view === 'plan' && (
         <div className="bg-surface rounded-xl-2 border border-outline shadow-elev-1 overflow-x-auto">
           <table className="w-full text-sm">
             <thead className="bg-surface-2 border-b border-outline sticky top-0">
@@ -269,100 +320,27 @@ export default function ProjectHours() {
               })}
             </tbody>
           </table>
+          <div className="px-4 py-2 border-t border-outline bg-surface-2 text-[11px] text-on-surface-muted">
+            Click any W cell to edit. The month total updates automatically. To compare with what was actually logged, switch to the Capacity tab.
+          </div>
         </div>
+      )}
 
-        {/* Right rail */}
-        <aside className="group relative bg-surface rounded-xl-2 border border-outline shadow-elev-1 overflow-hidden h-fit lg:sticky lg:top-4">
-          <div className="absolute -top-8 -right-8 w-28 h-28 rounded-full bg-brand/15 blur-2xl opacity-50" />
-          <div className="relative px-4 py-3 border-b border-outline bg-surface-2">
-            <p className="font-display text-xl font-bold tracking-tight text-on-surface">Per-employee weekly</p>
-            <p className="text-[11px] text-on-surface-subtle mt-0.5">Target: <span className="num-mono">{TARGET_WEEKLY}</span>h/week</p>
-          </div>
-          <div className="relative overflow-auto max-h-[70vh]">
-            <table className="w-full text-xs">
-              <thead className="bg-surface-2 text-on-surface-muted">
-                <tr>
-                  <th className="px-2 py-2 text-left">Employee</th>
-                  <th className="px-1 py-2 text-center">W1</th>
-                  <th className="px-1 py-2 text-center">W2</th>
-                  <th className="px-1 py-2 text-center">W3</th>
-                  <th className="px-1 py-2 text-center">W4</th>
-                  <th className="px-1 py-2 text-center">W5</th>
-                  <th className="px-1 py-2 text-center bg-surface-3">M</th>
-                  <th className="px-1 py-2 text-center" title="Approved hours logged above allocation this month">Over</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-outline">
-                {!summary || summary.employees.length === 0 ? (
-                  <tr><td colSpan={8} className="px-3 py-6 text-center text-on-surface-subtle text-xs">No data yet.</td></tr>
-                ) : summary.employees.map(e => {
-                  const weekPlans = [e.w1, e.w2, e.w3, e.w4, e.w5];
-                  const weekOvers = [e.w1_over ?? 0, e.w2_over ?? 0, e.w3_over ?? 0, e.w4_over ?? 0, e.w5_over ?? 0];
-                  const weekDisplays = weekPlans.map((p, i) => Number(p) + Number(weekOvers[i]));
-                  const monthlyDisplay = Number(e.monthly) + Number(e.logged_over_plan ?? 0);
-                  const openDetail = (focusWeek?: number) => setDetail({ employeeId: e.employee_id, employeeName: e.employee_name || '—', focusWeek });
-                  return (
-                    <tr key={e.employee_id}>
-                      <td className="px-2 py-1.5 font-medium text-on-surface whitespace-nowrap">
-                        <button onClick={() => openDetail()} className="hover:text-accent transition-colors">
-                          {e.employee_name || '—'}
-                        </button>
-                      </td>
-                      {weekDisplays.map((value, i) => {
-                        const over = Number(weekOvers[i]);
-                        return (
-                          <td key={i} className="px-1 py-1.5 text-center">
-                            <button
-                              onClick={() => openDetail(i + 1)}
-                              title={over > 0 ? `${weekPlans[i]}h planned + ${over}h over plan` : `${weekPlans[i]}h planned`}
-                              className={`num-mono inline-flex items-center justify-center w-full px-1 py-0.5 rounded-md font-medium transition-colors ${
-                                over > 0 ? 'text-warning hover:bg-warning-container' : `${varianceClass(value)} hover:opacity-80`
-                              }`}
-                            >
-                              {value}
-                              {over > 0 && <span className="text-[8px] ml-0.5 font-bold">+{Math.round(over)}</span>}
-                            </button>
-                          </td>
-                        );
-                      })}
-                      <td className="px-1 py-1.5 text-center font-bold bg-surface-2">
-                        <button
-                          onClick={() => openDetail()}
-                          className={`num-mono inline-flex items-center justify-center w-full px-1 py-0.5 rounded-md transition-colors ${
-                            (e.logged_over_plan ?? 0) > 0 ? 'text-warning hover:bg-warning-container' : 'text-on-surface hover:bg-surface-3'
-                          }`}
-                          title={(e.logged_over_plan ?? 0) > 0 ? `Plan ${e.monthly}h + ${Math.round(e.logged_over_plan ?? 0)}h over` : `Plan ${e.monthly}h`}
-                        >
-                          {monthlyDisplay}
-                          {(e.logged_over_plan ?? 0) > 0 && <span className="text-[8px] ml-0.5 font-bold">+{Math.round(e.logged_over_plan ?? 0)}</span>}
-                        </button>
-                      </td>
-                      <td className="px-1 py-1.5 text-center"
-                        title={(e.over_plan_log_count ?? 0) > 0 ? `${e.over_plan_log_count} approved log(s) exceeded weekly allocation` : ''}>
-                        {(e.logged_over_plan ?? 0) > 0 ? (
-                          <button onClick={() => openDetail()}
-                            className="num-mono font-semibold text-warning hover:bg-warning-container px-1.5 py-0.5 rounded transition-colors">
-                            +{Math.round(e.logged_over_plan ?? 0)}
-                          </button>
-                        ) : <span className="num-mono text-on-surface-subtle">—</span>}
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
-          <div className="relative px-3 py-2 border-t border-outline bg-surface-2 text-[10px] text-on-surface-muted">
-            <p className="mb-1">Cell value = plan + approved over-plan hours. Click any cell to drill in.</p>
-            <div className="flex items-center gap-3">
-              <span className="inline-flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-success" />33–37</span>
-              <span className="inline-flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-warning" />28–32 / 38–40</span>
-              <span className="inline-flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-danger" />other</span>
-              <span className="inline-flex items-center gap-1 ml-auto"><span className="text-warning font-bold text-[10px]">+</span> over plan</span>
-            </div>
-          </div>
-        </aside>
-      </div>
+      {/* ── Mine view: people who report to me + projects I review ─────────── */}
+      {view === 'mine' && me && (
+        <MineView
+          summary={summary}
+          assignments={assignments}
+          myProjects={myProjects}
+          reportsToIds={reportsTo}
+          loading={loading}
+          month={month}
+          year={year}
+          openDetail={(employeeId, employeeName, focusWeek) =>
+            setDetail({ employeeId, employeeName, focusWeek })
+          }
+        />
+      )}
 
       {showAdd && (
         <AssignmentForm
@@ -540,6 +518,319 @@ function AssignmentForm({
           </button>
         </div>
       </div>
+    </div>
+  );
+}
+
+// ── Tab button ─────────────────────────────────────────────────────────────
+function TabButton({ active, onClick, icon: Icon, label, sub, badge }: {
+  active: boolean; onClick: () => void; icon: any; label: string; sub?: string; badge?: number;
+}) {
+  return (
+    <button onClick={onClick}
+      className={`relative flex items-center gap-2.5 px-4 py-2 rounded-lg text-sm font-semibold transition-all ${
+        active ? 'bg-accent text-on-accent shadow-elev-1' : 'text-on-surface-muted hover:text-on-surface hover:bg-surface-2'
+      }`}>
+      <Icon size={15} strokeWidth={2.25} />
+      <span className="text-left leading-tight">
+        <span className="block">{label}</span>
+        {sub && <span className={`block text-[10px] font-normal mt-0.5 ${active ? 'text-on-accent/75' : 'text-on-surface-subtle'}`}>{sub}</span>}
+      </span>
+      {badge !== undefined && badge > 0 && (
+        <span className={`num-mono text-[10px] font-bold px-1.5 py-0.5 rounded-full ${active ? 'bg-on-accent text-accent' : 'bg-accent text-on-accent'}`}>
+          {badge}
+        </span>
+      )}
+    </button>
+  );
+}
+
+// ── Capacity view (full-width per-employee weekly) ─────────────────────────
+function CapacityView({ summary, loading, search, month, year, openDetail }: {
+  summary: any;
+  loading: boolean;
+  search: string;
+  month: number;
+  year: number;
+  openDetail: (employeeId: string, employeeName: string, focusWeek?: number) => void;
+}) {
+  const rows = useMemo(() => {
+    if (!summary) return [] as any[];
+    const term = (search ?? '').trim().toLowerCase();
+    if (!term) return summary.employees;
+    return summary.employees.filter((e: any) => (e.employee_name ?? '').toLowerCase().includes(term));
+  }, [summary, search]);
+
+  if (loading) {
+    return <div className="bg-surface rounded-xl-2 border border-outline shadow-elev-1 py-16 text-center text-on-surface-subtle">Loading capacity…</div>;
+  }
+  if (!summary || rows.length === 0) {
+    return (
+      <div className="bg-surface rounded-xl-2 border border-outline shadow-elev-1 py-16 text-center">
+        <UsersIcon size={28} className="mx-auto text-on-surface-subtle mb-2" />
+        <p className="text-sm text-on-surface-muted">No employees on plan for {MONTHS[month-1]} {year}.</p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="bg-surface rounded-xl-3 border border-outline shadow-elev-2 overflow-hidden">
+      <div className="px-5 py-4 border-b border-outline bg-gradient-to-r from-brand-container/40 to-surface flex flex-wrap items-end justify-between gap-3">
+        <div>
+          <h3 className="font-display text-xl font-bold tracking-tight text-on-surface">Per-employee capacity · {MONTHS[month-1]} {year}</h3>
+          <p className="text-xs text-on-surface-muted mt-0.5">
+            Cells show <span className="font-semibold">plan + approved over-plan</span>. Click any cell to drill into the actual logs. Target: <span className="num-mono">{TARGET_WEEKLY}h</span>/week.
+          </p>
+        </div>
+        <div className="flex items-center gap-3 text-[11px] text-on-surface-muted">
+          <span className="inline-flex items-center gap-1.5"><span className="w-2.5 h-2.5 rounded-full bg-success" />33–37h band</span>
+          <span className="inline-flex items-center gap-1.5"><span className="w-2.5 h-2.5 rounded-full bg-warning" />28–32 / 38–40</span>
+          <span className="inline-flex items-center gap-1.5"><span className="w-2.5 h-2.5 rounded-full bg-danger" />outside</span>
+          <span className="inline-flex items-center gap-1.5 text-warning"><AlertTriangle size={11} /> over plan</span>
+        </div>
+      </div>
+
+      <div className="overflow-x-auto">
+        <table className="w-full text-sm">
+          <thead className="bg-surface-2 border-b border-outline">
+            <tr className="text-left text-[10px] font-bold text-on-surface-muted uppercase tracking-[0.16em]">
+              <th className="px-5 py-3 sticky left-0 bg-surface-2">Employee</th>
+              {['W1','W2','W3','W4','W5'].map(w => <th key={w} className="px-4 py-3 text-center min-w-[88px]">{w}</th>)}
+              <th className="px-4 py-3 text-center bg-surface-3 min-w-[96px]">Month</th>
+              <th className="px-4 py-3 text-center min-w-[88px]">Over plan</th>
+              <th className="px-3 py-3"></th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-outline">
+            {rows.map((e: any) => {
+              const weekPlans = [e.w1, e.w2, e.w3, e.w4, e.w5];
+              const weekOvers = [e.w1_over ?? 0, e.w2_over ?? 0, e.w3_over ?? 0, e.w4_over ?? 0, e.w5_over ?? 0];
+              const weekLogged = [e.w1_logged ?? 0, e.w2_logged ?? 0, e.w3_logged ?? 0, e.w4_logged ?? 0, e.w5_logged ?? 0];
+              const monthlyDisplay = Number(e.monthly) + Number(e.logged_over_plan ?? 0);
+              return (
+                <tr key={e.employee_id} className="hover:bg-surface-2/60 transition-colors">
+                  <td className="px-5 py-3 font-semibold text-on-surface whitespace-nowrap sticky left-0 bg-surface hover:bg-surface-2/60">
+                    <button onClick={() => openDetail(e.employee_id, e.employee_name || '—')}
+                      className="text-left hover:text-accent transition-colors">
+                      {e.employee_name || '—'}
+                    </button>
+                  </td>
+                  {weekPlans.map((p: number, i: number) => {
+                    const over = Number(weekOvers[i]);
+                    const display = Number(p) + over;
+                    const logged = Number(weekLogged[i]);
+                    return (
+                      <td key={i} className="px-2 py-2 text-center">
+                        <button
+                          onClick={() => openDetail(e.employee_id, e.employee_name || '—', i + 1)}
+                          title={`Plan ${p}h · Logged ${logged}h${over > 0 ? ` (+${over} over)` : ''}`}
+                          className={`group num-mono inline-flex flex-col items-center justify-center w-full px-2 py-2 rounded-lg font-semibold transition-all ${
+                            over > 0
+                              ? 'bg-warning-container text-warning hover:shadow-elev-1 hover:scale-[1.04]'
+                              : `${varianceClass(display)} hover:shadow-elev-1 hover:scale-[1.04]`
+                          }`}
+                        >
+                          <span className="text-base leading-none">{display}</span>
+                          {over > 0
+                            ? <span className="text-[10px] font-bold mt-1 inline-flex items-center gap-0.5"><AlertTriangle size={9} />+{Math.round(over)}</span>
+                            : logged > 0 && logged !== Number(p)
+                              ? <span className="text-[10px] font-normal mt-1 opacity-70">{logged}/{p}</span>
+                              : <span className="text-[10px] font-normal mt-1 opacity-0">·</span>
+                          }
+                        </button>
+                      </td>
+                    );
+                  })}
+                  <td className="px-2 py-2 text-center bg-surface-2">
+                    <button onClick={() => openDetail(e.employee_id, e.employee_name || '—')}
+                      title={`Plan ${e.monthly}h${(e.logged_over_plan ?? 0) > 0 ? ` + ${Math.round(e.logged_over_plan ?? 0)}h over` : ''}`}
+                      className={`num-mono inline-flex flex-col items-center justify-center w-full px-2 py-2 rounded-lg font-bold transition-all ${
+                        (e.logged_over_plan ?? 0) > 0 ? 'text-warning hover:bg-warning-container hover:scale-[1.04]' : 'text-on-surface hover:bg-surface-3 hover:scale-[1.04]'
+                      }`}>
+                      <span className="text-lg leading-none">{monthlyDisplay}</span>
+                      {(e.logged_over_plan ?? 0) > 0 && <span className="text-[10px] font-bold mt-1">+{Math.round(e.logged_over_plan ?? 0)}</span>}
+                    </button>
+                  </td>
+                  <td className="px-2 py-2 text-center">
+                    {(e.logged_over_plan ?? 0) > 0 ? (
+                      <button onClick={() => openDetail(e.employee_id, e.employee_name || '—')}
+                        className="num-mono inline-flex items-center gap-1 font-bold text-warning bg-warning-container hover:opacity-80 px-2.5 py-1 rounded-full text-xs transition-opacity">
+                        <AlertTriangle size={11} />+{Math.round(e.logged_over_plan ?? 0)}h
+                        <span className="text-[9px] font-normal opacity-80">({e.over_plan_log_count ?? 0})</span>
+                      </button>
+                    ) : <span className="num-mono text-on-surface-subtle text-xs">—</span>}
+                  </td>
+                  <td className="px-3 py-2 text-right">
+                    <button onClick={() => openDetail(e.employee_id, e.employee_name || '—')}
+                      className="inline-flex items-center gap-1 text-xs font-semibold text-on-surface-muted hover:text-accent transition-colors">
+                      View <ChevronRight size={12} />
+                    </button>
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+// ── Mine view: my direct reports + projects I review ───────────────────────
+function MineView({ summary, assignments, myProjects, reportsToIds, loading, month, year, openDetail }: {
+  summary: any;
+  assignments: any[];
+  myProjects: any[];
+  reportsToIds: Set<string>;
+  loading: boolean;
+  month: number;
+  year: number;
+  openDetail: (employeeId: string, employeeName: string, focusWeek?: number) => void;
+}) {
+  const teamRows = useMemo(() => {
+    if (!summary) return [] as any[];
+    if (reportsToIds.size === 0) return [] as any[];
+    return summary.employees.filter((e: any) => reportsToIds.has(e.employee_id));
+  }, [summary, reportsToIds]);
+
+  // Aggregate per project: how many employees are assigned + their hours this month
+  const projectStats = useMemo(() => {
+    return myProjects.map(p => {
+      const rows = assignments.filter(a => a.project_id === p.id);
+      const totalPlanned = rows.reduce((s, a) => s + Number(a.monthly_hours || 0), 0);
+      const employeeNames = Array.from(new Set(rows.map(a => a.employee_name).filter(Boolean)));
+      return { project: p, totalPlanned, employees: employeeNames, rows };
+    });
+  }, [myProjects, assignments]);
+
+  if (loading) {
+    return <div className="bg-surface rounded-xl-2 border border-outline shadow-elev-1 py-16 text-center text-on-surface-subtle">Loading…</div>;
+  }
+
+  const nothing = teamRows.length === 0 && projectStats.length === 0;
+  if (nothing) {
+    return (
+      <div className="bg-surface rounded-xl-2 border border-outline shadow-elev-1 py-16 text-center">
+        <UsersIcon size={28} className="mx-auto text-on-surface-subtle mb-2" />
+        <p className="text-sm text-on-surface-muted">Nothing under your responsibility this month.</p>
+        <p className="text-xs text-on-surface-subtle mt-1">Once you're set as a Reporting person on a project or have direct reports, this view will populate.</p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-5">
+      {/* My direct reports' capacity */}
+      {teamRows.length > 0 && (
+        <div className="bg-surface rounded-xl-3 border border-outline shadow-elev-2 overflow-hidden">
+          <div className="px-5 py-4 border-b border-outline bg-gradient-to-r from-brand-container/40 to-surface">
+            <h3 className="font-display text-lg font-bold tracking-tight text-on-surface">My team's capacity</h3>
+            <p className="text-xs text-on-surface-muted mt-0.5"><span className="num-mono">{teamRows.length}</span> direct report{teamRows.length === 1 ? '' : 's'} · {MONTHS[month-1]} {year}</p>
+          </div>
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead className="bg-surface-2 border-b border-outline">
+                <tr className="text-left text-[10px] font-bold text-on-surface-muted uppercase tracking-[0.16em]">
+                  <th className="px-5 py-3">Employee</th>
+                  {['W1','W2','W3','W4','W5'].map(w => <th key={w} className="px-3 py-3 text-center min-w-[72px]">{w}</th>)}
+                  <th className="px-3 py-3 text-center bg-surface-3 min-w-[88px]">Month</th>
+                  <th className="px-3 py-3 text-center min-w-[80px]">Over plan</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-outline">
+                {teamRows.map((e: any) => {
+                  const weekPlans = [e.w1, e.w2, e.w3, e.w4, e.w5];
+                  const weekOvers = [e.w1_over ?? 0, e.w2_over ?? 0, e.w3_over ?? 0, e.w4_over ?? 0, e.w5_over ?? 0];
+                  const monthlyDisplay = Number(e.monthly) + Number(e.logged_over_plan ?? 0);
+                  return (
+                    <tr key={e.employee_id} className="hover:bg-surface-2/60 transition-colors">
+                      <td className="px-5 py-3 font-semibold text-on-surface">
+                        <button onClick={() => openDetail(e.employee_id, e.employee_name || '—')} className="hover:text-accent transition-colors">
+                          {e.employee_name || '—'}
+                        </button>
+                      </td>
+                      {weekPlans.map((p: number, i: number) => {
+                        const over = Number(weekOvers[i]);
+                        const display = Number(p) + over;
+                        return (
+                          <td key={i} className="px-2 py-2 text-center">
+                            <button onClick={() => openDetail(e.employee_id, e.employee_name || '—', i + 1)}
+                              className={`num-mono inline-flex items-center justify-center w-full px-2 py-1.5 rounded-md font-semibold transition-colors ${
+                                over > 0 ? 'bg-warning-container text-warning' : varianceClass(display)
+                              }`}>
+                              {display}
+                              {over > 0 && <span className="text-[9px] ml-0.5 font-bold">+{Math.round(over)}</span>}
+                            </button>
+                          </td>
+                        );
+                      })}
+                      <td className="px-2 py-2 text-center bg-surface-2">
+                        <button onClick={() => openDetail(e.employee_id, e.employee_name || '—')}
+                          className={`num-mono inline-flex items-center justify-center w-full font-bold ${
+                            (e.logged_over_plan ?? 0) > 0 ? 'text-warning' : 'text-on-surface'
+                          }`}>
+                          {monthlyDisplay}
+                        </button>
+                      </td>
+                      <td className="px-2 py-2 text-center">
+                        {(e.logged_over_plan ?? 0) > 0 ? (
+                          <span className="num-mono inline-flex items-center gap-1 font-bold text-warning bg-warning-container px-2 py-0.5 rounded-full text-xs">
+                            <AlertTriangle size={10} />+{Math.round(e.logged_over_plan ?? 0)}h
+                          </span>
+                        ) : <span className="num-mono text-on-surface-subtle text-xs">—</span>}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
+      {/* Projects I review */}
+      {projectStats.length > 0 && (
+        <div className="bg-surface rounded-xl-3 border border-outline shadow-elev-2 overflow-hidden">
+          <div className="px-5 py-4 border-b border-outline bg-gradient-to-r from-accent-container/40 to-surface flex items-end justify-between gap-3 flex-wrap">
+            <div>
+              <h3 className="font-display text-lg font-bold tracking-tight text-on-surface">Projects I review</h3>
+              <p className="text-xs text-on-surface-muted mt-0.5">You're the reporting person for <span className="num-mono">{projectStats.length}</span> project{projectStats.length === 1 ? '' : 's'} this month.</p>
+            </div>
+            <Link to="/hours/approvals" className="inline-flex items-center gap-2 px-3.5 py-2 rounded-lg text-xs font-semibold bg-accent text-on-accent hover:opacity-90 transition-opacity">
+              <ClipboardCheck size={14} /> Open approval queue
+            </Link>
+          </div>
+          <div className="divide-y divide-outline">
+            {projectStats.map(({ project, totalPlanned, employees: empNames, rows }: any) => (
+              <div key={project.id} className="px-5 py-4 hover:bg-surface-2/40 transition-colors">
+                <div className="flex items-start justify-between gap-3">
+                  <div className="min-w-0">
+                    <div className="flex items-center gap-2">
+                      <p className="font-display text-base font-bold text-on-surface tracking-tight">{project.name}</p>
+                      {project.flag && (
+                        <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold ${project.flag === 'red' ? 'bg-danger-container text-danger' : 'bg-warning-container text-warning'}`}>
+                          <Flag size={10} />{project.flag === 'red' ? 'At risk' : 'Watch'}
+                        </span>
+                      )}
+                    </div>
+                    {project.client_name && <p className="text-xs text-on-surface-muted mt-0.5">{project.client_name}</p>}
+                    <p className="text-xs text-on-surface-subtle mt-2">
+                      {empNames.length > 0
+                        ? <>{empNames.length} on plan: <span className="text-on-surface">{empNames.slice(0,4).join(', ')}{empNames.length > 4 ? ` +${empNames.length - 4}` : ''}</span></>
+                        : 'No one assigned yet this month'}
+                    </p>
+                  </div>
+                  <div className="text-right flex-shrink-0">
+                    <p className="text-[10px] uppercase tracking-[0.16em] font-bold text-on-surface-muted">Planned</p>
+                    <p className="num-mono text-xl font-bold text-on-surface mt-0.5">{totalPlanned}<span className="text-xs text-on-surface-muted ml-0.5">h</span></p>
+                    <p className="text-[10px] text-on-surface-subtle mt-0.5">{rows.length} assignment{rows.length === 1 ? '' : 's'}</p>
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
     </div>
   );
 }
