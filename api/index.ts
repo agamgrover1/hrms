@@ -70,6 +70,34 @@ async function notifyCoordinators(type: string, title: string, body?: string) {
   } catch { /* non-fatal */ }
 }
 
+// Capture every change to an hour_log so partial / unilateral admin edits are visible
+async function recordHourLogAudit(p: {
+  hour_log_id: string;
+  action: 'created' | 'edited' | 'approved' | 'rejected' | 'admin_edit' | 'resubmitted';
+  actor_id?: string | null;
+  actor_name?: string | null;
+  actor_role?: string | null;
+  before?: { hours_logged?: number | null; status?: string | null; work_description?: string | null } | null;
+  after?: { hours_logged?: number | null; status?: string | null; work_description?: string | null } | null;
+  reason?: string | null;
+}) {
+  try {
+    await sql`
+      INSERT INTO hour_log_audit (
+        hour_log_id, action, actor_id, actor_name, actor_role,
+        before_hours, after_hours, before_status, after_status,
+        before_description, after_description, reason
+      ) VALUES (
+        ${p.hour_log_id}, ${p.action},
+        ${p.actor_id ?? null}, ${p.actor_name ?? null}, ${p.actor_role ?? null},
+        ${p.before?.hours_logged ?? null}, ${p.after?.hours_logged ?? null},
+        ${p.before?.status ?? null}, ${p.after?.status ?? null},
+        ${p.before?.work_description ?? null}, ${p.after?.work_description ?? null},
+        ${p.reason ?? null}
+      )`;
+  } catch { /* non-fatal */ }
+}
+
 async function notifyEmployeeUser(employeeDbId: string, type: string, title: string, body?: string) {
   try {
     const users = await sql`SELECT u.id FROM app_users u JOIN employees e ON e.employee_id = u.employee_id_ref WHERE e.id = ${employeeDbId}`;
@@ -323,6 +351,25 @@ async function runStartupMigrations() {
       created_by TEXT,
       UNIQUE(project_id, employee_id, month, year)
     )`;
+  await sql`
+    CREATE TABLE IF NOT EXISTS hour_log_audit (
+      id SERIAL PRIMARY KEY,
+      hour_log_id TEXT NOT NULL,
+      action TEXT NOT NULL,
+      actor_id TEXT,
+      actor_name TEXT,
+      actor_role TEXT,
+      before_hours NUMERIC,
+      after_hours NUMERIC,
+      before_status TEXT,
+      after_status TEXT,
+      before_description TEXT,
+      after_description TEXT,
+      reason TEXT,
+      created_at TIMESTAMPTZ DEFAULT NOW()
+    )`;
+  await sql`CREATE INDEX IF NOT EXISTS idx_hour_log_audit_log_id ON hour_log_audit(hour_log_id)`.catch(()=>{});
+
   await sql`
     CREATE TABLE IF NOT EXISTS hour_logs (
       id TEXT PRIMARY KEY,
@@ -2698,7 +2745,10 @@ app.post('/api/hour-logs', async (req, res) => {
     if (!(aRows as any[]).length)
       return res.status(400).json({ error: 'No matching assignment exists for that project/month' });
     const assignment_id = (aRows as any[])[0].id;
-    const id = newId('hl');
+    // Capture the pre-state so we can decide audit action: 'created' vs 'resubmitted'
+    const preRows = await sql`SELECT id, hours_logged, status, work_description FROM hour_logs WHERE assignment_id=${assignment_id} AND week_num=${week_num}`;
+    const existing = (preRows as any[])[0];
+    const id = existing?.id ?? newId('hl');
     const rows = await sql`
       INSERT INTO hour_logs (id, assignment_id, project_id, employee_id, employee_name,
         month, year, week_num, hours_logged, work_description, status)
@@ -2713,6 +2763,16 @@ app.post('/api/hour-logs', async (req, res) => {
         submitted_at=NOW(), updated_at=NOW()
       RETURNING *`;
     const log = (rows as any[])[0];
+    // Audit
+    await recordHourLogAudit({
+      hour_log_id: log.id,
+      action: existing ? 'resubmitted' : 'created',
+      actor_id: employee_id,
+      actor_name: employee_name ?? null,
+      actor_role: 'employee',
+      before: existing ? { hours_logged: existing.hours_logged, status: existing.status, work_description: existing.work_description } : null,
+      after: { hours_logged: Number(hours_logged) || 0, status: 'pending', work_description: work_description ?? null },
+    });
     try {
       const p = await sql`SELECT name, project_reporting_id FROM projects WHERE id=${project_id}`;
       const projRow = (p as any[])[0];
@@ -2732,8 +2792,8 @@ app.post('/api/hour-logs', async (req, res) => {
 
 app.put('/api/hour-logs/:id', async (req, res) => {
   try {
-    const { hours_logged, work_description, actor_role, keep_status } = req.body;
-    const existing = await sql`SELECT status FROM hour_logs WHERE id=${req.params.id}`;
+    const { hours_logged, work_description, actor_id, actor_name, actor_role, keep_status, reason } = req.body;
+    const existing = await sql`SELECT * FROM hour_logs WHERE id=${req.params.id}`;
     if (!(existing as any[]).length) return res.status(404).json({ error: 'Log not found' });
     const cur = (existing as any[])[0];
     const isPrivileged = actor_role === 'admin' || actor_role === 'hr_manager' || actor_role === 'project_coordinator';
@@ -2741,32 +2801,75 @@ app.put('/api/hour-logs/:id', async (req, res) => {
     if (cur.status === 'approved' && !isPrivileged) {
       return res.status(400).json({ error: 'Approved logs cannot be edited' });
     }
+    // A privileged edit on an approved log MUST come with a reason — transparency for the audit trail.
+    if (isPrivileged && cur.status === 'approved' && (!reason || !String(reason).trim())) {
+      return res.status(400).json({ error: 'A reason is required when editing an already-approved log.' });
+    }
     // Privileged + keep_status preserves the existing status (admin override on an approved log).
     // Default behaviour for an employee self-edit: reset to pending so it goes back through review.
     const preserve = isPrivileged && keep_status;
+    const newHours = Number(hours_logged) || 0;
+    const newDesc = work_description ?? null;
     const rows = preserve
       ? await sql`
         UPDATE hour_logs SET
-          hours_logged=${Number(hours_logged) || 0},
-          work_description=${work_description ?? null},
+          hours_logged=${newHours},
+          work_description=${newDesc},
           updated_at=NOW()
         WHERE id=${req.params.id} RETURNING *`
       : await sql`
         UPDATE hour_logs SET
-          hours_logged=${Number(hours_logged) || 0},
-          work_description=${work_description ?? null},
+          hours_logged=${newHours},
+          work_description=${newDesc},
           status='pending',
           rejection_reason=NULL,
           reviewed_by_id=NULL, reviewed_by_name=NULL, reviewed_at=NULL,
           updated_at=NOW()
         WHERE id=${req.params.id} RETURNING *`;
-    res.json(rows[0]);
+    const updated = (rows as any[])[0];
+    // Audit
+    const auditAction: 'admin_edit' | 'edited' = isPrivileged ? 'admin_edit' : 'edited';
+    await recordHourLogAudit({
+      hour_log_id: updated.id,
+      action: auditAction,
+      actor_id: actor_id ?? null,
+      actor_name: actor_name ?? null,
+      actor_role: actor_role ?? 'employee',
+      before: { hours_logged: cur.hours_logged, status: cur.status, work_description: cur.work_description },
+      after: { hours_logged: updated.hours_logged, status: updated.status, work_description: updated.work_description },
+      reason: reason ?? null,
+    });
+    // If an admin / HR / coord changed an already-approved log, the employee deserves a heads-up.
+    if (isPrivileged && cur.status === 'approved') {
+      try {
+        const proj = await sql`SELECT name FROM projects WHERE id=${updated.project_id}`;
+        const projectName = (proj as any[])[0]?.name || 'a project';
+        notifyEmployeeUser(updated.employee_id, 'hours_admin_edited',
+          'Hours record edited',
+          `${actor_name || 'An admin'} adjusted your ${cur.hours_logged}h → ${updated.hours_logged}h on ${projectName} (W${updated.week_num})${reason ? ` — ${reason}` : ''}`).catch(()=>{});
+      } catch {}
+    }
+    res.json(updated);
+  } catch (err: any) { res.status(500).json({ error: err.message || 'Server error' }); }
+});
+
+// Audit history for one log — used by the detail modal's expandable History section
+app.get('/api/hour-logs/:id/audit', async (req, res) => {
+  try {
+    await runStartupMigrations();
+    const rows = await sql`
+      SELECT * FROM hour_log_audit
+      WHERE hour_log_id=${req.params.id}
+      ORDER BY created_at ASC`;
+    res.json(rows);
   } catch (err: any) { res.status(500).json({ error: err.message || 'Server error' }); }
 });
 
 app.patch('/api/hour-logs/:id/approve', async (req, res) => {
   try {
     const { reviewer_id, reviewer_name } = req.body;
+    const pre = await sql`SELECT hours_logged, status, work_description FROM hour_logs WHERE id=${req.params.id}`;
+    const cur = (pre as any[])[0];
     const rows = await sql`
       UPDATE hour_logs SET status='approved',
         rejection_reason=NULL,
@@ -2775,6 +2878,15 @@ app.patch('/api/hour-logs/:id/approve', async (req, res) => {
       WHERE id=${req.params.id} RETURNING *`;
     if (!rows.length) return res.status(404).json({ error: 'Log not found' });
     const r = rows[0];
+    await recordHourLogAudit({
+      hour_log_id: r.id,
+      action: 'approved',
+      actor_id: reviewer_id ?? null,
+      actor_name: reviewer_name ?? null,
+      actor_role: 'reviewer',
+      before: cur ? { hours_logged: cur.hours_logged, status: cur.status, work_description: cur.work_description } : null,
+      after: { hours_logged: r.hours_logged, status: r.status, work_description: r.work_description },
+    });
     try {
       const proj = await sql`SELECT name FROM projects WHERE id=${r.project_id}`;
       const projectName = (proj as any[])[0]?.name || 'a project';
@@ -2790,6 +2902,8 @@ app.patch('/api/hour-logs/:id/reject', async (req, res) => {
   try {
     const { reviewer_id, reviewer_name, rejection_reason } = req.body;
     if (!rejection_reason) return res.status(400).json({ error: 'rejection_reason is required' });
+    const pre = await sql`SELECT hours_logged, status, work_description FROM hour_logs WHERE id=${req.params.id}`;
+    const cur = (pre as any[])[0];
     const rows = await sql`
       UPDATE hour_logs SET status='rejected',
         rejection_reason=${rejection_reason},
@@ -2798,6 +2912,16 @@ app.patch('/api/hour-logs/:id/reject', async (req, res) => {
       WHERE id=${req.params.id} RETURNING *`;
     if (!rows.length) return res.status(404).json({ error: 'Log not found' });
     const r = rows[0];
+    await recordHourLogAudit({
+      hour_log_id: r.id,
+      action: 'rejected',
+      actor_id: reviewer_id ?? null,
+      actor_name: reviewer_name ?? null,
+      actor_role: 'reviewer',
+      before: cur ? { hours_logged: cur.hours_logged, status: cur.status, work_description: cur.work_description } : null,
+      after: { hours_logged: r.hours_logged, status: r.status, work_description: r.work_description },
+      reason: rejection_reason,
+    });
     try {
       const proj = await sql`SELECT name FROM projects WHERE id=${r.project_id}`;
       const projectName = (proj as any[])[0]?.name || 'a project';

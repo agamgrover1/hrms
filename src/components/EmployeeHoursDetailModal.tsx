@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { X, AlertTriangle, CheckCircle, XCircle, Clock as ClockIcon, Pencil, Save } from 'lucide-react';
+import { X, AlertTriangle, CheckCircle, XCircle, Clock as ClockIcon, Pencil, Save, History, ChevronDown } from 'lucide-react';
 import { api } from '../services/api';
 import { useAuth } from '../context/AuthContext';
 
@@ -41,8 +41,11 @@ export default function EmployeeHoursDetailModal({ employeeId, employeeName, mon
   const [logs, setLogs] = useState<LogRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [editingId, setEditingId] = useState<string | null>(null);
-  const [editDraft, setEditDraft] = useState<{ hours: string; desc: string }>({ hours: '', desc: '' });
+  const [editDraft, setEditDraft] = useState<{ hours: string; desc: string; reason: string }>({ hours: '', desc: '', reason: '' });
   const [saving, setSaving] = useState(false);
+  const [historyOpenFor, setHistoryOpenFor] = useState<string | null>(null);
+  const [historyData, setHistoryData] = useState<Record<string, any[]>>({});
+  const [historyLoading, setHistoryLoading] = useState<Record<string, boolean>>({});
 
   const reload = () => {
     setLoading(true);
@@ -59,30 +62,73 @@ export default function EmployeeHoursDetailModal({ employeeId, employeeName, mon
 
   const startEdit = (log: LogRow) => {
     setEditingId(log.id);
-    setEditDraft({ hours: String(log.hours_logged), desc: log.work_description ?? '' });
+    setEditDraft({ hours: String(log.hours_logged), desc: log.work_description ?? '', reason: '' });
   };
 
-  const cancelEdit = () => { setEditingId(null); setEditDraft({ hours: '', desc: '' }); };
+  const cancelEdit = () => { setEditingId(null); setEditDraft({ hours: '', desc: '', reason: '' }); };
 
   const saveEdit = async (log: LogRow) => {
     const h = Number(editDraft.hours);
     if (Number.isNaN(h) || h < 0) return;
+    // Editing an approved log requires a reason — the backend enforces this too
+    if (canEditAny && log.status === 'approved' && !editDraft.reason.trim()) {
+      alert('Please add a short reason — this log is already approved, so the audit trail requires it.');
+      return;
+    }
     setSaving(true);
     try {
       await api.editHourLog(log.id, {
         hours_logged: h,
         work_description: editDraft.desc,
+        actor_id: user?.id,
+        actor_name: user?.name,
         actor_role: user?.role,
         // Privileged edit: keep whatever status the log already has (don't reset approved → pending)
         keep_status: canEditAny,
+        reason: editDraft.reason.trim() || undefined,
       });
       setEditingId(null);
+      // refresh both the logs and any open history for this log
       reload();
+      if (historyOpenFor === log.id) loadHistory(log.id);
     } catch (err: any) {
       alert(err.message ?? 'Failed to save.');
     } finally {
       setSaving(false);
     }
+  };
+
+  const loadHistory = async (logId: string) => {
+    setHistoryLoading(prev => ({ ...prev, [logId]: true }));
+    try {
+      const data = await api.getHourLogAudit(logId);
+      setHistoryData(prev => ({ ...prev, [logId]: data }));
+    } catch {
+      setHistoryData(prev => ({ ...prev, [logId]: [] }));
+    } finally {
+      setHistoryLoading(prev => ({ ...prev, [logId]: false }));
+    }
+  };
+  const toggleHistory = (logId: string) => {
+    if (historyOpenFor === logId) {
+      setHistoryOpenFor(null);
+    } else {
+      setHistoryOpenFor(logId);
+      if (!historyData[logId]) loadHistory(logId);
+    }
+  };
+
+  const fmtTs = (ts: string) => {
+    const d = new Date(ts);
+    return d.toLocaleString('en-IN', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' });
+  };
+  const ACTION_LABEL: Record<string, { label: string; cls: string; Icon: any }> = {
+    created:     { label: 'Submitted',       cls: 'bg-brand-container text-on-brand-container', Icon: ClockIcon },
+    resubmitted: { label: 'Re-submitted',    cls: 'bg-brand-container text-on-brand-container', Icon: ClockIcon },
+    edited:      { label: 'Edited',          cls: 'bg-surface-2 text-on-surface-muted', Icon: Pencil },
+    approved:    { label: 'Approved',        cls: 'bg-success-container text-success', Icon: CheckCircle },
+    rejected:    { label: 'Rejected',        cls: 'bg-danger-container text-danger', Icon: XCircle },
+    admin_edit:  { label: 'Admin override',  cls: 'bg-warning-container text-warning', Icon: AlertTriangle },
   };
 
   // Group by week_num, preserve sort order
@@ -247,12 +293,112 @@ export default function EmployeeHoursDetailModal({ employeeId, employeeName, mon
                                     </button>
                                   </div>
                                 )}
+                                {!isEditing && (
+                                  <button
+                                    onClick={() => toggleHistory(log.id)}
+                                    title="View change history"
+                                    className={`p-1.5 rounded-md transition-colors ${historyOpenFor === log.id ? 'text-accent bg-accent-container' : 'text-on-surface-muted hover:text-on-surface hover:bg-surface-2'}`}>
+                                    <History size={13} />
+                                  </button>
+                                )}
                               </div>
                             </div>
+
+                            {/* Reason input when editing an already-approved log */}
+                            {isEditing && canEditAny && log.status === 'approved' && (
+                              <div className="mt-2">
+                                <label className="text-[10px] uppercase tracking-[0.16em] font-bold text-on-surface-muted block mb-1">
+                                  Reason for change <span className="text-danger">*</span>
+                                </label>
+                                <input
+                                  value={editDraft.reason}
+                                  onChange={e => setEditDraft(d => ({ ...d, reason: e.target.value }))}
+                                  placeholder="e.g. correcting from a typo, reconciling with timesheet, etc."
+                                  className="w-full bg-surface border border-outline rounded-lg px-2.5 py-1.5 text-xs text-on-surface focus:outline-none focus:ring-2 focus:ring-accent/30"
+                                />
+                                <p className="text-[10px] text-on-surface-subtle mt-1">
+                                  Visible in the audit trail to everyone (including {employeeName}).
+                                </p>
+                              </div>
+                            )}
+
                             {log.reviewed_by_name && !isEditing && (
                               <p className="text-[10px] text-on-surface-subtle mt-1.5">
                                 {log.status === 'approved' ? 'Approved' : log.status === 'rejected' ? 'Rejected' : 'Reviewed'} by {log.reviewed_by_name}
                               </p>
+                            )}
+
+                            {/* Audit history (expandable) */}
+                            {historyOpenFor === log.id && (
+                              <div className="mt-3 rounded-lg border border-outline bg-surface-2/50 overflow-hidden">
+                                <div className="px-3 py-2 border-b border-outline bg-surface-2 flex items-center justify-between">
+                                  <p className="text-[10px] uppercase tracking-[0.16em] font-bold text-on-surface-muted flex items-center gap-1.5">
+                                    <History size={11} /> Change history
+                                  </p>
+                                  <button onClick={() => toggleHistory(log.id)} className="text-on-surface-subtle hover:text-on-surface">
+                                    <ChevronDown size={12} className="rotate-180 transition-transform" />
+                                  </button>
+                                </div>
+                                {historyLoading[log.id] ? (
+                                  <div className="px-3 py-4 text-center text-xs text-on-surface-subtle">Loading history…</div>
+                                ) : (historyData[log.id] ?? []).length === 0 ? (
+                                  <div className="px-3 py-4 text-center text-xs text-on-surface-subtle">No history yet.</div>
+                                ) : (
+                                  <ol className="divide-y divide-outline">
+                                    {(historyData[log.id] ?? []).map(entry => {
+                                      const cfg = ACTION_LABEL[entry.action] ?? ACTION_LABEL.edited;
+                                      const Icon = cfg.Icon;
+                                      const hoursChanged = entry.before_hours !== null && entry.before_hours !== entry.after_hours;
+                                      const statusChanged = entry.before_status && entry.before_status !== entry.after_status;
+                                      const descChanged = (entry.before_description ?? '') !== (entry.after_description ?? '');
+                                      return (
+                                        <li key={entry.id} className="px-3 py-2.5 flex gap-2.5">
+                                          <span className={`inline-flex items-center justify-center w-7 h-7 rounded-full flex-shrink-0 ${cfg.cls}`}>
+                                            <Icon size={12} />
+                                          </span>
+                                          <div className="flex-1 min-w-0">
+                                            <div className="flex items-baseline justify-between gap-2">
+                                              <p className="text-xs font-semibold text-on-surface">
+                                                {cfg.label}
+                                                {entry.actor_name && <span className="text-on-surface-muted font-normal"> · by {entry.actor_name}</span>}
+                                                {entry.actor_role && entry.actor_role !== 'employee' && (
+                                                  <span className="ml-1 inline-flex items-center px-1.5 py-0 rounded-full text-[9px] font-bold uppercase tracking-wider bg-surface-3 text-on-surface-muted">
+                                                    {entry.actor_role.replace('_', ' ')}
+                                                  </span>
+                                                )}
+                                              </p>
+                                              <p className="text-[10px] text-on-surface-subtle font-mono whitespace-nowrap">{fmtTs(entry.created_at)}</p>
+                                            </div>
+                                            {hoursChanged && (
+                                              <p className="text-[11px] text-on-surface-muted mt-0.5">
+                                                Hours: <span className="num-mono text-on-surface-subtle line-through">{Number(entry.before_hours)}h</span> → <span className="num-mono font-semibold text-on-surface">{Number(entry.after_hours)}h</span>
+                                              </p>
+                                            )}
+                                            {!hoursChanged && entry.action === 'created' && entry.after_hours !== null && (
+                                              <p className="text-[11px] text-on-surface-muted mt-0.5">Hours: <span className="num-mono font-semibold text-on-surface">{Number(entry.after_hours)}h</span></p>
+                                            )}
+                                            {statusChanged && (
+                                              <p className="text-[11px] text-on-surface-muted mt-0.5">
+                                                Status: <span className="text-on-surface-subtle">{entry.before_status}</span> → <span className="font-semibold text-on-surface">{entry.after_status}</span>
+                                              </p>
+                                            )}
+                                            {descChanged && (
+                                              <p className="text-[11px] text-on-surface-muted mt-0.5 line-clamp-2">
+                                                Description changed
+                                              </p>
+                                            )}
+                                            {entry.reason && (
+                                              <p className="text-[11px] mt-1 italic text-warning bg-warning-container px-2 py-1 rounded">
+                                                "{entry.reason}"
+                                              </p>
+                                            )}
+                                          </div>
+                                        </li>
+                                      );
+                                    })}
+                                  </ol>
+                                )}
+                              </div>
                             )}
                             {isEditing && (
                               <p className="text-[10px] text-warning mt-1.5 flex items-center gap-1">

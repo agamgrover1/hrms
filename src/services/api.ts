@@ -295,8 +295,25 @@ export const api = {
     month: number; year: number; week_num: number;
     hours_logged: number; work_description?: string;
   }) => request<any>('/hour-logs', { method: 'POST', body: JSON.stringify(data) }),
-  editHourLog: (id: string, data: { hours_logged: number; work_description?: string; actor_role?: string; keep_status?: boolean }) =>
+  editHourLog: (id: string, data: { hours_logged: number; work_description?: string; actor_id?: string; actor_name?: string; actor_role?: string; keep_status?: boolean; reason?: string }) =>
     request<any>(`/hour-logs/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
+  getHourLogAudit: (id: string) =>
+    request<Array<{
+      id: number;
+      hour_log_id: string;
+      action: 'created' | 'edited' | 'approved' | 'rejected' | 'admin_edit' | 'resubmitted';
+      actor_id: string | null;
+      actor_name: string | null;
+      actor_role: string | null;
+      before_hours: number | null;
+      after_hours: number | null;
+      before_status: string | null;
+      after_status: string | null;
+      before_description: string | null;
+      after_description: string | null;
+      reason: string | null;
+      created_at: string;
+    }>>(`/hour-logs/${id}/audit`),
   approveHourLog: (id: string, data: { reviewer_id?: string; reviewer_name?: string }) =>
     request<any>(`/hour-logs/${id}/approve`, { method: 'PATCH', body: JSON.stringify(data) }),
   rejectHourLog: (id: string, data: { reviewer_id?: string; reviewer_name?: string; rejection_reason: string }) =>
