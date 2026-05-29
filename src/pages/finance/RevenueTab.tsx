@@ -1,7 +1,10 @@
 import { useEffect, useState } from 'react';
-import { Copy } from 'lucide-react';
+import { Copy, Plus, X } from 'lucide-react';
 import { financeApi } from '../../services/financeApi';
+import { useAuth } from '../../context/AuthContext';
 import { MONTHS, money } from './format';
+
+const BLANK_NEW = { name: '', client_name: '', billing_type: 'fixed', fixed_amount: '', hourly_rate: '', billable_hours: '' };
 
 type Row = {
   id: string; name: string; client_name: string | null;
@@ -9,10 +12,14 @@ type Row = {
 };
 
 export default function RevenueTab({ month, year, onChanged }: { month: number; year: number; onChanged: () => void }) {
+  const { user } = useAuth();
   const [rows, setRows] = useState<Row[]>([]);
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState('');
   const [saving, setSaving] = useState<string | null>(null);
+  const [showAdd, setShowAdd] = useState(false);
+  const [creating, setCreating] = useState(false);
+  const [np, setNp] = useState({ ...BLANK_NEW });
 
   const load = () => {
     setLoading(true); setErr('');
@@ -37,6 +44,21 @@ export default function RevenueTab({ month, year, onChanged }: { month: number; 
     } catch (e: any) { setErr(e.message); } finally { setSaving(null); }
   };
 
+  const createProject = async () => {
+    if (!np.name.trim()) { setErr('Project name is required'); return; }
+    setCreating(true); setErr('');
+    try {
+      await financeApi.createProject({
+        name: np.name.trim(), client_name: np.client_name.trim(), month, year,
+        billing_type: np.billing_type, fixed_amount: Number(np.fixed_amount) || 0,
+        hourly_rate: Number(np.hourly_rate) || 0, billable_hours: Number(np.billable_hours) || 0,
+        created_by: user?.name,
+      });
+      setNp({ ...BLANK_NEW }); setShowAdd(false);
+      load(); onChanged();
+    } catch (e: any) { setErr(e.message); } finally { setCreating(false); }
+  };
+
   const copyPrev = async () => {
     const idx = year * 12 + (month - 1) - 1;
     const pm = (idx % 12) + 1, py = Math.floor(idx / 12);
@@ -49,12 +71,69 @@ export default function RevenueTab({ month, year, onChanged }: { month: number; 
   return (
     <div className="space-y-4">
       {err && <div className="rounded-xl-2 border border-danger/30 bg-danger-container/40 p-3 text-sm text-danger">{err}</div>}
-      <div className="flex items-center justify-between">
+      <div className="flex flex-wrap items-center justify-between gap-2">
         <p className="text-sm text-on-surface-muted">What each client pays for <b className="text-on-surface">{MONTHS[month - 1]} {year}</b>. Visible to admins only.</p>
-        <button onClick={copyPrev} className="flex items-center gap-1.5 rounded-xl-2 border border-outline bg-surface px-3 py-2 text-xs font-medium text-on-surface hover:bg-surface-2">
-          <Copy size={14} /> Copy last month
-        </button>
+        <div className="flex items-center gap-2">
+          <button onClick={() => setShowAdd((v) => !v)} className="flex items-center gap-1.5 rounded-xl-2 bg-brand px-3 py-2 text-xs font-medium text-on-brand hover:opacity-90">
+            {showAdd ? <X size={14} /> : <Plus size={14} />} {showAdd ? 'Cancel' : 'New project'}
+          </button>
+          <button onClick={copyPrev} className="flex items-center gap-1.5 rounded-xl-2 border border-outline bg-surface px-3 py-2 text-xs font-medium text-on-surface hover:bg-surface-2">
+            <Copy size={14} /> Copy last month
+          </button>
+        </div>
       </div>
+
+      {showAdd && (
+        <div className="rounded-xl-2 border border-brand/30 bg-brand-container/20 p-4">
+          <h4 className="text-sm font-semibold text-on-surface mb-3">New project <span className="font-normal text-on-surface-muted">· also appears in Project Mgmt → Projects</span></h4>
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
+            <div>
+              <label className="block text-xs text-on-surface-muted mb-1">Project name *</label>
+              <input value={np.name} onChange={(e) => setNp({ ...np, name: e.target.value })} placeholder="e.g. VA Support Retainer"
+                className="w-full rounded-lg border border-outline bg-surface px-2.5 py-2 text-sm text-on-surface outline-none focus:border-brand" />
+            </div>
+            <div>
+              <label className="block text-xs text-on-surface-muted mb-1">Client</label>
+              <input value={np.client_name} onChange={(e) => setNp({ ...np, client_name: e.target.value })} placeholder="Client name"
+                className="w-full rounded-lg border border-outline bg-surface px-2.5 py-2 text-sm text-on-surface outline-none focus:border-brand" />
+            </div>
+            <div>
+              <label className="block text-xs text-on-surface-muted mb-1">Billing</label>
+              <select value={np.billing_type} onChange={(e) => setNp({ ...np, billing_type: e.target.value })}
+                className="w-full rounded-lg border border-outline bg-surface px-2.5 py-2 text-sm text-on-surface outline-none focus:border-brand">
+                <option value="fixed">Fixed monthly</option>
+                <option value="hourly">Hourly</option>
+              </select>
+            </div>
+            {np.billing_type === 'fixed' ? (
+              <div>
+                <label className="block text-xs text-on-surface-muted mb-1">Fixed amount /mo</label>
+                <input type="number" value={np.fixed_amount} onChange={(e) => setNp({ ...np, fixed_amount: e.target.value })} placeholder="0"
+                  className="w-full rounded-lg border border-outline bg-surface px-2.5 py-2 text-right text-sm text-on-surface outline-none focus:border-brand" />
+              </div>
+            ) : (
+              <>
+                <div>
+                  <label className="block text-xs text-on-surface-muted mb-1">Hourly rate</label>
+                  <input type="number" value={np.hourly_rate} onChange={(e) => setNp({ ...np, hourly_rate: e.target.value })} placeholder="0"
+                    className="w-full rounded-lg border border-outline bg-surface px-2.5 py-2 text-right text-sm text-on-surface outline-none focus:border-brand" />
+                </div>
+                <div>
+                  <label className="block text-xs text-on-surface-muted mb-1">Billable hours /mo</label>
+                  <input type="number" value={np.billable_hours} onChange={(e) => setNp({ ...np, billable_hours: e.target.value })} placeholder="0"
+                    className="w-full rounded-lg border border-outline bg-surface px-2.5 py-2 text-right text-sm text-on-surface outline-none focus:border-brand" />
+                </div>
+              </>
+            )}
+          </div>
+          <div className="mt-3 flex items-center gap-3">
+            <button onClick={createProject} disabled={creating} className="rounded-xl-2 bg-brand px-4 py-2 text-sm font-medium text-on-brand hover:opacity-90 disabled:opacity-50">
+              {creating ? 'Creating…' : 'Create project'}
+            </button>
+            <span className="text-xs text-on-surface-subtle">Assign people & hours afterwards under Project Mgmt → Hours grid.</span>
+          </div>
+        </div>
+      )}
 
       <div className="rounded-xl-2 border border-outline bg-surface overflow-x-auto">
         <table className="w-full text-sm min-w-[760px]">

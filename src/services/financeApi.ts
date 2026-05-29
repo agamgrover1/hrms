@@ -89,6 +89,8 @@ export const financeApi = {
   }>>(`/revenue?month=${month}&year=${year}`),
   saveRevenue: (data: { project_id: string; month: number; year: number; billing_type: string; fixed_amount: number; hourly_rate: number; billable_hours: number }) =>
     request<any>('/revenue', { method: 'PUT', body: JSON.stringify(data) }),
+  createProject: (data: { name: string; client_name?: string; month: number; year: number; billing_type: string; fixed_amount: number; hourly_rate: number; billable_hours: number; created_by?: string }) =>
+    request<any>('/projects', { method: 'POST', body: JSON.stringify(data) }),
   copyMonth: (from_month: number, from_year: number, to_month: number, to_year: number) =>
     request<any>('/copy-month', { method: 'POST', body: JSON.stringify({ from_month, from_year, to_month, to_year }) }),
 

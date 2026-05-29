@@ -3658,6 +3658,32 @@ app.put('/api/finance/revenue', async (req, res) => {
     res.json({ ok: true });
   } catch (err: any) { res.status(500).json({ error: err.message || 'Server error' }); }
 });
+// Create a project FROM the finance module — writes a real projects row (so it
+// shows up in Project Mgmt too) and sets its billing for the given month.
+app.post('/api/finance/projects', async (req, res) => {
+  await runStartupMigrations();
+  if (!(await requireAdmin(req, res))) return;
+  try {
+    const { name, client_name, project_type, month, year, billing_type, fixed_amount, hourly_rate, billable_hours, created_by } = req.body;
+    if (!name?.trim()) return res.status(400).json({ error: 'Project name is required' });
+    const id = newId('proj');
+    const rows = await sql`
+      INSERT INTO projects (id, name, client_name, project_type, status, created_by)
+      VALUES (${id}, ${name.trim()}, ${client_name?.trim() || null}, ${project_type || null}, 'active', ${created_by || null})
+      RETURNING *`;
+    if (month && year) {
+      await sql`
+        INSERT INTO fin_project_revenue (project_id, month, year, billing_type, fixed_amount, hourly_rate, billable_hours)
+        VALUES (${id}, ${Number(month)}, ${Number(year)}, ${billing_type || 'fixed'},
+                ${Number(fixed_amount) || 0}, ${Number(hourly_rate) || 0}, ${Number(billable_hours) || 0})
+        ON CONFLICT (project_id, month, year) DO UPDATE SET
+          billing_type = EXCLUDED.billing_type, fixed_amount = EXCLUDED.fixed_amount,
+          hourly_rate = EXCLUDED.hourly_rate, billable_hours = EXCLUDED.billable_hours`;
+    }
+    res.status(201).json((rows as any[])[0]);
+  } catch (err: any) { res.status(500).json({ error: err.message || 'Server error' }); }
+});
+
 // Copy revenue + overhead from a previous month into the target month (if empty)
 app.post('/api/finance/copy-month', async (req, res) => {
   await runStartupMigrations();
