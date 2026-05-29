@@ -87,6 +87,16 @@ router.put('/:id', async (req, res) => {
         date_of_birth = ${date_of_birth || null}
       WHERE id = ${req.params.id} RETURNING *
     `;
+    // Mirror name / department / designation into the linked app_users row.
+    const updated = (rows as any[])[0];
+    if (updated?.employee_id) {
+      await sql`
+        UPDATE app_users SET
+          name = ${name},
+          department = ${department},
+          designation = ${designation}
+        WHERE employee_id_ref = ${updated.employee_id}`.catch(() => {});
+    }
     res.json(rows[0]);
   } catch (err) {
     console.error('[PUT employee]', err);

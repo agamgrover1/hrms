@@ -590,7 +590,19 @@ app.put('/api/employees/:id', async (req, res) => {
         next_appraisal_month=${next_appraisal_month ?? null}, next_appraisal_year=${next_appraisal_year ?? null},
         date_of_birth=${date_of_birth || null}
       WHERE id=${req.params.id} RETURNING *`;
-    res.json(rows[0]);
+    // Keep the linked app_users row in sync — name / department / designation are
+    // denormalized there for the employee's own portal. Without this, HR can edit
+    // the employee record but the user's MyPortal stays showing the old values.
+    const updated = (rows as any[])[0];
+    if (updated?.employee_id) {
+      await sql`
+        UPDATE app_users SET
+          name=${name},
+          department=${department},
+          designation=${designation}
+        WHERE employee_id_ref=${updated.employee_id}`.catch(()=>{});
+    }
+    res.json(updated);
   } catch (err) { res.status(500).json({ error: 'Server error' }); }
 });
 
