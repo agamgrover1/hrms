@@ -2909,13 +2909,15 @@ async function recomputeWeeklyFromDays(assignment_id: string, week_num: number):
     FROM hour_log_days
     WHERE assignment_id=${assignment_id} AND week_num=${week_num}`;
   const r = (sumRows as any[])[0];
-  if (!r || Number(r.day_count) === 0) {
-    // No days remaining for this week → remove the parent log if any
-    await sql`DELETE FROM hour_logs WHERE assignment_id=${assignment_id} AND week_num=${week_num}`.catch(()=>{});
-    return null;
-  }
   const existing = await sql`SELECT id, status FROM hour_logs WHERE assignment_id=${assignment_id} AND week_num=${week_num}`;
   const e = (existing as any[])[0];
+  if (!r || Number(r.day_count) === 0) {
+    // No days remain for this week. DON'T auto-delete the parent — it may be a
+    // legacy weekly entry the employee never converted to days. The week-level
+    // DELETE endpoint is the explicit way to drop it. We just return whatever
+    // parent id existed (or null if none).
+    return e?.id ?? null;
+  }
   if (e) {
     await sql`
       UPDATE hour_logs SET
@@ -2925,6 +2927,9 @@ async function recomputeWeeklyFromDays(assignment_id: string, week_num: number):
         reviewed_by_id=NULL, reviewed_by_name=NULL, reviewed_at=NULL,
         submitted_at=NOW(), updated_at=NOW()
       WHERE id=${e.id}`;
+    // Backfill day pointers so /api/hour-log-days returns the parent id consistently
+    await sql`UPDATE hour_log_days SET hour_log_id=${e.id}
+              WHERE assignment_id=${assignment_id} AND week_num=${week_num} AND hour_log_id IS NULL`;
     return e.id;
   }
   const id = newId('hl');
