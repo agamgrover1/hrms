@@ -2475,12 +2475,24 @@ app.post('/api/users', async (req, res) => {
 app.put('/api/users/:id', async (req, res) => {
   try {
     const { name, email, password, role, department, designation, avatar, active } = req.body;
-    const pwToStore = password && !password.startsWith('$2') ? await bcrypt.hash(password, 10) : password;
-    const rows = await sql`
-      UPDATE app_users SET name=${name}, email=${email}, password=${pwToStore}, role=${role},
-        department=${department}, designation=${designation}, avatar=${avatar}, active=${active}
-      WHERE id=${req.params.id}
-      RETURNING id, employee_id_ref, name, email, role, department, designation, avatar, active, created_at`;
+    // Only touch the password column when an explicit password is provided.
+    // Callers that just want to update profile fields (department, designation,
+    // etc.) shouldn't have to re-supply the user's password — and they can't
+    // because GET /api/users never returns it.
+    const rows = password
+      ? await sql`
+        UPDATE app_users SET name=${name}, email=${email},
+          password=${password.startsWith('$2') ? password : await bcrypt.hash(password, 10)},
+          role=${role}, department=${department}, designation=${designation},
+          avatar=${avatar}, active=${active}
+        WHERE id=${req.params.id}
+        RETURNING id, employee_id_ref, name, email, role, department, designation, avatar, active, created_at`
+      : await sql`
+        UPDATE app_users SET name=${name}, email=${email}, role=${role},
+          department=${department}, designation=${designation},
+          avatar=${avatar}, active=${active}
+        WHERE id=${req.params.id}
+        RETURNING id, employee_id_ref, name, email, role, department, designation, avatar, active, created_at`;
     if (!rows.length) return res.status(404).json({ error: 'User not found' });
     res.json(rows[0]);
   } catch (err) { res.status(500).json({ error: 'Server error' }); }
