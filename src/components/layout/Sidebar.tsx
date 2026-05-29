@@ -2,7 +2,7 @@ import { NavLink, useLocation } from 'react-router-dom';
 import {
   LayoutDashboard, Users, Clock3, CalendarDays, Wallet, Sparkles,
   ChevronLeft, ChevronRight, UserCog, User, SlidersHorizontal, TrendingUp, Wrench,
-  Briefcase, ClipboardCheck, Layers, type LucideIcon,
+  Briefcase, ClipboardCheck, Layers, LineChart, type LucideIcon,
 } from 'lucide-react';
 import { useState, useEffect, useRef } from 'react';
 import { useAuth } from '../../context/AuthContext';
@@ -40,6 +40,14 @@ const projectGroup: NavGroup = {
     { to: '/projects', icon: Briefcase, label: 'Projects' },
     { to: '/hours', icon: Layers, label: 'Hours grid' },
     { to: '/hours/approvals', icon: ClipboardCheck, label: 'Approvals' },
+  ],
+};
+
+const financeGroup: NavGroup = {
+  id: 'finance',
+  label: 'Finance (Admin)',
+  items: [
+    { to: '/finance', icon: LineChart, label: 'Profitability' },
   ],
 };
 
@@ -91,7 +99,9 @@ export default function Sidebar() {
   // Build the set of groups visible to this role
   const groups: NavGroup[] = [];
   if (isAdminLike) {
-    groups.push(workspaceGroup, opsGroup, projectGroup, settingsGroup);
+    groups.push(workspaceGroup, opsGroup, projectGroup);
+    if (role === 'admin') groups.push(financeGroup); // admin-only finance module
+    groups.push(settingsGroup);
   } else if (isCoord) {
     // Coord sees Project Mgmt + their own personal nav (rendered below)
     groups.push(projectGroup);

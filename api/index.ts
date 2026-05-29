@@ -117,6 +117,27 @@ async function notifyManagerOfEmployee(employeeDbId: string, type: string, title
   } catch { /* non-fatal */ }
 }
 
+// ── Admin guard for the Finance module ──────────────────────────────────
+// The app's session lives client-side, so the finance API client sends the
+// signed-in user's id in the `x-user-id` header. We verify here that the
+// caller is an active admin before returning any financial data.
+async function requireAdmin(req: any, res: any): Promise<boolean> {
+  try {
+    const userId = req.header('x-user-id') || req.query.__uid;
+    if (!userId) { res.status(401).json({ error: 'Not authenticated' }); return false; }
+    const rows = await sql`SELECT role, active FROM app_users WHERE id = ${userId} LIMIT 1`;
+    const u = (rows as any[])[0];
+    if (!u || u.active !== true || u.role !== 'admin') {
+      res.status(403).json({ error: 'Admins only' });
+      return false;
+    }
+    return true;
+  } catch (err: any) {
+    res.status(500).json({ error: err?.message || 'Auth check failed' });
+    return false;
+  }
+}
+
 // ── Startup migrations (idempotent — safe to run on every cold start) ────
 let _migrated = false;
 async function runStartupMigrations() {
@@ -412,6 +433,48 @@ async function runStartupMigrations() {
       updated_at TIMESTAMPTZ DEFAULT NOW(),
       UNIQUE(assignment_id, week_num)
     )`;
+
+  // ── Finance / CFO module (admin-only) ───────────────────────────────────
+  // Reuses employees.salary, projects, and project_assignments.monthly_hours.
+  // These tables only add the finance-specific layer: revenue, direct/indirect
+  // classification, overhead costs and settings.
+  await sql`
+    CREATE TABLE IF NOT EXISTS fin_settings (
+      id INTEGER PRIMARY KEY,
+      working_hours_per_month NUMERIC NOT NULL DEFAULT 176,
+      overhead_method TEXT NOT NULL DEFAULT 'direct_hours',
+      currency TEXT NOT NULL DEFAULT '₹',
+      include_bench_in_overhead BOOLEAN NOT NULL DEFAULT FALSE
+    )`;
+  await sql`INSERT INTO fin_settings (id) VALUES (1) ON CONFLICT (id) DO NOTHING`;
+  await sql`
+    CREATE TABLE IF NOT EXISTS fin_employee_meta (
+      employee_id TEXT PRIMARY KEY,
+      cost_type TEXT NOT NULL DEFAULT 'direct',
+      capacity_hours NUMERIC,
+      active BOOLEAN NOT NULL DEFAULT TRUE
+    )`;
+  await sql`
+    CREATE TABLE IF NOT EXISTS fin_project_revenue (
+      project_id TEXT NOT NULL,
+      month INTEGER NOT NULL,
+      year INTEGER NOT NULL,
+      billing_type TEXT NOT NULL DEFAULT 'fixed',
+      fixed_amount NUMERIC NOT NULL DEFAULT 0,
+      hourly_rate NUMERIC NOT NULL DEFAULT 0,
+      billable_hours NUMERIC NOT NULL DEFAULT 0,
+      PRIMARY KEY (project_id, month, year)
+    )`;
+  await sql`
+    CREATE TABLE IF NOT EXISTS fin_other_costs (
+      id SERIAL PRIMARY KEY,
+      month INTEGER NOT NULL,
+      year INTEGER NOT NULL,
+      name TEXT NOT NULL,
+      amount NUMERIC NOT NULL DEFAULT 0,
+      category TEXT NOT NULL DEFAULT 'general'
+    )`;
+  await sql`CREATE INDEX IF NOT EXISTS idx_fin_other_costs_period ON fin_other_costs(year, month)`.catch(()=>{});
 
   await sql`
     CREATE TABLE IF NOT EXISTS attendance_sync_log (
@@ -3330,6 +3393,331 @@ app.get('/api/hours-summary', async (req, res) => {
       over_plan_log_count: Number((logTotals as any[])[0]?.over_plan_log_count || 0),
       pending_review_count: Number((logTotals as any[])[0]?.pending_count || 0),
     });
+  } catch (err: any) { res.status(500).json({ error: err.message || 'Server error' }); }
+});
+
+// ════════════════════════════════════════════════════════════════════════
+// ── Finance / CFO module (admin-only) ───────────────────────────────────
+// ════════════════════════════════════════════════════════════════════════
+const FIN_DEFAULT_SETTINGS = {
+  working_hours_per_month: 176,
+  overhead_method: 'direct_hours',
+  currency: '₹',
+  include_bench_in_overhead: false,
+};
+
+async function finGetSettings() {
+  const row = (await sql`SELECT * FROM fin_settings WHERE id=1`)[0] as any;
+  if (!row) return { ...FIN_DEFAULT_SETTINGS };
+  return {
+    working_hours_per_month: Number(row.working_hours_per_month) || 176,
+    overhead_method: row.overhead_method || 'direct_hours',
+    currency: row.currency || '₹',
+    include_bench_in_overhead: !!row.include_bench_in_overhead,
+  };
+}
+
+// The CFO engine for a single month — mirrors the standalone finance app.
+async function finComputeMonth(month: number, year: number) {
+  const settings = await finGetSettings();
+  const defCap = settings.working_hours_per_month;
+
+  const employees = (await sql`
+    SELECT e.id, e.name, e.designation, e.department, COALESCE(e.salary,0) AS salary,
+           m.cost_type, m.capacity_hours
+    FROM fin_employee_meta m JOIN employees e ON e.id = m.employee_id
+    WHERE m.active = TRUE`) as any[];
+  const projects = (await sql`SELECT id, name, client_name FROM projects WHERE status='active'`) as any[];
+  const revenues = (await sql`SELECT * FROM fin_project_revenue WHERE month=${month} AND year=${year}`) as any[];
+  const assignments = (await sql`
+    SELECT project_id, employee_id, COALESCE(monthly_hours,0) AS hours
+    FROM project_assignments WHERE month=${month} AND year=${year}`) as any[];
+  const otherCosts = (await sql`
+    SELECT id, name, amount, category FROM fin_other_costs
+    WHERE month=${month} AND year=${year} ORDER BY amount DESC`) as any[];
+
+  const empById = new Map(employees.map((e) => [e.id, e]));
+  const projIds = new Set(projects.map((p) => p.id));
+  const revByProj = new Map(revenues.map((r) => [r.project_id, r]));
+
+  const capOf = (e: any) => { const c = Number(e.capacity_hours); return c > 0 ? c : defCap; };
+  const rateOf = (e: any) => { const c = capOf(e); return c > 0 ? Number(e.salary) / c : 0; };
+  const revenueOf = (p: any) => {
+    const r = revByProj.get(p.id);
+    if (!r) return 0;
+    return r.billing_type === 'hourly' ? Number(r.hourly_rate) * Number(r.billable_hours) : Number(r.fixed_amount);
+  };
+
+  const activeAllocs = assignments.filter(
+    (a) => empById.has(a.employee_id) && projIds.has(a.project_id) && empById.get(a.employee_id).cost_type === 'direct'
+  );
+  const allocByEmp = new Map<string, number>();
+  for (const a of activeAllocs) allocByEmp.set(a.employee_id, (allocByEmp.get(a.employee_id) || 0) + Number(a.hours));
+
+  const employeeRows = employees.map((e) => {
+    const rate = rateOf(e), capacity = capOf(e), isDirect = e.cost_type === 'direct';
+    const allocated = isDirect ? (allocByEmp.get(e.id) || 0) : 0;
+    const bench = isDirect ? Math.max(capacity - allocated, 0) : 0;
+    return {
+      id: e.id, name: e.name, designation: e.designation, department: e.department, cost_type: e.cost_type,
+      salary: Number(e.salary), rate, capacity, allocatedHours: allocated, benchHours: bench,
+      allocatedCost: isDirect ? rate * allocated : 0, benchCost: isDirect ? rate * bench : 0,
+      utilization: isDirect && capacity > 0 ? allocated / capacity : null,
+    };
+  });
+
+  const indirectSalaries = employees.filter((e) => e.cost_type === 'indirect').reduce((s, e) => s + Number(e.salary), 0);
+  const otherCostTotal = otherCosts.reduce((s, c) => s + Number(c.amount), 0);
+  const benchCost = employeeRows.reduce((s, e) => s + e.benchCost, 0);
+  const overheadPool = indirectSalaries + otherCostTotal + (settings.include_bench_in_overhead ? benchCost : 0);
+
+  const totalDirectHours = activeAllocs.reduce((s, a) => s + Number(a.hours), 0);
+  const totalRevenue = projects.reduce((s, p) => s + revenueOf(p), 0);
+  const shareOf = (dh: number, rev: number) => {
+    switch (settings.overhead_method) {
+      case 'direct_hours': return totalDirectHours > 0 ? dh / totalDirectHours : 0;
+      case 'revenue': return totalRevenue > 0 ? rev / totalRevenue : 0;
+      case 'headcount': return projects.length > 0 ? 1 / projects.length : 0;
+      default: return 0;
+    }
+  };
+
+  const projectRows = projects.map((p) => {
+    const allocs = activeAllocs.filter((a) => a.project_id === p.id);
+    const team = allocs.map((a) => {
+      const e = empById.get(a.employee_id); const rate = rateOf(e);
+      return { id: e.id, name: e.name, designation: e.designation, hours: Number(a.hours), rate, cost: rate * Number(a.hours) };
+    }).sort((x, y) => y.cost - x.cost);
+    const directCost = team.reduce((s, t) => s + t.cost, 0);
+    const directHours = team.reduce((s, t) => s + t.hours, 0);
+    const revenue = revenueOf(p);
+    const grossProfit = revenue - directCost;
+    const overhead = overheadPool * shareOf(directHours, revenue);
+    const netProfit = grossProfit - overhead;
+    const r = revByProj.get(p.id);
+    return {
+      id: p.id, name: p.name, client_name: p.client_name,
+      billing_type: r?.billing_type || 'fixed', hourly_rate: Number(r?.hourly_rate || 0),
+      billable_hours: Number(r?.billable_hours || 0), fixed_amount: Number(r?.fixed_amount || 0),
+      revenue, directCost, directHours, grossProfit, grossMargin: revenue > 0 ? grossProfit / revenue : 0,
+      overhead, netProfit, netMargin: revenue > 0 ? netProfit / revenue : 0,
+      effectiveCostPerHour: directHours > 0 ? directCost / directHours : 0,
+      revenuePerHour: directHours > 0 ? revenue / directHours : 0, team,
+    };
+  }).sort((a, b) => b.netProfit - a.netProfit);
+
+  const totalDirectCost = projectRows.reduce((s, p) => s + p.directCost, 0);
+  const grossProfit = totalRevenue - totalDirectCost;
+  const netProfit = totalRevenue - totalDirectCost - benchCost - indirectSalaries - otherCostTotal;
+  const totalSalary = employees.reduce((s, e) => s + Number(e.salary), 0);
+  const totalCost = totalDirectCost + benchCost + indirectSalaries + otherCostTotal;
+  const directEmps = employeeRows.filter((e) => e.cost_type === 'direct');
+  const directCapacityHours = directEmps.reduce((s, e) => s + e.capacity, 0);
+  const allocatedDirectHours = directEmps.reduce((s, e) => s + e.allocatedHours, 0);
+
+  const deptMap = new Map<string, { headcount: number; salary: number }>();
+  for (const e of employees) {
+    const k = e.department || '—'; const v = deptMap.get(k) || { headcount: 0, salary: 0 };
+    v.headcount++; v.salary += Number(e.salary); deptMap.set(k, v);
+  }
+  const byDept = [...deptMap.entries()].map(([department, v]) => ({ department, ...v })).sort((a, b) => b.salary - a.salary);
+
+  return {
+    month, year, settings,
+    employeeRows, projectRows,
+    otherCosts: otherCosts.map((c) => ({ id: c.id, name: c.name, amount: Number(c.amount), category: c.category })),
+    byDept,
+    totals: {
+      revenue: totalRevenue, directCost: totalDirectCost, benchCost, indirectSalaries, otherCosts: otherCostTotal,
+      overheadPool, grossProfit, grossMargin: totalRevenue > 0 ? grossProfit / totalRevenue : 0,
+      netProfit, netMargin: totalRevenue > 0 ? netProfit / totalRevenue : 0, totalSalary, totalCost,
+      directCapacityHours, allocatedDirectHours, utilization: directCapacityHours > 0 ? allocatedDirectHours / directCapacityHours : null,
+      headcount: employees.length, directHeadcount: directEmps.length, indirectHeadcount: employees.length - directEmps.length,
+      activeProjects: projects.length,
+    },
+  };
+}
+
+// GET /api/finance/dashboard?month=&year=
+app.get('/api/finance/dashboard', async (req, res) => {
+  await runStartupMigrations();
+  if (!(await requireAdmin(req, res))) return;
+  try {
+    const month = Number(req.query.month), year = Number(req.query.year);
+    if (!month || !year) return res.status(400).json({ error: 'month and year are required' });
+    res.json(await finComputeMonth(month, year));
+  } catch (err: any) { res.status(500).json({ error: err.message || 'Server error' }); }
+});
+
+// GET /api/finance/trends?month=&year=  → 12 months up to and including the given month
+app.get('/api/finance/trends', async (req, res) => {
+  await runStartupMigrations();
+  if (!(await requireAdmin(req, res))) return;
+  try {
+    const month = Number(req.query.month), year = Number(req.query.year);
+    if (!month || !year) return res.status(400).json({ error: 'month and year are required' });
+    const out: any[] = [];
+    for (let i = 11; i >= 0; i--) {
+      const idx = (year * 12 + (month - 1)) - i;
+      const y = Math.floor(idx / 12), m = (idx % 12) + 1;
+      const model = await finComputeMonth(m, y);
+      out.push({ month: m, year: y, ...model.totals });
+    }
+    res.json(out);
+  } catch (err: any) { res.status(500).json({ error: err.message || 'Server error' }); }
+});
+
+// Settings
+app.get('/api/finance/settings', async (req, res) => {
+  await runStartupMigrations();
+  if (!(await requireAdmin(req, res))) return;
+  try { res.json(await finGetSettings()); }
+  catch (err: any) { res.status(500).json({ error: err.message || 'Server error' }); }
+});
+app.put('/api/finance/settings', async (req, res) => {
+  await runStartupMigrations();
+  if (!(await requireAdmin(req, res))) return;
+  try {
+    const { working_hours_per_month, overhead_method, currency, include_bench_in_overhead } = req.body;
+    await sql`UPDATE fin_settings SET
+      working_hours_per_month = ${Number(working_hours_per_month) || 176},
+      overhead_method = ${overhead_method || 'direct_hours'},
+      currency = ${currency || '₹'},
+      include_bench_in_overhead = ${!!include_bench_in_overhead}
+      WHERE id = 1`;
+    res.json(await finGetSettings());
+  } catch (err: any) { res.status(500).json({ error: err.message || 'Server error' }); }
+});
+
+// Employee classification (direct / indirect / unclassified)
+app.get('/api/finance/employees', async (req, res) => {
+  await runStartupMigrations();
+  if (!(await requireAdmin(req, res))) return;
+  try {
+    const rows = await sql`
+      SELECT e.id, e.name, e.designation, e.department, COALESCE(e.salary,0) AS salary,
+             m.cost_type, m.capacity_hours, m.active
+      FROM employees e
+      LEFT JOIN fin_employee_meta m ON m.employee_id = e.id
+      WHERE e.status = 'active'
+      ORDER BY e.name`;
+    res.json((rows as any[]).map((r) => ({ ...r, salary: Number(r.salary) })));
+  } catch (err: any) { res.status(500).json({ error: err.message || 'Server error' }); }
+});
+app.put('/api/finance/employees/:id', async (req, res) => {
+  await runStartupMigrations();
+  if (!(await requireAdmin(req, res))) return;
+  try {
+    const id = req.params.id;
+    const { cost_type, capacity_hours, active } = req.body;
+    if (cost_type === 'none' || cost_type == null) {
+      await sql`DELETE FROM fin_employee_meta WHERE employee_id = ${id}`; // unclassify
+      return res.json({ employee_id: id, cost_type: null });
+    }
+    const cap = capacity_hours === '' || capacity_hours == null ? null : Number(capacity_hours);
+    const act = active === undefined ? true : !!active;
+    await sql`
+      INSERT INTO fin_employee_meta (employee_id, cost_type, capacity_hours, active)
+      VALUES (${id}, ${cost_type}, ${cap}, ${act})
+      ON CONFLICT (employee_id) DO UPDATE SET
+        cost_type = EXCLUDED.cost_type, capacity_hours = EXCLUDED.capacity_hours, active = EXCLUDED.active`;
+    res.json({ employee_id: id, cost_type, capacity_hours: cap, active: act });
+  } catch (err: any) { res.status(500).json({ error: err.message || 'Server error' }); }
+});
+
+// Per-project monthly revenue (admin-only)
+app.get('/api/finance/revenue', async (req, res) => {
+  await runStartupMigrations();
+  if (!(await requireAdmin(req, res))) return;
+  try {
+    const month = Number(req.query.month), year = Number(req.query.year);
+    if (!month || !year) return res.status(400).json({ error: 'month and year are required' });
+    const rows = await sql`
+      SELECT p.id, p.name, p.client_name,
+             r.billing_type, r.fixed_amount, r.hourly_rate, r.billable_hours
+      FROM projects p
+      LEFT JOIN fin_project_revenue r ON r.project_id = p.id AND r.month = ${month} AND r.year = ${year}
+      WHERE p.status = 'active'
+      ORDER BY p.name`;
+    res.json(rows);
+  } catch (err: any) { res.status(500).json({ error: err.message || 'Server error' }); }
+});
+app.put('/api/finance/revenue', async (req, res) => {
+  await runStartupMigrations();
+  if (!(await requireAdmin(req, res))) return;
+  try {
+    const { project_id, month, year, billing_type, fixed_amount, hourly_rate, billable_hours } = req.body;
+    if (!project_id || !month || !year) return res.status(400).json({ error: 'project_id, month, year are required' });
+    await sql`
+      INSERT INTO fin_project_revenue (project_id, month, year, billing_type, fixed_amount, hourly_rate, billable_hours)
+      VALUES (${project_id}, ${Number(month)}, ${Number(year)}, ${billing_type || 'fixed'},
+              ${Number(fixed_amount) || 0}, ${Number(hourly_rate) || 0}, ${Number(billable_hours) || 0})
+      ON CONFLICT (project_id, month, year) DO UPDATE SET
+        billing_type = EXCLUDED.billing_type, fixed_amount = EXCLUDED.fixed_amount,
+        hourly_rate = EXCLUDED.hourly_rate, billable_hours = EXCLUDED.billable_hours`;
+    res.json({ ok: true });
+  } catch (err: any) { res.status(500).json({ error: err.message || 'Server error' }); }
+});
+// Copy revenue + overhead from a previous month into the target month (if empty)
+app.post('/api/finance/copy-month', async (req, res) => {
+  await runStartupMigrations();
+  if (!(await requireAdmin(req, res))) return;
+  try {
+    const { from_month, from_year, to_month, to_year } = req.body;
+    if (!from_month || !from_year || !to_month || !to_year) return res.status(400).json({ error: 'from/to month & year required' });
+    await sql`
+      INSERT INTO fin_project_revenue (project_id, month, year, billing_type, fixed_amount, hourly_rate, billable_hours)
+      SELECT project_id, ${Number(to_month)}, ${Number(to_year)}, billing_type, fixed_amount, hourly_rate, billable_hours
+      FROM fin_project_revenue WHERE month=${Number(from_month)} AND year=${Number(from_year)}
+      ON CONFLICT (project_id, month, year) DO NOTHING`;
+    await sql`
+      INSERT INTO fin_other_costs (month, year, name, amount, category)
+      SELECT ${Number(to_month)}, ${Number(to_year)}, name, amount, category
+      FROM fin_other_costs WHERE month=${Number(from_month)} AND year=${Number(from_year)}`;
+    res.json({ ok: true });
+  } catch (err: any) { res.status(500).json({ error: err.message || 'Server error' }); }
+});
+
+// Overhead costs (admin-only)
+app.get('/api/finance/overhead', async (req, res) => {
+  await runStartupMigrations();
+  if (!(await requireAdmin(req, res))) return;
+  try {
+    const month = Number(req.query.month), year = Number(req.query.year);
+    if (!month || !year) return res.status(400).json({ error: 'month and year are required' });
+    res.json(await sql`SELECT * FROM fin_other_costs WHERE month=${month} AND year=${year} ORDER BY amount DESC`);
+  } catch (err: any) { res.status(500).json({ error: err.message || 'Server error' }); }
+});
+app.post('/api/finance/overhead', async (req, res) => {
+  await runStartupMigrations();
+  if (!(await requireAdmin(req, res))) return;
+  try {
+    const { month, year, name, amount, category } = req.body;
+    if (!month || !year || !name?.trim()) return res.status(400).json({ error: 'month, year, name are required' });
+    const rows = await sql`
+      INSERT INTO fin_other_costs (month, year, name, amount, category)
+      VALUES (${Number(month)}, ${Number(year)}, ${name.trim()}, ${Number(amount) || 0}, ${category || 'general'})
+      RETURNING *`;
+    res.json((rows as any[])[0]);
+  } catch (err: any) { res.status(500).json({ error: err.message || 'Server error' }); }
+});
+app.put('/api/finance/overhead/:id', async (req, res) => {
+  await runStartupMigrations();
+  if (!(await requireAdmin(req, res))) return;
+  try {
+    const { name, amount, category } = req.body;
+    const rows = await sql`
+      UPDATE fin_other_costs SET name=${name?.trim() || ''}, amount=${Number(amount) || 0}, category=${category || 'general'}
+      WHERE id=${Number(req.params.id)} RETURNING *`;
+    res.json((rows as any[])[0] || {});
+  } catch (err: any) { res.status(500).json({ error: err.message || 'Server error' }); }
+});
+app.delete('/api/finance/overhead/:id', async (req, res) => {
+  await runStartupMigrations();
+  if (!(await requireAdmin(req, res))) return;
+  try {
+    await sql`DELETE FROM fin_other_costs WHERE id=${Number(req.params.id)}`;
+    res.json({ success: true });
   } catch (err: any) { res.status(500).json({ error: err.message || 'Server error' }); }
 });
 

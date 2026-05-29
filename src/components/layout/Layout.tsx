@@ -14,6 +14,7 @@ const pageTitles: Record<string, string> = {
   '/config': 'Configuration',
   '/incentives': 'Finance',
   '/asset-repairs': 'IT Assets & Repairs',
+  '/finance': 'Project Profitability',
   '/projects': 'Projects',
   '/hours': 'Project Hours',
   '/hours/approvals': 'Hour Approvals',

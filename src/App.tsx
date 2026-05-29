@@ -19,6 +19,7 @@ import MyTeam from './pages/employee/MyTeam';
 import Projects from './pages/Projects';
 import ProjectHours from './pages/ProjectHours';
 import HoursApproval from './pages/HoursApproval';
+import Finance from './pages/finance/Finance';
 
 function landingFor(role: string): string {
   if (role === 'employee' || role === 'project_coordinator') return '/my';
@@ -52,6 +53,9 @@ function AppRoutes() {
         <Route path="config" element={<ProtectedRoute roles={['admin', 'hr_manager']}><Config /></ProtectedRoute>} />
         <Route path="incentives" element={<ProtectedRoute roles={['admin', 'hr_manager']}><Incentives /></ProtectedRoute>} />
         <Route path="asset-repairs" element={<ProtectedRoute roles={['admin', 'hr_manager']}><AssetRepairs /></ProtectedRoute>} />
+
+        {/* Finance / CFO — admin only */}
+        <Route path="finance" element={<ProtectedRoute roles={['admin']}><Finance /></ProtectedRoute>} />
 
         {/* Project Mgmt routes */}
         <Route path="projects" element={<ProtectedRoute roles={['admin', 'hr_manager', 'project_coordinator']}><Projects /></ProtectedRoute>} />
