@@ -22,6 +22,9 @@ export default function DashboardTab({ month, year, rev }: { month: number; year
   const c = model.settings.currency;
   const t = model.totals;
   const hasData = t.headcount > 0 || t.activeProjects > 0;
+  const ovhSum = model.projectRows.reduce((s, p) => s + p.overhead, 0);
+  const supSum = model.projectRows.reduce((s, p) => s + p.supervision, 0);
+  const netSum = model.projectRows.reduce((s, p) => s + p.netProfit, 0);
 
   if (!hasData) {
     return (
@@ -80,6 +83,7 @@ export default function DashboardTab({ month, year, rev }: { month: number; year
                   <th className="text-right font-semibold px-3 py-2.5">Direct cost</th>
                   <th className="text-right font-semibold px-3 py-2.5">Gross</th>
                   <th className="text-right font-semibold px-3 py-2.5">Overhead</th>
+                  <th className="text-right font-semibold px-3 py-2.5">Supervision</th>
                   <th className="text-right font-semibold px-3 py-2.5">Net profit</th>
                   <th className="text-right font-semibold px-3 py-2.5">Margin</th>
                 </tr>
@@ -95,6 +99,7 @@ export default function DashboardTab({ month, year, rev }: { month: number; year
                     <td className="px-3 py-2.5 text-right tabular-nums text-on-surface-muted">{money(p.directCost, c)}</td>
                     <td className="px-3 py-2.5 text-right tabular-nums text-on-surface">{money(p.grossProfit, c)}</td>
                     <td className="px-3 py-2.5 text-right tabular-nums text-on-surface-subtle">{money(p.overhead, c)}</td>
+                    <td className="px-3 py-2.5 text-right tabular-nums text-on-surface-subtle" title={p.supervisorNames?.length ? `Leads: ${p.supervisorNames.join(', ')}` : 'No supervisor assigned'}>{money(p.supervision, c)}</td>
                     <td className={`px-3 py-2.5 text-right font-semibold tabular-nums ${p.netProfit >= 0 ? 'text-success' : 'text-danger'}`}>{money(p.netProfit, c)}</td>
                     <td className={`px-3 py-2.5 text-right tabular-nums ${marginTone(p.netMargin)}`}>{pct(p.netMargin)}</td>
                   </tr>
@@ -106,8 +111,9 @@ export default function DashboardTab({ month, year, rev }: { month: number; year
                   <td className="px-3 py-2.5 text-right tabular-nums">{money(t.revenue, c)}</td>
                   <td className="px-3 py-2.5 text-right tabular-nums">{money(t.directCost, c)}</td>
                   <td className="px-3 py-2.5 text-right tabular-nums">{money(t.grossProfit, c)}</td>
-                  <td className="px-3 py-2.5 text-right tabular-nums">{money(t.overheadPool - (model.settings.include_bench_in_overhead ? t.benchCost : 0), c)}</td>
-                  <td className="px-3 py-2.5 text-right tabular-nums">{money(t.revenue - t.directCost - t.overheadPool, c)}</td>
+                  <td className="px-3 py-2.5 text-right tabular-nums">{money(ovhSum, c)}</td>
+                  <td className="px-3 py-2.5 text-right tabular-nums">{money(supSum, c)}</td>
+                  <td className="px-3 py-2.5 text-right tabular-nums">{money(netSum, c)}</td>
                   <td className="px-3 py-2.5"></td>
                 </tr>
               </tfoot>
@@ -166,6 +172,7 @@ function Waterfall({ t, currency }: { t: any; currency: string }) {
   const segments = [
     { label: 'Direct labour', value: t.directCost, color: 'bg-brand' },
     { label: 'Idle / bench', value: t.benchCost, color: 'bg-warning' },
+    { label: 'Management (leads)', value: t.supervisionCost, color: 'bg-indigo-500' },
     { label: 'Indirect salaries', value: t.indirectSalaries, color: 'bg-accent' },
     { label: 'Other overhead', value: t.otherCosts, color: 'bg-on-surface-subtle' },
     { label: 'Net profit', value: Math.max(t.netProfit, 0), color: 'bg-success' },

@@ -3423,11 +3423,11 @@ async function finComputeMonth(month: number, year: number) {
   const defCap = settings.working_hours_per_month;
 
   const employees = (await sql`
-    SELECT e.id, e.name, e.designation, e.department, COALESCE(e.salary,0) AS salary,
-           m.cost_type, m.capacity_hours
+    SELECT e.id, e.name, e.designation, e.department, e.reporting_manager_id,
+           COALESCE(e.salary,0) AS salary, m.cost_type, m.capacity_hours
     FROM fin_employee_meta m JOIN employees e ON e.id = m.employee_id
     WHERE m.active = TRUE`) as any[];
-  const projects = (await sql`SELECT id, name, client_name FROM projects WHERE status='active'`) as any[];
+  const projects = (await sql`SELECT id, name, client_name, project_lead_id, project_reporting_id FROM projects WHERE status='active'`) as any[];
   const revenues = (await sql`SELECT * FROM fin_project_revenue WHERE month=${month} AND year=${year}`) as any[];
   const assignments = (await sql`
     SELECT project_id, employee_id, COALESCE(monthly_hours,0) AS hours
@@ -3467,9 +3467,66 @@ async function finComputeMonth(month: number, year: number) {
   });
 
   const indirectSalaries = employees.filter((e) => e.cost_type === 'indirect').reduce((s, e) => s + Number(e.salary), 0);
+  const supervisors = employees.filter((e) => e.cost_type === 'supervisor');
+  const supervisorSalariesTotal = supervisors.reduce((s, e) => s + Number(e.salary), 0);
   const otherCostTotal = otherCosts.reduce((s, c) => s + Number(c.amount), 0);
   const benchCost = employeeRows.reduce((s, e) => s + e.benchCost, 0);
-  const overheadPool = indirectSalaries + otherCostTotal + (settings.include_bench_in_overhead ? benchCost : 0);
+
+  // Pre-compute per-project direct hours / cost / team (direct staff only).
+  const directHoursByProject = new Map<string, number>();
+  const directCostByProject = new Map<string, number>();
+  const teamByProject = new Map<string, any[]>();
+  for (const p of projects) {
+    const allocs = activeAllocs.filter((a) => a.project_id === p.id);
+    const team = allocs.map((a) => {
+      const e = empById.get(a.employee_id); const rate = rateOf(e);
+      return { id: e.id, name: e.name, designation: e.designation, hours: Number(a.hours), rate, cost: rate * Number(a.hours) };
+    }).sort((x, y) => y.cost - x.cost);
+    directHoursByProject.set(p.id, team.reduce((s, t) => s + t.hours, 0));
+    directCostByProject.set(p.id, team.reduce((s, t) => s + t.cost, 0));
+    teamByProject.set(p.id, team);
+  }
+
+  // Which managers does each project's assigned direct staff report to?
+  const managersByProject = new Map<string, Set<string>>();
+  for (const a of activeAllocs) {
+    const mgr = empById.get(a.employee_id)?.reporting_manager_id;
+    if (!mgr) continue;
+    if (!managersByProject.has(a.project_id)) managersByProject.set(a.project_id, new Set());
+    managersByProject.get(a.project_id)!.add(mgr);
+  }
+
+  // ── Supervision allocation ──
+  // Each supervisor's full salary is spread ONLY across the projects they run
+  // (they're the project lead/reporting owner, OR their reports are assigned there),
+  // proportional to those projects' direct hours. Supervisors with no managed
+  // project this month fall back into the general overhead pool so nothing is lost.
+  const supervisionByProject = new Map<string, number>();
+  const supervisorsByProject = new Map<string, string[]>();
+  const managedCountBySupervisor = new Map<string, number>();
+  let unallocatedSupervision = 0;
+  for (const s of supervisors) {
+    const managed = projects.filter((p) =>
+      p.project_lead_id === s.id || p.project_reporting_id === s.id || managersByProject.get(p.id)?.has(s.id)
+    ).map((p) => p.id);
+    managedCountBySupervisor.set(s.id, managed.length);
+    const salary = Number(s.salary);
+    if (managed.length === 0) { unallocatedSupervision += salary; continue; }
+    const totalMgHours = managed.reduce((sum, pid) => sum + (directHoursByProject.get(pid) || 0), 0);
+    for (const pid of managed) {
+      const share = totalMgHours > 0 ? (directHoursByProject.get(pid) || 0) / totalMgHours : 1 / managed.length;
+      supervisionByProject.set(pid, (supervisionByProject.get(pid) || 0) + salary * share);
+      if (!supervisorsByProject.has(pid)) supervisorsByProject.set(pid, []);
+      supervisorsByProject.get(pid)!.push(s.name);
+    }
+  }
+
+  // attach managed-project count onto supervisor employee rows
+  for (const er of employeeRows) {
+    (er as any).managedProjects = er.cost_type === 'supervisor' ? (managedCountBySupervisor.get(er.id) || 0) : 0;
+  }
+
+  const overheadPool = indirectSalaries + otherCostTotal + unallocatedSupervision + (settings.include_bench_in_overhead ? benchCost : 0);
 
   const totalDirectHours = activeAllocs.reduce((s, a) => s + Number(a.hours), 0);
   const totalRevenue = projects.reduce((s, p) => s + revenueOf(p), 0);
@@ -3483,24 +3540,22 @@ async function finComputeMonth(month: number, year: number) {
   };
 
   const projectRows = projects.map((p) => {
-    const allocs = activeAllocs.filter((a) => a.project_id === p.id);
-    const team = allocs.map((a) => {
-      const e = empById.get(a.employee_id); const rate = rateOf(e);
-      return { id: e.id, name: e.name, designation: e.designation, hours: Number(a.hours), rate, cost: rate * Number(a.hours) };
-    }).sort((x, y) => y.cost - x.cost);
-    const directCost = team.reduce((s, t) => s + t.cost, 0);
-    const directHours = team.reduce((s, t) => s + t.hours, 0);
+    const team = teamByProject.get(p.id) || [];
+    const directCost = directCostByProject.get(p.id) || 0;
+    const directHours = directHoursByProject.get(p.id) || 0;
     const revenue = revenueOf(p);
     const grossProfit = revenue - directCost;
     const overhead = overheadPool * shareOf(directHours, revenue);
-    const netProfit = grossProfit - overhead;
+    const supervision = supervisionByProject.get(p.id) || 0;
+    const netProfit = grossProfit - overhead - supervision;
     const r = revByProj.get(p.id);
     return {
       id: p.id, name: p.name, client_name: p.client_name,
       billing_type: r?.billing_type || 'fixed', hourly_rate: Number(r?.hourly_rate || 0),
       billable_hours: Number(r?.billable_hours || 0), fixed_amount: Number(r?.fixed_amount || 0),
       revenue, directCost, directHours, grossProfit, grossMargin: revenue > 0 ? grossProfit / revenue : 0,
-      overhead, netProfit, netMargin: revenue > 0 ? netProfit / revenue : 0,
+      overhead, supervision, supervisorNames: supervisorsByProject.get(p.id) || [],
+      netProfit, netMargin: revenue > 0 ? netProfit / revenue : 0,
       effectiveCostPerHour: directHours > 0 ? directCost / directHours : 0,
       revenuePerHour: directHours > 0 ? revenue / directHours : 0, team,
     };
@@ -3508,9 +3563,9 @@ async function finComputeMonth(month: number, year: number) {
 
   const totalDirectCost = projectRows.reduce((s, p) => s + p.directCost, 0);
   const grossProfit = totalRevenue - totalDirectCost;
-  const netProfit = totalRevenue - totalDirectCost - benchCost - indirectSalaries - otherCostTotal;
+  const netProfit = totalRevenue - totalDirectCost - benchCost - indirectSalaries - supervisorSalariesTotal - otherCostTotal;
   const totalSalary = employees.reduce((s, e) => s + Number(e.salary), 0);
-  const totalCost = totalDirectCost + benchCost + indirectSalaries + otherCostTotal;
+  const totalCost = totalDirectCost + benchCost + indirectSalaries + supervisorSalariesTotal + otherCostTotal;
   const directEmps = employeeRows.filter((e) => e.cost_type === 'direct');
   const directCapacityHours = directEmps.reduce((s, e) => s + e.capacity, 0);
   const allocatedDirectHours = directEmps.reduce((s, e) => s + e.allocatedHours, 0);
@@ -3528,7 +3583,9 @@ async function finComputeMonth(month: number, year: number) {
     otherCosts: otherCosts.map((c) => ({ id: c.id, name: c.name, amount: Number(c.amount), category: c.category })),
     byDept,
     totals: {
-      revenue: totalRevenue, directCost: totalDirectCost, benchCost, indirectSalaries, otherCosts: otherCostTotal,
+      revenue: totalRevenue, directCost: totalDirectCost, benchCost, indirectSalaries,
+      supervisionCost: supervisorSalariesTotal, supervisorHeadcount: supervisors.length,
+      otherCosts: otherCostTotal,
       overheadPool, grossProfit, grossMargin: totalRevenue > 0 ? grossProfit / totalRevenue : 0,
       netProfit, netMargin: totalRevenue > 0 ? netProfit / totalRevenue : 0, totalSalary, totalCost,
       directCapacityHours, allocatedDirectHours, utilization: directCapacityHours > 0 ? allocatedDirectHours / directCapacityHours : null,

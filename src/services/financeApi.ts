@@ -39,7 +39,8 @@ export interface FinSettings {
 }
 
 export interface FinTotals {
-  revenue: number; directCost: number; benchCost: number; indirectSalaries: number; otherCosts: number;
+  revenue: number; directCost: number; benchCost: number; indirectSalaries: number;
+  supervisionCost: number; supervisorHeadcount: number; otherCosts: number;
   overheadPool: number; grossProfit: number; grossMargin: number; netProfit: number; netMargin: number;
   totalSalary: number; totalCost: number; directCapacityHours: number; allocatedDirectHours: number;
   utilization: number | null; headcount: number; directHeadcount: number; indirectHeadcount: number; activeProjects: number;
@@ -49,14 +50,15 @@ export interface FinProjectRow {
   id: string; name: string; client_name: string | null;
   billing_type: 'fixed' | 'hourly'; hourly_rate: number; billable_hours: number; fixed_amount: number;
   revenue: number; directCost: number; directHours: number; grossProfit: number; grossMargin: number;
-  overhead: number; netProfit: number; netMargin: number; effectiveCostPerHour: number; revenuePerHour: number;
+  overhead: number; supervision: number; supervisorNames: string[];
+  netProfit: number; netMargin: number; effectiveCostPerHour: number; revenuePerHour: number;
   team: { id: string; name: string; designation: string | null; hours: number; rate: number; cost: number }[];
 }
 
 export interface FinEmployeeRow {
-  id: string; name: string; designation: string | null; department: string | null; cost_type: 'direct' | 'indirect';
+  id: string; name: string; designation: string | null; department: string | null; cost_type: 'direct' | 'indirect' | 'supervisor';
   salary: number; rate: number; capacity: number; allocatedHours: number; benchHours: number;
-  allocatedCost: number; benchCost: number; utilization: number | null;
+  allocatedCost: number; benchCost: number; utilization: number | null; managedProjects?: number;
 }
 
 export interface FinModel {
@@ -78,7 +80,7 @@ export const financeApi = {
 
   getEmployees: () => request<Array<{
     id: string; name: string; designation: string | null; department: string | null; salary: number;
-    cost_type: 'direct' | 'indirect' | null; capacity_hours: number | null; active: boolean | null;
+    cost_type: 'direct' | 'indirect' | 'supervisor' | null; capacity_hours: number | null; active: boolean | null;
   }>>('/employees'),
   saveEmployee: (id: string, data: { cost_type: string | null; capacity_hours?: number | null; active?: boolean }) =>
     request<any>(`/employees/${id}`, { method: 'PUT', body: JSON.stringify(data) }),

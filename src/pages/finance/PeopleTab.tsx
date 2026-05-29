@@ -4,7 +4,7 @@ import { money } from './format';
 
 type Row = {
   id: string; name: string; designation: string | null; department: string | null; salary: number;
-  cost_type: 'direct' | 'indirect' | null; capacity_hours: number | null; active: boolean | null;
+  cost_type: 'direct' | 'indirect' | 'supervisor' | null; capacity_hours: number | null; active: boolean | null;
 };
 
 export default function PeopleTab({ onChanged }: { onChanged: () => void }) {
@@ -45,8 +45,9 @@ export default function PeopleTab({ onChanged }: { onChanged: () => void }) {
     <div className="space-y-4">
       {err && <div className="rounded-xl-2 border border-danger/30 bg-danger-container/40 p-3 text-sm text-danger">{err}</div>}
       <p className="text-sm text-on-surface-muted">
-        Tag each person as <b className="text-success">Direct</b> (billable — their hours land on projects) or <b className="text-accent">Indirect</b> (overhead — founders, HR, admin).
-        Unclassified people are excluded from finance. <b className="text-on-surface">{classified}</b> of {rows.length} classified. Salaries come from the HRMS.
+        Tag each person as <b className="text-success">Direct</b> (billable — hours land on projects), <b className="text-accent">Indirect</b> (overhead — founders, HR, admin),
+        or <b className="text-brand">Supervisor</b> (lead/manager — cost spreads only across the projects they run). Unclassified people are excluded.
+        <b className="text-on-surface"> {classified}</b> of {rows.length} classified. Salaries come from the HRMS.
       </p>
 
       <div className="rounded-xl-2 border border-outline bg-surface overflow-x-auto">
@@ -80,15 +81,16 @@ export default function PeopleTab({ onChanged }: { onChanged: () => void }) {
                       <option value="none">Unclassified</option>
                       <option value="direct">Direct (billable)</option>
                       <option value="indirect">Indirect (overhead)</option>
+                      <option value="supervisor">Supervisor (lead/manager)</option>
                     </select>
                   </td>
                   <td className="px-3 py-2">
-                    <input type="number" placeholder={String(defCap)} value={r.capacity_hours ?? ''} disabled={!r.cost_type}
+                    <input type="number" placeholder={String(defCap)} value={r.capacity_hours ?? ''} disabled={r.cost_type !== 'direct'}
                       onChange={(e) => setRows((rs) => rs.map((x) => x.id === r.id ? { ...x, capacity_hours: e.target.value === '' ? null : Number(e.target.value) } : x))}
-                      onBlur={() => r.cost_type && persist(r.id, {})}
+                      onBlur={() => r.cost_type === 'direct' && persist(r.id, {})}
                       className="w-24 rounded-lg border border-outline bg-surface px-2 py-1.5 text-right text-sm text-on-surface outline-none focus:border-brand disabled:opacity-40" />
                   </td>
-                  <td className="px-3 py-2 text-right tabular-nums text-on-surface-muted">{r.cost_type ? money(rate, currency) : '—'}</td>
+                  <td className="px-3 py-2 text-right tabular-nums text-on-surface-muted">{r.cost_type === 'direct' ? money(rate, currency) : '—'}</td>
                   <td className="px-3 py-2 text-center">
                     <input type="checkbox" disabled={!r.cost_type} checked={r.active ?? false}
                       onChange={(e) => persist(r.id, { active: e.target.checked })}
