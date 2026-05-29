@@ -15,6 +15,7 @@ interface Props {
 
 interface LogRow {
   id: string;
+  assignment_id: string;
   project_id: string;
   project_name?: string;
   project_client_name?: string | null;
@@ -31,6 +32,15 @@ interface LogRow {
   last_admin_editor?: string | null;
 }
 
+interface DayRow {
+  id: string;
+  assignment_id: string;
+  log_date: string;
+  week_num: number;
+  hours: number;
+  notes: string | null;
+}
+
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 
 function allocFor(log: LogRow): number {
@@ -42,6 +52,7 @@ export default function EmployeeHoursDetailModal({ employeeId, employeeName, mon
   const { user } = useAuth();
   const canEditAny = user?.role === 'admin' || user?.role === 'hr_manager' || user?.role === 'project_coordinator';
   const [logs, setLogs] = useState<LogRow[]>([]);
+  const [days, setDays] = useState<DayRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editDraft, setEditDraft] = useState<{ hours: string; desc: string; reason: string }>({ hours: '', desc: '', reason: '' });
@@ -52,10 +63,10 @@ export default function EmployeeHoursDetailModal({ employeeId, employeeName, mon
 
   const reload = () => {
     setLoading(true);
-    api.getHourLogs({ employee_id: employeeId, month, year })
-      .then(d => setLogs(d as LogRow[]))
-      .catch(() => {})
-      .finally(() => setLoading(false));
+    Promise.all([
+      api.getHourLogs({ employee_id: employeeId, month, year }).then(d => setLogs(d as LogRow[])).catch(() => {}),
+      api.getHourLogDays({ employee_id: employeeId, month, year }).then(d => setDays(d as DayRow[])).catch(() => setDays([])),
+    ]).finally(() => setLoading(false));
   };
 
   useEffect(() => {
@@ -365,6 +376,36 @@ export default function EmployeeHoursDetailModal({ employeeId, employeeName, mon
                                 </p>
                               </div>
                             )}
+
+                            {/* Daily breakdown — visible whenever the log has day entries */}
+                            {(() => {
+                              const logDays = days.filter(d => d.assignment_id === log.assignment_id && d.week_num === log.week_num)
+                                                  .sort((a, b) => a.log_date.localeCompare(b.log_date));
+                              if (logDays.length === 0) return null;
+                              return (
+                                <div className="mt-3 rounded-lg bg-surface-2/40 border border-outline overflow-hidden">
+                                  <p className="px-3 py-1.5 text-[10px] uppercase tracking-[0.16em] font-bold text-on-surface-muted border-b border-outline bg-surface-2">
+                                    Daily breakdown · {logDays.length} {logDays.length === 1 ? 'day' : 'days'}
+                                  </p>
+                                  <ul className="divide-y divide-outline">
+                                    {logDays.map(d => {
+                                      const dt = new Date(d.log_date + 'T12:00:00Z');
+                                      const dayName = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'][dt.getUTCDay()];
+                                      return (
+                                        <li key={d.id} className="px-3 py-1.5 flex items-center gap-3 text-xs">
+                                          <div className="w-16 flex-shrink-0">
+                                            <p className="text-[10px] uppercase font-bold text-on-surface-subtle">{dayName}</p>
+                                            <p className="num-mono font-semibold text-on-surface leading-tight">{dt.getUTCDate()}</p>
+                                          </div>
+                                          <p className="num-mono font-bold text-on-surface w-12 flex-shrink-0">{Number(d.hours)}<span className="text-on-surface-muted font-normal text-[10px]">h</span></p>
+                                          <p className="flex-1 min-w-0 text-on-surface-muted truncate">{d.notes || <span className="text-on-surface-subtle italic">No note</span>}</p>
+                                        </li>
+                                      );
+                                    })}
+                                  </ul>
+                                </div>
+                              );
+                            })()}
 
                             {log.reviewed_by_name && !isEditing && (
                               <p className="text-[10px] text-on-surface-subtle mt-1.5">

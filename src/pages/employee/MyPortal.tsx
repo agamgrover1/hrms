@@ -1,4 +1,4 @@
-import { useState, useEffect, Component, type ReactNode } from 'react';
+import { useState, useEffect, useMemo, Component, type ReactNode } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { Clock, Calendar, DollarSign, User, CheckCircle, XCircle, AlertCircle, Plus, X, Target, FileText, Lock, Trash2, Save, Users, Monitor, Briefcase, Edit2 } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
@@ -2417,6 +2417,21 @@ function WeekCell({ alloc, log, onClick }: { alloc: number; log?: MHLog; onClick
   );
 }
 
+// Returns the dates within the given month that belong to a 1..5 "week" using
+// CEIL(day_of_month / 7) — same rule the backend uses for week_num.
+function daysOfWeek(month: number, year: number, weekNum: number): string[] {
+  const out: string[] = [];
+  const daysInMonth = new Date(year, month, 0).getDate();
+  const startDay = (weekNum - 1) * 7 + 1;
+  const endDay = Math.min(startDay + 6, daysInMonth);
+  for (let d = startDay; d <= endDay; d++) {
+    out.push(`${year}-${String(month).padStart(2,'0')}-${String(d).padStart(2,'0')}`);
+  }
+  return out;
+}
+
+const DAY_LABELS = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
+
 function HourLogModal({
   assignment, weekNum, existing, employeeId, employeeName, onClose, onSaved,
 }: {
@@ -2430,26 +2445,68 @@ function HourLogModal({
 }) {
   const allocKey = `w${weekNum}_hours` as 'w1_hours' | 'w2_hours' | 'w3_hours' | 'w4_hours' | 'w5_hours';
   const alloc = Number(assignment[allocKey] ?? 0);
-  const [hours, setHours] = useState(existing ? String(existing.hours_logged) : String(alloc));
-  const [desc, setDesc] = useState(existing?.work_description ?? '');
+  const dates = useMemo(() => daysOfWeek(assignment.month, assignment.year, weekNum), [assignment.month, assignment.year, weekNum]);
+  // Per-day draft state: { date → { id?, hours: string, notes: string } }
+  const [days, setDays] = useState<Record<string, { id?: string; hours: string; notes: string; existing?: boolean }>>(() => {
+    const init: Record<string, { id?: string; hours: string; notes: string; existing?: boolean }> = {};
+    for (const d of dates) init[d] = { hours: '', notes: '' };
+    return init;
+  });
+  const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
 
+  // Load any existing day entries for this assignment+week
+  useEffect(() => {
+    setLoading(true);
+    api.getHourLogDays({ assignment_id: assignment.id })
+      .then(rows => {
+        setDays(prev => {
+          const next = { ...prev };
+          for (const r of rows) {
+            const iso = String(r.log_date).slice(0, 10);
+            if (next[iso] !== undefined) {
+              next[iso] = { id: r.id, hours: String(r.hours), notes: r.notes ?? '', existing: true };
+            }
+          }
+          return next;
+        });
+      })
+      .catch(() => {})
+      .finally(() => setLoading(false));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [assignment.id]);
+
+  const setDay = (iso: string, patch: Partial<{ hours: string; notes: string }>) => {
+    setDays(prev => ({ ...prev, [iso]: { ...prev[iso], ...patch } }));
+  };
+
+  const total = Object.values(days).reduce((s, d) => s + (Number(d.hours) || 0), 0);
+
   const save = async () => {
-    const h = Number(hours);
-    if (Number.isNaN(h) || h < 0) { setError('Enter a valid number of hours.'); return; }
+    setError('');
     setSaving(true);
     try {
-      if (existing) {
-        await api.editHourLog(existing.id, { hours_logged: h, work_description: desc });
-      } else {
-        await api.submitHourLog({
-          project_id: assignment.project_id,
-          employee_id: employeeId, employee_name: employeeName,
-          month: assignment.month, year: assignment.year, week_num: weekNum,
-          hours_logged: h, work_description: desc,
-        });
+      const ops: Promise<any>[] = [];
+      for (const iso of dates) {
+        const d = days[iso];
+        const h = Number(d.hours);
+        const validHours = !Number.isNaN(h) && h > 0;
+        if (validHours) {
+          ops.push(api.upsertHourLogDay({
+            assignment_id: assignment.id,
+            log_date: iso,
+            hours: h,
+            notes: d.notes.trim() || undefined,
+            employee_id: employeeId,
+            employee_name: employeeName,
+          }));
+        } else if (d.existing && d.id) {
+          // Was logged before but the employee zeroed it out → remove the day
+          ops.push(api.deleteHourLogDay(d.id));
+        }
       }
+      await Promise.all(ops);
       onSaved();
     } catch (err: any) {
       setError(err.message ?? 'Save failed.');
@@ -2458,46 +2515,97 @@ function HourLogModal({
     }
   };
 
+  const weeklyDelta = total - alloc;
+
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 backdrop-blur-sm p-4">
-      <div className="bg-surface rounded-2xl shadow-2xl w-full max-w-md">
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-bg/55 backdrop-blur-sm p-4">
+      <div className="bg-surface rounded-2xl shadow-elev-4 border border-outline w-full max-w-xl max-h-[92vh] overflow-hidden flex flex-col">
         <div className="flex items-center justify-between px-6 py-5 border-b border-outline">
-          <div>
-            <h3 className="text-lg font-semibold text-on-surface">{existing ? 'Edit hours' : 'Log hours'} · W{weekNum}</h3>
-            <p className="text-xs text-on-surface-subtle mt-0.5">{assignment.project_name} · {MH_MONTHS[assignment.month-1]} {assignment.year}</p>
+          <div className="min-w-0">
+            <h3 className="font-display text-xl font-bold tracking-tight text-on-surface">Log hours · Week {weekNum}</h3>
+            <p className="text-xs text-on-surface-muted mt-0.5 truncate">{assignment.project_name} · {MH_MONTHS[assignment.month-1]} {assignment.year}</p>
           </div>
-          <button onClick={onClose} className="p-1.5 hover:bg-surface-2 rounded-lg"><X size={16} className="text-on-surface-subtle" /></button>
+          <button onClick={onClose} className="p-1.5 hover:bg-surface-2 rounded-lg flex-shrink-0"><X size={16} className="text-on-surface-muted" /></button>
         </div>
-        <div className="p-6 space-y-4">
-          <div className="bg-surface-2 rounded-lg p-3 text-xs flex items-center justify-between">
-            <span className="text-on-surface-subtle">Allocated for W{weekNum}</span>
-            <span className="font-semibold text-on-surface">{alloc} h</span>
+
+        {/* Summary row */}
+        <div className="px-6 py-3 border-b border-outline bg-surface-2/40 flex items-center justify-between gap-4">
+          <div>
+            <p className="text-[10px] uppercase tracking-[0.16em] font-bold text-on-surface-muted">Allocated</p>
+            <p className="num-mono text-lg font-bold text-on-surface">{alloc}<span className="text-xs text-on-surface-muted">h</span></p>
           </div>
           <div>
-            <label className="text-xs font-medium text-on-surface-subtle mb-1.5 block">Hours worked *</label>
-            <input type="number" step="0.5" min="0" value={hours} onChange={e => setHours(e.target.value)}
-              className="w-full border border-outline rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-primary-200" />
+            <p className="text-[10px] uppercase tracking-[0.16em] font-bold text-on-surface-muted">Total logged</p>
+            <p className={`num-mono text-lg font-bold ${total > alloc ? 'text-warning' : total > 0 && total < alloc ? 'text-danger' : 'text-on-surface'}`}>
+              {total}<span className="text-xs text-on-surface-muted">h</span>
+            </p>
           </div>
           <div>
-            <label className="text-xs font-medium text-on-surface-subtle mb-1.5 block">What did you do? *</label>
-            <textarea value={desc} onChange={e => setDesc(e.target.value)} rows={4}
-              placeholder="Describe the work — keyword research, content draft, technical audit, etc."
-              className="w-full border border-outline rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-primary-200 resize-none" />
+            <p className="text-[10px] uppercase tracking-[0.16em] font-bold text-on-surface-muted">Delta</p>
+            <p className={`num-mono text-lg font-bold ${weeklyDelta > 0 ? 'text-warning' : weeklyDelta < 0 ? 'text-danger' : 'text-success'}`}>
+              {weeklyDelta > 0 ? '+' : ''}{weeklyDelta}<span className="text-xs text-on-surface-muted">h</span>
+            </p>
           </div>
+          {existing?.status === 'approved' && (
+            <p className="text-[10px] inline-flex items-center gap-1 px-2 py-1 rounded-full bg-warning-container text-warning font-semibold">
+              Changing will re-submit
+            </p>
+          )}
+        </div>
+
+        {/* Per-day inputs */}
+        <div className="flex-1 overflow-y-auto p-5 space-y-2">
+          {loading ? (
+            <div className="text-center text-on-surface-subtle py-8 text-sm">Loading…</div>
+          ) : dates.map(iso => {
+            const dt = new Date(iso + 'T12:00:00Z');
+            const dayLabel = DAY_LABELS[dt.getUTCDay()];
+            const isWeekend = dt.getUTCDay() === 0 || dt.getUTCDay() === 6;
+            const d = days[iso];
+            const h = Number(d.hours) || 0;
+            return (
+              <div key={iso} className={`rounded-xl-2 border ${isWeekend ? 'border-outline bg-surface-2/30' : 'border-outline bg-surface'} px-3 py-2.5`}>
+                <div className="flex items-center gap-3">
+                  <div className="w-12 text-center flex-shrink-0">
+                    <p className="text-[10px] uppercase tracking-wider font-bold text-on-surface-muted">{dayLabel}</p>
+                    <p className="num-mono text-lg font-bold text-on-surface leading-none">{dt.getUTCDate()}</p>
+                  </div>
+                  <div className="flex items-center gap-1 flex-shrink-0">
+                    <input
+                      type="number" step="0.5" min="0" inputMode="decimal"
+                      value={d.hours}
+                      onChange={e => setDay(iso, { hours: e.target.value })}
+                      placeholder="0"
+                      className="num-mono w-16 text-center text-base font-semibold bg-surface border border-outline rounded-lg px-2 py-1.5 focus:outline-none focus:border-accent focus:ring-2 focus:ring-accent/20"
+                    />
+                    <span className="text-xs text-on-surface-muted">h</span>
+                  </div>
+                  <input
+                    type="text"
+                    value={d.notes}
+                    onChange={e => setDay(iso, { notes: e.target.value })}
+                    placeholder={h > 0 ? 'What did you work on?' : '—'}
+                    disabled={h === 0 && !d.existing}
+                    className="flex-1 min-w-0 text-sm bg-transparent border border-transparent hover:border-outline focus:border-accent focus:ring-2 focus:ring-accent/20 focus:bg-surface rounded-lg px-2 py-1.5 placeholder:text-on-surface-subtle transition-colors disabled:opacity-50"
+                  />
+                </div>
+              </div>
+            );
+          })}
           {existing?.status === 'rejected' && existing.rejection_reason && (
-            <div className="text-xs bg-danger-container border border-outline rounded-lg p-3 text-danger">
+            <div className="text-xs bg-danger-container border border-danger/20 rounded-xl-2 p-3 text-danger mt-3">
               <p className="font-semibold mb-0.5">Last rejection</p>
               <p>{existing.rejection_reason}</p>
             </div>
           )}
-          {error && <p className="text-sm text-danger bg-danger-container px-3 py-2 rounded-lg">{error}</p>}
+          {error && <p className="text-sm text-danger bg-danger-container px-3 py-2 rounded-lg mt-3">{error}</p>}
         </div>
-        <div className="px-6 py-4 border-t border-outline flex justify-end gap-2">
-          <button onClick={onClose} className="px-4 py-2 text-sm font-medium text-on-surface-muted hover:bg-surface-2 rounded-lg">Cancel</button>
-          <button onClick={save} disabled={saving || !desc.trim()}
-            className="px-4 py-2 text-sm font-semibold text-white rounded-lg disabled:opacity-50"
-            style={{ background: '#EE2770' }}>
-            {saving ? 'Saving…' : (existing ? 'Resubmit' : 'Submit')}
+
+        <div className="px-6 py-4 border-t border-outline flex justify-end gap-2 bg-surface">
+          <button onClick={onClose} className="px-4 py-2 text-sm font-medium text-on-surface-muted hover:bg-surface-2 rounded-lg transition-colors">Cancel</button>
+          <button onClick={save} disabled={saving || loading}
+            className="px-4 py-2 text-sm font-semibold bg-accent text-on-accent rounded-lg hover:opacity-90 disabled:opacity-50 transition-opacity">
+            {saving ? 'Saving…' : 'Save week'}
           </button>
         </div>
       </div>

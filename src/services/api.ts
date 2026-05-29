@@ -299,6 +299,37 @@ export const api = {
     request<any>(`/hour-logs/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
   deleteHourLog: (id: string, data: { actor_id?: string; actor_name?: string; actor_role?: string; reason?: string }) =>
     request<{ success: boolean }>(`/hour-logs/${id}`, { method: 'DELETE', body: JSON.stringify(data) }),
+
+  // ── Daily entries (auto-roll up to the weekly hour_logs row) ──
+  getHourLogDays: (params?: { employee_id?: string; month?: number; year?: number; assignment_id?: string }) => {
+    const qs = new URLSearchParams();
+    if (params?.employee_id) qs.set('employee_id', params.employee_id);
+    if (params?.month) qs.set('month', String(params.month));
+    if (params?.year) qs.set('year', String(params.year));
+    if (params?.assignment_id) qs.set('assignment_id', params.assignment_id);
+    return request<Array<{
+      id: string;
+      assignment_id: string;
+      hour_log_id: string | null;
+      project_id: string;
+      employee_id: string;
+      employee_name: string | null;
+      log_date: string;
+      week_num: number;
+      month: number;
+      year: number;
+      hours: number;
+      notes: string | null;
+      project_name?: string;
+      project_client_name?: string | null;
+    }>>(`/hour-log-days?${qs}`);
+  },
+  upsertHourLogDay: (data: { assignment_id: string; log_date: string; hours: number; notes?: string; employee_id?: string; employee_name?: string }) =>
+    request<{ assignment_id: string; log_date: string; week_num: number; hours: number; hour_log_id: string | null }>('/hour-log-days', { method: 'POST', body: JSON.stringify(data) }),
+  editHourLogDay: (id: string, data: { hours: number; notes?: string }) =>
+    request<{ id: string; assignment_id: string; week_num: number; hour_log_id: string | null }>(`/hour-log-days/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
+  deleteHourLogDay: (id: string) =>
+    request<{ success: boolean; hour_log_id: string | null }>(`/hour-log-days/${id}`, { method: 'DELETE' }),
   getHourLogAudit: (id: string) =>
     request<Array<{
       id: number;

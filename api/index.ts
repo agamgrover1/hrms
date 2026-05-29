@@ -352,6 +352,27 @@ async function runStartupMigrations() {
       UNIQUE(project_id, employee_id, month, year)
     )`;
   await sql`
+    CREATE TABLE IF NOT EXISTS hour_log_days (
+      id TEXT PRIMARY KEY,
+      assignment_id TEXT NOT NULL,
+      hour_log_id TEXT,
+      project_id TEXT NOT NULL,
+      employee_id TEXT NOT NULL,
+      employee_name TEXT,
+      log_date DATE NOT NULL,
+      week_num INTEGER NOT NULL,
+      month INTEGER NOT NULL,
+      year INTEGER NOT NULL,
+      hours NUMERIC NOT NULL,
+      notes TEXT,
+      created_at TIMESTAMPTZ DEFAULT NOW(),
+      updated_at TIMESTAMPTZ DEFAULT NOW(),
+      UNIQUE(assignment_id, log_date)
+    )`;
+  await sql`CREATE INDEX IF NOT EXISTS idx_hour_log_days_employee_month ON hour_log_days(employee_id, month, year)`.catch(()=>{});
+  await sql`CREATE INDEX IF NOT EXISTS idx_hour_log_days_week ON hour_log_days(assignment_id, week_num)`.catch(()=>{});
+
+  await sql`
     CREATE TABLE IF NOT EXISTS hour_log_audit (
       id SERIAL PRIMARY KEY,
       hour_log_id TEXT NOT NULL,
@@ -2868,6 +2889,132 @@ app.put('/api/hour-logs/:id', async (req, res) => {
 });
 
 // Audit history for one log — used by the detail modal's expandable History section
+// ── Daily hour-log entries ────────────────────────────────────────────────
+// Each row is one day for one assignment. Weekly hour_logs row is the rollup
+// that gets reviewed/approved — kept in sync by recomputeWeeklyFromDays.
+function weekNumOfDate(iso: string): number {
+  // CEIL(day_of_month / 7) — gives 1..5
+  const d = new Date(iso + 'T12:00:00Z');
+  return Math.ceil(d.getUTCDate() / 7);
+}
+
+async function recomputeWeeklyFromDays(assignment_id: string, week_num: number): Promise<string | null> {
+  const sumRows = await sql`
+    SELECT COALESCE(SUM(hours), 0)::numeric AS total,
+           COUNT(*)::int AS day_count,
+           MIN(month) AS month, MIN(year) AS year,
+           MIN(employee_id) AS employee_id,
+           MIN(employee_name) AS employee_name,
+           MIN(project_id) AS project_id
+    FROM hour_log_days
+    WHERE assignment_id=${assignment_id} AND week_num=${week_num}`;
+  const r = (sumRows as any[])[0];
+  if (!r || Number(r.day_count) === 0) {
+    // No days remaining for this week → remove the parent log if any
+    await sql`DELETE FROM hour_logs WHERE assignment_id=${assignment_id} AND week_num=${week_num}`.catch(()=>{});
+    return null;
+  }
+  const existing = await sql`SELECT id, status FROM hour_logs WHERE assignment_id=${assignment_id} AND week_num=${week_num}`;
+  const e = (existing as any[])[0];
+  if (e) {
+    await sql`
+      UPDATE hour_logs SET
+        hours_logged=${Number(r.total)},
+        status='pending',
+        rejection_reason=NULL,
+        reviewed_by_id=NULL, reviewed_by_name=NULL, reviewed_at=NULL,
+        submitted_at=NOW(), updated_at=NOW()
+      WHERE id=${e.id}`;
+    return e.id;
+  }
+  const id = newId('hl');
+  await sql`
+    INSERT INTO hour_logs (id, assignment_id, project_id, employee_id, employee_name,
+      month, year, week_num, hours_logged, work_description, status)
+    VALUES (${id}, ${assignment_id}, ${r.project_id}, ${r.employee_id}, ${r.employee_name},
+      ${r.month}, ${r.year}, ${week_num}, ${Number(r.total)}, NULL, 'pending')`;
+  await sql`UPDATE hour_log_days SET hour_log_id=${id}
+            WHERE assignment_id=${assignment_id} AND week_num=${week_num} AND hour_log_id IS NULL`;
+  return id;
+}
+
+app.get('/api/hour-log-days', async (req, res) => {
+  try {
+    await runStartupMigrations();
+    const month = req.query.month ? Number(req.query.month) : null;
+    const year = req.query.year ? Number(req.query.year) : null;
+    const employee_id = (req.query.employee_id as string) || null;
+    const assignment_id = (req.query.assignment_id as string) || null;
+    const rows = await sql`
+      SELECT d.*, p.name AS project_name, p.client_name AS project_client_name
+      FROM hour_log_days d
+      JOIN projects p ON p.id = d.project_id
+      WHERE (${month}::int IS NULL OR d.month=${month})
+        AND (${year}::int  IS NULL OR d.year=${year})
+        AND (${employee_id}::text IS NULL OR d.employee_id=${employee_id})
+        AND (${assignment_id}::text IS NULL OR d.assignment_id=${assignment_id})
+      ORDER BY d.log_date ASC`;
+    res.json(rows);
+  } catch (err: any) { res.status(500).json({ error: err.message || 'Server error' }); }
+});
+
+app.post('/api/hour-log-days', async (req, res) => {
+  try {
+    await runStartupMigrations();
+    const { assignment_id, log_date, hours, notes, employee_id, employee_name } = req.body;
+    if (!assignment_id || !log_date || hours === undefined || hours === null)
+      return res.status(400).json({ error: 'assignment_id, log_date and hours are required' });
+    const aRows = await sql`SELECT project_id, employee_id, month, year FROM project_assignments WHERE id=${assignment_id}`;
+    if (!(aRows as any[]).length) return res.status(404).json({ error: 'Assignment not found' });
+    const a = (aRows as any[])[0];
+    // Make sure log_date falls within the assignment's month/year
+    const dParts = String(log_date).slice(0, 10).split('-').map(Number);
+    if (dParts[0] !== a.year || dParts[1] !== a.month) {
+      return res.status(400).json({ error: `log_date must be in ${a.year}-${String(a.month).padStart(2,'0')}` });
+    }
+    const week_num = weekNumOfDate(log_date);
+    const id = newId('hld');
+    const hoursN = Number(hours) || 0;
+    await sql`
+      INSERT INTO hour_log_days (id, assignment_id, project_id, employee_id, employee_name,
+        log_date, week_num, month, year, hours, notes)
+      VALUES (${id}, ${assignment_id}, ${a.project_id}, ${employee_id ?? a.employee_id}, ${employee_name ?? null},
+        ${log_date}, ${week_num}, ${a.month}, ${a.year}, ${hoursN}, ${notes ?? null})
+      ON CONFLICT (assignment_id, log_date) DO UPDATE SET
+        hours=EXCLUDED.hours, notes=EXCLUDED.notes, updated_at=NOW()`;
+    const parentId = await recomputeWeeklyFromDays(assignment_id, week_num);
+    res.status(201).json({ assignment_id, log_date, week_num, hours: hoursN, hour_log_id: parentId });
+  } catch (err: any) { res.status(500).json({ error: err.message || 'Server error' }); }
+});
+
+app.put('/api/hour-log-days/:id', async (req, res) => {
+  try {
+    const { hours, notes } = req.body;
+    const existing = await sql`SELECT * FROM hour_log_days WHERE id=${req.params.id}`;
+    if (!(existing as any[]).length) return res.status(404).json({ error: 'Day entry not found' });
+    const cur = (existing as any[])[0];
+    await sql`
+      UPDATE hour_log_days SET
+        hours=${Number(hours) || 0},
+        notes=${notes ?? null},
+        updated_at=NOW()
+      WHERE id=${req.params.id}`;
+    const parentId = await recomputeWeeklyFromDays(cur.assignment_id, cur.week_num);
+    res.json({ id: cur.id, assignment_id: cur.assignment_id, week_num: cur.week_num, hour_log_id: parentId });
+  } catch (err: any) { res.status(500).json({ error: err.message || 'Server error' }); }
+});
+
+app.delete('/api/hour-log-days/:id', async (req, res) => {
+  try {
+    const existing = await sql`SELECT assignment_id, week_num FROM hour_log_days WHERE id=${req.params.id}`;
+    if (!(existing as any[]).length) return res.status(404).json({ error: 'Day entry not found' });
+    const cur = (existing as any[])[0];
+    await sql`DELETE FROM hour_log_days WHERE id=${req.params.id}`;
+    const parentId = await recomputeWeeklyFromDays(cur.assignment_id, cur.week_num);
+    res.json({ success: true, hour_log_id: parentId });
+  } catch (err: any) { res.status(500).json({ error: err.message || 'Server error' }); }
+});
+
 app.get('/api/hour-logs/:id/audit', async (req, res) => {
   try {
     await runStartupMigrations();
