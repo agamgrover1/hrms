@@ -714,6 +714,47 @@ async function runStartupMigrations() {
   await sql`CREATE INDEX IF NOT EXISTS idx_role_resp_role ON role_responsibilities(role, section_order, item_order)`.catch(()=>{});
   await seedRoleResponsibilities();
 
+  // Per-employee R&R overlay. The role-level template stays the baseline
+  // everyone with that role sees; this table holds items that are *specific*
+  // to one employee (custom expectations layered on top by admin / HR / their
+  // reporting manager). The employee sees these; the role template comes
+  // along for the ride read-only.
+  await sql`
+    CREATE TABLE IF NOT EXISTS employee_responsibilities (
+      id SERIAL PRIMARY KEY,
+      employee_id TEXT NOT NULL,
+      section_name TEXT NOT NULL,
+      section_order INTEGER NOT NULL DEFAULT 0,
+      item_order INTEGER NOT NULL DEFAULT 0,
+      title TEXT NOT NULL,
+      details TEXT,
+      frequency TEXT,
+      where_to_do TEXT,
+      created_at TIMESTAMPTZ DEFAULT NOW(),
+      updated_at TIMESTAMPTZ DEFAULT NOW()
+    )`;
+  await sql`CREATE INDEX IF NOT EXISTS idx_emp_resp_emp ON employee_responsibilities(employee_id, section_order, item_order)`.catch(()=>{});
+
+  // Change log: who created / edited / deleted which item, and what the data
+  // looked like before vs after. Visible only to admin / HR / reporting manager
+  // so they can see when expectations were rewritten and by whom.
+  await sql`
+    CREATE TABLE IF NOT EXISTS employee_responsibilities_audit (
+      id SERIAL PRIMARY KEY,
+      employee_id TEXT NOT NULL,
+      item_id INTEGER,
+      action TEXT NOT NULL,
+      title TEXT,
+      before_data JSONB,
+      after_data JSONB,
+      reason TEXT,
+      actor_id TEXT,
+      actor_name TEXT,
+      actor_role TEXT,
+      created_at TIMESTAMPTZ DEFAULT NOW()
+    )`;
+  await sql`CREATE INDEX IF NOT EXISTS idx_emp_resp_audit_emp ON employee_responsibilities_audit(employee_id, created_at DESC)`.catch(()=>{});
+
   await sql`
     CREATE TABLE IF NOT EXISTS attendance_sync_log (
       id SERIAL PRIMARY KEY, sync_id TEXT UNIQUE, triggered TEXT,
@@ -2215,6 +2256,193 @@ app.delete('/api/role-responsibilities/:id', async (req, res) => {
     if (!(await requireAdmin(req, res))) return;
     await sql`DELETE FROM role_responsibilities WHERE id=${Number(req.params.id)}`;
     res.json({ success: true });
+  } catch (err: any) { res.status(500).json({ error: err.message || 'Server error' }); }
+});
+
+// ── Per-employee R&R access & helpers ─────────────────────────────────────
+// READ: admin / HR / the employee themselves / anyone in their reporting chain (upward).
+// WRITE: admin / HR / anyone in their reporting chain (NOT the employee — they can't
+// edit their own expectations). AUDIT: write-permitted users only.
+type RespCallerCheck = {
+  ok: boolean;
+  canWrite: boolean;
+  canAudit: boolean;
+  user?: { id: string; name: string; role: string; employee_id_ref: string | null };
+};
+async function respAccessCheck(req: any, employeeId: string): Promise<RespCallerCheck> {
+  const userId = req.header('x-user-id') || req.query.__uid;
+  if (!userId) return { ok: false, canWrite: false, canAudit: false };
+  const userRows = await sql`SELECT id, name, role, employee_id_ref, active FROM app_users WHERE id=${userId} LIMIT 1`;
+  const u = (userRows as any[])[0];
+  if (!u || u.active !== true) return { ok: false, canWrite: false, canAudit: false };
+
+  const isAdminish = u.role === 'admin' || u.role === 'hr_manager';
+  if (isAdminish) {
+    return { ok: true, canWrite: true, canAudit: true, user: u };
+  }
+
+  // Resolve caller's employee.id from their employee_id_ref
+  let callerEmpDbId: string | null = null;
+  if (u.employee_id_ref) {
+    const er = await sql`SELECT id FROM employees WHERE employee_id=${u.employee_id_ref} LIMIT 1`;
+    callerEmpDbId = (er as any[])[0]?.id ?? null;
+  }
+
+  // Self-read only
+  const isSelf = !!callerEmpDbId && callerEmpDbId === employeeId;
+
+  // Reporting chain: walk upward from target. If caller is an ancestor → manager-of-target.
+  let isManagerChain = false;
+  if (callerEmpDbId) {
+    const chain = await sql`
+      WITH RECURSIVE chain AS (
+        SELECT id, reporting_manager_id FROM employees WHERE id=${employeeId}
+        UNION ALL
+        SELECT e.id, e.reporting_manager_id FROM employees e
+        JOIN chain c ON e.id = c.reporting_manager_id
+      )
+      SELECT 1 FROM chain WHERE reporting_manager_id=${callerEmpDbId} LIMIT 1`;
+    isManagerChain = (chain as any[]).length > 0;
+  }
+
+  if (isManagerChain) {
+    return { ok: true, canWrite: true, canAudit: true, user: u };
+  }
+  if (isSelf) {
+    return { ok: true, canWrite: false, canAudit: false, user: u };
+  }
+  return { ok: false, canWrite: false, canAudit: false };
+}
+
+async function logEmpRespAudit(p: {
+  employee_id: string; item_id: number | null; action: 'create' | 'update' | 'delete';
+  title: string | null; before: any; after: any; reason?: string | null;
+  actor_id?: string | null; actor_name?: string | null; actor_role?: string | null;
+}) {
+  try {
+    await sql`
+      INSERT INTO employee_responsibilities_audit
+        (employee_id, item_id, action, title, before_data, after_data, reason, actor_id, actor_name, actor_role)
+      VALUES (${p.employee_id}, ${p.item_id}, ${p.action}, ${p.title},
+              ${p.before ? JSON.stringify(p.before) : null}::jsonb,
+              ${p.after ? JSON.stringify(p.after) : null}::jsonb,
+              ${p.reason ?? null}, ${p.actor_id ?? null}, ${p.actor_name ?? null}, ${p.actor_role ?? null})`;
+  } catch { /* non-fatal */ }
+}
+
+// GET — list items for an employee
+app.get('/api/employee-responsibilities', async (req, res) => {
+  try {
+    await runStartupMigrations();
+    const employeeId = (req.query.employee_id as string) || '';
+    if (!employeeId) return res.status(400).json({ error: 'employee_id required' });
+    const access = await respAccessCheck(req, employeeId);
+    if (!access.ok) return res.status(403).json({ error: 'Not authorized' });
+    const rows = await sql`
+      SELECT * FROM employee_responsibilities
+      WHERE employee_id=${employeeId}
+      ORDER BY section_order, item_order, id`;
+    res.json({ items: rows, can_write: access.canWrite, can_view_audit: access.canAudit });
+  } catch (err: any) { res.status(500).json({ error: err.message || 'Server error' }); }
+});
+
+// POST — add new personal item
+app.post('/api/employee-responsibilities', async (req, res) => {
+  try {
+    await runStartupMigrations();
+    const { employee_id, section_name, section_order, item_order, title, details, frequency, where_to_do, reason } = req.body;
+    if (!employee_id) return res.status(400).json({ error: 'employee_id required' });
+    if (!section_name?.trim() || !title?.trim()) return res.status(400).json({ error: 'section_name and title are required' });
+    const access = await respAccessCheck(req, employee_id);
+    if (!access.ok) return res.status(403).json({ error: 'Not authorized' });
+    if (!access.canWrite) return res.status(403).json({ error: 'You can view but not edit this employee\'s R&R' });
+
+    const inserted = await sql`
+      INSERT INTO employee_responsibilities
+        (employee_id, section_name, section_order, item_order, title, details, frequency, where_to_do)
+      VALUES (${employee_id}, ${section_name.trim()}, ${Number(section_order) || 0}, ${Number(item_order) || 0},
+              ${title.trim()}, ${details?.trim() || null}, ${frequency || null}, ${where_to_do?.trim() || null})
+      RETURNING *`;
+    const row = (inserted as any[])[0];
+    await logEmpRespAudit({
+      employee_id, item_id: row.id, action: 'create', title: row.title,
+      before: null, after: row, reason: reason ?? null,
+      actor_id: access.user?.id, actor_name: access.user?.name, actor_role: access.user?.role,
+    });
+    res.status(201).json(row);
+  } catch (err: any) { res.status(500).json({ error: err.message || 'Server error' }); }
+});
+
+// PUT — edit existing item
+app.put('/api/employee-responsibilities/:id', async (req, res) => {
+  try {
+    await runStartupMigrations();
+    const id = Number(req.params.id);
+    const existing = (await sql`SELECT * FROM employee_responsibilities WHERE id=${id}`) as any[];
+    if (!existing.length) return res.status(404).json({ error: 'Item not found' });
+    const before = existing[0];
+    const access = await respAccessCheck(req, before.employee_id);
+    if (!access.ok) return res.status(403).json({ error: 'Not authorized' });
+    if (!access.canWrite) return res.status(403).json({ error: 'You can view but not edit this employee\'s R&R' });
+
+    const { section_name, section_order, item_order, title, details, frequency, where_to_do, reason } = req.body;
+    if (!section_name?.trim() || !title?.trim()) return res.status(400).json({ error: 'section_name, title are required' });
+    const updated = await sql`
+      UPDATE employee_responsibilities SET
+        section_name=${section_name.trim()},
+        section_order=${Number(section_order) || 0},
+        item_order=${Number(item_order) || 0},
+        title=${title.trim()},
+        details=${details?.trim() || null},
+        frequency=${frequency || null},
+        where_to_do=${where_to_do?.trim() || null},
+        updated_at=NOW()
+      WHERE id=${id} RETURNING *`;
+    const after = (updated as any[])[0];
+    await logEmpRespAudit({
+      employee_id: before.employee_id, item_id: id, action: 'update', title: after.title,
+      before, after, reason: reason ?? null,
+      actor_id: access.user?.id, actor_name: access.user?.name, actor_role: access.user?.role,
+    });
+    res.json(after);
+  } catch (err: any) { res.status(500).json({ error: err.message || 'Server error' }); }
+});
+
+// DELETE — remove item
+app.delete('/api/employee-responsibilities/:id', async (req, res) => {
+  try {
+    await runStartupMigrations();
+    const id = Number(req.params.id);
+    const existing = (await sql`SELECT * FROM employee_responsibilities WHERE id=${id}`) as any[];
+    if (!existing.length) return res.status(404).json({ error: 'Item not found' });
+    const before = existing[0];
+    const access = await respAccessCheck(req, before.employee_id);
+    if (!access.ok) return res.status(403).json({ error: 'Not authorized' });
+    if (!access.canWrite) return res.status(403).json({ error: 'You can view but not edit this employee\'s R&R' });
+
+    await sql`DELETE FROM employee_responsibilities WHERE id=${id}`;
+    await logEmpRespAudit({
+      employee_id: before.employee_id, item_id: id, action: 'delete', title: before.title,
+      before, after: null, reason: (req.body?.reason as string) ?? null,
+      actor_id: access.user?.id, actor_name: access.user?.name, actor_role: access.user?.role,
+    });
+    res.json({ success: true });
+  } catch (err: any) { res.status(500).json({ error: err.message || 'Server error' }); }
+});
+
+// GET — change log
+app.get('/api/employee-responsibilities/:employeeId/audit', async (req, res) => {
+  try {
+    await runStartupMigrations();
+    const employeeId = req.params.employeeId;
+    const access = await respAccessCheck(req, employeeId);
+    if (!access.ok) return res.status(403).json({ error: 'Not authorized' });
+    if (!access.canAudit) return res.status(403).json({ error: 'Audit log is admin / HR / reporting-manager only' });
+    const rows = await sql`
+      SELECT * FROM employee_responsibilities_audit
+      WHERE employee_id=${employeeId}
+      ORDER BY created_at DESC LIMIT 200`;
+    res.json(rows);
   } catch (err: any) { res.status(500).json({ error: err.message || 'Server error' }); }
 });
 

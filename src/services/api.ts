@@ -419,6 +419,34 @@ export const api = {
   deleteRoleResponsibility: (id: number) =>
     request<any>(`/role-responsibilities/${id}`, { method: 'DELETE' }),
 
+  // Per-employee R&R overlay (personal items + edit-history)
+  getEmployeeResponsibilities: (employeeId: string) =>
+    request<{
+      items: Array<{
+        id: number; employee_id: string;
+        section_name: string; section_order: number; item_order: number;
+        title: string; details: string | null;
+        frequency: string | null; where_to_do: string | null;
+        created_at: string; updated_at: string;
+      }>;
+      can_write: boolean;
+      can_view_audit: boolean;
+    }>(`/employee-responsibilities?employee_id=${employeeId}`),
+  addEmployeeResponsibility: (data: { employee_id: string; section_name: string; section_order?: number; item_order?: number; title: string; details?: string; frequency?: string; where_to_do?: string; reason?: string }) =>
+    request<any>('/employee-responsibilities', { method: 'POST', body: JSON.stringify(data) }),
+  updateEmployeeResponsibility: (id: number, data: { section_name: string; section_order?: number; item_order?: number; title: string; details?: string; frequency?: string; where_to_do?: string; reason?: string }) =>
+    request<any>(`/employee-responsibilities/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
+  deleteEmployeeResponsibility: (id: number, reason?: string) =>
+    request<any>(`/employee-responsibilities/${id}`, { method: 'DELETE', body: reason ? JSON.stringify({ reason }) : undefined }),
+  getEmployeeResponsibilitiesAudit: (employeeId: string) =>
+    request<Array<{
+      id: number; employee_id: string; item_id: number | null;
+      action: 'create' | 'update' | 'delete'; title: string | null;
+      before_data: any; after_data: any; reason: string | null;
+      actor_id: string | null; actor_name: string | null; actor_role: string | null;
+      created_at: string;
+    }>>(`/employee-responsibilities/${employeeId}/audit`),
+
   getHoursCompliance: (params: { date?: string; manager_id?: string }) => {
     const qs = new URLSearchParams();
     if (params.date) qs.set('date', params.date);

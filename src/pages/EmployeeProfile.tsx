@@ -11,6 +11,7 @@ import {
 import { api } from '../services/api';
 import { useAuth } from '../context/AuthContext';
 import { EditEmployeeModal } from './Employees';
+import EmployeeResponsibilitiesPanel from '../components/EmployeeResponsibilitiesPanel';
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 function toDateStr(val: any): string {
@@ -152,7 +153,7 @@ function ActionModal({ title, info, type, isIncentive, onClose, onConfirm }: {
 }
 
 // ── Tabs ──────────────────────────────────────────────────────────────────────
-const TABS = ['Overview','Attendance','Leave','Performance','Incentives','Expenses','Warnings'] as const;
+const TABS = ['Overview','Attendance','Leave','Performance','Incentives','Expenses','Warnings','Responsibilities'] as const;
 type Tab = typeof TABS[number];
 
 // ── Main page ─────────────────────────────────────────────────────────────────
@@ -1261,6 +1262,11 @@ export default function EmployeeProfile() {
             )}
           </div>
         </div>
+      )}
+
+      {/* ── Responsibilities ─────────────────────────────────────────────── */}
+      {tab === 'Responsibilities' && emp && (
+        <EmployeeResponsibilitiesPanel employeeId={emp.id} employeeName={emp.name} />
       )}
 
       {/* ── Modals ─────────────────────────────────────────────────────────── */}

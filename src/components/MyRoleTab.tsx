@@ -29,8 +29,20 @@ const ROLE_LABEL: Record<string, string> = {
   employee: 'Employee',
 };
 
-export default function MyRoleTab({ role }: { role: string | undefined }) {
+interface PersonalItem {
+  id: number;
+  section_name: string;
+  section_order: number;
+  item_order: number;
+  title: string;
+  details: string | null;
+  frequency: string | null;
+  where_to_do: string | null;
+}
+
+export default function MyRoleTab({ role, employeeId }: { role: string | undefined; employeeId?: string | null }) {
   const [items, setItems] = useState<RoleItem[] | null>(null);
+  const [personal, setPersonal] = useState<PersonalItem[] | null>(null);
   const [err, setErr] = useState('');
 
   useEffect(() => {
@@ -40,6 +52,13 @@ export default function MyRoleTab({ role }: { role: string | undefined }) {
       .then(d => setItems(d as RoleItem[]))
       .catch(e => setErr(e.message));
   }, [role]);
+
+  useEffect(() => {
+    if (!employeeId) { setPersonal([]); return; }
+    api.getEmployeeResponsibilities(employeeId)
+      .then(r => setPersonal(r.items as PersonalItem[]))
+      .catch(() => setPersonal([]));
+  }, [employeeId]);
 
   // Group by section_name preserving section_order
   const sections = useMemo(() => {
@@ -97,18 +116,50 @@ export default function MyRoleTab({ role }: { role: string | undefined }) {
           ))}
         </div>
       )}
+
+      {/* Personal additions overlay — items added specifically for this
+          employee by their admin / HR / reporting manager. Always shown
+          below the role template so the baseline-vs-overlay distinction
+          stays visible. */}
+      {personal && personal.length > 0 && <PersonalSection items={personal} />}
     </div>
   );
 }
 
-function Section({ name, rows }: { name: string; rows: RoleItem[] }) {
+function PersonalSection({ items }: { items: PersonalItem[] }) {
+  const sections = useMemo(() => {
+    const map = new Map<string, { order: number; rows: PersonalItem[] }>();
+    for (const it of items) {
+      const ex = map.get(it.section_name);
+      if (ex) ex.rows.push(it);
+      else map.set(it.section_name, { order: it.section_order, rows: [it] });
+    }
+    return Array.from(map.entries())
+      .sort((a, b) => a[1].order - b[1].order)
+      .map(([name, v]) => ({ name, rows: v.rows.sort((a, b) => a.item_order - b.item_order) }));
+  }, [items]);
+
+  return (
+    <div className="space-y-3 pt-2">
+      <div className="rounded-xl-2 border border-accent/30 bg-accent-container/30 px-4 py-2.5 flex items-center gap-2">
+        <span className="inline-flex items-center px-1.5 py-0.5 rounded-full text-[10px] font-bold bg-accent text-on-accent uppercase tracking-wide">Specific to you</span>
+        <span className="text-xs text-on-surface-muted">{items.length} item{items.length === 1 ? '' : 's'} added by your reporting manager or HR.</span>
+      </div>
+      {sections.map(section => (
+        <Section key={`p-${section.name}`} name={section.name} rows={section.rows as any} personal />
+      ))}
+    </div>
+  );
+}
+
+function Section({ name, rows, personal }: { name: string; rows: RoleItem[]; personal?: boolean }) {
   const [open, setOpen] = useState(true);
   return (
-    <div className="bg-surface rounded-xl-2 border border-outline shadow-elev-1 overflow-hidden">
+    <div className={`bg-surface rounded-xl-2 shadow-elev-1 overflow-hidden ${personal ? 'border border-accent/30' : 'border border-outline'}`}>
       <button onClick={() => setOpen(o => !o)}
-        className="w-full px-5 py-3 flex items-center justify-between gap-3 bg-surface-2/40 hover:bg-surface-2 transition-colors">
+        className={`w-full px-5 py-3 flex items-center justify-between gap-3 transition-colors ${personal ? 'bg-accent-container/30 hover:bg-accent-container/50' : 'bg-surface-2/40 hover:bg-surface-2'}`}>
         <div className="flex items-center gap-2 min-w-0">
-          <span className="num-mono text-[10px] font-bold px-1.5 py-0.5 rounded-full bg-brand-container/60 text-brand">{rows.length}</span>
+          <span className={`num-mono text-[10px] font-bold px-1.5 py-0.5 rounded-full ${personal ? 'bg-accent text-on-accent' : 'bg-brand-container/60 text-brand'}`}>{rows.length}</span>
           <h4 className="font-display text-base font-bold tracking-tight text-on-surface truncate">{name}</h4>
         </div>
         <span className={`text-on-surface-subtle text-xs transition-transform ${open ? 'rotate-90' : ''}`}>▶</span>

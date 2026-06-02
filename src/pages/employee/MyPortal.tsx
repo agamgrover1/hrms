@@ -53,6 +53,39 @@ class TabErrorBoundary extends Component<{ children: ReactNode }, { error: strin
   }
 }
 
+// Small hub-tile components defined inline so they don't sprawl into a
+// separate file (only used here). HubStat is a 1-up KPI cell, hubHints
+// maps tab keys to dynamic badge data (e.g. "3 pending").
+function HubStat({ label, value, tone }: { label: string; value: number; tone: string }) {
+  return (
+    <div className="bg-surface rounded-xl-2 border border-outline p-4 shadow-elev-1">
+      <p className={`num-mono text-2xl font-bold ${tone}`}>{value}</p>
+      <p className="text-xs text-on-surface-subtle mt-0.5">{label}</p>
+    </div>
+  );
+}
+
+function hubHints(ctx: { key: string; pendingLeaves: number; pendingWfh: number; fullDay: number; shortLeave: number; performance: any }): { badge?: string | number; badgeTone?: string; sub?: string } | null {
+  switch (ctx.key) {
+    case 'role':       return { sub: 'Your playbook' };
+    case 'attendance': return { sub: 'Clock-in history' };
+    case 'leave':      return ctx.pendingLeaves > 0
+      ? { badge: ctx.pendingLeaves, badgeTone: 'bg-warning text-on-accent', sub: `${ctx.fullDay + ctx.shortLeave} left` }
+      : { sub: `${ctx.fullDay + ctx.shortLeave} days available` };
+    case 'wfh':        return ctx.pendingWfh > 0
+      ? { badge: ctx.pendingWfh, badgeTone: 'bg-warning text-on-accent', sub: 'Pending approval' }
+      : { sub: 'Apply for WFH' };
+    case 'my-hours':   return { sub: 'Log project hours' };
+    case 'incentives': return { sub: 'Upsell rewards' };
+    case 'expenses':   return { sub: 'Reimbursements' };
+    case 'device':     return { sub: 'Assigned assets' };
+    case 'payslip':    return { sub: 'Salary history' };
+    case 'performance':return { sub: 'Reviews & goals' };
+    case 'myteam':     return { sub: 'Direct reports' };
+    default: return null;
+  }
+}
+
 const baseTabs = [
   { key: 'overview',     label: 'Overview',     icon: User },
   { key: 'role',         label: 'My Role',      icon: BookOpen },
@@ -194,7 +227,7 @@ function ApplyLeaveModal({ onClose, onSubmit, balance }: { onClose: () => void; 
 export default function MyPortal() {
   const { user } = useAuth();
   const [searchParams] = useSearchParams();
-  const [tab, setTab] = useState(() => searchParams.get('tab') ?? 'overview');
+  const [tab, setTab] = useState(() => searchParams.get('tab') ?? 'hub');
   // Keep tab in sync if user navigates via notification while already on this page
   useEffect(() => { const t = searchParams.get('tab'); if (t) setTab(t); }, [searchParams]);
   const [applyLeave, setApplyLeave] = useState(false);
@@ -589,18 +622,116 @@ export default function MyPortal() {
         </div>
       </div>
 
-      {/* Tabs */}
-      <div className="flex flex-wrap gap-1 bg-surface rounded-xl p-1 border border-outline shadow-sm w-fit">
-        {tabs.map(({ key, label, icon: Icon }) => (
-          <button key={key} onClick={() => setTab(key)}
-            className="flex items-center gap-2 px-4 py-2 text-sm font-semibold rounded-lg transition-all"
-            style={tab === key
-              ? { background: '#192250', color: '#fff' }
-              : { color: '#6b7280' }}>
-            <Icon size={14} /> {label}
-          </button>
-        ))}
-      </div>
+      {/* Hub-or-section nav: hub gets no strip; deep sections get a compact
+          back-link so the user always has one tap home. */}
+      {tab !== 'hub' && (() => {
+        const current = tabs.find(t => t.key === tab);
+        const Icon = current?.icon;
+        return (
+          <div className="flex items-center justify-between gap-3">
+            <div className="inline-flex items-center gap-3">
+              <button onClick={() => setTab('hub')}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold border border-outline bg-surface text-on-surface-muted hover:bg-surface-2 transition-colors">
+                ← All sections
+              </button>
+              <div className="inline-flex items-center gap-2 text-on-surface">
+                {Icon && <Icon size={16} className="text-brand" />}
+                <span className="font-display text-base font-bold tracking-tight">{current?.label ?? 'Section'}</span>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
+
+      {/* Hub — landing dashboard with section cards */}
+      {tab === 'hub' && (() => {
+        const present = presentDays, late = lateDays, absent = absentDays;
+        const today = new Date();
+        const todayStr = today.toLocaleDateString('en-IN', { weekday: 'long', day: 'numeric', month: 'long' });
+        const hour = today.getHours();
+        const greeting = hour < 12 ? 'Good morning' : hour < 17 ? 'Good afternoon' : 'Good evening';
+        const todayRec = attendance.find((a: any) => (a.date ?? '').slice(0, 10) === today.toISOString().slice(0, 10));
+        const pendingLeaves = leaveRequests.filter((l: any) => l.status === 'pending').length;
+        const pendingWfh = wfh.filter((w: any) => w.status === 'pending').length;
+        const fullDay = (balance as any).full_day ?? 0;
+        const shortLeave = (balance as any).short_leave ?? 0;
+
+        return (
+          <div className="space-y-5">
+            {/* Hero */}
+            <div className="relative overflow-hidden rounded-xl-3 border border-outline bg-surface shadow-elev-2">
+              <div className="absolute inset-0 aurora-bg opacity-90" />
+              <div className="absolute inset-0 grain-overlay" />
+              <div className="relative px-6 py-6 text-white">
+                <p className="text-sm opacity-80">{todayStr}</p>
+                <h2 className="font-display text-2xl font-bold mt-1">{greeting}, {user?.name?.split(' ')[0] ?? 'there'}.</h2>
+                <div className="mt-4 flex flex-wrap items-center gap-4 text-sm">
+                  {todayRec ? (
+                    <span className="inline-flex items-center gap-2 px-3 py-1.5 rounded-full bg-white/15 backdrop-blur">
+                      <span className="w-2 h-2 rounded-full bg-success animate-pulse" />
+                      Clocked in {todayRec.clock_in ?? ''}
+                      {todayRec.total_hours != null && <span className="opacity-80">· {Math.round(Number(todayRec.total_hours) * 10) / 10}h today</span>}
+                    </span>
+                  ) : (
+                    <span className="inline-flex items-center gap-2 px-3 py-1.5 rounded-full bg-white/15 backdrop-blur">
+                      <span className="w-2 h-2 rounded-full bg-warning" />
+                      Not clocked in yet
+                    </span>
+                  )}
+                  <span className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-white/15 backdrop-blur">
+                    {fullDay} full + {shortLeave} short leave left
+                  </span>
+                  {(pendingLeaves > 0 || pendingWfh > 0) && (
+                    <span className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-warning/30 backdrop-blur text-white">
+                      {pendingLeaves + pendingWfh} pending approval{pendingLeaves + pendingWfh === 1 ? '' : 's'}
+                    </span>
+                  )}
+                </div>
+              </div>
+            </div>
+
+            {/* This-month stats */}
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+              <HubStat label="Present" value={present} tone="text-success" />
+              <HubStat label="Late" value={late} tone="text-warning" />
+              <HubStat label="Absent" value={absent} tone="text-danger" />
+              <HubStat label="WFH days" value={wfh.filter((w: any) => w.status === 'approved').length} tone="text-on-surface" />
+            </div>
+
+            {/* Section cards */}
+            <div>
+              <p className="text-[10px] uppercase tracking-[0.18em] font-bold text-on-surface-subtle mb-2">Quick access</p>
+              <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3">
+                {tabs.filter(t => t.key !== 'overview').map(t => {
+                  const Icon = t.icon;
+                  const hint = hubHints({
+                    key: t.key, pendingLeaves, pendingWfh, fullDay, shortLeave, performance,
+                  });
+                  return (
+                    <button key={t.key} onClick={() => setTab(t.key)}
+                      className="text-left group bg-surface rounded-xl-2 border border-outline shadow-elev-1 hover:shadow-elev-2 hover:border-accent/40 transition-all p-4">
+                      <div className="flex items-start justify-between gap-2">
+                        <div className="w-9 h-9 rounded-lg bg-brand-container/50 flex items-center justify-center group-hover:bg-accent-container transition-colors">
+                          <Icon size={16} className="text-brand group-hover:text-accent transition-colors" />
+                        </div>
+                        {hint?.badge && (
+                          <span className={`num-mono text-[10px] font-bold px-1.5 py-0.5 rounded-full ${hint.badgeTone ?? 'bg-warning text-on-accent'}`}>{hint.badge}</span>
+                        )}
+                      </div>
+                      <p className="mt-3 font-display text-sm font-bold text-on-surface group-hover:text-accent transition-colors">{t.label}</p>
+                      {hint?.sub && <p className="text-[11px] text-on-surface-subtle mt-0.5">{hint.sub}</p>}
+                    </button>
+                  );
+                })}
+                <button onClick={() => setTab('overview')}
+                  className="text-left group bg-surface-2 rounded-xl-2 border border-dashed border-outline hover:border-accent/40 transition-all p-4 flex items-center justify-center text-on-surface-muted hover:text-accent text-xs font-semibold">
+                  See full overview →
+                </button>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
 
       {/* ── Overview ── */}
       {tab === 'overview' && (
@@ -658,7 +789,7 @@ export default function MyPortal() {
       )}
 
       {/* ── My Role (read-only playbook for the employee's role) ── */}
-      {tab === 'role' && <MyRoleTab role={user?.role} />}
+      {tab === 'role' && <MyRoleTab role={user?.role} employeeId={empDbId || null} />}
 
       {/* ── Attendance ── */}
       {tab === 'attendance' && (
