@@ -227,11 +227,26 @@ export default function Sidebar() {
 }
 
 function SidebarGroup({ group, collapsed, pathname }: { group: NavGroup; collapsed: boolean; pathname: string }) {
-  // Track the active item index for the morphing pill background
+  // Track the active item index for the morphing pill background.
+  // Pick the LONGEST prefix match so that on `/hours/approvals`, the
+  // "Approvals" item wins over the parent "Hours grid" (/hours) — otherwise
+  // findIndex would return the first match in array order and highlight
+  // the wrong row. Exact (end:true) matches are still required to be exact.
   const containerRef = useRef<HTMLDivElement>(null);
-  const activeIndex = group.items.findIndex(item =>
-    item.end ? pathname === item.to : pathname.startsWith(item.to) && (item.to !== '/' || pathname === '/')
-  );
+  const activeIndex = (() => {
+    let bestIdx = -1;
+    let bestLen = -1;
+    group.items.forEach((item, idx) => {
+      const matches = item.end
+        ? pathname === item.to
+        : pathname === item.to || pathname.startsWith(item.to + '/');
+      if (matches && item.to.length > bestLen) {
+        bestIdx = idx;
+        bestLen = item.to.length;
+      }
+    });
+    return bestIdx;
+  })();
 
   return (
     <div ref={containerRef}>

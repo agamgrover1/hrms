@@ -1908,9 +1908,12 @@ app.put('/api/performance/appraisal-goals/admin', async (req, res) => {
 // ── Notifications ─────────────────────────────────────────────────────────
 app.get('/api/notifications', async (req, res) => {
   try {
-    const { user_id } = req.query as any;
+    const { user_id, limit } = req.query as any;
     if (!user_id) return res.status(400).json({ error: 'user_id required' });
-    const rows = await sql`SELECT * FROM notifications WHERE user_id=${user_id} ORDER BY created_at DESC LIMIT 50`;
+    // The bell-icon dropdown uses 50; the dedicated /notifications page asks
+    // for more so users can scroll their full history.
+    const lim = Math.max(1, Math.min(500, Number(limit) || 50));
+    const rows = await sql`SELECT * FROM notifications WHERE user_id=${user_id} ORDER BY created_at DESC LIMIT ${lim}`;
     res.json(rows);
   } catch (err) { res.status(500).json({ error: 'Server error' }); }
 });
@@ -2946,6 +2949,10 @@ app.put('/api/projects/:id', async (req, res) => {
       project_lead_id, project_lead_name,
       status, flag, flag_reason, notes, total_hours_cap,
     } = req.body;
+    // Detect status flipping to 'archived' so we can clean up future-month
+    // assignments (planning should stop from that day onward).
+    const wasActive = (await sql`SELECT status FROM projects WHERE id=${req.params.id}` as any[])[0]?.status;
+    const isArchiving = status === 'archived' && wasActive !== 'archived';
     // Only update cap if explicitly provided in the body — callers that omit it
     // keep the existing value.
     const updateCap = total_hours_cap !== undefined;
@@ -2974,15 +2981,33 @@ app.put('/api/projects/:id', async (req, res) => {
           notes=${notes ?? null}
         WHERE id=${req.params.id} RETURNING *`;
     if (!rows.length) return res.status(404).json({ error: 'Project not found' });
+    if (isArchiving) {
+      await dismissFutureAssignments(req.params.id);
+    }
     res.json(rows[0]);
   } catch (err: any) { res.status(500).json({ error: err.message || 'Server error' }); }
 });
+
+// When a project is archived we stop further planning against it: drop
+// assignment rows for the current month and all future months. Past months
+// are kept so historical reporting still works, and any hour_logs already
+// recorded against the project remain intact (the work happened).
+async function dismissFutureAssignments(projectId: string) {
+  const now = new Date();
+  const m = now.getMonth() + 1;
+  const y = now.getFullYear();
+  await sql`
+    DELETE FROM project_assignments
+    WHERE project_id = ${projectId}
+      AND (year > ${y} OR (year = ${y} AND month >= ${m}))`;
+}
 
 app.delete('/api/projects/:id', async (req, res) => {
   try {
     // Soft delete: mark archived; preserves history of hour logs
     const rows = await sql`UPDATE projects SET status='archived' WHERE id=${req.params.id} RETURNING id, status`;
     if (!rows.length) return res.status(404).json({ error: 'Project not found' });
+    await dismissFutureAssignments(req.params.id);
     res.json(rows[0]);
   } catch (err: any) { res.status(500).json({ error: err.message || 'Server error' }); }
 });

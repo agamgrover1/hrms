@@ -44,6 +44,15 @@ const STATUS_PILL: Record<string, { label: string; bg: string; color: string }> 
   archived: { label: 'Archived', bg: 'rgb(var(--surface-3))',         color: 'rgb(var(--on-surface-muted))' },
 };
 
+function FilterField({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <label className="block">
+      <span className="block text-[10px] font-bold uppercase tracking-[0.14em] text-on-surface-subtle mb-1">{label}</span>
+      {children}
+    </label>
+  );
+}
+
 function typeLabel(v: string | null) {
   return PROJECT_TYPES.find(t => t.value === v)?.label ?? v ?? '—';
 }
@@ -60,6 +69,10 @@ export default function Projects() {
   const [search, setSearch] = useState('');
   const [typeFilter, setTypeFilter] = useState('');
   const [statusFilter, setStatusFilter] = useState('active');
+  const [reportingFilter, setReportingFilter] = useState('');
+  const [leadFilter, setLeadFilter] = useState('');
+  const [flagFilter, setFlagFilter] = useState('');
+  const [showMoreFilters, setShowMoreFilters] = useState(false);
 
   const [showForm, setShowForm] = useState(false);
   const [editing, setEditing] = useState<Project | null>(null);
@@ -81,14 +94,37 @@ export default function Projects() {
     return projects.filter(p => {
       if (statusFilter && p.status !== statusFilter) return false;
       if (typeFilter && p.project_type !== typeFilter) return false;
+      if (reportingFilter && p.project_reporting_id !== reportingFilter) return false;
+      if (leadFilter && p.project_lead_id !== leadFilter) return false;
+      if (flagFilter === 'none' && p.flag) return false;
+      if (flagFilter && flagFilter !== 'none' && p.flag !== flagFilter) return false;
       if (!term) return true;
       return (
         p.name.toLowerCase().includes(term) ||
         (p.client_name ?? '').toLowerCase().includes(term) ||
-        (p.project_reporting_name ?? '').toLowerCase().includes(term)
+        (p.project_reporting_name ?? '').toLowerCase().includes(term) ||
+        (p.project_lead_name ?? '').toLowerCase().includes(term)
       );
     });
-  }, [projects, search, typeFilter, statusFilter]);
+  }, [projects, search, typeFilter, statusFilter, reportingFilter, leadFilter, flagFilter]);
+
+  // Surface people who actually own at least one project — keeps the
+  // dropdowns from showing every employee in the system.
+  const reportingPeople = useMemo(() => {
+    const m = new Map<string, string>();
+    for (const p of projects) if (p.project_reporting_id) m.set(p.project_reporting_id, p.project_reporting_name || '—');
+    return Array.from(m.entries()).sort((a, b) => a[1].localeCompare(b[1]));
+  }, [projects]);
+  const leadPeople = useMemo(() => {
+    const m = new Map<string, string>();
+    for (const p of projects) if (p.project_lead_id) m.set(p.project_lead_id, p.project_lead_name || '—');
+    return Array.from(m.entries()).sort((a, b) => a[1].localeCompare(b[1]));
+  }, [projects]);
+
+  const activeFilterCount = [typeFilter, reportingFilter, leadFilter, flagFilter].filter(Boolean).length;
+  const clearAllFilters = () => {
+    setTypeFilter(''); setReportingFilter(''); setLeadFilter(''); setFlagFilter('');
+  };
 
   const counts = {
     active: projects.filter(p => p.status === 'active').length,
@@ -127,35 +163,84 @@ export default function Projects() {
       </div>
 
       {/* Toolbar */}
-      <div className="flex flex-wrap items-center gap-3">
-        <div className="relative flex-1 min-w-48">
-          <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-on-surface-subtle" />
-          <input
-            value={search}
-            onChange={e => setSearch(e.target.value)}
-            placeholder="Search project, client, reporting…"
-            className="w-full pl-9 pr-4 py-2.5 text-sm bg-surface border border-outline rounded-lg text-on-surface placeholder:text-on-surface-subtle focus:outline-none focus:ring-2 focus:ring-accent/30"
-          />
-        </div>
-        <select value={typeFilter} onChange={e => setTypeFilter(e.target.value)}
-          className="text-sm border border-outline rounded-lg px-3 py-2.5 bg-surface text-on-surface-muted focus:outline-none focus:ring-2 focus:ring-accent/30">
-          <option value="">All Types</option>
-          {PROJECT_TYPES.map(t => <option key={t.value} value={t.value}>{t.label}</option>)}
-        </select>
-        <select value={statusFilter} onChange={e => setStatusFilter(e.target.value)}
-          className="text-sm border border-outline rounded-lg px-3 py-2.5 bg-surface text-on-surface-muted focus:outline-none focus:ring-2 focus:ring-accent/30">
-          <option value="active">Active</option>
-          <option value="on_hold">On Hold</option>
-          <option value="archived">Archived</option>
-          <option value="">All Statuses</option>
-        </select>
-        {canEdit && (
-          <button
-            onClick={() => { setEditing(null); setShowForm(true); }}
-            className="inline-flex items-center gap-2 px-4 py-2.5 rounded-lg text-sm font-semibold bg-accent text-on-accent hover:opacity-90 shadow-elev-1 hover:shadow-elev-2 transition-all"
-          >
-            <Plus size={15} /> New Project
+      <div className="space-y-3">
+        <div className="flex flex-wrap items-center gap-3">
+          <div className="relative flex-1 min-w-48">
+            <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-on-surface-subtle" />
+            <input
+              value={search}
+              onChange={e => setSearch(e.target.value)}
+              placeholder="Search project, client, reporting, lead…"
+              className="w-full pl-9 pr-4 py-2.5 text-sm bg-surface border border-outline rounded-lg text-on-surface placeholder:text-on-surface-subtle focus:outline-none focus:ring-2 focus:ring-accent/30"
+            />
+          </div>
+          <select value={statusFilter} onChange={e => setStatusFilter(e.target.value)}
+            className="text-sm border border-outline rounded-lg px-3 py-2.5 bg-surface text-on-surface-muted focus:outline-none focus:ring-2 focus:ring-accent/30">
+            <option value="active">Active</option>
+            <option value="on_hold">On Hold</option>
+            <option value="archived">Archived</option>
+            <option value="">All Statuses</option>
+          </select>
+          <button onClick={() => setShowMoreFilters(s => !s)}
+            className={`inline-flex items-center gap-1.5 px-3 py-2.5 rounded-lg text-sm font-medium border transition-colors ${
+              showMoreFilters || activeFilterCount > 0
+                ? 'border-accent bg-accent-container/40 text-accent'
+                : 'border-outline bg-surface text-on-surface-muted hover:bg-surface-2'
+            }`}>
+            Filters
+            {activeFilterCount > 0 && (
+              <span className="num-mono text-[10px] font-bold px-1.5 py-0.5 rounded-full bg-accent text-on-accent">{activeFilterCount}</span>
+            )}
           </button>
+          {canEdit && (
+            <button
+              onClick={() => { setEditing(null); setShowForm(true); }}
+              className="inline-flex items-center gap-2 px-4 py-2.5 rounded-lg text-sm font-semibold bg-accent text-on-accent hover:opacity-90 shadow-elev-1 hover:shadow-elev-2 transition-all"
+            >
+              <Plus size={15} /> New Project
+            </button>
+          )}
+        </div>
+
+        {showMoreFilters && (
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 bg-surface-2 border border-outline rounded-xl-2 p-3">
+            <FilterField label="Type">
+              <select value={typeFilter} onChange={e => setTypeFilter(e.target.value)}
+                className="w-full text-sm border border-outline rounded-lg px-2.5 py-2 bg-surface text-on-surface focus:outline-none focus:ring-2 focus:ring-accent/30">
+                <option value="">Any type</option>
+                {PROJECT_TYPES.map(t => <option key={t.value} value={t.value}>{t.label}</option>)}
+              </select>
+            </FilterField>
+            <FilterField label="Reporting person">
+              <select value={reportingFilter} onChange={e => setReportingFilter(e.target.value)}
+                className="w-full text-sm border border-outline rounded-lg px-2.5 py-2 bg-surface text-on-surface focus:outline-none focus:ring-2 focus:ring-accent/30">
+                <option value="">Any reviewer</option>
+                {reportingPeople.map(([id, name]) => <option key={id} value={id}>{name}</option>)}
+              </select>
+            </FilterField>
+            <FilterField label="Project lead">
+              <select value={leadFilter} onChange={e => setLeadFilter(e.target.value)}
+                className="w-full text-sm border border-outline rounded-lg px-2.5 py-2 bg-surface text-on-surface focus:outline-none focus:ring-2 focus:ring-accent/30">
+                <option value="">Any lead</option>
+                {leadPeople.map(([id, name]) => <option key={id} value={id}>{name}</option>)}
+              </select>
+            </FilterField>
+            <FilterField label="Flag">
+              <select value={flagFilter} onChange={e => setFlagFilter(e.target.value)}
+                className="w-full text-sm border border-outline rounded-lg px-2.5 py-2 bg-surface text-on-surface focus:outline-none focus:ring-2 focus:ring-accent/30">
+                <option value="">Any</option>
+                <option value="red">🔴 Red — at risk</option>
+                <option value="yellow">🟡 Yellow — watch</option>
+                <option value="none">No flag</option>
+              </select>
+            </FilterField>
+            {activeFilterCount > 0 && (
+              <div className="sm:col-span-2 lg:col-span-4 flex items-center justify-end pt-1">
+                <button onClick={clearAllFilters}
+                  className="text-xs font-semibold text-accent hover:underline">Clear all filters</button>
+              </div>
+            )}
+          </div>
         )}
       </div>
 

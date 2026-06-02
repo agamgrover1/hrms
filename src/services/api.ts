@@ -250,7 +250,8 @@ export const api = {
     request<{ dates: any[]; used_count: number; remaining: number }>(`/optional-leave/available?employee_id=${employeeId}&year=${year}`),
 
   // Notifications
-  getNotifications: (userId: string) => request<any[]>(`/notifications?user_id=${userId}`),
+  getNotifications: (userId: string, limit?: number) =>
+    request<any[]>(`/notifications?user_id=${userId}${limit ? `&limit=${limit}` : ''}`),
   markNotificationRead: (id: number) => request<any>(`/notifications/${id}/read`, { method: 'PATCH' }),
   markAllNotificationsRead: (userId: string) => request<any>(`/notifications/read-all?user_id=${userId}`, { method: 'PATCH' }),
   deleteNotification: (id: number) => request<any>(`/notifications/${id}`, { method: 'DELETE' }),

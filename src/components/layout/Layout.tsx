@@ -20,6 +20,7 @@ const pageTitles: Record<string, string> = {
   '/hours': 'Project Hours',
   '/hours/approvals': 'Hour Approvals',
   '/hours/compliance': 'Daily Log Compliance',
+  '/notifications': 'Notifications',
   '/my': 'My Portal',
   '/my-team': 'My Team',
 };

@@ -6,7 +6,7 @@ import { api } from '../../services/api';
 import ThemeToggle from '../ThemeToggle';
 
 // Map notification type + user role → destination route
-function getNotifRoute(type: string, role: string): string {
+export function getNotifRoute(type: string, role: string): string {
   const isHR  = role === 'admin' || role === 'hr_manager';
   const isMgr = role === 'employee'; // employees can be managers
 
@@ -133,7 +133,7 @@ interface Props {
   title: string;
 }
 
-const TYPE_CONFIG: Record<string, { icon: any; color: string; bg: string }> = {
+export const TYPE_CONFIG: Record<string, { icon: any; color: string; bg: string }> = {
   // Leave
   leave_applied:           { icon: Calendar,       color: '#d97706', bg: '#fffbeb' },
   leave_approved:          { icon: CheckCircle,    color: '#15803d', bg: '#f0fdf4' },
@@ -389,6 +389,13 @@ export default function TopBar({ title }: Props) {
                     );
                   })
                 )}
+              </div>
+              {/* Footer: link to full notifications page */}
+              <div className="border-t border-outline px-3 py-2 bg-surface-2/40">
+                <button onClick={() => { setShowNotifs(false); navigate('/notifications'); }}
+                  className="w-full text-center text-xs font-semibold text-accent hover:underline">
+                  View all notifications →
+                </button>
               </div>
             </div>
           )}
