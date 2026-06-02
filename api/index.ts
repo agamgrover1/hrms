@@ -3762,10 +3762,17 @@ async function finComputeMonth(month: number, year: number) {
   // Per-project invoice totals — coordinator-raised + admin-cleared amounts.
   // Cancelled invoices are excluded. When invoices exist for a project, they
   // override the legacy fin_project_revenue figure as the revenue source.
+  //
+  // `realized` is the hybrid revenue figure that actually drives the P&L:
+  // for each invoice, take the received amount if cleared, else the invoiced
+  // amount. So pending invoices count at face value (expected) and cleared
+  // ones count at the real money received. A short-paid invoice (TDS, FX)
+  // immediately drops the project's revenue on clearance.
   const invoiceAgg = (await sql`
     SELECT project_id,
       SUM(amount_invoiced)::numeric AS invoiced,
       SUM(CASE WHEN status='cleared' THEN COALESCE(amount_received, 0) ELSE 0 END)::numeric AS received,
+      SUM(CASE WHEN status='cleared' THEN COALESCE(amount_received, 0) ELSE amount_invoiced END)::numeric AS realized,
       COUNT(*) FILTER (WHERE status='pending')::int AS pending_count,
       COUNT(*) FILTER (WHERE status='cleared')::int AS cleared_count,
       COUNT(*)::int AS invoice_count
@@ -3782,10 +3789,12 @@ async function finComputeMonth(month: number, year: number) {
   const capOf = (e: any) => { const c = Number(e.capacity_hours); return c > 0 ? c : defCap; };
   const rateOf = (e: any) => { const c = capOf(e); return c > 0 ? Number(e.salary) / c : 0; };
   const revenueOf = (p: any) => {
-    // Invoices win when present (accrual basis — billed amount is the truth).
-    // Legacy fin_project_revenue is the fallback for projects without invoices yet.
+    // Invoices win when present. Use the *realized* figure — cleared invoices
+    // contribute their received amount, pending invoices their invoiced amount.
+    // This means cleared shortfalls (TDS, FX, partial pay) immediately hit
+    // gross/net profit instead of hiding behind the accrual number.
     const inv = invoiceByProj.get(p.id);
-    if (inv && Number(inv.invoiced) > 0) return Number(inv.invoiced);
+    if (inv && Number(inv.invoiced) > 0) return Number(inv.realized);
     const r = revByProj.get(p.id);
     if (!r) return 0;
     return r.billing_type === 'hourly' ? Number(r.hourly_rate) * Number(r.billable_hours) : Number(r.fixed_amount);
