@@ -149,7 +149,10 @@ export default function MyTeam() {
       if (!emp) { setLoading(false); return; }
       const eid = emp.id;
       setEmpDbId(eid);
-      api.getTeamMembers(eid).then(members => {
+      // includeDescendants=true so a 2nd/3rd-level manager sees their entire
+      // sub-tree, not just direct reports — they have the same responsibilities
+      // for the whole branch.
+      api.getTeamMembers(eid, true).then(members => {
         setTeamMembers(members);
         setLoading(false);
         if (!members.length) return;

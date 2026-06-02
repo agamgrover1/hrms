@@ -479,10 +479,11 @@ export default function MyPortal() {
     return { month: m, score: rec ? rec.overall_score : null };
   });
 
-  // Load team data once empDbId is known
+  // Load team data once empDbId is known. Descendants=true so an Nth-level
+  // manager sees their full sub-tree (the My Team tab + drilldowns).
   useEffect(() => {
     if (!empDbId) return;
-    api.getTeamMembers(empDbId).then(members => {
+    api.getTeamMembers(empDbId, true).then(members => {
       setTeamMembers(members);
       if (members.length === 0) return;
       api.getLeaveRequests({ reporting_manager_id: empDbId }).then(leavs =>

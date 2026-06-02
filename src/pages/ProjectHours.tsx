@@ -106,9 +106,28 @@ export default function ProjectHours() {
       .catch(() => {});
   }, [user?.employee_id_ref]);
 
+  // Descendants of `me` in the reporting tree — direct reports AND everyone who
+  // reports up through them, recursively. A 2nd/3rd-level manager sees their
+  // entire sub-tree, not just direct reports.
   const reportsTo = useMemo(() => {
     if (!me) return new Set<string>();
-    return new Set((employees as any[]).filter(e => e.reporting_manager_id === me.id).map(e => e.id));
+    const childrenByManager = new Map<string, string[]>();
+    for (const e of employees as any[]) {
+      if (!e.reporting_manager_id) continue;
+      const arr = childrenByManager.get(e.reporting_manager_id);
+      if (arr) arr.push(e.id); else childrenByManager.set(e.reporting_manager_id, [e.id]);
+    }
+    const seen = new Set<string>();
+    const stack = [me.id];
+    while (stack.length) {
+      const next = stack.pop()!;
+      for (const child of childrenByManager.get(next) ?? []) {
+        if (seen.has(child)) continue; // guard against any accidental cycle
+        seen.add(child);
+        stack.push(child);
+      }
+    }
+    return seen;
   }, [employees, me]);
   // Projects this user is responsible for — either as reviewer (approves hour logs)
   // or as the project lead. Both relationships count for the Mine view.

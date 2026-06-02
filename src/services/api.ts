@@ -28,7 +28,8 @@ export const api = {
 
   // Employees
   getEmployees: () => request<any[]>('/employees'),
-  getTeamMembers: (reporting_manager_id: string) => request<any[]>(`/employees?reporting_manager_id=${reporting_manager_id}`),
+  getTeamMembers: (reporting_manager_id: string, includeDescendants = false) =>
+    request<any[]>(`/employees?reporting_manager_id=${reporting_manager_id}${includeDescendants ? '&descendants=true' : ''}`),
   createEmployee: (data: any) => request<any>('/employees', { method: 'POST', body: JSON.stringify(data) }),
   updateEmployee: (id: string, data: any) => request<any>(`/employees/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
   deleteEmployee: (id: string) => request<any>(`/employees/${id}`, { method: 'DELETE' }),

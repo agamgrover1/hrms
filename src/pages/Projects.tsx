@@ -1,7 +1,8 @@
 import { useState, useEffect, useMemo } from 'react';
-import { Plus, Pencil, Trash2, X, Search, Briefcase, ExternalLink, Flag, AlertTriangle } from 'lucide-react';
+import { Plus, Pencil, Trash2, X, Search, Briefcase, ExternalLink, Flag, AlertTriangle, IndianRupee } from 'lucide-react';
 import { api } from '../services/api';
 import { useAuth } from '../context/AuthContext';
+import { financeApi, type FinProjectExpense } from '../services/financeApi';
 
 interface Project {
   id: string;
@@ -60,6 +61,7 @@ export default function Projects() {
 
   const [showForm, setShowForm] = useState(false);
   const [editing, setEditing] = useState<Project | null>(null);
+  const [expensesFor, setExpensesFor] = useState<Project | null>(null);
 
   const load = () => {
     setLoading(true);
@@ -222,6 +224,10 @@ export default function Projects() {
                   {canEdit && (
                     <td className="px-4 py-3 text-right">
                       <div className="inline-flex items-center gap-1">
+                        <button onClick={() => setExpensesFor(p)}
+                          className="p-1.5 rounded hover:bg-warning-container/60 transition-colors" title="Project expenses (outsourcing, content, ads)">
+                          <IndianRupee size={14} className="text-warning" />
+                        </button>
                         <button onClick={() => { setEditing(p); setShowForm(true); }}
                           className="p-1.5 rounded hover:bg-surface-3 transition-colors" title="Edit">
                           <Pencil size={14} className="text-on-surface-muted" />
@@ -251,6 +257,204 @@ export default function Projects() {
           createdBy={user?.name}
         />
       )}
+
+      {expensesFor && (
+        <ProjectExpensesModal
+          project={expensesFor}
+          onClose={() => setExpensesFor(null)}
+        />
+      )}
+    </div>
+  );
+}
+
+// ── Project expenses modal — outsourced services, content, ad spend ─────────
+const EXPENSE_CATEGORIES: { value: string; label: string }[] = [
+  { value: 'outsource', label: 'Outsourced work' },
+  { value: 'content',   label: 'Content / copy' },
+  { value: 'ads',       label: 'Ad spend' },
+  { value: 'tools',     label: 'Tools / software' },
+  { value: 'travel',    label: 'Travel' },
+  { value: 'other',     label: 'Other' },
+];
+
+const fmtINR = (n: number) => `₹${Math.round(Number(n) || 0).toLocaleString('en-IN')}`;
+const monthLabel = (m: number, y: number) =>
+  new Date(y, m - 1, 1).toLocaleDateString('en-IN', { month: 'short', year: 'numeric' });
+
+function ProjectExpensesModal({ project, onClose }: { project: Project; onClose: () => void }) {
+  const today = new Date();
+  const [month, setMonth] = useState(today.getMonth() + 1);
+  const [year, setYear] = useState(today.getFullYear());
+  const [list, setList] = useState<FinProjectExpense[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [draft, setDraft] = useState({ vendor: '', description: '', amount: '', category: 'outsource' });
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState('');
+
+  const load = () => {
+    setLoading(true);
+    financeApi.getProjectExpenses({ project_id: project.id, month, year })
+      .then(setList).catch(() => setList([]))
+      .finally(() => setLoading(false));
+  };
+  useEffect(() => { load(); /* eslint-disable-next-line */ }, [project.id, month, year]);
+
+  const total = useMemo(() => list.reduce((s, e) => s + Number(e.amount || 0), 0), [list]);
+
+  const add = async () => {
+    const amount = Number(draft.amount);
+    if (!draft.description.trim()) { setError('Description is required'); return; }
+    if (Number.isNaN(amount) || amount <= 0) { setError('Amount must be a positive number'); return; }
+    setError(''); setSaving(true);
+    try {
+      await financeApi.addProjectExpense({
+        project_id: project.id, month, year,
+        vendor: draft.vendor.trim() || undefined,
+        description: draft.description.trim(),
+        amount, category: draft.category,
+      });
+      setDraft({ vendor: '', description: '', amount: '', category: draft.category });
+      load();
+    } catch (err: any) {
+      setError(err.message ?? 'Failed to add expense');
+    } finally {
+      setSaving(false);
+    }
+  };
+  const remove = async (id: number) => {
+    if (!confirm('Delete this expense?')) return;
+    try { await financeApi.deleteProjectExpense(id); load(); }
+    catch (err: any) { alert(err.message ?? 'Failed'); }
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-bg/55 backdrop-blur-sm p-4" onClick={onClose}>
+      <div className="bg-surface rounded-2xl shadow-elev-4 border border-outline w-full max-w-2xl max-h-[92vh] overflow-hidden flex flex-col"
+        onClick={e => e.stopPropagation()}>
+        <div className="flex items-start justify-between px-6 py-5 border-b border-outline">
+          <div className="min-w-0">
+            <h3 className="font-display text-xl font-bold tracking-tight text-on-surface truncate">Project expenses</h3>
+            <p className="text-xs text-on-surface-muted mt-0.5 truncate">{project.name}{project.client_name ? ` · ${project.client_name}` : ''}</p>
+            <p className="text-[11px] text-on-surface-subtle mt-1">
+              Outsourced services, content, ad spend, tools — deducted from this project's revenue in the profitability dashboard.
+            </p>
+          </div>
+          <button onClick={onClose} className="p-1.5 hover:bg-surface-2 rounded-lg flex-shrink-0"><X size={16} className="text-on-surface-muted" /></button>
+        </div>
+
+        {/* Month/year + total */}
+        <div className="px-6 py-3 border-b border-outline bg-surface-2/40 flex items-center justify-between gap-3">
+          <div className="flex items-center gap-2">
+            <select value={month} onChange={e => setMonth(Number(e.target.value))}
+              className="text-sm bg-surface border border-outline rounded-lg px-2.5 py-1.5">
+              {Array.from({ length: 12 }, (_, i) => (
+                <option key={i+1} value={i+1}>{monthLabel(i+1, year).split(' ')[0]}</option>
+              ))}
+            </select>
+            <select value={year} onChange={e => setYear(Number(e.target.value))}
+              className="text-sm bg-surface border border-outline rounded-lg px-2.5 py-1.5">
+              {[year-1, year, year+1].map(y => <option key={y} value={y}>{y}</option>)}
+            </select>
+          </div>
+          <div className="text-right">
+            <p className="text-[10px] uppercase tracking-[0.16em] font-bold text-on-surface-muted">Total · {monthLabel(month, year)}</p>
+            <p className="num-mono text-lg font-bold text-warning">{fmtINR(total)}</p>
+          </div>
+        </div>
+
+        {/* Add form */}
+        <div className="px-6 py-3 border-b border-outline grid grid-cols-12 gap-2 items-end">
+          <div className="col-span-12 sm:col-span-3">
+            <label className="text-[10px] uppercase tracking-wide font-bold text-on-surface-muted block mb-1">Category</label>
+            <select value={draft.category} onChange={e => setDraft({ ...draft, category: e.target.value })}
+              className="w-full text-sm bg-surface border border-outline rounded-lg px-2.5 py-1.5">
+              {EXPENSE_CATEGORIES.map(c => <option key={c.value} value={c.value}>{c.label}</option>)}
+            </select>
+          </div>
+          <div className="col-span-12 sm:col-span-3">
+            <label className="text-[10px] uppercase tracking-wide font-bold text-on-surface-muted block mb-1">Vendor</label>
+            <input value={draft.vendor} onChange={e => setDraft({ ...draft, vendor: e.target.value })}
+              placeholder="optional"
+              className="w-full text-sm bg-surface border border-outline rounded-lg px-2.5 py-1.5 placeholder:text-on-surface-subtle" />
+          </div>
+          <div className="col-span-12 sm:col-span-4">
+            <label className="text-[10px] uppercase tracking-wide font-bold text-on-surface-muted block mb-1">Description *</label>
+            <input value={draft.description} onChange={e => setDraft({ ...draft, description: e.target.value })}
+              placeholder="e.g. Content writing — May batch"
+              className="w-full text-sm bg-surface border border-outline rounded-lg px-2.5 py-1.5 placeholder:text-on-surface-subtle" />
+          </div>
+          <div className="col-span-8 sm:col-span-2">
+            <label className="text-[10px] uppercase tracking-wide font-bold text-on-surface-muted block mb-1">Amount *</label>
+            <input value={draft.amount} onChange={e => setDraft({ ...draft, amount: e.target.value })}
+              type="number" step="0.01" min="0" placeholder="0"
+              className="w-full text-sm bg-surface border border-outline rounded-lg px-2.5 py-1.5 text-right num-mono" />
+          </div>
+          <div className="col-span-4 sm:col-span-12 sm:flex sm:justify-end">
+            <button onClick={add} disabled={saving}
+              className="w-full sm:w-auto inline-flex items-center justify-center gap-1.5 px-4 py-1.5 rounded-lg text-sm font-semibold bg-accent text-on-accent hover:opacity-90 disabled:opacity-50 transition-opacity">
+              <Plus size={14} /> {saving ? '…' : 'Add'}
+            </button>
+          </div>
+          {error && <p className="col-span-12 text-xs text-danger bg-danger-container px-2 py-1 rounded">{error}</p>}
+        </div>
+
+        {/* List */}
+        <div className="flex-1 overflow-y-auto">
+          {loading ? (
+            <div className="px-6 py-12 text-center text-sm text-on-surface-subtle">Loading…</div>
+          ) : list.length === 0 ? (
+            <div className="px-6 py-12 text-center">
+              <Briefcase size={24} className="mx-auto text-on-surface-subtle mb-2" />
+              <p className="text-sm text-on-surface-muted">No expenses logged for {monthLabel(month, year)} yet.</p>
+            </div>
+          ) : (
+            <table className="w-full text-sm">
+              <thead className="bg-surface-2 border-b border-outline">
+                <tr className="text-left text-[10px] font-bold text-on-surface-muted uppercase tracking-wider">
+                  <th className="px-5 py-2.5">Category</th>
+                  <th className="px-3 py-2.5">Vendor / Description</th>
+                  <th className="px-3 py-2.5 text-right">Amount</th>
+                  <th className="px-3 py-2.5">Added by</th>
+                  <th className="px-3 py-2.5"></th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-outline">
+                {list.map(e => {
+                  const cat = EXPENSE_CATEGORIES.find(c => c.value === e.category)?.label ?? e.category;
+                  return (
+                    <tr key={e.id} className="hover:bg-surface-2/40 transition-colors">
+                      <td className="px-5 py-2.5">
+                        <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider bg-warning-container text-warning">
+                          {cat}
+                        </span>
+                      </td>
+                      <td className="px-3 py-2.5">
+                        <p className="text-sm text-on-surface">{e.description}</p>
+                        {e.vendor && <p className="text-[11px] text-on-surface-muted">{e.vendor}</p>}
+                      </td>
+                      <td className="px-3 py-2.5 text-right num-mono font-bold text-warning">{fmtINR(e.amount)}</td>
+                      <td className="px-3 py-2.5 text-[11px] text-on-surface-muted">
+                        {e.created_by ?? '—'}
+                        {e.created_by_role ? <span className="ml-1 px-1 py-0 rounded bg-surface-3 text-on-surface-subtle text-[9px] uppercase">{e.created_by_role.replace('_',' ')}</span> : null}
+                      </td>
+                      <td className="px-3 py-2.5 text-right">
+                        <button onClick={() => remove(e.id)} className="p-1.5 rounded hover:bg-danger-container/50">
+                          <Trash2 size={13} className="text-danger" />
+                        </button>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          )}
+        </div>
+
+        <div className="px-6 py-3 border-t border-outline bg-surface-2/60 flex justify-end">
+          <button onClick={onClose} className="px-4 py-1.5 text-sm font-medium text-on-surface-muted hover:bg-surface-3 rounded-lg transition-colors">Close</button>
+        </div>
+      </div>
     </div>
   );
 }

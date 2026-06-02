@@ -81,6 +81,7 @@ export default function DashboardTab({ month, year, rev }: { month: number; year
                   <th className="text-left font-semibold px-4 py-2.5">Project</th>
                   <th className="text-right font-semibold px-3 py-2.5">Revenue</th>
                   <th className="text-right font-semibold px-3 py-2.5">Direct cost</th>
+                  <th className="text-right font-semibold px-3 py-2.5" title="Outsourced services, content, ad spend etc. logged against this project">Outsourced</th>
                   <th className="text-right font-semibold px-3 py-2.5">Gross</th>
                   <th className="text-right font-semibold px-3 py-2.5">Overhead</th>
                   <th className="text-right font-semibold px-3 py-2.5">Supervision</th>
@@ -97,6 +98,7 @@ export default function DashboardTab({ month, year, rev }: { month: number; year
                     </td>
                     <td className="px-3 py-2.5 text-right tabular-nums text-on-surface">{money(p.revenue, c)}</td>
                     <td className="px-3 py-2.5 text-right tabular-nums text-on-surface-muted">{money(p.directCost, c)}</td>
+                    <td className={`px-3 py-2.5 text-right tabular-nums ${p.projectExpenses > 0 ? 'text-warning' : 'text-on-surface-subtle'}`}>{money(p.projectExpenses || 0, c)}</td>
                     <td className="px-3 py-2.5 text-right tabular-nums text-on-surface">{money(p.grossProfit, c)}</td>
                     <td className="px-3 py-2.5 text-right tabular-nums text-on-surface-subtle">{money(p.overhead, c)}</td>
                     <td className="px-3 py-2.5 text-right tabular-nums text-on-surface-subtle" title={p.supervisorNames?.length ? `Leads: ${p.supervisorNames.join(', ')}` : 'No supervisor assigned'}>{money(p.supervision, c)}</td>
@@ -110,6 +112,7 @@ export default function DashboardTab({ month, year, rev }: { month: number; year
                   <td className="px-4 py-2.5">Total</td>
                   <td className="px-3 py-2.5 text-right tabular-nums">{money(t.revenue, c)}</td>
                   <td className="px-3 py-2.5 text-right tabular-nums">{money(t.directCost, c)}</td>
+                  <td className="px-3 py-2.5 text-right tabular-nums">{money(t.projectExpenses || 0, c)}</td>
                   <td className="px-3 py-2.5 text-right tabular-nums">{money(t.grossProfit, c)}</td>
                   <td className="px-3 py-2.5 text-right tabular-nums">{money(ovhSum, c)}</td>
                   <td className="px-3 py-2.5 text-right tabular-nums">{money(supSum, c)}</td>

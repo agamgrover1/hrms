@@ -39,7 +39,8 @@ export interface FinSettings {
 }
 
 export interface FinTotals {
-  revenue: number; directCost: number; benchCost: number; indirectSalaries: number;
+  revenue: number; directCost: number; projectExpenses: number;
+  benchCost: number; indirectSalaries: number;
   supervisionCost: number; supervisorHeadcount: number; otherCosts: number;
   overheadPool: number; grossProfit: number; grossMargin: number; netProfit: number; netMargin: number;
   totalSalary: number; totalCost: number; directCapacityHours: number; allocatedDirectHours: number;
@@ -49,10 +50,27 @@ export interface FinTotals {
 export interface FinProjectRow {
   id: string; name: string; client_name: string | null;
   billing_type: 'fixed' | 'hourly'; hourly_rate: number; billable_hours: number; fixed_amount: number;
-  revenue: number; directCost: number; directHours: number; grossProfit: number; grossMargin: number;
+  revenue: number; directCost: number; directHours: number; projectExpenses: number;
+  grossProfit: number; grossMargin: number;
   overhead: number; supervision: number; supervisorNames: string[];
   netProfit: number; netMargin: number; effectiveCostPerHour: number; revenuePerHour: number;
   team: { id: string; name: string; designation: string | null; hours: number; rate: number; cost: number }[];
+}
+
+export interface FinProjectExpense {
+  id: number;
+  project_id: string;
+  project_name?: string;
+  project_client_name?: string | null;
+  month: number;
+  year: number;
+  vendor: string | null;
+  description: string;
+  amount: number;
+  category: string;
+  created_by: string | null;
+  created_by_role: string | null;
+  created_at: string;
 }
 
 export interface FinEmployeeRow {
@@ -102,4 +120,18 @@ export const financeApi = {
   updateOverhead: (id: number, data: { name: string; amount: number; category: string }) =>
     request<any>(`/overhead/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
   deleteOverhead: (id: number) => request<any>(`/overhead/${id}`, { method: 'DELETE' }),
+
+  // ── Per-project expenses (outsourced services, content, ad spend, etc.) ──
+  getProjectExpenses: (params: { project_id?: string; month?: number; year?: number }) => {
+    const qs = new URLSearchParams();
+    if (params.project_id) qs.set('project_id', params.project_id);
+    if (params.month) qs.set('month', String(params.month));
+    if (params.year) qs.set('year', String(params.year));
+    return request<FinProjectExpense[]>(`/project-expenses?${qs}`);
+  },
+  addProjectExpense: (data: { project_id: string; month: number; year: number; vendor?: string; description: string; amount: number; category?: string }) =>
+    request<FinProjectExpense>('/project-expenses', { method: 'POST', body: JSON.stringify(data) }),
+  updateProjectExpense: (id: number, data: { vendor?: string; description?: string; amount?: number; category?: string; month?: number; year?: number }) =>
+    request<FinProjectExpense>(`/project-expenses/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
+  deleteProjectExpense: (id: number) => request<any>(`/project-expenses/${id}`, { method: 'DELETE' }),
 };

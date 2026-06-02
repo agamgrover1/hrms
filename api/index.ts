@@ -164,6 +164,25 @@ async function requireAdmin(req: any, res: any): Promise<boolean> {
   }
 }
 
+// Allow admin OR project_coordinator (used for project-level expense entries
+// which a coordinator may add against the projects they run).
+async function requireAdminOrCoord(req: any, res: any): Promise<{ ok: boolean; user?: any }> {
+  try {
+    const userId = req.header('x-user-id') || req.query.__uid;
+    if (!userId) { res.status(401).json({ error: 'Not authenticated' }); return { ok: false }; }
+    const rows = await sql`SELECT id, name, role, active FROM app_users WHERE id = ${userId} LIMIT 1`;
+    const u = (rows as any[])[0];
+    if (!u || u.active !== true || !['admin','project_coordinator','hr_manager'].includes(u.role)) {
+      res.status(403).json({ error: 'Admin / HR / coordinator only' });
+      return { ok: false };
+    }
+    return { ok: true, user: u };
+  } catch (err: any) {
+    res.status(500).json({ error: err?.message || 'Auth check failed' });
+    return { ok: false };
+  }
+}
+
 // ── Startup migrations (idempotent — safe to run on every cold start) ────
 let _migrated = false;
 async function runStartupMigrations() {
@@ -519,6 +538,26 @@ async function runStartupMigrations() {
     )`;
   await sql`CREATE INDEX IF NOT EXISTS idx_fin_other_costs_period ON fin_other_costs(year, month)`.catch(()=>{});
 
+  // Per-project direct expenses — outsourced services, content, ad spend, etc.
+  // Deducted from that project's revenue in the profitability calculation,
+  // unlike fin_other_costs which is the org-wide overhead pool.
+  await sql`
+    CREATE TABLE IF NOT EXISTS fin_project_expenses (
+      id SERIAL PRIMARY KEY,
+      project_id TEXT NOT NULL,
+      month INTEGER NOT NULL,
+      year INTEGER NOT NULL,
+      vendor TEXT,
+      description TEXT NOT NULL,
+      amount NUMERIC NOT NULL DEFAULT 0,
+      category TEXT NOT NULL DEFAULT 'outsource',
+      created_by TEXT,
+      created_by_role TEXT,
+      created_at TIMESTAMPTZ DEFAULT NOW()
+    )`;
+  await sql`CREATE INDEX IF NOT EXISTS idx_fin_proj_exp_period ON fin_project_expenses(year, month)`.catch(()=>{});
+  await sql`CREATE INDEX IF NOT EXISTS idx_fin_proj_exp_project ON fin_project_expenses(project_id, year, month)`.catch(()=>{});
+
   await sql`
     CREATE TABLE IF NOT EXISTS attendance_sync_log (
       id SERIAL PRIMARY KEY, sync_id TEXT UNIQUE, triggered TEXT,
@@ -633,9 +672,24 @@ app.post('/api/auth/login', async (req, res) => {
 // ── Employees ─────────────────────────────────────────────────────────────
 app.get('/api/employees', async (req, res) => {
   try {
-    const { reporting_manager_id } = req.query as any;
+    const { reporting_manager_id, descendants } = req.query as any;
     if (reporting_manager_id) {
-      res.json(await sql`SELECT * FROM employees WHERE reporting_manager_id = ${reporting_manager_id} ORDER BY name`);
+      // descendants=true walks the entire reporting tree under this manager,
+      // so a 2nd/3rd/Nth-level reporting manager sees the full sub-tree (their
+      // direct reports AND everyone reporting to those reports, recursively).
+      if (descendants === 'true' || descendants === '1') {
+        const rows = await sql`
+          WITH RECURSIVE team AS (
+            SELECT * FROM employees WHERE reporting_manager_id = ${reporting_manager_id}
+            UNION ALL
+            SELECT e.* FROM employees e
+            JOIN team t ON e.reporting_manager_id = t.id
+          )
+          SELECT * FROM team ORDER BY name`;
+        res.json(rows);
+      } else {
+        res.json(await sql`SELECT * FROM employees WHERE reporting_manager_id = ${reporting_manager_id} ORDER BY name`);
+      }
     } else {
       res.json(await sql`SELECT * FROM employees ORDER BY name`);
     }
@@ -3621,6 +3675,15 @@ async function finComputeMonth(month: number, year: number) {
   const otherCosts = (await sql`
     SELECT id, name, amount, category FROM fin_other_costs
     WHERE month=${month} AND year=${year} ORDER BY amount DESC`) as any[];
+  // Per-project direct expenses (outsourced work, content fees, ads, etc.)
+  const projExpenses = (await sql`
+    SELECT id, project_id, vendor, description, amount, category, created_by, created_by_role, created_at
+    FROM fin_project_expenses
+    WHERE month=${month} AND year=${year}`) as any[];
+  const projExpenseByProject = new Map<string, number>();
+  for (const e of projExpenses) {
+    projExpenseByProject.set(e.project_id, (projExpenseByProject.get(e.project_id) || 0) + Number(e.amount));
+  }
 
   const empById = new Map(employees.map((e) => [e.id, e]));
   const projIds = new Set(projects.map((p) => p.id));
@@ -3730,7 +3793,10 @@ async function finComputeMonth(month: number, year: number) {
     const directCost = directCostByProject.get(p.id) || 0;
     const directHours = directHoursByProject.get(p.id) || 0;
     const revenue = revenueOf(p);
-    const grossProfit = revenue - directCost;
+    const projectExpenses = projExpenseByProject.get(p.id) || 0;
+    // Gross profit now excludes outsourced project expenses too (they're direct
+    // cost of delivery for this project, not org overhead).
+    const grossProfit = revenue - directCost - projectExpenses;
     const overhead = overheadPool * shareOf(directHours, revenue);
     const supervision = supervisionByProject.get(p.id) || 0;
     const netProfit = grossProfit - overhead - supervision;
@@ -3739,7 +3805,8 @@ async function finComputeMonth(month: number, year: number) {
       id: p.id, name: p.name, client_name: p.client_name,
       billing_type: r?.billing_type || 'fixed', hourly_rate: Number(r?.hourly_rate || 0),
       billable_hours: Number(r?.billable_hours || 0), fixed_amount: Number(r?.fixed_amount || 0),
-      revenue, directCost, directHours, grossProfit, grossMargin: revenue > 0 ? grossProfit / revenue : 0,
+      revenue, directCost, directHours, projectExpenses,
+      grossProfit, grossMargin: revenue > 0 ? grossProfit / revenue : 0,
       overhead, supervision, supervisorNames: supervisorsByProject.get(p.id) || [],
       netProfit, netMargin: revenue > 0 ? netProfit / revenue : 0,
       effectiveCostPerHour: directHours > 0 ? directCost / directHours : 0,
@@ -3748,10 +3815,11 @@ async function finComputeMonth(month: number, year: number) {
   }).sort((a, b) => b.netProfit - a.netProfit);
 
   const totalDirectCost = projectRows.reduce((s, p) => s + p.directCost, 0);
-  const grossProfit = totalRevenue - totalDirectCost;
-  const netProfit = totalRevenue - totalDirectCost - benchCost - indirectSalaries - supervisorSalariesTotal - otherCostTotal;
+  const totalProjectExpenses = projectRows.reduce((s, p) => s + p.projectExpenses, 0);
+  const grossProfit = totalRevenue - totalDirectCost - totalProjectExpenses;
+  const netProfit = totalRevenue - totalDirectCost - totalProjectExpenses - benchCost - indirectSalaries - supervisorSalariesTotal - otherCostTotal;
   const totalSalary = employees.reduce((s, e) => s + Number(e.salary), 0);
-  const totalCost = totalDirectCost + benchCost + indirectSalaries + supervisorSalariesTotal + otherCostTotal;
+  const totalCost = totalDirectCost + totalProjectExpenses + benchCost + indirectSalaries + supervisorSalariesTotal + otherCostTotal;
   const directEmps = employeeRows.filter((e) => e.cost_type === 'direct');
   const directCapacityHours = directEmps.reduce((s, e) => s + e.capacity, 0);
   const allocatedDirectHours = directEmps.reduce((s, e) => s + e.allocatedHours, 0);
@@ -3769,7 +3837,9 @@ async function finComputeMonth(month: number, year: number) {
     otherCosts: otherCosts.map((c) => ({ id: c.id, name: c.name, amount: Number(c.amount), category: c.category })),
     byDept,
     totals: {
-      revenue: totalRevenue, directCost: totalDirectCost, benchCost, indirectSalaries,
+      revenue: totalRevenue, directCost: totalDirectCost,
+      projectExpenses: totalProjectExpenses,
+      benchCost, indirectSalaries,
       supervisionCost: supervisorSalariesTotal, supervisorHeadcount: supervisors.length,
       otherCosts: otherCostTotal,
       overheadPool, grossProfit, grossMargin: totalRevenue > 0 ? grossProfit / totalRevenue : 0,
@@ -3986,6 +4056,80 @@ app.delete('/api/finance/overhead/:id', async (req, res) => {
   if (!(await requireAdmin(req, res))) return;
   try {
     await sql`DELETE FROM fin_other_costs WHERE id=${Number(req.params.id)}`;
+    res.json({ success: true });
+  } catch (err: any) { res.status(500).json({ error: err.message || 'Server error' }); }
+});
+
+// ── Per-project expenses (outsourced services, content, ads, etc.) ──
+// Admin / HR / project_coordinator can manage. Subtracted from the project's
+// revenue in the profitability engine. Coordinators get write access because
+// they're closest to the day-to-day vendor spend on the projects they run.
+app.get('/api/finance/project-expenses', async (req, res) => {
+  await runStartupMigrations();
+  const gate = await requireAdminOrCoord(req, res);
+  if (!gate.ok) return;
+  try {
+    const month = req.query.month ? Number(req.query.month) : null;
+    const year = req.query.year ? Number(req.query.year) : null;
+    const project_id = (req.query.project_id as string) || null;
+    const rows = await sql`
+      SELECT e.*, p.name AS project_name, p.client_name AS project_client_name
+      FROM fin_project_expenses e
+      LEFT JOIN projects p ON p.id = e.project_id
+      WHERE (${month}::int IS NULL OR e.month=${month})
+        AND (${year}::int IS NULL OR e.year=${year})
+        AND (${project_id}::text IS NULL OR e.project_id=${project_id})
+      ORDER BY e.created_at DESC`;
+    res.json(rows);
+  } catch (err: any) { res.status(500).json({ error: err.message || 'Server error' }); }
+});
+
+app.post('/api/finance/project-expenses', async (req, res) => {
+  await runStartupMigrations();
+  const gate = await requireAdminOrCoord(req, res);
+  if (!gate.ok) return;
+  try {
+    const { project_id, month, year, vendor, description, amount, category } = req.body;
+    if (!project_id || !month || !year) return res.status(400).json({ error: 'project_id, month, year are required' });
+    if (!description?.trim()) return res.status(400).json({ error: 'description is required' });
+    if (amount == null || Number(amount) < 0) return res.status(400).json({ error: 'amount must be a non-negative number' });
+    const rows = await sql`
+      INSERT INTO fin_project_expenses (project_id, month, year, vendor, description, amount, category, created_by, created_by_role)
+      VALUES (${project_id}, ${month}, ${year}, ${vendor || null}, ${description.trim()}, ${Number(amount)},
+              ${category || 'outsource'}, ${gate.user?.name ?? null}, ${gate.user?.role ?? null})
+      RETURNING *`;
+    res.status(201).json(rows[0]);
+  } catch (err: any) { res.status(500).json({ error: err.message || 'Server error' }); }
+});
+
+app.put('/api/finance/project-expenses/:id', async (req, res) => {
+  await runStartupMigrations();
+  const gate = await requireAdminOrCoord(req, res);
+  if (!gate.ok) return;
+  try {
+    const { vendor, description, amount, category, month, year } = req.body;
+    if (amount != null && Number(amount) < 0) return res.status(400).json({ error: 'amount must be a non-negative number' });
+    const rows = await sql`
+      UPDATE fin_project_expenses SET
+        vendor=${vendor ?? null},
+        description=${(description ?? '').trim() || null},
+        amount=${amount != null ? Number(amount) : null},
+        category=${category ?? null},
+        month=${month ?? null},
+        year=${year ?? null}
+      WHERE id=${Number(req.params.id)}
+      RETURNING *`;
+    if (!rows.length) return res.status(404).json({ error: 'Expense not found' });
+    res.json(rows[0]);
+  } catch (err: any) { res.status(500).json({ error: err.message || 'Server error' }); }
+});
+
+app.delete('/api/finance/project-expenses/:id', async (req, res) => {
+  await runStartupMigrations();
+  const gate = await requireAdminOrCoord(req, res);
+  if (!gate.ok) return;
+  try {
+    await sql`DELETE FROM fin_project_expenses WHERE id=${Number(req.params.id)}`;
     res.json({ success: true });
   } catch (err: any) { res.status(500).json({ error: err.message || 'Server error' }); }
 });
