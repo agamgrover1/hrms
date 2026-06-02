@@ -1,8 +1,9 @@
 import { useState, useEffect } from 'react';
-import { Settings, Plus, Trash2, Edit3, Check, X, Clock, Briefcase, Building2, CalendarDays } from 'lucide-react';
+import { Settings, Plus, Trash2, Edit3, Check, X, Clock, Briefcase, Building2, CalendarDays, BookOpen } from 'lucide-react';
 import { api } from '../services/api';
+import RoleResponsibilitiesTab from '../components/admin/RoleResponsibilitiesTab';
 
-type Tab = 'departments' | 'designations' | 'shifts' | 'optional_leave';
+type Tab = 'departments' | 'designations' | 'shifts' | 'optional_leave' | 'roles';
 
 function fmt12(t: string) {
   if (!t) return '';
@@ -154,6 +155,7 @@ export default function Config() {
     { key: 'designations',  label: 'Designations',   icon: Briefcase   },
     { key: 'shifts',        label: 'Shifts',         icon: Clock       },
     { key: 'optional_leave',label: 'Optional Leaves',icon: CalendarDays},
+    { key: 'roles',         label: 'Roles & Responsibilities', icon: BookOpen },
   ];
 
   return (
@@ -422,6 +424,9 @@ export default function Config() {
           </div>
         </div>
       )}
+
+      {/* ── Roles & Responsibilities ── */}
+      {tab === 'roles' && <RoleResponsibilitiesTab />}
     </div>
   );
 }

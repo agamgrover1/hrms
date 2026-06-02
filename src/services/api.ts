@@ -1,10 +1,21 @@
 const BASE = '/api';
+const SESSION_KEY = 'digitalleap_hrms_session';
+
+function currentUserId(): string {
+  try {
+    const raw = localStorage.getItem(SESSION_KEY);
+    return raw ? (JSON.parse(raw).id ?? '') : '';
+  } catch { return ''; }
+}
 
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
-  const res = await fetch(`${BASE}${path}`, {
-    headers: { 'Content-Type': 'application/json' },
-    ...options,
-  });
+  const uid = currentUserId();
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+    ...(uid ? { 'x-user-id': uid } : {}),
+    ...((options?.headers as Record<string, string>) ?? {}),
+  };
+  const res = await fetch(`${BASE}${path}`, { ...options, headers });
   // Guard against non-JSON responses (e.g. Vercel HTML error pages when a
   // serverless function crashes due to missing env vars or build errors)
   const contentType = res.headers.get('content-type') ?? '';
@@ -391,6 +402,22 @@ export const api = {
       over_plan_log_count: number;
       pending_review_count: number;
     }>(`/hours-summary?month=${month}&year=${year}`),
+
+  // Role-based playbook
+  getRoleResponsibilities: (role?: string) =>
+    request<Array<{
+      id: number; role: string;
+      section_name: string; section_order: number; item_order: number;
+      title: string; details: string | null;
+      frequency: string | null; where_to_do: string | null;
+      created_at: string; updated_at: string;
+    }>>(`/role-responsibilities${role ? `?role=${role}` : ''}`),
+  addRoleResponsibility: (data: { role: string; section_name: string; section_order?: number; item_order?: number; title: string; details?: string; frequency?: string; where_to_do?: string }) =>
+    request<any>('/role-responsibilities', { method: 'POST', body: JSON.stringify(data) }),
+  updateRoleResponsibility: (id: number, data: { section_name: string; section_order?: number; item_order?: number; title: string; details?: string; frequency?: string; where_to_do?: string }) =>
+    request<any>(`/role-responsibilities/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
+  deleteRoleResponsibility: (id: number) =>
+    request<any>(`/role-responsibilities/${id}`, { method: 'DELETE' }),
 
   getHoursCompliance: (params: { date?: string; manager_id?: string }) => {
     const qs = new URLSearchParams();

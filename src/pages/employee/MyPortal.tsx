@@ -1,6 +1,7 @@
 import { useState, useEffect, useMemo, Component, type ReactNode } from 'react';
 import { useSearchParams } from 'react-router-dom';
-import { Clock, Calendar, DollarSign, User, CheckCircle, XCircle, AlertCircle, Plus, X, Target, FileText, Lock, Trash2, Save, Users, Monitor, Briefcase, Edit2 } from 'lucide-react';
+import { Clock, Calendar, DollarSign, User, CheckCircle, XCircle, AlertCircle, Plus, X, Target, FileText, Lock, Trash2, Save, Users, Monitor, Briefcase, Edit2, BookOpen } from 'lucide-react';
+import MyRoleTab from '../../components/MyRoleTab';
 import { useAuth } from '../../context/AuthContext';
 import { api } from '../../services/api';
 
@@ -54,6 +55,7 @@ class TabErrorBoundary extends Component<{ children: ReactNode }, { error: strin
 
 const baseTabs = [
   { key: 'overview',     label: 'Overview',     icon: User },
+  { key: 'role',         label: 'My Role',      icon: BookOpen },
   { key: 'attendance',   label: 'Attendance',   icon: Clock },
   { key: 'leave',        label: 'My Leaves',    icon: Calendar },
   { key: 'wfh',          label: 'Work From Home', icon: Monitor },
@@ -654,6 +656,9 @@ export default function MyPortal() {
           </div>
         </div>
       )}
+
+      {/* ── My Role (read-only playbook for the employee's role) ── */}
+      {tab === 'role' && <MyRoleTab role={user?.role} />}
 
       {/* ── Attendance ── */}
       {tab === 'attendance' && (

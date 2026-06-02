@@ -185,6 +185,113 @@ async function requireAdminOrCoord(req: any, res: any): Promise<{ ok: boolean; u
 
 // ── Startup migrations (idempotent — safe to run on every cold start) ────
 let _migrated = false;
+// Seed the project_coordinator playbook. Idempotent — only inserts when the
+// role has zero rows, so admins can freely edit / delete items without them
+// reappearing on every cold start.
+async function seedRoleResponsibilities() {
+  try {
+    const existing = (await sql`SELECT COUNT(*)::int AS c FROM role_responsibilities WHERE role='project_coordinator'`) as any[];
+    if (Number(existing[0]?.c || 0) > 0) return;
+
+    type Item = { section: string; sOrd: number; iOrd: number; title: string; details?: string; freq?: string; where?: string };
+    const items: Item[] = [
+      // ── Section 1: Client onboarding ────────────────────────────────────────
+      { section: 'Client onboarding', sOrd: 1, iOrd: 1, freq: 'one_time',
+        title: 'Create the project',
+        where: 'Project Mgmt → Projects → + New Project',
+        details: 'Set name, client, type, dashboard URL, reporting person (the approver for hour logs on this project), project lead, and total-hours cap (only for one-time fixed-budget projects — leave blank for retainers).' },
+      { section: 'Client onboarding', sOrd: 1, iOrd: 2, freq: 'one_time',
+        title: 'Assign the team for the current month',
+        where: 'Project Mgmt → Hours grid → Add Assignment',
+        details: 'For every employee who will work on the project this month, allocate W1–W5 hours. Aim for 35h/week per person across all their projects. The Capacity tab flags anyone over/under.' },
+      { section: 'Client onboarding', sOrd: 1, iOrd: 3, freq: 'one_time',
+        title: 'Raise the first invoice',
+        where: 'Finance → Invoices → + New Invoice',
+        details: 'Pick the project, set invoice #, date, amount invoiced, and notes. Status starts as Pending until admin confirms the payment landed in the bank.' },
+      { section: 'Client onboarding', sOrd: 1, iOrd: 4, freq: 'one_time',
+        title: 'Notify the assigned team',
+        details: 'Employees get an "hours_assigned" notification automatically, but a heads-up in your usual channel (WhatsApp / Slack) lands the context.' },
+
+      // ── Section 2: Daily ────────────────────────────────────────────────────
+      { section: 'Daily routine', sOrd: 2, iOrd: 1, freq: 'daily',
+        title: 'Check who hasn\'t logged hours today',
+        where: 'Project Mgmt → Compliance',
+        details: 'Page lists every eligible employee with zero logs for the day. Follow up with the gaps before end of shift.' },
+      { section: 'Daily routine', sOrd: 2, iOrd: 2, freq: 'daily',
+        title: 'Approve hour logs on projects you review',
+        where: 'Project Mgmt → Approvals',
+        details: 'You only see logs for projects where you\'re the Reporting person. Don\'t sit on them — anything older than 24h is flagged on Compliance.' },
+      { section: 'Daily routine', sOrd: 2, iOrd: 3, freq: 'daily',
+        title: 'Watch the bell for alerts',
+        where: 'Top-right bell icon · also /notifications',
+        details: 'Pending invoices, rejected logs, project alerts all surface there. Click View all to see full history.' },
+
+      // ── Section 3: Weekly ───────────────────────────────────────────────────
+      { section: 'Weekly review (Mon morning ~15min)', sOrd: 3, iOrd: 1, freq: 'weekly',
+        title: 'Review last week\'s actuals vs plan',
+        where: 'Hours grid → Capacity tab → Group: Team',
+        details: 'Spot people consistently over or under. Talk to them or rebalance allocations.' },
+      { section: 'Weekly review (Mon morning ~15min)', sOrd: 3, iOrd: 2, freq: 'weekly',
+        title: 'Log outsourced expenses from last week',
+        where: 'Projects → ₹ icon on each project',
+        details: 'Freelancer fees, content fees, ad spend, tools — anything outsourced for delivery goes here so it shows up correctly in project profitability.' },
+      { section: 'Weekly review (Mon morning ~15min)', sOrd: 3, iOrd: 3, freq: 'weekly',
+        title: 'Update project flags',
+        where: 'Projects (main table)',
+        details: 'If a project slipped last week, set its flag to Yellow with a short reason. Red means at-risk and needs immediate attention.' },
+
+      // ── Section 4: Monthly ──────────────────────────────────────────────────
+      { section: 'Month-end (25th–28th)', sOrd: 4, iOrd: 1, freq: 'monthly',
+        title: 'Copy this month\'s assignments to next month',
+        where: 'Hours grid → Copy from previous month',
+        details: 'Duplicates every row in bulk; hours come over blank so you can refill them deliberately.' },
+      { section: 'Month-end (25th–28th)', sOrd: 4, iOrd: 2, freq: 'monthly',
+        title: 'Refill W1–W5 hours for next month',
+        where: 'Hours grid → Plan tab',
+        details: 'Inline-edit each cell. M (monthly total) auto-recalculates.' },
+      { section: 'First week of new month', sOrd: 5, iOrd: 1, freq: 'monthly',
+        title: 'Raise this month\'s invoice for every active project',
+        where: 'Finance → Invoices → + New Invoice',
+        details: 'Status = Pending. Admin marks Cleared once payment lands and updates the received amount (which becomes the actual revenue).' },
+
+      // ── Section 5: As-needed ────────────────────────────────────────────────
+      { section: 'Ad-hoc actions', sOrd: 6, iOrd: 1, freq: 'as_needed',
+        title: 'Adding someone to a project mid-month',
+        where: 'Hours grid → Add Assignment',
+        details: 'Allocate hours only for the remaining weeks of the month.' },
+      { section: 'Ad-hoc actions', sOrd: 6, iOrd: 2, freq: 'as_needed',
+        title: 'Removing someone from a project',
+        where: 'Hours grid → Plan tab → trash icon',
+        details: 'Future plans for that employee on that project are dropped. Already-logged hours stay for history.' },
+      { section: 'Ad-hoc actions', sOrd: 6, iOrd: 3, freq: 'as_needed',
+        title: 'Project at risk',
+        where: 'Projects → edit the row',
+        details: 'Flag Red with a reason. Don\'t wait — admin can see the flag immediately and intervene.' },
+      { section: 'Ad-hoc actions', sOrd: 6, iOrd: 4, freq: 'as_needed',
+        title: 'Outsourced work (freelancer / content / ads / tools)',
+        where: 'Projects → ₹ icon → New expense',
+        details: 'Log against the right project. Category options: outsource / content / ads / tools / travel / other.' },
+      { section: 'Ad-hoc actions', sOrd: 6, iOrd: 5, freq: 'as_needed',
+        title: 'Project finished or churned',
+        where: 'Projects → trash icon (soft-delete to archived)',
+        details: 'Auto-clears current and future-month assignments. Past months and hour logs are preserved for reporting.' },
+      { section: 'Ad-hoc actions', sOrd: 6, iOrd: 6, freq: 'as_needed',
+        title: 'Hour log rejected by reviewer',
+        where: 'Notifications → click the row',
+        details: 'Read the reason, re-plan or talk to the employee, and ask them to resubmit.' },
+      { section: 'Ad-hoc actions', sOrd: 6, iOrd: 7, freq: 'as_needed',
+        title: 'Client paid less than invoiced (TDS, FX, partial)',
+        details: 'Tell admin so they clear the invoice with the actual received amount. The variance becomes a real cost in P&L.' },
+    ];
+
+    for (const it of items) {
+      await sql`
+        INSERT INTO role_responsibilities (role, section_name, section_order, item_order, title, details, frequency, where_to_do)
+        VALUES ('project_coordinator', ${it.section}, ${it.sOrd}, ${it.iOrd}, ${it.title}, ${it.details ?? null}, ${it.freq ?? null}, ${it.where ?? null})`;
+    }
+  } catch { /* migrations are best-effort */ }
+}
+
 async function runStartupMigrations() {
   if (_migrated) return;
   _migrated = true;
@@ -585,6 +692,27 @@ async function runStartupMigrations() {
   await sql`CREATE INDEX IF NOT EXISTS idx_fin_invoices_period ON fin_project_invoices(year, month)`.catch(()=>{});
   await sql`CREATE INDEX IF NOT EXISTS idx_fin_invoices_project ON fin_project_invoices(project_id, year, month)`.catch(()=>{});
   await sql`CREATE INDEX IF NOT EXISTS idx_fin_invoices_status ON fin_project_invoices(status)`.catch(()=>{});
+
+  // Role-based playbook — every employee with that role inherits these items.
+  // Sections (Daily / Weekly / Monthly / etc.) group items; frequency drives
+  // the colored pill on each item. where_to_do is a short nav breadcrumb
+  // so the employee can find the screen referenced (e.g. "Project Mgmt → Hours grid").
+  await sql`
+    CREATE TABLE IF NOT EXISTS role_responsibilities (
+      id SERIAL PRIMARY KEY,
+      role TEXT NOT NULL,
+      section_name TEXT NOT NULL,
+      section_order INTEGER NOT NULL DEFAULT 0,
+      item_order INTEGER NOT NULL DEFAULT 0,
+      title TEXT NOT NULL,
+      details TEXT,
+      frequency TEXT,
+      where_to_do TEXT,
+      created_at TIMESTAMPTZ DEFAULT NOW(),
+      updated_at TIMESTAMPTZ DEFAULT NOW()
+    )`;
+  await sql`CREATE INDEX IF NOT EXISTS idx_role_resp_role ON role_responsibilities(role, section_order, item_order)`.catch(()=>{});
+  await seedRoleResponsibilities();
 
   await sql`
     CREATE TABLE IF NOT EXISTS attendance_sync_log (
@@ -2031,6 +2159,63 @@ app.put('/api/config/shifts/:id', async (req, res) => {
 app.delete('/api/config/shifts/:id', async (req, res) => {
   try { await sql`DELETE FROM config_shifts WHERE id=${req.params.id}`; res.json({ success: true }); }
   catch { res.status(500).json({ error: 'Server error' }); }
+});
+
+// ── Role responsibilities (playbook per role) ─────────────────────────────
+// Read is open to any authenticated user — they need to see their own role's
+// playbook. Mutations require admin so only HR can rewrite expectations.
+app.get('/api/role-responsibilities', async (req, res) => {
+  try {
+    await runStartupMigrations();
+    const role = (req.query.role as string) || null;
+    const rows = role
+      ? await sql`SELECT * FROM role_responsibilities WHERE role=${role} ORDER BY section_order, item_order, id`
+      : await sql`SELECT * FROM role_responsibilities ORDER BY role, section_order, item_order, id`;
+    res.json(rows);
+  } catch (err: any) { res.status(500).json({ error: err.message || 'Server error' }); }
+});
+
+app.post('/api/role-responsibilities', async (req, res) => {
+  try {
+    if (!(await requireAdmin(req, res))) return;
+    const { role, section_name, section_order, item_order, title, details, frequency, where_to_do } = req.body;
+    if (!role || !section_name?.trim() || !title?.trim()) return res.status(400).json({ error: 'role, section_name, title are required' });
+    const rows = await sql`
+      INSERT INTO role_responsibilities (role, section_name, section_order, item_order, title, details, frequency, where_to_do)
+      VALUES (${role}, ${section_name.trim()}, ${Number(section_order) || 0}, ${Number(item_order) || 0},
+              ${title.trim()}, ${details?.trim() || null}, ${frequency || null}, ${where_to_do?.trim() || null})
+      RETURNING *`;
+    res.status(201).json(rows[0]);
+  } catch (err: any) { res.status(500).json({ error: err.message || 'Server error' }); }
+});
+
+app.put('/api/role-responsibilities/:id', async (req, res) => {
+  try {
+    if (!(await requireAdmin(req, res))) return;
+    const { section_name, section_order, item_order, title, details, frequency, where_to_do } = req.body;
+    if (!section_name?.trim() || !title?.trim()) return res.status(400).json({ error: 'section_name, title are required' });
+    const rows = await sql`
+      UPDATE role_responsibilities SET
+        section_name = ${section_name.trim()},
+        section_order = ${Number(section_order) || 0},
+        item_order = ${Number(item_order) || 0},
+        title = ${title.trim()},
+        details = ${details?.trim() || null},
+        frequency = ${frequency || null},
+        where_to_do = ${where_to_do?.trim() || null},
+        updated_at = NOW()
+      WHERE id=${Number(req.params.id)} RETURNING *`;
+    if (!rows.length) return res.status(404).json({ error: 'Item not found' });
+    res.json(rows[0]);
+  } catch (err: any) { res.status(500).json({ error: err.message || 'Server error' }); }
+});
+
+app.delete('/api/role-responsibilities/:id', async (req, res) => {
+  try {
+    if (!(await requireAdmin(req, res))) return;
+    await sql`DELETE FROM role_responsibilities WHERE id=${Number(req.params.id)}`;
+    res.json({ success: true });
+  } catch (err: any) { res.status(500).json({ error: err.message || 'Server error' }); }
 });
 
 // ── Optional Leave ────────────────────────────────────────────────────────
