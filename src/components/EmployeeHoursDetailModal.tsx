@@ -380,7 +380,7 @@ export default function EmployeeHoursDetailModal({ employeeId, employeeName, mon
                             {/* Daily breakdown — visible whenever the log has day entries */}
                             {(() => {
                               const logDays = days.filter(d => d.assignment_id === log.assignment_id && d.week_num === log.week_num)
-                                                  .sort((a, b) => a.log_date.localeCompare(b.log_date));
+                                                  .sort((a, b) => String(a.log_date).localeCompare(String(b.log_date)));
                               if (logDays.length === 0) return null;
                               return (
                                 <div className="mt-3 rounded-lg bg-surface-2/40 border border-outline overflow-hidden">
@@ -389,7 +389,11 @@ export default function EmployeeHoursDetailModal({ employeeId, employeeName, mon
                                   </p>
                                   <ul className="divide-y divide-outline">
                                     {logDays.map(d => {
-                                      const dt = new Date(d.log_date + 'T12:00:00Z');
+                                      // Neon serialises DATE as a full ISO timestamp ("2026-05-04T00:00:00.000Z").
+                                      // Take just the YYYY-MM-DD part before re-parsing — otherwise concatenating
+                                      // 'T12:00:00Z' produces an invalid timestamp and getUTCDate() → NaN.
+                                      const iso = String(d.log_date).slice(0, 10);
+                                      const dt = new Date(iso + 'T12:00:00Z');
                                       const dayName = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'][dt.getUTCDay()];
                                       return (
                                         <li key={d.id} className="px-3 py-1.5 flex items-center gap-3 text-xs">
