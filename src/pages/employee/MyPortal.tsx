@@ -651,10 +651,11 @@ export default function MyPortal() {
         const hour = today.getHours();
         const greeting = hour < 12 ? 'Good morning' : hour < 17 ? 'Good afternoon' : 'Good evening';
         const todayRec = attendance.find((a: any) => (a.date ?? '').slice(0, 10) === today.toISOString().slice(0, 10));
-        const pendingLeaves = leaveRequests.filter((l: any) => l.status === 'pending').length;
-        const pendingWfh = wfh.filter((w: any) => w.status === 'pending').length;
+        const pendingLeaves = leaves.filter((l: any) => l.status === 'pending').length;
+        const pendingWfh = wfhRequests.filter((w: any) => w.status === 'pending').length;
         const fullDay = (balance as any).full_day ?? 0;
         const shortLeave = (balance as any).short_leave ?? 0;
+        const approvedWfh = wfhRequests.filter((w: any) => w.status === 'approved').length;
 
         return (
           <div className="space-y-5">
@@ -695,7 +696,7 @@ export default function MyPortal() {
               <HubStat label="Present" value={present} tone="text-success" />
               <HubStat label="Late" value={late} tone="text-warning" />
               <HubStat label="Absent" value={absent} tone="text-danger" />
-              <HubStat label="WFH days" value={wfh.filter((w: any) => w.status === 'approved').length} tone="text-on-surface" />
+              <HubStat label="WFH days" value={approvedWfh} tone="text-on-surface" />
             </div>
 
             {/* Section cards */}
@@ -705,7 +706,7 @@ export default function MyPortal() {
                 {tabs.filter(t => t.key !== 'overview').map(t => {
                   const Icon = t.icon;
                   const hint = hubHints({
-                    key: t.key, pendingLeaves, pendingWfh, fullDay, shortLeave, performance,
+                    key: t.key, pendingLeaves, pendingWfh, fullDay, shortLeave, performance: monthlyPerf,
                   });
                   return (
                     <button key={t.key} onClick={() => setTab(t.key)}
