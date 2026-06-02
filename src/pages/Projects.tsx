@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo } from 'react';
-import { Plus, Pencil, Trash2, X, Search, Briefcase, ExternalLink, Flag, AlertTriangle, IndianRupee } from 'lucide-react';
+import { Plus, Pencil, Trash2, X, Search, Briefcase, ExternalLink, Flag, AlertTriangle, IndianRupee, CalendarDays } from 'lucide-react';
 import { api } from '../services/api';
 import { useAuth } from '../context/AuthContext';
 import { financeApi, type FinProjectExpense } from '../services/financeApi';
@@ -18,6 +18,8 @@ interface Project {
   flag: string | null;
   flag_reason: string | null;
   notes: string | null;
+  total_hours_cap?: number | null;
+  consumed_hours_total?: number | null;
 }
 
 const PROJECT_TYPES = [
@@ -62,6 +64,7 @@ export default function Projects() {
   const [showForm, setShowForm] = useState(false);
   const [editing, setEditing] = useState<Project | null>(null);
   const [expensesFor, setExpensesFor] = useState<Project | null>(null);
+  const [dailyFor, setDailyFor] = useState<Project | null>(null);
 
   const load = () => {
     setLoading(true);
@@ -166,14 +169,15 @@ export default function Projects() {
               <th className="px-4 py-3">Reporting</th>
               <th className="px-4 py-3">Lead</th>
               <th className="px-4 py-3">Status</th>
+              <th className="px-4 py-3 text-right" title="Consumed vs total-hours cap (one-time projects)">Hours</th>
               {canEdit && <th className="px-4 py-3 text-right">Actions</th>}
             </tr>
           </thead>
           <tbody className="divide-y divide-outline">
             {loading ? (
-              <tr><td colSpan={canEdit ? 6 : 5} className="px-4 py-8 text-center text-on-surface-subtle">Loading projects…</td></tr>
+              <tr><td colSpan={canEdit ? 7 : 6} className="px-4 py-8 text-center text-on-surface-subtle">Loading projects…</td></tr>
             ) : filtered.length === 0 ? (
-              <tr><td colSpan={canEdit ? 6 : 5} className="px-4 py-12 text-center">
+              <tr><td colSpan={canEdit ? 7 : 6} className="px-4 py-12 text-center">
                 <Briefcase size={28} className="mx-auto text-on-surface-subtle mb-2" />
                 <p className="text-sm text-on-surface-muted">No projects match your filters.</p>
               </td></tr>
@@ -221,9 +225,44 @@ export default function Projects() {
                       {pill.label}
                     </span>
                   </td>
+                  <td className="px-4 py-3 text-right">
+                    {p.total_hours_cap != null && Number(p.total_hours_cap) > 0 ? (() => {
+                      const used = Math.round(Number(p.consumed_hours_total ?? 0));
+                      const cap = Number(p.total_hours_cap);
+                      const pctUsed = Math.min(1, used / cap);
+                      const overBy = used - cap;
+                      const tone =
+                        overBy > 0 ? 'text-danger'
+                        : pctUsed >= 0.9 ? 'text-warning'
+                        : 'text-on-surface';
+                      const barTone =
+                        overBy > 0 ? 'bg-danger'
+                        : pctUsed >= 0.9 ? 'bg-warning'
+                        : 'bg-success';
+                      return (
+                        <div className="inline-flex flex-col items-end gap-1">
+                          <span className={`num-mono text-xs font-semibold ${tone}`}>
+                            {used}<span className="text-on-surface-subtle">/{cap}h</span>
+                            {overBy > 0 && <span className="ml-1 text-[10px]">(+{overBy})</span>}
+                          </span>
+                          <div className="w-20 h-1 rounded-full bg-surface-3 overflow-hidden">
+                            <div className={`h-full ${barTone}`} style={{ width: `${Math.min(100, pctUsed * 100)}%` }} />
+                          </div>
+                        </div>
+                      );
+                    })() : (
+                      <span className="num-mono text-xs text-on-surface-subtle">
+                        {Math.round(Number(p.consumed_hours_total ?? 0))}h<span className="text-on-surface-subtle/60"> · uncapped</span>
+                      </span>
+                    )}
+                  </td>
                   {canEdit && (
                     <td className="px-4 py-3 text-right">
                       <div className="inline-flex items-center gap-1">
+                        <button onClick={() => setDailyFor(p)}
+                          className="p-1.5 rounded hover:bg-brand-container/60 transition-colors" title="Daily activity (who worked how many hours each day)">
+                          <CalendarDays size={14} className="text-on-brand-container" />
+                        </button>
                         <button onClick={() => setExpensesFor(p)}
                           className="p-1.5 rounded hover:bg-warning-container/60 transition-colors" title="Project expenses (outsourcing, content, ads)">
                           <IndianRupee size={14} className="text-warning" />
@@ -264,6 +303,204 @@ export default function Projects() {
           onClose={() => setExpensesFor(null)}
         />
       )}
+
+      {dailyFor && (
+        <ProjectDailyActivityModal
+          project={dailyFor}
+          onClose={() => setDailyFor(null)}
+        />
+      )}
+    </div>
+  );
+}
+
+// ── Daily activity modal — project-centric view: employees × days ──────────
+// Reporting managers / coordinators / admins use this to see how many hours
+// were spent on a specific project each day, by whom, with the day's notes.
+function ProjectDailyActivityModal({ project, onClose }: { project: Project; onClose: () => void }) {
+  const today = new Date();
+  const [month, setMonth] = useState(today.getMonth() + 1);
+  const [year, setYear] = useState(today.getFullYear());
+  const [days, setDays] = useState<Array<{
+    id: string; employee_id: string; employee_name: string | null; log_date: string;
+    hours: number; notes: string | null;
+  }>>([]);
+  const [loading, setLoading] = useState(true);
+  const [hoveredCell, setHoveredCell] = useState<{ emp: string; date: string } | null>(null);
+
+  useEffect(() => {
+    setLoading(true);
+    api.getHourLogDays({ project_id: project.id, month, year })
+      .then((d: any[]) => setDays(d as any))
+      .catch(() => setDays([]))
+      .finally(() => setLoading(false));
+  }, [project.id, month, year]);
+
+  // Build the list of days in the month (1..N)
+  const daysInMonth = new Date(year, month, 0).getDate();
+  const dayNums = Array.from({ length: daysInMonth }, (_, i) => i + 1);
+
+  // Group entries: (employee_id → date → row[])
+  const byEmpDate = new Map<string, Map<string, typeof days>>();
+  const empNames = new Map<string, string>();
+  for (const d of days) {
+    const iso = String(d.log_date).slice(0, 10);
+    if (!byEmpDate.has(d.employee_id)) byEmpDate.set(d.employee_id, new Map());
+    const empMap = byEmpDate.get(d.employee_id)!;
+    if (!empMap.has(iso)) empMap.set(iso, []);
+    empMap.get(iso)!.push(d);
+    if (d.employee_name) empNames.set(d.employee_id, d.employee_name);
+  }
+  const employees = Array.from(byEmpDate.keys()).sort((a, b) =>
+    (empNames.get(a) ?? '').localeCompare(empNames.get(b) ?? '')
+  );
+
+  // Totals
+  const totalHours = days.reduce((s, d) => s + Number(d.hours), 0);
+  const activeDays = new Set(days.map(d => String(d.log_date).slice(0, 10))).size;
+
+  // Daily totals (across all employees) for the column footer
+  const totalByDay = new Map<string, number>();
+  for (const d of days) {
+    const iso = String(d.log_date).slice(0, 10);
+    totalByDay.set(iso, (totalByDay.get(iso) ?? 0) + Number(d.hours));
+  }
+
+  const heatTone = (h: number) => {
+    if (h === 0) return 'text-on-surface-subtle';
+    if (h < 2)   return 'bg-brand/15 text-on-surface';
+    if (h < 5)   return 'bg-brand/30 text-on-surface';
+    if (h < 8)   return 'bg-brand/55 text-on-brand-container font-bold';
+    return 'bg-accent/70 text-on-accent font-bold';
+  };
+  const isoFor = (day: number) => `${year}-${String(month).padStart(2,'0')}-${String(day).padStart(2,'0')}`;
+  const weekdayLabel = (day: number) => ['S','M','T','W','T','F','S'][new Date(year, month-1, day).getDay()];
+
+  // The note panel shows whatever the user is hovering on (or last clicked)
+  const hoveredEntries = hoveredCell ? (byEmpDate.get(hoveredCell.emp)?.get(hoveredCell.date) ?? []) : [];
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-bg/55 backdrop-blur-sm p-4" onClick={onClose}>
+      <div className="bg-surface rounded-2xl shadow-elev-4 border border-outline w-full max-w-5xl max-h-[92vh] overflow-hidden flex flex-col"
+        onClick={e => e.stopPropagation()}>
+        <div className="flex items-start justify-between px-6 py-5 border-b border-outline">
+          <div className="min-w-0">
+            <h3 className="font-display text-xl font-bold tracking-tight text-on-surface truncate">Daily activity</h3>
+            <p className="text-xs text-on-surface-muted mt-0.5 truncate">{project.name}{project.client_name ? ` · ${project.client_name}` : ''}</p>
+            <p className="text-[11px] text-on-surface-subtle mt-1">Each cell is one employee's hours on this project for that day. Hover for the work notes.</p>
+          </div>
+          <button onClick={onClose} className="p-1.5 hover:bg-surface-2 rounded-lg flex-shrink-0"><X size={16} className="text-on-surface-muted" /></button>
+        </div>
+
+        <div className="px-6 py-3 border-b border-outline bg-surface-2/40 flex items-center justify-between flex-wrap gap-3">
+          <div className="flex items-center gap-2">
+            <select value={month} onChange={e => setMonth(Number(e.target.value))}
+              className="text-sm bg-surface border border-outline rounded-lg px-2.5 py-1.5">
+              {Array.from({ length: 12 }, (_, i) => (
+                <option key={i+1} value={i+1}>{new Date(2000, i, 1).toLocaleString('en-IN', { month: 'short' })}</option>
+              ))}
+            </select>
+            <select value={year} onChange={e => setYear(Number(e.target.value))}
+              className="text-sm bg-surface border border-outline rounded-lg px-2.5 py-1.5">
+              {[year-1, year, year+1].map(y => <option key={y} value={y}>{y}</option>)}
+            </select>
+          </div>
+          <div className="flex items-center gap-6 text-xs">
+            <div><span className="text-on-surface-subtle">Hours: </span><span className="num-mono font-bold text-on-surface">{Math.round(totalHours)}h</span></div>
+            <div><span className="text-on-surface-subtle">Contributors: </span><span className="num-mono font-bold text-on-surface">{employees.length}</span></div>
+            <div><span className="text-on-surface-subtle">Active days: </span><span className="num-mono font-bold text-on-surface">{activeDays}</span></div>
+          </div>
+        </div>
+
+        <div className="flex-1 overflow-auto">
+          {loading ? (
+            <div className="px-6 py-12 text-center text-sm text-on-surface-subtle">Loading…</div>
+          ) : employees.length === 0 ? (
+            <div className="px-6 py-12 text-center">
+              <CalendarDays size={28} className="mx-auto text-on-surface-subtle mb-2" />
+              <p className="text-sm text-on-surface-muted">No daily entries logged on this project for {new Date(year, month-1, 1).toLocaleDateString('en-IN', { month: 'long', year: 'numeric' })}.</p>
+            </div>
+          ) : (
+            <table className="text-xs border-collapse w-full">
+              <thead className="sticky top-0 bg-surface-2 z-10">
+                <tr className="border-b border-outline">
+                  <th className="px-3 py-2 text-left text-[10px] uppercase tracking-wider font-bold text-on-surface-muted sticky left-0 bg-surface-2 min-w-[160px]">Employee</th>
+                  {dayNums.map(d => (
+                    <th key={d} className="px-1 py-2 text-center font-mono min-w-[28px]">
+                      <div className="text-[9px] uppercase font-bold text-on-surface-subtle">{weekdayLabel(d)}</div>
+                      <div className="text-[10px] font-semibold text-on-surface">{d}</div>
+                    </th>
+                  ))}
+                  <th className="px-2 py-2 text-right text-[10px] uppercase tracking-wider font-bold text-on-surface-muted bg-surface-3 min-w-[60px]">Total</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-outline">
+                {employees.map(empId => {
+                  const dateMap = byEmpDate.get(empId) ?? new Map();
+                  const empTotal = Array.from(dateMap.values()).flat().reduce((s, d) => s + Number(d.hours), 0);
+                  return (
+                    <tr key={empId} className="hover:bg-surface-2/40">
+                      <td className="px-3 py-1.5 text-sm font-semibold text-on-surface sticky left-0 bg-surface hover:bg-surface-2/40 whitespace-nowrap">{empNames.get(empId) ?? '—'}</td>
+                      {dayNums.map(d => {
+                        const iso = isoFor(d);
+                        const entries = dateMap.get(iso) ?? [];
+                        const sum = entries.reduce((s: number, e: any) => s + Number(e.hours), 0);
+                        const focused = hoveredCell?.emp === empId && hoveredCell?.date === iso;
+                        return (
+                          <td key={d}
+                            onMouseEnter={() => setHoveredCell({ emp: empId, date: iso })}
+                            className={`px-1 py-1 text-center text-[11px] cursor-default transition-colors ${heatTone(sum)} ${focused ? 'ring-2 ring-accent ring-inset' : ''}`}
+                          >
+                            <span className="num-mono">{sum > 0 ? sum : ''}</span>
+                          </td>
+                        );
+                      })}
+                      <td className="px-2 py-1.5 text-right num-mono font-bold text-on-surface bg-surface-2/40">{Math.round(empTotal)}</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+              <tfoot className="bg-surface-2 border-t border-outline">
+                <tr>
+                  <th className="px-3 py-2 text-right text-[10px] uppercase tracking-wider font-bold text-on-surface-muted sticky left-0 bg-surface-2">Day total</th>
+                  {dayNums.map(d => {
+                    const sum = totalByDay.get(isoFor(d)) ?? 0;
+                    return (
+                      <td key={d} className="px-1 py-2 text-center num-mono text-[11px] font-bold text-on-surface">{sum > 0 ? Math.round(sum) : ''}</td>
+                    );
+                  })}
+                  <td className="px-2 py-2 text-right num-mono font-bold text-accent">{Math.round(totalHours)}</td>
+                </tr>
+              </tfoot>
+            </table>
+          )}
+        </div>
+
+        {/* Hover note panel */}
+        <div className="px-6 py-3 border-t border-outline bg-surface-2/40 min-h-[64px]">
+          {hoveredCell && hoveredEntries.length > 0 ? (
+            <div>
+              <p className="text-[10px] uppercase tracking-[0.16em] font-bold text-on-surface-muted">
+                {empNames.get(hoveredCell.emp)} · {new Date(hoveredCell.date + 'T12:00:00Z').toLocaleDateString('en-IN', { weekday: 'short', day: 'numeric', month: 'short' })}
+              </p>
+              <ul className="mt-1 space-y-0.5">
+                {hoveredEntries.map((e: any) => (
+                  <li key={e.id} className="text-xs text-on-surface">
+                    <span className="num-mono font-semibold">{Number(e.hours)}h</span>
+                    <span className="text-on-surface-muted"> — {e.notes || <em className="text-on-surface-subtle">no note</em>}</span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          ) : (
+            <p className="text-xs text-on-surface-subtle italic">Hover a cell to see the day's note.</p>
+          )}
+        </div>
+
+        <div className="px-6 py-3 border-t border-outline bg-surface flex justify-end">
+          <button onClick={onClose} className="px-4 py-1.5 text-sm font-medium text-on-surface-muted hover:bg-surface-2 rounded-lg transition-colors">Close</button>
+        </div>
+      </div>
     </div>
   );
 }
@@ -479,6 +716,7 @@ function ProjectForm({
     flag: existing?.flag ?? '',
     flag_reason: existing?.flag_reason ?? '',
     notes: existing?.notes ?? '',
+    total_hours_cap: (existing as any)?.total_hours_cap != null ? String((existing as any).total_hours_cap) : '',
   });
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
@@ -491,7 +729,13 @@ function ProjectForm({
     setError('');
     const reportingEmp = employees.find(e => e.id === form.project_reporting_id);
     const leadEmp = employees.find(e => e.id === form.project_lead_id);
-    const payload = {
+    const trimmedCap = form.total_hours_cap.trim();
+    if (trimmedCap && (Number.isNaN(Number(trimmedCap)) || Number(trimmedCap) < 0)) {
+      setError('Total hours cap must be a non-negative number.');
+      setSaving(false);
+      return;
+    }
+    const payload: any = {
       name: form.name.trim(),
       client_name: form.client_name.trim() || null,
       project_type: form.project_type || null,
@@ -504,6 +748,7 @@ function ProjectForm({
       flag: form.flag || null,
       flag_reason: form.flag ? form.flag_reason.trim() || null : null,
       notes: form.notes.trim() || null,
+      total_hours_cap: trimmedCap === '' ? null : Number(trimmedCap),
       created_by: createdBy ?? null,
     };
     try {
@@ -600,6 +845,18 @@ function ProjectForm({
                 className={inputCls} />
             </div>
           )}
+          <div>
+            <label className={labelCls}>Total hours cap <span className="font-normal text-on-surface-subtle">(optional — for one-time / fixed-budget projects)</span></label>
+            <input value={form.total_hours_cap} onChange={e => setF('total_hours_cap', e.target.value)}
+              type="number" step="0.5" min="0"
+              placeholder="Leave blank for recurring projects"
+              className={`${inputCls} num-mono`} />
+            {existing && (existing as any)?.consumed_hours_total != null && (
+              <p className="text-[11px] text-on-surface-subtle mt-1">
+                <span className="num-mono font-semibold text-on-surface">{Math.round(Number((existing as any).consumed_hours_total))}h</span> approved so far across all months.
+              </p>
+            )}
+          </div>
           <div>
             <label className={labelCls}>Notes</label>
             <textarea value={form.notes} onChange={e => setF('notes', e.target.value)} rows={3}

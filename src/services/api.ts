@@ -318,12 +318,13 @@ export const api = {
     request<{ success: boolean }>(`/hour-logs/${id}`, { method: 'DELETE', body: JSON.stringify(data) }),
 
   // ── Daily entries (auto-roll up to the weekly hour_logs row) ──
-  getHourLogDays: (params?: { employee_id?: string; month?: number; year?: number; assignment_id?: string }) => {
+  getHourLogDays: (params?: { employee_id?: string; month?: number; year?: number; assignment_id?: string; project_id?: string }) => {
     const qs = new URLSearchParams();
     if (params?.employee_id) qs.set('employee_id', params.employee_id);
     if (params?.month) qs.set('month', String(params.month));
     if (params?.year) qs.set('year', String(params.year));
     if (params?.assignment_id) qs.set('assignment_id', params.assignment_id);
+    if (params?.project_id) qs.set('project_id', params.project_id);
     return request<Array<{
       id: string;
       assignment_id: string;

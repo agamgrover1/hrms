@@ -603,6 +603,9 @@ async function runStartupMigrations() {
     await sql`ALTER TABLE leave_requests ADD COLUMN IF NOT EXISTS cancelled_at TIMESTAMPTZ`;
     await sql`ALTER TABLE leave_requests ADD COLUMN IF NOT EXISTS cancellation_reason TEXT`;
     await sql`ALTER TABLE upsell_requests ALTER COLUMN requested_amount DROP NOT NULL`.catch(()=>{});
+    // Optional total-hours cap per project (one-time / fixed-budget projects).
+    // Null = uncapped / recurring.
+    await sql`ALTER TABLE projects ADD COLUMN IF NOT EXISTS total_hours_cap NUMERIC`.catch(()=>{});
   } catch { /* columns may already exist — non-fatal */ }
 
   // ── Seed default config data ─────────────────────────────────────────────
@@ -2846,15 +2849,33 @@ app.get('/api/projects', async (req, res) => {
   try {
     await runStartupMigrations();
     const { status, type } = req.query;
+    // LEFT JOIN total approved hours per project so the list can show
+    // consumed-vs-cap progress without an extra round trip.
     let rows: any[];
     if (status && type) {
-      rows = await sql`SELECT * FROM projects WHERE status=${status} AND project_type=${type} ORDER BY name ASC`;
+      rows = await sql`
+        SELECT p.*, COALESCE(c.consumed, 0)::numeric AS consumed_hours_total
+        FROM projects p
+        LEFT JOIN (SELECT project_id, SUM(hours_logged) AS consumed FROM hour_logs WHERE status='approved' GROUP BY project_id) c ON c.project_id = p.id
+        WHERE p.status=${status} AND p.project_type=${type} ORDER BY p.name ASC`;
     } else if (status) {
-      rows = await sql`SELECT * FROM projects WHERE status=${status} ORDER BY name ASC`;
+      rows = await sql`
+        SELECT p.*, COALESCE(c.consumed, 0)::numeric AS consumed_hours_total
+        FROM projects p
+        LEFT JOIN (SELECT project_id, SUM(hours_logged) AS consumed FROM hour_logs WHERE status='approved' GROUP BY project_id) c ON c.project_id = p.id
+        WHERE p.status=${status} ORDER BY p.name ASC`;
     } else if (type) {
-      rows = await sql`SELECT * FROM projects WHERE project_type=${type} ORDER BY name ASC`;
+      rows = await sql`
+        SELECT p.*, COALESCE(c.consumed, 0)::numeric AS consumed_hours_total
+        FROM projects p
+        LEFT JOIN (SELECT project_id, SUM(hours_logged) AS consumed FROM hour_logs WHERE status='approved' GROUP BY project_id) c ON c.project_id = p.id
+        WHERE p.project_type=${type} ORDER BY p.name ASC`;
     } else {
-      rows = await sql`SELECT * FROM projects ORDER BY status='archived', name ASC`;
+      rows = await sql`
+        SELECT p.*, COALESCE(c.consumed, 0)::numeric AS consumed_hours_total
+        FROM projects p
+        LEFT JOIN (SELECT project_id, SUM(hours_logged) AS consumed FROM hour_logs WHERE status='approved' GROUP BY project_id) c ON c.project_id = p.id
+        ORDER BY p.status='archived', p.name ASC`;
     }
     res.json(rows);
   } catch (err: any) { res.status(500).json({ error: err.message || 'Server error' }); }
@@ -2867,18 +2888,23 @@ app.post('/api/projects', async (req, res) => {
       name, client_name, project_type, dashboard_url,
       project_reporting_id, project_reporting_name,
       project_lead_id, project_lead_name,
-      status, flag, flag_reason, notes, created_by,
+      status, flag, flag_reason, notes, created_by, total_hours_cap,
     } = req.body;
     if (!name) return res.status(400).json({ error: 'name is required' });
+    const capVal = total_hours_cap === '' || total_hours_cap === null || total_hours_cap === undefined ? null : Number(total_hours_cap);
+    if (capVal !== null && (Number.isNaN(capVal) || capVal < 0)) {
+      return res.status(400).json({ error: 'total_hours_cap must be a non-negative number' });
+    }
     const id = newId('proj');
     const rows = await sql`
       INSERT INTO projects (id, name, client_name, project_type, dashboard_url,
         project_reporting_id, project_reporting_name, project_lead_id, project_lead_name,
-        status, flag, flag_reason, notes, created_by)
+        status, flag, flag_reason, notes, created_by, total_hours_cap)
       VALUES (${id}, ${name}, ${client_name ?? null}, ${project_type ?? null}, ${dashboard_url ?? null},
         ${project_reporting_id ?? null}, ${project_reporting_name ?? null},
         ${project_lead_id ?? null}, ${project_lead_name ?? null},
-        ${status ?? 'active'}, ${flag ?? null}, ${flag_reason ?? null}, ${notes ?? null}, ${created_by ?? null})
+        ${status ?? 'active'}, ${flag ?? null}, ${flag_reason ?? null}, ${notes ?? null}, ${created_by ?? null},
+        ${capVal})
       RETURNING *`;
     res.status(201).json(rows[0]);
   } catch (err: any) { res.status(500).json({ error: err.message || 'Server error' }); }
@@ -2890,17 +2916,35 @@ app.put('/api/projects/:id', async (req, res) => {
       name, client_name, project_type, dashboard_url,
       project_reporting_id, project_reporting_name,
       project_lead_id, project_lead_name,
-      status, flag, flag_reason, notes,
+      status, flag, flag_reason, notes, total_hours_cap,
     } = req.body;
-    const rows = await sql`
-      UPDATE projects SET
-        name=${name}, client_name=${client_name ?? null}, project_type=${project_type ?? null},
-        dashboard_url=${dashboard_url ?? null},
-        project_reporting_id=${project_reporting_id ?? null}, project_reporting_name=${project_reporting_name ?? null},
-        project_lead_id=${project_lead_id ?? null}, project_lead_name=${project_lead_name ?? null},
-        status=${status ?? 'active'}, flag=${flag ?? null}, flag_reason=${flag_reason ?? null},
-        notes=${notes ?? null}
-      WHERE id=${req.params.id} RETURNING *`;
+    // Only update cap if explicitly provided in the body — callers that omit it
+    // keep the existing value.
+    const updateCap = total_hours_cap !== undefined;
+    const capVal = total_hours_cap === '' || total_hours_cap === null ? null : Number(total_hours_cap);
+    if (updateCap && capVal !== null && (Number.isNaN(capVal) || capVal < 0)) {
+      return res.status(400).json({ error: 'total_hours_cap must be a non-negative number' });
+    }
+    const rows = updateCap
+      ? await sql`
+        UPDATE projects SET
+          name=${name}, client_name=${client_name ?? null}, project_type=${project_type ?? null},
+          dashboard_url=${dashboard_url ?? null},
+          project_reporting_id=${project_reporting_id ?? null}, project_reporting_name=${project_reporting_name ?? null},
+          project_lead_id=${project_lead_id ?? null}, project_lead_name=${project_lead_name ?? null},
+          status=${status ?? 'active'}, flag=${flag ?? null}, flag_reason=${flag_reason ?? null},
+          notes=${notes ?? null},
+          total_hours_cap=${capVal}
+        WHERE id=${req.params.id} RETURNING *`
+      : await sql`
+        UPDATE projects SET
+          name=${name}, client_name=${client_name ?? null}, project_type=${project_type ?? null},
+          dashboard_url=${dashboard_url ?? null},
+          project_reporting_id=${project_reporting_id ?? null}, project_reporting_name=${project_reporting_name ?? null},
+          project_lead_id=${project_lead_id ?? null}, project_lead_name=${project_lead_name ?? null},
+          status=${status ?? 'active'}, flag=${flag ?? null}, flag_reason=${flag_reason ?? null},
+          notes=${notes ?? null}
+        WHERE id=${req.params.id} RETURNING *`;
     if (!rows.length) return res.status(404).json({ error: 'Project not found' });
     res.json(rows[0]);
   } catch (err: any) { res.status(500).json({ error: err.message || 'Server error' }); }
@@ -3278,6 +3322,7 @@ app.get('/api/hour-log-days', async (req, res) => {
     const year = req.query.year ? Number(req.query.year) : null;
     const employee_id = (req.query.employee_id as string) || null;
     const assignment_id = (req.query.assignment_id as string) || null;
+    const project_id = (req.query.project_id as string) || null;
     const rows = await sql`
       SELECT d.*, p.name AS project_name, p.client_name AS project_client_name
       FROM hour_log_days d
@@ -3286,6 +3331,7 @@ app.get('/api/hour-log-days', async (req, res) => {
         AND (${year}::int  IS NULL OR d.year=${year})
         AND (${employee_id}::text IS NULL OR d.employee_id=${employee_id})
         AND (${assignment_id}::text IS NULL OR d.assignment_id=${assignment_id})
+        AND (${project_id}::text IS NULL OR d.project_id=${project_id})
       ORDER BY d.log_date ASC`;
     res.json(rows);
   } catch (err: any) { res.status(500).json({ error: err.message || 'Server error' }); }
