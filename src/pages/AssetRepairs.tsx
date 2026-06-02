@@ -677,9 +677,36 @@ function TicketFormModal({ initial, employees, vendors, assets, currentUser, onC
     payment_date: initial?.payment_date?.split?.('T')[0] ?? '',
     notes:       initial?.notes ?? '',
     markPaid:    false,
+    force_status: '' as string,
   });
   const [error, setError] = useState('');
   const [saving, setSaving] = useState(false);
+
+  // Service log (admin/HR/coord only). Loads when editing an existing ticket.
+  const isAdmin = currentUser?.role === 'admin' || currentUser?.role === 'hr_manager' || currentUser?.role === 'project_coordinator';
+  const [activity, setActivity] = useState<any[]>([]);
+  const [activityLoading, setActivityLoading] = useState(false);
+  const [noteDraft, setNoteDraft] = useState('');
+  const [savingNote, setSavingNote] = useState(false);
+  const loadActivity = async () => {
+    if (!initial?.id) return;
+    setActivityLoading(true);
+    try { setActivity(await api.getRepairTicketActivity(initial.id)); }
+    catch { setActivity([]); }
+    finally { setActivityLoading(false); }
+  };
+  useEffect(() => { if (initial?.id && isAdmin) loadActivity(); /* eslint-disable-next-line */ }, [initial?.id]);
+  const submitNote = async () => {
+    const note = noteDraft.trim();
+    if (!note || !initial?.id) return;
+    setSavingNote(true);
+    try {
+      await api.addRepairTicketNote(initial.id, { note, actor_id: currentUser?.id, actor_name: currentUser?.name, actor_role: currentUser?.role });
+      setNoteDraft('');
+      loadActivity();
+    } catch (e: any) { setError(e.message ?? 'Failed to add note'); }
+    finally { setSavingNote(false); }
+  };
 
   const employeeAssets = useMemo(
     () => assets.filter((a: any) => a.assigned_to_id === form.employee_id),
@@ -709,7 +736,10 @@ function TicketFormModal({ initial, employees, vendors, assets, currentUser, onC
       };
       if (initial) {
         if (form.markPaid) payload.status = 'paid';
+        if (form.force_status) payload.status = form.force_status;
         payload.updated_by_role = currentUser?.role;
+        payload.actor_id = currentUser?.id;
+        payload.actor_name = currentUser?.name;
         await api.updateRepairTicket(initial.id, payload);
       } else {
         payload.created_by = currentUser?.name;
@@ -829,8 +859,99 @@ function TicketFormModal({ initial, employees, vendors, assets, currentUser, onC
             className="w-full text-sm border border-outline rounded-lg px-3 py-2 bg-surface text-on-surface placeholder:text-on-surface-subtle focus:outline-none focus:border-accent focus:ring-2 focus:ring-accent/20 resize-none"/>
         </div>
 
+        {/* Admin force-status dropdown — lets admin/HR jump to ANY state at any time */}
+        {initial && isAdmin && (
+          <div className="rounded-lg border border-outline bg-surface-2/40 p-3">
+            <label className="text-xs font-semibold text-on-surface-subtle block mb-1">
+              Force status (admin override)
+            </label>
+            <select value={form.force_status} onChange={e => setForm({ ...form, force_status: e.target.value })}
+              className="w-full text-sm border border-outline rounded-lg px-3 py-2 bg-surface text-on-surface focus:outline-none focus:border-accent focus:ring-2 focus:ring-accent/20">
+              <option value="">— Keep current ({initial.status}) —</option>
+              <option value="reported">Reported</option>
+              <option value="picked_up">Picked up</option>
+              <option value="returned">Returned</option>
+              <option value="awaiting_approval">Awaiting approval</option>
+              <option value="paid">Paid</option>
+              <option value="cancelled">Cancelled</option>
+            </select>
+            <p className="text-[10px] text-on-surface-subtle mt-1">
+              Use to fix a wrongly-set status or reopen a closed ticket. Logged in the service trail.
+            </p>
+          </div>
+        )}
+
         {error && <p className="text-xs text-danger bg-danger-container border border-danger/20 rounded-lg px-3 py-2">{error}</p>}
         <ModalActions onClose={onClose} onSave={handleSave} saving={saving}/>
+
+        {/* Service log — admin/HR/coord only. Shown after Save row so it doesn't
+            interrupt the editing flow but is always reachable on an existing ticket. */}
+        {initial && isAdmin && (
+          <div className="rounded-xl-2 border border-outline overflow-hidden mt-4">
+            <div className="px-3 py-2 bg-surface-2 border-b border-outline flex items-center justify-between">
+              <p className="text-[10px] uppercase tracking-[0.16em] font-bold text-on-surface-muted">
+                Service log · admin only
+              </p>
+              <p className="text-[10px] text-on-surface-subtle">{activity.length} {activity.length === 1 ? 'entry' : 'entries'}</p>
+            </div>
+
+            {/* Add-note row */}
+            <div className="px-3 py-2 border-b border-outline bg-surface flex gap-2">
+              <input
+                value={noteDraft}
+                onChange={e => setNoteDraft(e.target.value)}
+                onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); submitNote(); } }}
+                placeholder="Add a log note (e.g. 'spoke with vendor about delay')…"
+                className="flex-1 text-xs bg-surface border border-outline rounded-lg px-2.5 py-1.5 placeholder:text-on-surface-subtle focus:outline-none focus:border-accent focus:ring-2 focus:ring-accent/20"
+              />
+              <button onClick={submitNote} disabled={savingNote || !noteDraft.trim()}
+                className="px-3 py-1.5 text-xs font-semibold bg-accent text-on-accent rounded-lg hover:opacity-90 disabled:opacity-50 transition-opacity">
+                {savingNote ? '…' : 'Add'}
+              </button>
+            </div>
+
+            {/* Timeline */}
+            {activityLoading ? (
+              <div className="px-3 py-4 text-center text-xs text-on-surface-subtle">Loading…</div>
+            ) : activity.length === 0 ? (
+              <div className="px-3 py-4 text-center text-xs text-on-surface-subtle">No activity recorded yet.</div>
+            ) : (
+              <ul className="divide-y divide-outline max-h-72 overflow-y-auto">
+                {activity.map(a => {
+                  const ACTION_CFG: Record<string, { label: string; cls: string }> = {
+                    created:        { label: 'Created',        cls: 'bg-brand-container text-on-brand-container' },
+                    status_change:  { label: 'Status',         cls: 'bg-surface-3 text-on-surface' },
+                    cost_update:    { label: 'Cost',           cls: 'bg-warning-container text-warning' },
+                    vendor_change:  { label: 'Vendor',         cls: 'bg-surface-3 text-on-surface' },
+                    payment_update: { label: 'Payment',        cls: 'bg-warning-container text-warning' },
+                    notes_update:   { label: 'Notes',          cls: 'bg-surface-3 text-on-surface' },
+                    approved:       { label: 'Approved',       cls: 'bg-success-container text-success' },
+                    rejected:       { label: 'Rejected',       cls: 'bg-danger-container text-danger' },
+                    note:           { label: 'Note',           cls: 'bg-accent-container text-on-accent-container' },
+                  };
+                  const cfg = ACTION_CFG[a.action] ?? { label: a.action, cls: 'bg-surface-3 text-on-surface' };
+                  const d = new Date(a.created_at);
+                  return (
+                    <li key={a.id} className="px-3 py-2.5 flex gap-2.5 items-start">
+                      <span className={`inline-flex items-center px-1.5 py-0.5 rounded-full text-[9px] font-bold uppercase tracking-wider flex-shrink-0 mt-0.5 ${cfg.cls}`}>
+                        {cfg.label}
+                      </span>
+                      <div className="flex-1 min-w-0">
+                        <p className="text-xs text-on-surface leading-snug">{a.description ?? '—'}</p>
+                        <p className="text-[10px] text-on-surface-subtle mt-0.5">
+                          {a.actor_name ?? 'system'}
+                          {a.actor_role ? <span className="ml-1 px-1 py-0 rounded bg-surface-3 text-on-surface-muted">{a.actor_role.replace('_',' ')}</span> : null}
+                          <span className="mx-1.5">·</span>
+                          <span className="font-mono">{d.toLocaleString('en-IN', { day:'numeric', month:'short', hour:'2-digit', minute:'2-digit' })}</span>
+                        </p>
+                      </div>
+                    </li>
+                  );
+                })}
+              </ul>
+            )}
+          </div>
+        )}
       </div>
     </Modal>
   );

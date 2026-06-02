@@ -176,6 +176,22 @@ export const api = {
   rejectRepairTicket: (id: string, rejected_by?: string, rejection_reason?: string) =>
     request<any>(`/repair-tickets/${id}/reject`, { method: 'PATCH', body: JSON.stringify({ rejected_by, rejection_reason }) }),
   deleteRepairTicket: (id: string) => request<any>(`/repair-tickets/${id}`, { method: 'DELETE' }),
+  getRepairTicketActivity: (id: string) =>
+    request<Array<{
+      id: number;
+      ticket_id: string | null;
+      asset_id: string | null;
+      action: string;
+      actor_id: string | null;
+      actor_name: string | null;
+      actor_role: string | null;
+      description: string | null;
+      before_value: string | null;
+      after_value: string | null;
+      created_at: string;
+    }>>(`/repair-tickets/${id}/activity`),
+  addRepairTicketNote: (id: string, data: { note: string; actor_id?: string; actor_name?: string; actor_role?: string }) =>
+    request<{ success: boolean }>(`/repair-tickets/${id}/note`, { method: 'POST', body: JSON.stringify(data) }),
 
   // Warnings & PIP
   getWarnings: (employeeId?: string) =>

@@ -70,6 +70,32 @@ async function notifyCoordinators(type: string, title: string, body?: string) {
   } catch { /* non-fatal */ }
 }
 
+// Service log for a repair ticket / asset — captures every admin action so
+// HR can audit what happened and when. NOT visible to the affected employee.
+async function recordAssetActivity(p: {
+  ticket_id?: string | null;
+  asset_id?: string | null;
+  action: string;
+  actor_id?: string | null;
+  actor_name?: string | null;
+  actor_role?: string | null;
+  description?: string | null;
+  before_value?: string | null;
+  after_value?: string | null;
+}) {
+  try {
+    await sql`
+      INSERT INTO asset_activity_log (
+        ticket_id, asset_id, action, actor_id, actor_name, actor_role,
+        description, before_value, after_value
+      ) VALUES (
+        ${p.ticket_id ?? null}, ${p.asset_id ?? null}, ${p.action},
+        ${p.actor_id ?? null}, ${p.actor_name ?? null}, ${p.actor_role ?? null},
+        ${p.description ?? null}, ${p.before_value ?? null}, ${p.after_value ?? null}
+      )`;
+  } catch { /* non-fatal */ }
+}
+
 // Capture every change to an hour_log so partial / unilateral admin edits are visible
 async function recordHourLogAudit(p: {
   hour_log_id: string;
@@ -392,6 +418,23 @@ async function runStartupMigrations() {
     )`;
   await sql`CREATE INDEX IF NOT EXISTS idx_hour_log_days_employee_month ON hour_log_days(employee_id, month, year)`.catch(()=>{});
   await sql`CREATE INDEX IF NOT EXISTS idx_hour_log_days_week ON hour_log_days(assignment_id, week_num)`.catch(()=>{});
+
+  await sql`
+    CREATE TABLE IF NOT EXISTS asset_activity_log (
+      id SERIAL PRIMARY KEY,
+      asset_id TEXT,
+      ticket_id TEXT,
+      action TEXT NOT NULL,
+      actor_id TEXT,
+      actor_name TEXT,
+      actor_role TEXT,
+      description TEXT,
+      before_value TEXT,
+      after_value TEXT,
+      created_at TIMESTAMPTZ DEFAULT NOW()
+    )`;
+  await sql`CREATE INDEX IF NOT EXISTS idx_asset_log_ticket ON asset_activity_log(ticket_id)`.catch(()=>{});
+  await sql`CREATE INDEX IF NOT EXISTS idx_asset_log_asset  ON asset_activity_log(asset_id)`.catch(()=>{});
 
   await sql`
     CREATE TABLE IF NOT EXISTS hour_log_audit (
@@ -2210,6 +2253,16 @@ app.post('/api/repair-tickets', async (req, res) => {
     // Mark asset as in_repair if linked
     if (asset_id) await sql`UPDATE assets SET status='in_repair' WHERE id=${asset_id}`.catch(()=>{});
     const ticket = (rows as any[])[0];
+    // Activity log
+    recordAssetActivity({
+      ticket_id: ticket.id,
+      asset_id: asset_id ?? null,
+      action: 'created',
+      actor_id: null,
+      actor_name: created_by ?? employee_name ?? null,
+      actor_role: 'employee',
+      description: `Ticket opened: ${issue.trim()}${quoted_cost != null && quoted_cost !== '' ? ` · quoted ₹${Number(quoted_cost).toLocaleString('en-IN')}` : ''}`,
+    });
     // Notifications
     notifyAdminsAndHR('repair_ticket_created', 'New Repair Ticket', `${employee_name ?? 'An employee'}'s laptop reported for repair: ${issue.trim().slice(0, 60)}${issue.length > 60 ? '…' : ''}`).catch(()=>{});
     if (employee_id) notifyEmployeeUser(employee_id, 'repair_ticket_created', 'Repair Ticket Logged', `Your laptop has been logged for repair. Issue: ${issue.trim().slice(0, 60)}${issue.length > 60 ? '…' : ''}`).catch(()=>{});
@@ -2220,7 +2273,7 @@ app.post('/api/repair-tickets', async (req, res) => {
 // Status transition + edits
 app.patch('/api/repair-tickets/:id', async (req, res) => {
   try {
-    const { status, asset_id, laptop_info, vendor_id, issue, quoted_cost, final_cost, payment_mode, payment_date, notes, updated_by_role } = req.body;
+    const { status, asset_id, laptop_info, vendor_id, issue, quoted_cost, final_cost, payment_mode, payment_date, notes, updated_by_role, actor_id, actor_name } = req.body;
     if (quoted_cost != null && quoted_cost !== '' && Number(quoted_cost) < 0) {
       return res.status(400).json({ error: 'Quoted cost cannot be negative' });
     }
@@ -2286,6 +2339,56 @@ app.patch('/api/repair-tickets/:id', async (req, res) => {
 
     const updated = upd[0];
 
+    // Activity log — emit one entry per field that actually changed
+    const actor = {
+      actor_id:   actor_id ?? null,
+      actor_name: actor_name ?? null,
+      actor_role: updated_by_role ?? null,
+    };
+    const wasN = (v: any) => v === null || v === undefined || v === '' ? null : String(v);
+    if (status && status !== t.status) {
+      await recordAssetActivity({
+        ticket_id: updated.id, asset_id: updated.asset_id, action: 'status_change',
+        ...actor,
+        before_value: t.status, after_value: newStatus,
+        description: `Status changed from ${t.status} to ${newStatus}`,
+      });
+    }
+    if (quoted_cost !== undefined && wasN(t.quoted_cost) !== wasN(quoted_cost)) {
+      await recordAssetActivity({
+        ticket_id: updated.id, action: 'cost_update', ...actor,
+        before_value: wasN(t.quoted_cost), after_value: wasN(quoted_cost),
+        description: `Quoted cost ${t.quoted_cost == null ? '—' : `₹${Number(t.quoted_cost).toLocaleString('en-IN')}`} → ${quoted_cost == null || quoted_cost === '' ? '—' : `₹${Number(quoted_cost).toLocaleString('en-IN')}`}`,
+      });
+    }
+    if (final_cost !== undefined && wasN(t.final_cost) !== wasN(final_cost)) {
+      await recordAssetActivity({
+        ticket_id: updated.id, action: 'cost_update', ...actor,
+        before_value: wasN(t.final_cost), after_value: wasN(final_cost),
+        description: `Final cost ${t.final_cost == null ? '—' : `₹${Number(t.final_cost).toLocaleString('en-IN')}`} → ${final_cost == null || final_cost === '' ? '—' : `₹${Number(final_cost).toLocaleString('en-IN')}`}`,
+      });
+    }
+    if (vendor_id !== undefined && wasN(t.vendor_id) !== wasN(vendor_id)) {
+      await recordAssetActivity({
+        ticket_id: updated.id, action: 'vendor_change', ...actor,
+        before_value: wasN(t.vendor_id), after_value: wasN(vendor_id),
+        description: `Vendor assignment changed`,
+      });
+    }
+    if (payment_mode !== undefined && wasN(t.payment_mode) !== wasN(payment_mode)) {
+      await recordAssetActivity({
+        ticket_id: updated.id, action: 'payment_update', ...actor,
+        before_value: wasN(t.payment_mode), after_value: wasN(payment_mode),
+        description: `Payment mode set to ${payment_mode || '—'}`,
+      });
+    }
+    if (notes !== undefined && (t.notes ?? '') !== (notes ?? '')) {
+      await recordAssetActivity({
+        ticket_id: updated.id, action: 'notes_update', ...actor,
+        description: notes ? `Notes updated: ${String(notes).slice(0, 120)}` : 'Notes cleared',
+      });
+    }
+
     // Mark asset status accordingly
     if (updated.asset_id) {
       if (newStatus === 'returned' || newStatus === 'paid')
@@ -2317,10 +2420,17 @@ app.patch('/api/repair-tickets/:id', async (req, res) => {
 // Admin approve — moves awaiting_approval → paid
 app.patch('/api/repair-tickets/:id/approve', async (req, res) => {
   try {
-    const { approved_by } = req.body;
+    const { approved_by, actor_id, actor_role } = req.body;
+    const pre = await sql`SELECT status FROM repair_tickets WHERE id=${req.params.id}` as any[];
     const rows = await sql`UPDATE repair_tickets SET status='paid', payment_status='paid', approved_by=${approved_by ?? null}, approved_at=NOW(), paid_at=NOW(), updated_at=NOW() WHERE id=${req.params.id} RETURNING *` as any[];
     if (!rows.length) return res.status(404).json({ error: 'Ticket not found' });
     const t = rows[0];
+    await recordAssetActivity({
+      ticket_id: t.id, asset_id: t.asset_id, action: 'approved',
+      actor_id: actor_id ?? null, actor_name: approved_by ?? null, actor_role: actor_role ?? 'admin',
+      before_value: pre[0]?.status, after_value: 'paid',
+      description: `Approved & paid · ₹${Number(t.final_cost ?? t.quoted_cost ?? 0).toLocaleString('en-IN')}`,
+    });
     if (t.asset_id) await sql`UPDATE assets SET status='active' WHERE id=${t.asset_id}`.catch(()=>{});
     if (t.employee_id) notifyEmployeeUser(t.employee_id, 'repair_paid', 'Laptop Repair Update', `Your laptop repair payment has been approved and marked as paid.`).catch(()=>{});
     notifyAdminsAndHR('repair_paid', 'Repair Payment Approved', `${t.employee_name}'s repair (₹${Number(t.final_cost ?? 0).toLocaleString('en-IN')}) approved & paid.`).catch(()=>{});
@@ -2331,12 +2441,46 @@ app.patch('/api/repair-tickets/:id/approve', async (req, res) => {
 // Admin reject — moves awaiting_approval → returned (HR can retry with revised cost)
 app.patch('/api/repair-tickets/:id/reject', async (req, res) => {
   try {
-    const { rejected_by, rejection_reason } = req.body;
+    const { rejected_by, rejection_reason, actor_id, actor_role } = req.body;
+    const pre = await sql`SELECT status FROM repair_tickets WHERE id=${req.params.id}` as any[];
     const rows = await sql`UPDATE repair_tickets SET status='returned', rejected_by=${rejected_by ?? null}, rejected_at=NOW(), rejection_reason=${rejection_reason ?? null}, requires_approval=FALSE, updated_at=NOW() WHERE id=${req.params.id} RETURNING *` as any[];
     if (!rows.length) return res.status(404).json({ error: 'Ticket not found' });
     const t = rows[0];
+    await recordAssetActivity({
+      ticket_id: t.id, asset_id: t.asset_id, action: 'rejected',
+      actor_id: actor_id ?? null, actor_name: rejected_by ?? null, actor_role: actor_role ?? 'admin',
+      before_value: pre[0]?.status, after_value: 'returned',
+      description: `Payment rejected${rejection_reason ? ` — ${rejection_reason}` : ''}`,
+    });
     notifyAdminsAndHR('repair_rejected', 'Repair Payment Rejected', `${t.employee_name}'s repair payment was rejected by ${rejected_by}.${rejection_reason ? ' Reason: ' + rejection_reason : ''}`).catch(()=>{});
     res.json(t);
+  } catch (e: any) { res.status(500).json({ error: e.message }); }
+});
+
+// Admin/HR adds a free-text log entry to a ticket (no state change, just a note)
+app.post('/api/repair-tickets/:id/note', async (req, res) => {
+  try {
+    const { note, actor_id, actor_name, actor_role } = req.body;
+    if (!note?.trim()) return res.status(400).json({ error: 'note is required' });
+    const rows = await sql`SELECT id, asset_id FROM repair_tickets WHERE id=${req.params.id}` as any[];
+    if (!rows.length) return res.status(404).json({ error: 'Ticket not found' });
+    await recordAssetActivity({
+      ticket_id: rows[0].id, asset_id: rows[0].asset_id, action: 'note',
+      actor_id: actor_id ?? null, actor_name: actor_name ?? null, actor_role: actor_role ?? null,
+      description: note.trim(),
+    });
+    res.json({ success: true });
+  } catch (e: any) { res.status(500).json({ error: e.message }); }
+});
+
+// Activity log for a single ticket — admin/HR view only (frontend gates this)
+app.get('/api/repair-tickets/:id/activity', async (req, res) => {
+  try {
+    const rows = await sql`
+      SELECT * FROM asset_activity_log
+      WHERE ticket_id=${req.params.id}
+      ORDER BY created_at ASC`;
+    res.json(rows);
   } catch (e: any) { res.status(500).json({ error: e.message }); }
 });
 
