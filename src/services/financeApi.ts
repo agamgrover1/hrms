@@ -56,6 +56,10 @@ export interface FinProjectRow {
   invoiced: number; received: number; pendingCount: number; clearedCount: number; invoiceCount: number;
   grossProfit: number; grossMargin: number;
   overhead: number; supervision: number; supervisorNames: string[];
+  supervisorBreakdown: { id: string; name: string; salary: number; share: number; amount: number }[];
+  overheadShare: number;
+  overheadMethod: 'direct_hours' | 'revenue' | 'headcount' | 'none';
+  overheadPool: number;
   netProfit: number; netMargin: number; effectiveCostPerHour: number; revenuePerHour: number;
   team: { id: string; name: string; designation: string | null; hours: number; rate: number; cost: number }[];
 }

@@ -1,6 +1,6 @@
 import { Fragment, useEffect, useMemo, useState } from 'react';
-import { X, Briefcase, Users as UsersIcon } from 'lucide-react';
-import { financeApi, type FinModel, type FinEmployeeRow } from '../../services/financeApi';
+import { X, Briefcase, Users as UsersIcon, FileText, IndianRupee, Receipt, Clock, CheckCircle2, Ban, ChevronRight } from 'lucide-react';
+import { financeApi, type FinModel, type FinEmployeeRow, type FinProjectRow, type FinInvoice, type FinProjectExpense } from '../../services/financeApi';
 import { MONTHS, money, moneyShort, pct, hrs, marginTone } from './format';
 
 type UtilGroupKey = 'none' | 'manager';
@@ -10,6 +10,7 @@ export default function DashboardTab({ month, year, rev }: { month: number; year
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState('');
   const [drilldown, setDrilldown] = useState<FinEmployeeRow | null>(null);
+  const [projectDrilldown, setProjectDrilldown] = useState<FinProjectRow | null>(null);
   const [utilGroup, setUtilGroup] = useState<UtilGroupKey>('none');
 
   useEffect(() => {
@@ -85,7 +86,7 @@ export default function DashboardTab({ month, year, rev }: { month: number; year
 
       {/* Project P&L */}
       <div className="rounded-xl-2 border border-outline bg-surface overflow-hidden">
-        <div className="px-5 py-3 border-b border-outline text-sm font-semibold text-on-surface">Project profitability</div>
+        <div className="px-5 py-3 border-b border-outline text-sm font-semibold text-on-surface">Project profitability <span className="text-xs font-normal text-on-surface-subtle ml-2">· click any row for the full breakdown</span></div>
         {model.projectRows.length === 0 ? (
           <div className="p-8 text-center text-sm text-on-surface-muted">No active projects with revenue this month.</div>
         ) : (
@@ -107,10 +108,11 @@ export default function DashboardTab({ month, year, rev }: { month: number; year
               </thead>
               <tbody className="divide-y divide-outline">
                 {model.projectRows.map((p) => (
-                  <tr key={p.id} className="hover:bg-surface-2/50">
+                  <tr key={p.id} className="hover:bg-surface-2/50 cursor-pointer group" onClick={() => setProjectDrilldown(p)}>
                     <td className="px-4 py-2.5">
-                      <div className="font-medium text-on-surface inline-flex items-center gap-2">
+                      <div className="font-medium text-on-surface inline-flex items-center gap-2 group-hover:text-accent transition-colors">
                         {p.name}
+                        <ChevronRight size={12} className="text-on-surface-subtle group-hover:text-accent transition-colors" />
                         {p.pendingCount > 0 && (
                           <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full text-[10px] font-bold bg-warning-container text-warning" title={`${p.pendingCount} pending invoice${p.pendingCount === 1 ? '' : 's'}`}>
                             ⏳ {p.pendingCount}
@@ -165,6 +167,17 @@ export default function DashboardTab({ month, year, rev }: { month: number; year
           month={month}
           year={year}
           onClose={() => setDrilldown(null)}
+        />
+      )}
+
+      {/* Per-project drill-in modal */}
+      {projectDrilldown && (
+        <ProjectDrilldownModal
+          project={projectDrilldown}
+          model={model}
+          month={month}
+          year={year}
+          onClose={() => setProjectDrilldown(null)}
         />
       )}
 
@@ -467,6 +480,312 @@ function EmployeeProjectsModal({ emp, model, month, year, onClose }: {
           )}
         </div>
       </div>
+    </div>
+  );
+}
+
+// ── Per-project profitability drilldown ────────────────────────────────────
+function ProjectDrilldownModal({ project: p, model, month, year, onClose }: {
+  project: FinProjectRow; model: FinModel; month: number; year: number; onClose: () => void;
+}) {
+  const c = model.settings.currency;
+  const [invoices, setInvoices] = useState<FinInvoice[] | null>(null);
+  const [expenses, setExpenses] = useState<FinProjectExpense[] | null>(null);
+  const [err, setErr] = useState('');
+
+  useEffect(() => {
+    let alive = true;
+    Promise.all([
+      financeApi.getInvoices({ project_id: p.id, month, year }).catch(() => [] as FinInvoice[]),
+      financeApi.getProjectExpenses({ project_id: p.id, month, year }).catch(() => [] as FinProjectExpense[]),
+    ]).then(([inv, exp]) => {
+      if (!alive) return;
+      setInvoices(inv);
+      setExpenses(exp);
+    }).catch((e: any) => alive && setErr(e.message));
+    return () => { alive = false; };
+  }, [p.id, month, year]);
+
+  const totalCost = p.directCost + p.projectExpenses + p.overhead + p.supervision;
+  const overheadMethodLabel: Record<string, string> = {
+    direct_hours: 'direct hours',
+    revenue: 'revenue',
+    headcount: 'headcount',
+    none: 'no allocation',
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm" onClick={onClose}>
+      <div className="bg-surface rounded-xl-3 border border-outline shadow-elev-3 w-full max-w-4xl max-h-[92vh] overflow-hidden flex flex-col" onClick={e => e.stopPropagation()}>
+        {/* Header */}
+        <div className="px-6 py-4 border-b border-outline bg-gradient-to-r from-brand-container/40 to-surface flex items-start justify-between gap-3">
+          <div>
+            <h3 className="font-display text-xl font-bold tracking-tight text-on-surface">{p.name}</h3>
+            <p className="text-xs text-on-surface-muted mt-0.5">
+              {p.client_name || '—'} · {p.billing_type === 'hourly' ? `${money(p.hourly_rate, c)}/h × ${hrs(p.billable_hours)}` : 'Fixed billing'} · {MONTHS[month - 1]} {year}
+            </p>
+          </div>
+          <button onClick={onClose} className="p-1.5 rounded-lg hover:bg-surface-2 transition-colors">
+            <X size={18} className="text-on-surface-muted" />
+          </button>
+        </div>
+
+        {/* P&L summary strip */}
+        <div className="px-6 py-4 border-b border-outline bg-surface-2/40 grid grid-cols-2 sm:grid-cols-4 gap-3">
+          <PnlTile label="Revenue" value={money(p.revenue, c)} tone="text-on-surface" />
+          <PnlTile label="Total cost" value={money(totalCost, c)} tone="text-on-surface-muted" sub={`${pct(p.revenue > 0 ? totalCost / p.revenue : 0)} of revenue`} />
+          <PnlTile label="Net profit" value={money(p.netProfit, c)} tone={p.netProfit >= 0 ? 'text-success' : 'text-danger'} />
+          <PnlTile label="Net margin" value={pct(p.netMargin)} tone={marginTone(p.netMargin)} />
+        </div>
+
+        {err && <div className="mx-6 mt-3 rounded-xl-2 border border-danger/30 bg-danger-container/40 p-3 text-sm text-danger">{err}</div>}
+
+        <div className="flex-1 overflow-y-auto p-6 space-y-6">
+
+          {/* Invoices */}
+          <Section icon={FileText} title="Invoices" subtitle={`${p.invoiceCount} invoice${p.invoiceCount === 1 ? '' : 's'} · Invoiced ${money(p.invoiced, c)} · Received ${money(p.received, c)}`}>
+            {invoices === null ? <Loading /> : invoices.length === 0 ? (
+              <Empty label="No invoices raised for this project this month." sub={p.revenue > 0 ? 'Revenue is coming from the legacy Billing setup row instead.' : undefined} />
+            ) : (
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="text-[10px] uppercase tracking-wide text-on-surface-subtle border-b border-outline">
+                    <th className="text-left font-semibold px-3 py-2">Invoice #</th>
+                    <th className="text-left font-semibold px-3 py-2">Date</th>
+                    <th className="text-right font-semibold px-3 py-2">Invoiced</th>
+                    <th className="text-right font-semibold px-3 py-2">Received</th>
+                    <th className="text-left font-semibold px-3 py-2">Status</th>
+                    <th className="text-left font-semibold px-3 py-2">Raised by</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-outline">
+                  {invoices.filter(i => i.status !== 'cancelled').map(i => (
+                    <tr key={i.id} className="hover:bg-surface-2/40">
+                      <td className="px-3 py-2 num-mono text-xs text-on-surface-muted">{i.invoice_number || '—'}</td>
+                      <td className="px-3 py-2 text-xs text-on-surface-muted">{i.invoice_date ? new Date(i.invoice_date.slice(0,10)+'T12:00:00Z').toLocaleDateString('en-IN', { day:'numeric', month:'short' }) : '—'}</td>
+                      <td className="px-3 py-2 text-right num-mono text-on-surface">{money(Number(i.amount_invoiced), c)}</td>
+                      <td className={`px-3 py-2 text-right num-mono ${i.status === 'cleared' ? 'text-success' : 'text-on-surface-subtle'}`}>
+                        {i.status === 'cleared' ? money(Number(i.amount_received || 0), c) : '—'}
+                      </td>
+                      <td className="px-3 py-2">
+                        {i.status === 'cleared' ? <Pill icon={CheckCircle2} label="Cleared" tone="bg-success-container text-success" />
+                          : i.status === 'cancelled' ? <Pill icon={Ban} label="Cancelled" tone="bg-surface-3 text-on-surface-subtle" />
+                          : <Pill icon={Clock} label="Pending" tone="bg-warning-container text-warning" />}
+                      </td>
+                      <td className="px-3 py-2 text-xs text-on-surface-muted">{i.created_by_name || '—'}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+          </Section>
+
+          {/* Direct cost (team) */}
+          <Section icon={UsersIcon} title="Direct cost (people)" subtitle={`${p.team.length} person${p.team.length === 1 ? '' : 's'} · ${hrs(p.directHours)} · ${money(p.directCost, c)}`}>
+            {p.team.length === 0 ? (
+              <Empty label="No direct staff allocated to this project this month." />
+            ) : (
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="text-[10px] uppercase tracking-wide text-on-surface-subtle border-b border-outline">
+                    <th className="text-left font-semibold px-3 py-2">Employee</th>
+                    <th className="text-right font-semibold px-3 py-2">Hours</th>
+                    <th className="text-right font-semibold px-3 py-2">Rate /h</th>
+                    <th className="text-right font-semibold px-3 py-2">Cost</th>
+                    <th className="text-right font-semibold px-3 py-2">% of direct cost</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-outline">
+                  {p.team.map(t => {
+                    const share = p.directCost > 0 ? t.cost / p.directCost : 0;
+                    return (
+                      <tr key={t.id} className="hover:bg-surface-2/40">
+                        <td className="px-3 py-2">
+                          <div className="text-on-surface">{t.name}</div>
+                          <div className="text-xs text-on-surface-subtle">{t.designation || '—'}</div>
+                        </td>
+                        <td className="px-3 py-2 text-right num-mono text-on-surface">{hrs(t.hours)}</td>
+                        <td className="px-3 py-2 text-right num-mono text-on-surface-muted">{money(t.rate, c)}</td>
+                        <td className="px-3 py-2 text-right num-mono font-semibold text-on-surface">{money(t.cost, c)}</td>
+                        <td className="px-3 py-2 text-right">
+                          <div className="inline-flex items-center gap-2 justify-end">
+                            <div className="w-16 h-1.5 rounded-full bg-surface-3 overflow-hidden">
+                              <div className="h-full rounded-full bg-brand" style={{ width: `${share * 100}%` }} />
+                            </div>
+                            <span className="num-mono text-xs text-on-surface-muted w-10 text-right">{pct(share)}</span>
+                          </div>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+                <tfoot>
+                  <tr className="border-t-2 border-outline-strong bg-surface-2 font-semibold">
+                    <td className="px-3 py-2">Total · {hrs(p.directHours)} at avg {money(p.effectiveCostPerHour, c)}/h</td>
+                    <td className="px-3 py-2 text-right num-mono">{hrs(p.directHours)}</td>
+                    <td className="px-3 py-2"></td>
+                    <td className="px-3 py-2 text-right num-mono">{money(p.directCost, c)}</td>
+                    <td className="px-3 py-2 text-right num-mono">100%</td>
+                  </tr>
+                </tfoot>
+              </table>
+            )}
+          </Section>
+
+          {/* Outsourced expenses */}
+          <Section icon={Receipt} title="Outsourced expenses" subtitle={`${money(p.projectExpenses, c)} this month`}>
+            {expenses === null ? <Loading /> :
+              expenses.length === 0 ? <Empty label="No outsourced expenses logged for this project." sub="Coordinators add these from the per-project ₹ button on the Projects page." /> : (
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr className="text-[10px] uppercase tracking-wide text-on-surface-subtle border-b border-outline">
+                      <th className="text-left font-semibold px-3 py-2">Vendor / description</th>
+                      <th className="text-left font-semibold px-3 py-2">Category</th>
+                      <th className="text-right font-semibold px-3 py-2">Amount</th>
+                      <th className="text-left font-semibold px-3 py-2">Added by</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-outline">
+                    {expenses.map(e => (
+                      <tr key={e.id} className="hover:bg-surface-2/40">
+                        <td className="px-3 py-2">
+                          <div className="text-on-surface">{e.vendor || '—'}</div>
+                          <div className="text-xs text-on-surface-subtle">{e.description}</div>
+                        </td>
+                        <td className="px-3 py-2 text-xs text-on-surface-muted capitalize">{e.category}</td>
+                        <td className="px-3 py-2 text-right num-mono text-warning font-semibold">{money(Number(e.amount), c)}</td>
+                        <td className="px-3 py-2 text-xs text-on-surface-muted">{e.created_by || '—'}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              )
+            }
+          </Section>
+
+          {/* Supervision */}
+          <Section icon={Briefcase} title="Supervision (project leads & reporting managers)" subtitle={`${money(p.supervision, c)} allocated from supervisor salaries`}>
+            {p.supervisorBreakdown.length === 0 ? (
+              <Empty label="No supervisor allocated to this project." sub="Supervision is computed only for staff classified as 'supervisor' and assigned as a lead or reporting manager." />
+            ) : (
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="text-[10px] uppercase tracking-wide text-on-surface-subtle border-b border-outline">
+                    <th className="text-left font-semibold px-3 py-2">Supervisor</th>
+                    <th className="text-right font-semibold px-3 py-2">Their salary /mo</th>
+                    <th className="text-right font-semibold px-3 py-2">Share to this project</th>
+                    <th className="text-right font-semibold px-3 py-2">Cost</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-outline">
+                  {p.supervisorBreakdown.map(s => (
+                    <tr key={s.id} className="hover:bg-surface-2/40">
+                      <td className="px-3 py-2 text-on-surface">{s.name}</td>
+                      <td className="px-3 py-2 text-right num-mono text-on-surface-muted">{money(s.salary, c)}</td>
+                      <td className="px-3 py-2 text-right num-mono text-on-surface-muted">{pct(s.share)}</td>
+                      <td className="px-3 py-2 text-right num-mono font-semibold text-on-surface">{money(s.amount, c)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+            {p.supervisorBreakdown.length > 0 && (
+              <p className="mt-2 text-[11px] text-on-surface-subtle">
+                Each supervisor's salary is spread across the projects they run, proportional to direct hours on each. So a supervisor on three projects with this one having half the hours gets 50% of their salary booked here.
+              </p>
+            )}
+          </Section>
+
+          {/* Overhead */}
+          <Section icon={IndianRupee} title="Overhead allocation" subtitle={`${money(p.overhead, c)} — ${pct(p.overheadShare)} of the ₹${Math.round(p.overheadPool).toLocaleString('en-IN')} pool`}>
+            <div className="rounded-xl-2 border border-outline bg-surface-2/40 p-4 space-y-2 text-sm">
+              <Line label="Overhead pool this month" value={money(p.overheadPool, c)} bold />
+              <Line label="Allocation method" value={overheadMethodLabel[p.overheadMethod] || p.overheadMethod} />
+              <Line label="This project's share" value={pct(p.overheadShare)} />
+              <Line label="Allocated to this project" value={money(p.overhead, c)} bold tone="text-on-surface" />
+            </div>
+            <p className="mt-2 text-[11px] text-on-surface-subtle">
+              The pool combines indirect salaries (admin, HR), other org-wide costs, and unallocated supervision. It's split across active projects using the method set under Settings → Overhead method.
+            </p>
+          </Section>
+
+          {/* Bottom-line walkthrough */}
+          <Section icon={null} title="How net profit is computed" subtitle="">
+            <div className="rounded-xl-2 border border-outline bg-surface-2/40 p-4 space-y-1.5 text-sm">
+              <Line label="Revenue" value={money(p.revenue, c)} tone="text-on-surface" />
+              <Line label="− Direct cost" value={money(p.directCost, c)} tone="text-on-surface-muted" minus />
+              <Line label="− Outsourced expenses" value={money(p.projectExpenses, c)} tone="text-warning" minus />
+              <div className="border-t border-outline pt-1.5">
+                <Line label="Gross profit" value={money(p.grossProfit, c)} bold />
+              </div>
+              <Line label="− Overhead" value={money(p.overhead, c)} tone="text-on-surface-muted" minus />
+              <Line label="− Supervision" value={money(p.supervision, c)} tone="text-on-surface-muted" minus />
+              <div className="border-t-2 border-outline-strong pt-1.5">
+                <Line label="Net profit" value={money(p.netProfit, c)} bold tone={p.netProfit >= 0 ? 'text-success' : 'text-danger'} />
+                <Line label="Net margin" value={pct(p.netMargin)} tone={marginTone(p.netMargin)} />
+              </div>
+            </div>
+          </Section>
+
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function PnlTile({ label, value, sub, tone }: { label: string; value: string; sub?: string; tone?: string }) {
+  return (
+    <div>
+      <div className="text-[10px] uppercase tracking-[0.16em] font-bold text-on-surface-subtle">{label}</div>
+      <div className={`num-mono text-lg font-bold mt-0.5 ${tone || 'text-on-surface'}`}>{value}</div>
+      {sub && <div className="text-[10px] text-on-surface-subtle mt-0.5">{sub}</div>}
+    </div>
+  );
+}
+
+function Section({ icon: Icon, title, subtitle, children }: { icon: any; title: string; subtitle?: string; children: React.ReactNode }) {
+  return (
+    <section className="rounded-xl-2 border border-outline bg-surface overflow-hidden">
+      <div className="px-4 py-3 border-b border-outline bg-surface-2/40 flex items-start justify-between gap-3">
+        <div className="flex items-start gap-2">
+          {Icon && <Icon size={15} className="text-brand mt-0.5" />}
+          <div>
+            <h4 className="text-sm font-bold text-on-surface">{title}</h4>
+            {subtitle && <p className="text-[11px] text-on-surface-muted mt-0.5">{subtitle}</p>}
+          </div>
+        </div>
+      </div>
+      <div className="overflow-x-auto">{children}</div>
+    </section>
+  );
+}
+
+function Empty({ label, sub }: { label: string; sub?: string }) {
+  return (
+    <div className="px-4 py-6 text-center">
+      <p className="text-sm text-on-surface-muted">{label}</p>
+      {sub && <p className="text-xs text-on-surface-subtle mt-1">{sub}</p>}
+    </div>
+  );
+}
+
+function Loading() {
+  return <div className="px-4 py-6 text-center text-sm text-on-surface-subtle">Loading…</div>;
+}
+
+function Pill({ icon: Icon, label, tone }: { icon: any; label: string; tone: string }) {
+  return (
+    <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-semibold ${tone}`}>
+      <Icon size={11} strokeWidth={2.5} /> {label}
+    </span>
+  );
+}
+
+function Line({ label, value, bold, minus, tone }: { label: string; value: string; bold?: boolean; minus?: boolean; tone?: string }) {
+  return (
+    <div className="flex items-center justify-between text-sm">
+      <span className={`${bold ? 'font-bold text-on-surface' : 'text-on-surface-muted'}`}>{label}</span>
+      <span className={`num-mono tabular-nums ${bold ? 'font-bold' : ''} ${tone || 'text-on-surface'}`}>{minus ? '−' : ''}{value}</span>
     </div>
   );
 }

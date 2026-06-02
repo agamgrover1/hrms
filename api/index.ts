@@ -3866,6 +3866,9 @@ async function finComputeMonth(month: number, year: number) {
   // project this month fall back into the general overhead pool so nothing is lost.
   const supervisionByProject = new Map<string, number>();
   const supervisorsByProject = new Map<string, string[]>();
+  // Per-project list of supervisors with the amount each one contributes to
+  // that project's supervision cost — needed for drill-down UI.
+  const supervisorBreakdownByProject = new Map<string, Array<{ id: string; name: string; salary: number; share: number; amount: number }>>();
   const managedCountBySupervisor = new Map<string, number>();
   let unallocatedSupervision = 0;
   for (const s of supervisors) {
@@ -3878,9 +3881,12 @@ async function finComputeMonth(month: number, year: number) {
     const totalMgHours = managed.reduce((sum, pid) => sum + (directHoursByProject.get(pid) || 0), 0);
     for (const pid of managed) {
       const share = totalMgHours > 0 ? (directHoursByProject.get(pid) || 0) / totalMgHours : 1 / managed.length;
-      supervisionByProject.set(pid, (supervisionByProject.get(pid) || 0) + salary * share);
+      const amount = salary * share;
+      supervisionByProject.set(pid, (supervisionByProject.get(pid) || 0) + amount);
       if (!supervisorsByProject.has(pid)) supervisorsByProject.set(pid, []);
       supervisorsByProject.get(pid)!.push(s.name);
+      if (!supervisorBreakdownByProject.has(pid)) supervisorBreakdownByProject.set(pid, []);
+      supervisorBreakdownByProject.get(pid)!.push({ id: s.id, name: s.name, salary, share, amount });
     }
   }
 
@@ -3911,7 +3917,8 @@ async function finComputeMonth(month: number, year: number) {
     // Gross profit now excludes outsourced project expenses too (they're direct
     // cost of delivery for this project, not org overhead).
     const grossProfit = revenue - directCost - projectExpenses;
-    const overhead = overheadPool * shareOf(directHours, revenue);
+    const overheadShare = shareOf(directHours, revenue);
+    const overhead = overheadPool * overheadShare;
     const supervision = supervisionByProject.get(p.id) || 0;
     const netProfit = grossProfit - overhead - supervision;
     const r = revByProj.get(p.id);
@@ -3927,7 +3934,14 @@ async function finComputeMonth(month: number, year: number) {
       clearedCount: Number(inv?.cleared_count || 0),
       invoiceCount: Number(inv?.invoice_count || 0),
       grossProfit, grossMargin: revenue > 0 ? grossProfit / revenue : 0,
-      overhead, supervision, supervisorNames: supervisorsByProject.get(p.id) || [],
+      overhead, supervision,
+      supervisorNames: supervisorsByProject.get(p.id) || [],
+      supervisorBreakdown: supervisorBreakdownByProject.get(p.id) || [],
+      // Overhead allocation transparency — lets the drill-down show
+      // "this project got X% of the ₹Y pool because <method> = Z"
+      overheadShare,
+      overheadMethod: settings.overhead_method,
+      overheadPool,
       netProfit, netMargin: revenue > 0 ? netProfit / revenue : 0,
       effectiveCostPerHour: directHours > 0 ? directCost / directHours : 0,
       revenuePerHour: directHours > 0 ? revenue / directHours : 0, team,
