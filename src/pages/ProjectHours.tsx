@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo, useCallback } from 'react';
+import { Fragment, useState, useEffect, useMemo, useCallback } from 'react';
 import { Plus, Trash2, X, Search, Copy, ExternalLink, Flag, ClipboardCheck, LayoutGrid, Pencil, Users as UsersIcon, ChevronRight, AlertTriangle } from 'lucide-react';
 import { Link } from 'react-router-dom';
 import { api } from '../services/api';
@@ -292,6 +292,7 @@ export default function ProjectHours() {
       {view === 'capacity' && (
         <CapacityView
           summary={summary}
+          employees={employees}
           loading={loading}
           search={search}
           month={month}
@@ -600,20 +601,67 @@ function TabButton({ active, onClick, icon: Icon, label, sub, badge }: {
 }
 
 // ── Capacity view (full-width per-employee weekly) ─────────────────────────
-function CapacityView({ summary, loading, search, month, year, openDetail }: {
+type GroupKey = 'none' | 'department' | 'manager';
+
+function CapacityView({ summary, employees, loading, search, month, year, openDetail }: {
   summary: any;
+  employees: any[];
   loading: boolean;
   search: string;
   month: number;
   year: number;
   openDetail: (employeeId: string, employeeName: string, focusWeek?: number) => void;
 }) {
+  const [groupBy, setGroupBy] = useState<GroupKey>('none');
+
+  // Map employee_id → enriched fields (department, manager name) from the employees list.
+  const empMeta = useMemo(() => {
+    const m = new Map<string, { department: string; manager: string }>();
+    for (const e of employees || []) {
+      const mgr = (employees || []).find((x: any) => x.id === e.reporting_manager_id);
+      m.set(e.id, {
+        department: e.department || '—',
+        manager: mgr?.name || e.manager || '—',
+      });
+    }
+    return m;
+  }, [employees]);
+
   const rows = useMemo(() => {
     if (!summary) return [] as any[];
     const term = (search ?? '').trim().toLowerCase();
-    if (!term) return summary.employees;
-    return summary.employees.filter((e: any) => (e.employee_name ?? '').toLowerCase().includes(term));
-  }, [summary, search]);
+    const base = !term
+      ? summary.employees
+      : summary.employees.filter((e: any) => (e.employee_name ?? '').toLowerCase().includes(term));
+    // Enrich each row with the group key for downstream sorting/grouping.
+    return base.map((e: any) => {
+      const meta = empMeta.get(e.employee_id);
+      return { ...e, _department: meta?.department || '—', _manager: meta?.manager || '—' };
+    });
+  }, [summary, search, empMeta]);
+
+  // Group rows by selected key. Returns [{ name, rows, subtotalMonth, subtotalOver, headcount }, …]
+  const groups = useMemo(() => {
+    if (groupBy === 'none') {
+      return [{ name: null as string | null, rows, subtotalMonth: 0, subtotalOver: 0, headcount: rows.length }];
+    }
+    const keyField = groupBy === 'department' ? '_department' : '_manager';
+    const buckets = new Map<string, any[]>();
+    for (const r of rows) {
+      const k = r[keyField] || '—';
+      const arr = buckets.get(k);
+      if (arr) arr.push(r); else buckets.set(k, [r]);
+    }
+    return Array.from(buckets.entries())
+      .sort((a, b) => a[0].localeCompare(b[0]))
+      .map(([name, arr]) => ({
+        name,
+        rows: arr,
+        subtotalMonth: arr.reduce((s, r) => s + Number(r.monthly || 0) + Number(r.logged_over_plan || 0), 0),
+        subtotalOver: arr.reduce((s, r) => s + Number(r.logged_over_plan || 0), 0),
+        headcount: arr.length,
+      }));
+  }, [rows, groupBy]);
 
   if (loading) {
     return <div className="bg-surface rounded-xl-2 border border-outline shadow-elev-1 py-16 text-center text-on-surface-subtle">Loading capacity…</div>;
@@ -637,6 +685,20 @@ function CapacityView({ summary, loading, search, month, year, openDetail }: {
           </p>
         </div>
         <div className="flex items-center gap-3 text-[11px] text-on-surface-muted flex-wrap">
+          {/* Group-by selector */}
+          <div className="inline-flex items-center gap-1.5 bg-surface-2 border border-outline rounded-lg px-1 py-0.5">
+            <span className="text-[10px] uppercase tracking-[0.14em] font-bold text-on-surface-subtle pl-1.5">Group</span>
+            {([
+              { key: 'none', label: 'None' },
+              { key: 'department', label: 'Team' },
+              { key: 'manager', label: 'Manager' },
+            ] as Array<{ key: GroupKey; label: string }>).map(opt => (
+              <button key={opt.key} onClick={() => setGroupBy(opt.key)}
+                className={`px-2 py-1 rounded-md text-[11px] font-semibold transition-colors ${
+                  groupBy === opt.key ? 'bg-accent text-on-accent' : 'text-on-surface-muted hover:text-on-surface hover:bg-surface-3'
+                }`}>{opt.label}</button>
+            ))}
+          </div>
           <span className="inline-flex items-center gap-1.5"><span className="w-2.5 h-2.5 rounded-full bg-success" />33–37h band</span>
           <span className="inline-flex items-center gap-1.5"><span className="w-2.5 h-2.5 rounded-full bg-warning" />28–32 / 38–40</span>
           <span className="inline-flex items-center gap-1.5"><span className="w-2.5 h-2.5 rounded-full bg-danger" />outside</span>
@@ -657,7 +719,30 @@ function CapacityView({ summary, loading, search, month, year, openDetail }: {
             </tr>
           </thead>
           <tbody className="divide-y divide-outline">
-            {rows.map((e: any) => {
+            {groups.map((g) => (
+              <Fragment key={g.name ?? '__all__'}>
+                {g.name !== null && (
+                  <tr className="bg-gradient-to-r from-brand-container/50 to-transparent border-y-2 border-outline-strong">
+                    <td className="px-5 py-2.5 sticky left-0 bg-gradient-to-r from-brand-container/80 to-brand-container/40">
+                      <div className="flex items-center gap-2">
+                        <UsersIcon size={13} className="text-brand" />
+                        <span className="font-display text-sm font-bold text-on-surface">{g.name}</span>
+                        <span className="num-mono text-[10px] font-semibold text-on-surface-muted bg-surface px-1.5 py-0.5 rounded-full">{g.headcount}</span>
+                      </div>
+                    </td>
+                    <td colSpan={5} className="px-4 py-2.5"></td>
+                    <td className="px-4 py-2.5 text-center bg-surface-3/50">
+                      <span className="num-mono text-sm font-bold text-on-surface">{Math.round(g.subtotalMonth)}<span className="text-[10px] font-normal text-on-surface-muted ml-0.5">h</span></span>
+                    </td>
+                    <td className="px-4 py-2.5 text-center">
+                      {g.subtotalOver > 0 ? (
+                        <span className="num-mono text-xs font-bold text-warning inline-flex items-center gap-0.5"><AlertTriangle size={10} />+{Math.round(g.subtotalOver)}h</span>
+                      ) : <span className="num-mono text-on-surface-subtle text-xs">—</span>}
+                    </td>
+                    <td className="px-3 py-2.5"></td>
+                  </tr>
+                )}
+                {g.rows.map((e: any) => {
               const weekPlans = [e.w1, e.w2, e.w3, e.w4, e.w5];
               const weekOvers = [e.w1_over ?? 0, e.w2_over ?? 0, e.w3_over ?? 0, e.w4_over ?? 0, e.w5_over ?? 0];
               const weekLogged = [e.w1_logged ?? 0, e.w2_logged ?? 0, e.w3_logged ?? 0, e.w4_logged ?? 0, e.w5_logged ?? 0];
@@ -740,6 +825,8 @@ function CapacityView({ summary, loading, search, month, year, openDetail }: {
                 </tr>
               );
             })}
+              </Fragment>
+            ))}
           </tbody>
         </table>
       </div>
