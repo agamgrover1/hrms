@@ -3806,12 +3806,23 @@ async function finComputeMonth(month: number, year: number) {
   const allocByEmp = new Map<string, number>();
   for (const a of activeAllocs) allocByEmp.set(a.employee_id, (allocByEmp.get(a.employee_id) || 0) + Number(a.hours));
 
+  // Resolve manager name per employee (their reporting manager is another row
+  // in the same employees array). Used by the dashboard to group people by
+  // who they report to — that's how "team" is interpreted across the app.
+  const empById2 = new Map(employees.map((e) => [e.id, e]));
+  const managerNameOf = (e: any) => {
+    if (!e.reporting_manager_id) return null;
+    return empById2.get(e.reporting_manager_id)?.name ?? null;
+  };
+
   const employeeRows = employees.map((e) => {
     const rate = rateOf(e), capacity = capOf(e), isDirect = e.cost_type === 'direct';
     const allocated = isDirect ? (allocByEmp.get(e.id) || 0) : 0;
     const bench = isDirect ? Math.max(capacity - allocated, 0) : 0;
     return {
       id: e.id, name: e.name, designation: e.designation, department: e.department, cost_type: e.cost_type,
+      reporting_manager_id: e.reporting_manager_id ?? null,
+      reporting_manager_name: managerNameOf(e),
       salary: Number(e.salary), rate, capacity, allocatedHours: allocated, benchHours: bench,
       allocatedCost: isDirect ? rate * allocated : 0, benchCost: isDirect ? rate * bench : 0,
       utilization: isDirect && capacity > 0 ? allocated / capacity : null,

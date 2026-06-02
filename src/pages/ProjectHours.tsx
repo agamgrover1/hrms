@@ -601,7 +601,10 @@ function TabButton({ active, onClick, icon: Icon, label, sub, badge }: {
 }
 
 // ── Capacity view (full-width per-employee weekly) ─────────────────────────
-type GroupKey = 'none' | 'department' | 'manager';
+// "Team" = reporting manager — that's how the org defines teams. We expose
+// a single Team toggle (not separate Department/Manager options) so the
+// concept stays consistent across screens.
+type GroupKey = 'none' | 'manager';
 
 function CapacityView({ summary, employees, loading, search, month, year, openDetail }: {
   summary: any;
@@ -614,15 +617,12 @@ function CapacityView({ summary, employees, loading, search, month, year, openDe
 }) {
   const [groupBy, setGroupBy] = useState<GroupKey>('none');
 
-  // Map employee_id → enriched fields (department, manager name) from the employees list.
+  // Map employee_id → manager name (the reporting manager defines the team).
   const empMeta = useMemo(() => {
-    const m = new Map<string, { department: string; manager: string }>();
+    const m = new Map<string, { manager: string }>();
     for (const e of employees || []) {
       const mgr = (employees || []).find((x: any) => x.id === e.reporting_manager_id);
-      m.set(e.id, {
-        department: e.department || '—',
-        manager: mgr?.name || e.manager || '—',
-      });
+      m.set(e.id, { manager: mgr?.name || e.manager || 'No manager' });
     }
     return m;
   }, [employees]);
@@ -633,22 +633,21 @@ function CapacityView({ summary, employees, loading, search, month, year, openDe
     const base = !term
       ? summary.employees
       : summary.employees.filter((e: any) => (e.employee_name ?? '').toLowerCase().includes(term));
-    // Enrich each row with the group key for downstream sorting/grouping.
     return base.map((e: any) => {
       const meta = empMeta.get(e.employee_id);
-      return { ...e, _department: meta?.department || '—', _manager: meta?.manager || '—' };
+      return { ...e, _manager: meta?.manager || 'No manager' };
     });
   }, [summary, search, empMeta]);
 
-  // Group rows by selected key. Returns [{ name, rows, subtotalMonth, subtotalOver, headcount }, …]
+  // Group rows by reporting manager (when Team is on). Returns
+  // [{ name, rows, subtotalMonth, subtotalOver, headcount }, …]
   const groups = useMemo(() => {
     if (groupBy === 'none') {
       return [{ name: null as string | null, rows, subtotalMonth: 0, subtotalOver: 0, headcount: rows.length }];
     }
-    const keyField = groupBy === 'department' ? '_department' : '_manager';
     const buckets = new Map<string, any[]>();
     for (const r of rows) {
-      const k = r[keyField] || '—';
+      const k = r._manager || 'No manager';
       const arr = buckets.get(k);
       if (arr) arr.push(r); else buckets.set(k, [r]);
     }
@@ -685,15 +684,15 @@ function CapacityView({ summary, employees, loading, search, month, year, openDe
           </p>
         </div>
         <div className="flex items-center gap-3 text-[11px] text-on-surface-muted flex-wrap">
-          {/* Group-by selector */}
+          {/* Group-by selector — Team = reporting manager. */}
           <div className="inline-flex items-center gap-1.5 bg-surface-2 border border-outline rounded-lg px-1 py-0.5">
             <span className="text-[10px] uppercase tracking-[0.14em] font-bold text-on-surface-subtle pl-1.5">Group</span>
             {([
               { key: 'none', label: 'None' },
-              { key: 'department', label: 'Team' },
-              { key: 'manager', label: 'Manager' },
+              { key: 'manager', label: 'Team' },
             ] as Array<{ key: GroupKey; label: string }>).map(opt => (
               <button key={opt.key} onClick={() => setGroupBy(opt.key)}
+                title={opt.key === 'manager' ? 'Group by reporting manager' : undefined}
                 className={`px-2 py-1 rounded-md text-[11px] font-semibold transition-colors ${
                   groupBy === opt.key ? 'bg-accent text-on-accent' : 'text-on-surface-muted hover:text-on-surface hover:bg-surface-3'
                 }`}>{opt.label}</button>

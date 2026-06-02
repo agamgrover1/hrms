@@ -100,6 +100,8 @@ export interface FinProjectExpense {
 
 export interface FinEmployeeRow {
   id: string; name: string; designation: string | null; department: string | null; cost_type: 'direct' | 'indirect' | 'supervisor';
+  reporting_manager_id: string | null;
+  reporting_manager_name: string | null;
   salary: number; rate: number; capacity: number; allocatedHours: number; benchHours: number;
   allocatedCost: number; benchCost: number; utilization: number | null; managedProjects?: number;
 }

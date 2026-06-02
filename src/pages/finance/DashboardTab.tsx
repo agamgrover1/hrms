@@ -3,7 +3,7 @@ import { X, Briefcase, Users as UsersIcon } from 'lucide-react';
 import { financeApi, type FinModel, type FinEmployeeRow } from '../../services/financeApi';
 import { MONTHS, money, moneyShort, pct, hrs, marginTone } from './format';
 
-type UtilGroupKey = 'none' | 'department' | 'designation';
+type UtilGroupKey = 'none' | 'manager';
 
 export default function DashboardTab({ month, year, rev }: { month: number; year: number; rev: number }) {
   const [model, setModel] = useState<FinModel | null>(null);
@@ -195,7 +195,8 @@ function UtilizationSection({ model, groupBy, setGroupBy, onPick }: {
     if (groupBy === 'none') {
       return [{ name: null as string | null, rows: direct, totalAlloc: 0, totalCap: 0, totalBench: 0 }];
     }
-    const keyOf = (e: FinEmployeeRow) => (groupBy === 'department' ? e.department : e.designation) || '—';
+    // Team = reporting manager. People with no manager get bucketed under "No manager".
+    const keyOf = (e: FinEmployeeRow) => e.reporting_manager_name || 'No manager';
     const buckets = new Map<string, FinEmployeeRow[]>();
     for (const e of direct) {
       const k = keyOf(e);
@@ -224,10 +225,10 @@ function UtilizationSection({ model, groupBy, setGroupBy, onPick }: {
           <span className="text-[10px] uppercase tracking-[0.14em] font-bold text-on-surface-subtle pl-1.5">Group</span>
           {([
             { key: 'none', label: 'None' },
-            { key: 'department', label: 'Team' },
-            { key: 'designation', label: 'Role' },
+            { key: 'manager', label: 'Team' },
           ] as Array<{ key: UtilGroupKey; label: string }>).map(opt => (
             <button key={opt.key} onClick={() => setGroupBy(opt.key)}
+              title={opt.key === 'manager' ? 'Group by reporting manager' : undefined}
               className={`px-2 py-1 rounded-md text-[11px] font-semibold transition-colors ${
                 groupBy === opt.key ? 'bg-accent text-on-accent' : 'text-on-surface-muted hover:text-on-surface hover:bg-surface-3'
               }`}>{opt.label}</button>
