@@ -40,10 +40,20 @@ export default function DashboardTab({ month, year, rev }: { month: number; year
     <div className="space-y-5">
       {/* KPIs */}
       <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
-        <Kpi label="Revenue" value={money(t.revenue, c)} sub={`${t.activeProjects} active projects`} />
         <Kpi label="Net profit (true)" value={money(t.netProfit, c)} tone={t.netProfit >= 0 ? 'text-success' : 'text-danger'} sub="after every cost" />
         <Kpi label="Net margin" value={pct(t.netMargin)} tone={marginTone(t.netMargin)} sub={`gross ${pct(t.grossMargin)}`} />
         <Kpi label="Utilization" value={pct(t.utilization)} tone={(t.utilization ?? 0) >= 0.8 ? 'text-success' : (t.utilization ?? 0) >= 0.6 ? 'text-warning' : 'text-danger'} sub={`${hrs(t.allocatedDirectHours)} / ${hrs(t.directCapacityHours)}`} />
+        <Kpi label="Active projects" value={String(t.activeProjects)} sub={`${t.headcount} headcount`} />
+      </div>
+
+      {/* Invoiced vs Received strip — accrual vs cash side-by-side */}
+      <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+        <Kpi label="Invoiced" value={money(t.totalInvoiced || t.revenue, c)} sub="accrual · what we billed" />
+        <Kpi label="Received" value={money(t.totalReceived || 0, c)} tone="text-success" sub="cash · in the bank" />
+        <Kpi label="Pending" value={money(t.totalPending || 0, c)}
+          tone={(t.pendingInvoiceCount ?? 0) > 0 ? 'text-warning' : 'text-on-surface-subtle'}
+          sub={`${t.pendingInvoiceCount ?? 0} invoice${t.pendingInvoiceCount === 1 ? '' : 's'} awaiting clearance`} />
+        <Kpi label="Cleared" value={String(t.clearedInvoiceCount ?? 0)} sub={`of ${(t.pendingInvoiceCount ?? 0) + (t.clearedInvoiceCount ?? 0)} this month`} />
       </div>
 
       <div className="grid gap-4 lg:grid-cols-3">
@@ -81,7 +91,8 @@ export default function DashboardTab({ month, year, rev }: { month: number; year
               <thead>
                 <tr className="text-[11px] uppercase tracking-wide text-on-surface-subtle border-b border-outline bg-surface-2">
                   <th className="text-left font-semibold px-4 py-2.5">Project</th>
-                  <th className="text-right font-semibold px-3 py-2.5">Revenue</th>
+                  <th className="text-right font-semibold px-3 py-2.5" title="Drives the P&L (accrual basis)">Revenue</th>
+                  <th className="text-right font-semibold px-3 py-2.5" title="Cleared invoices only — money actually received">Received</th>
                   <th className="text-right font-semibold px-3 py-2.5">Direct cost</th>
                   <th className="text-right font-semibold px-3 py-2.5" title="Outsourced services, content, ad spend etc. logged against this project">Outsourced</th>
                   <th className="text-right font-semibold px-3 py-2.5">Gross</th>
@@ -95,10 +106,20 @@ export default function DashboardTab({ month, year, rev }: { month: number; year
                 {model.projectRows.map((p) => (
                   <tr key={p.id} className="hover:bg-surface-2/50">
                     <td className="px-4 py-2.5">
-                      <div className="font-medium text-on-surface">{p.name}</div>
+                      <div className="font-medium text-on-surface inline-flex items-center gap-2">
+                        {p.name}
+                        {p.pendingCount > 0 && (
+                          <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full text-[10px] font-bold bg-warning-container text-warning" title={`${p.pendingCount} pending invoice${p.pendingCount === 1 ? '' : 's'}`}>
+                            ⏳ {p.pendingCount}
+                          </span>
+                        )}
+                      </div>
                       <div className="text-xs text-on-surface-subtle">{p.client_name || '—'} · {p.billing_type === 'hourly' ? `${money(p.hourly_rate, c)}/h` : 'fixed'} · {hrs(p.directHours)}</div>
                     </td>
                     <td className="px-3 py-2.5 text-right tabular-nums text-on-surface">{money(p.revenue, c)}</td>
+                    <td className={`px-3 py-2.5 text-right tabular-nums ${p.received > 0 ? (p.received < p.invoiced ? 'text-warning' : 'text-success') : 'text-on-surface-subtle'}`} title={p.invoiceCount > 0 ? `${p.clearedCount} cleared, ${p.pendingCount} pending of ${p.invoiceCount}` : 'No invoices raised yet'}>
+                      {p.invoiceCount > 0 ? money(p.received, c) : <span className="text-on-surface-subtle">—</span>}
+                    </td>
                     <td className="px-3 py-2.5 text-right tabular-nums text-on-surface-muted">{money(p.directCost, c)}</td>
                     <td className={`px-3 py-2.5 text-right tabular-nums ${p.projectExpenses > 0 ? 'text-warning' : 'text-on-surface-subtle'}`}>{money(p.projectExpenses || 0, c)}</td>
                     <td className="px-3 py-2.5 text-right tabular-nums text-on-surface">{money(p.grossProfit, c)}</td>
@@ -113,6 +134,7 @@ export default function DashboardTab({ month, year, rev }: { month: number; year
                 <tr className="border-t-2 border-outline-strong bg-surface-2 font-semibold text-on-surface">
                   <td className="px-4 py-2.5">Total</td>
                   <td className="px-3 py-2.5 text-right tabular-nums">{money(t.revenue, c)}</td>
+                  <td className={`px-3 py-2.5 text-right tabular-nums ${(t.totalReceived ?? 0) < (t.totalInvoiced ?? t.revenue) ? 'text-warning' : 'text-success'}`}>{money(t.totalReceived ?? 0, c)}</td>
                   <td className="px-3 py-2.5 text-right tabular-nums">{money(t.directCost, c)}</td>
                   <td className="px-3 py-2.5 text-right tabular-nums">{money(t.projectExpenses || 0, c)}</td>
                   <td className="px-3 py-2.5 text-right tabular-nums">{money(t.grossProfit, c)}</td>

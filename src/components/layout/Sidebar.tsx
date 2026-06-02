@@ -51,6 +51,16 @@ const financeGroup: NavGroup = {
   ],
 };
 
+// Coordinators get a single Invoices link instead of the full Finance suite —
+// they raise invoices but can't see profitability, salaries, overhead, etc.
+const coordFinanceGroup: NavGroup = {
+  id: 'finance-coord',
+  label: 'Finance',
+  items: [
+    { to: '/finance?tab=invoices', icon: LineChart, label: 'Invoices' },
+  ],
+};
+
 const settingsGroup: NavGroup = {
   id: 'settings',
   label: 'Settings',
@@ -113,8 +123,9 @@ export default function Sidebar() {
     if (role === 'admin') groups.push(financeGroup); // admin-only finance module
     groups.push(settingsGroup);
   } else if (isCoord) {
-    // Coord sees Project Mgmt + their own personal nav (rendered below)
+    // Coord sees Project Mgmt + Invoices + their own personal nav (rendered below)
     groups.push(projectGroup);
+    groups.push(coordFinanceGroup);
   }
 
   // Personal nav for employees + coordinators

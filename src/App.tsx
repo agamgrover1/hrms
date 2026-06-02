@@ -54,8 +54,8 @@ function AppRoutes() {
         <Route path="incentives" element={<ProtectedRoute roles={['admin', 'hr_manager']}><Incentives /></ProtectedRoute>} />
         <Route path="asset-repairs" element={<ProtectedRoute roles={['admin', 'hr_manager']}><AssetRepairs /></ProtectedRoute>} />
 
-        {/* Finance / CFO — admin only */}
-        <Route path="finance" element={<ProtectedRoute roles={['admin']}><Finance /></ProtectedRoute>} />
+        {/* Finance / CFO — admin sees everything; project_coordinator only sees the Invoices tab. */}
+        <Route path="finance" element={<ProtectedRoute roles={['admin', 'project_coordinator']}><Finance /></ProtectedRoute>} />
 
         {/* Project Mgmt routes */}
         <Route path="projects" element={<ProtectedRoute roles={['admin', 'hr_manager', 'project_coordinator']}><Projects /></ProtectedRoute>} />

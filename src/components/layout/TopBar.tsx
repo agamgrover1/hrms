@@ -112,6 +112,14 @@ function getNotifRoute(type: string, role: string): string {
       // Reviewer receives → Approvals queue
       return '/hours/approvals';
 
+    // ── Invoices (finance) ─────────────────────────────────────────────────────
+    case 'invoice_raised':
+    case 'invoice_cleared':
+    case 'invoice_adjusted':
+    case 'invoice_reopened':
+      // Both admin and coordinator land on the Invoices tab of /finance.
+      return '/finance?tab=invoices';
+
     // ── General ────────────────────────────────────────────────────────────────
     case 'info':
       return isHR ? '/' : '/my';
@@ -169,6 +177,11 @@ const TYPE_CONFIG: Record<string, { icon: any; color: string; bg: string }> = {
   hours_approved:          { icon: CheckCircle,    color: '#15803d', bg: '#f0fdf4' },
   hours_rejected:          { icon: XCircle,        color: '#dc2626', bg: '#fef2f2' },
   hours_admin_edited:      { icon: AlertTriangle,  color: '#b45309', bg: '#fffbeb' },
+  // Invoices
+  invoice_raised:          { icon: FileText,       color: '#2563eb', bg: '#eff6ff' },
+  invoice_cleared:         { icon: CheckCircle,    color: '#15803d', bg: '#f0fdf4' },
+  invoice_adjusted:        { icon: AlertTriangle,  color: '#d97706', bg: '#fffbeb' },
+  invoice_reopened:        { icon: XCircle,        color: '#dc2626', bg: '#fef2f2' },
   // General
   info:                    { icon: CheckCircle,    color: '#15803d', bg: '#f0fdf4' },
 };

@@ -558,6 +558,34 @@ async function runStartupMigrations() {
   await sql`CREATE INDEX IF NOT EXISTS idx_fin_proj_exp_period ON fin_project_expenses(year, month)`.catch(()=>{});
   await sql`CREATE INDEX IF NOT EXISTS idx_fin_proj_exp_project ON fin_project_expenses(project_id, year, month)`.catch(()=>{});
 
+  // Per-project invoices — coordinator raises (amount_invoiced), admin clears
+  // with the actual received amount. Multiple invoices per project per month
+  // are allowed (retainer + ad-hoc deliverable).
+  await sql`
+    CREATE TABLE IF NOT EXISTS fin_project_invoices (
+      id SERIAL PRIMARY KEY,
+      project_id TEXT NOT NULL,
+      month INTEGER NOT NULL,
+      year INTEGER NOT NULL,
+      invoice_number TEXT,
+      invoice_date DATE,
+      amount_invoiced NUMERIC NOT NULL DEFAULT 0,
+      amount_received NUMERIC,
+      status TEXT NOT NULL DEFAULT 'pending',
+      cleared_date DATE,
+      cleared_by TEXT,
+      cleared_by_name TEXT,
+      notes TEXT,
+      created_by TEXT,
+      created_by_name TEXT,
+      created_by_role TEXT,
+      created_at TIMESTAMPTZ DEFAULT NOW(),
+      updated_at TIMESTAMPTZ DEFAULT NOW()
+    )`;
+  await sql`CREATE INDEX IF NOT EXISTS idx_fin_invoices_period ON fin_project_invoices(year, month)`.catch(()=>{});
+  await sql`CREATE INDEX IF NOT EXISTS idx_fin_invoices_project ON fin_project_invoices(project_id, year, month)`.catch(()=>{});
+  await sql`CREATE INDEX IF NOT EXISTS idx_fin_invoices_status ON fin_project_invoices(status)`.catch(()=>{});
+
   await sql`
     CREATE TABLE IF NOT EXISTS attendance_sync_log (
       id SERIAL PRIMARY KEY, sync_id TEXT UNIQUE, triggered TEXT,
@@ -3731,6 +3759,22 @@ async function finComputeMonth(month: number, year: number) {
     projExpenseByProject.set(e.project_id, (projExpenseByProject.get(e.project_id) || 0) + Number(e.amount));
   }
 
+  // Per-project invoice totals — coordinator-raised + admin-cleared amounts.
+  // Cancelled invoices are excluded. When invoices exist for a project, they
+  // override the legacy fin_project_revenue figure as the revenue source.
+  const invoiceAgg = (await sql`
+    SELECT project_id,
+      SUM(amount_invoiced)::numeric AS invoiced,
+      SUM(CASE WHEN status='cleared' THEN COALESCE(amount_received, 0) ELSE 0 END)::numeric AS received,
+      COUNT(*) FILTER (WHERE status='pending')::int AS pending_count,
+      COUNT(*) FILTER (WHERE status='cleared')::int AS cleared_count,
+      COUNT(*)::int AS invoice_count
+    FROM fin_project_invoices
+    WHERE month=${month} AND year=${year} AND status <> 'cancelled'
+    GROUP BY project_id`) as any[];
+  const invoiceByProj = new Map<string, any>();
+  for (const i of invoiceAgg) invoiceByProj.set(i.project_id, i);
+
   const empById = new Map(employees.map((e) => [e.id, e]));
   const projIds = new Set(projects.map((p) => p.id));
   const revByProj = new Map(revenues.map((r) => [r.project_id, r]));
@@ -3738,6 +3782,10 @@ async function finComputeMonth(month: number, year: number) {
   const capOf = (e: any) => { const c = Number(e.capacity_hours); return c > 0 ? c : defCap; };
   const rateOf = (e: any) => { const c = capOf(e); return c > 0 ? Number(e.salary) / c : 0; };
   const revenueOf = (p: any) => {
+    // Invoices win when present (accrual basis — billed amount is the truth).
+    // Legacy fin_project_revenue is the fallback for projects without invoices yet.
+    const inv = invoiceByProj.get(p.id);
+    if (inv && Number(inv.invoiced) > 0) return Number(inv.invoiced);
     const r = revByProj.get(p.id);
     if (!r) return 0;
     return r.billing_type === 'hourly' ? Number(r.hourly_rate) * Number(r.billable_hours) : Number(r.fixed_amount);
@@ -3847,11 +3895,17 @@ async function finComputeMonth(month: number, year: number) {
     const supervision = supervisionByProject.get(p.id) || 0;
     const netProfit = grossProfit - overhead - supervision;
     const r = revByProj.get(p.id);
+    const inv = invoiceByProj.get(p.id);
     return {
       id: p.id, name: p.name, client_name: p.client_name,
       billing_type: r?.billing_type || 'fixed', hourly_rate: Number(r?.hourly_rate || 0),
       billable_hours: Number(r?.billable_hours || 0), fixed_amount: Number(r?.fixed_amount || 0),
       revenue, directCost, directHours, projectExpenses,
+      invoiced: Number(inv?.invoiced || 0),
+      received: Number(inv?.received || 0),
+      pendingCount: Number(inv?.pending_count || 0),
+      clearedCount: Number(inv?.cleared_count || 0),
+      invoiceCount: Number(inv?.invoice_count || 0),
       grossProfit, grossMargin: revenue > 0 ? grossProfit / revenue : 0,
       overhead, supervision, supervisorNames: supervisorsByProject.get(p.id) || [],
       netProfit, netMargin: revenue > 0 ? netProfit / revenue : 0,
@@ -3885,6 +3939,15 @@ async function finComputeMonth(month: number, year: number) {
     totals: {
       revenue: totalRevenue, directCost: totalDirectCost,
       projectExpenses: totalProjectExpenses,
+      // Invoice aggregates: invoiced is what was billed (accrual), received is
+      // what's actually in the bank, pending is the gap. invoiced typically
+      // equals totalRevenue when every project has invoices; differs only for
+      // projects still relying on the legacy fin_project_revenue fallback.
+      totalInvoiced: projectRows.reduce((s, p) => s + p.invoiced, 0),
+      totalReceived: projectRows.reduce((s, p) => s + p.received, 0),
+      totalPending: projectRows.reduce((s, p) => s + Math.max(p.invoiced - p.received, 0), 0),
+      pendingInvoiceCount: projectRows.reduce((s, p) => s + p.pendingCount, 0),
+      clearedInvoiceCount: projectRows.reduce((s, p) => s + p.clearedCount, 0),
       benchCost, indirectSalaries,
       supervisionCost: supervisorSalariesTotal, supervisorHeadcount: supervisors.length,
       otherCosts: otherCostTotal,
@@ -4176,6 +4239,183 @@ app.delete('/api/finance/project-expenses/:id', async (req, res) => {
   if (!gate.ok) return;
   try {
     await sql`DELETE FROM fin_project_expenses WHERE id=${Number(req.params.id)}`;
+    res.json({ success: true });
+  } catch (err: any) { res.status(500).json({ error: err.message || 'Server error' }); }
+});
+
+// ── Project invoices ─────────────────────────────────────────────────────
+// Coordinator raises an invoice (amount_invoiced, status='pending').
+// Admin marks it cleared with the actual received amount (which may differ
+// due to TDS, FX, partial payment, etc.). Both numbers are kept so the owner
+// can compare what was billed vs what landed in the bank.
+
+const fmtMoney = (n: number) => `₹${Math.round(n).toLocaleString('en-IN')}`;
+
+app.get('/api/finance/invoices', async (req, res) => {
+  await runStartupMigrations();
+  const gate = await requireAdminOrCoord(req, res);
+  if (!gate.ok) return;
+  try {
+    const month = req.query.month ? Number(req.query.month) : null;
+    const year = req.query.year ? Number(req.query.year) : null;
+    const project_id = (req.query.project_id as string) || null;
+    const status = (req.query.status as string) || null;
+    const rows = await sql`
+      SELECT i.*, p.name AS project_name, p.client_name AS project_client_name
+      FROM fin_project_invoices i
+      LEFT JOIN projects p ON p.id = i.project_id
+      WHERE (${month}::int IS NULL OR i.month=${month})
+        AND (${year}::int IS NULL OR i.year=${year})
+        AND (${project_id}::text IS NULL OR i.project_id=${project_id})
+        AND (${status}::text IS NULL OR i.status=${status})
+      ORDER BY i.invoice_date DESC NULLS LAST, i.created_at DESC`;
+    res.json(rows);
+  } catch (err: any) { res.status(500).json({ error: err.message || 'Server error' }); }
+});
+
+app.post('/api/finance/invoices', async (req, res) => {
+  await runStartupMigrations();
+  const gate = await requireAdminOrCoord(req, res);
+  if (!gate.ok) return;
+  try {
+    const { project_id, month, year, invoice_number, invoice_date, amount_invoiced, notes } = req.body;
+    if (!project_id || !month || !year) return res.status(400).json({ error: 'project_id, month, year are required' });
+    if (amount_invoiced == null || Number(amount_invoiced) <= 0) return res.status(400).json({ error: 'amount_invoiced must be > 0' });
+    const proj = (await sql`SELECT id, name FROM projects WHERE id=${project_id}`) as any[];
+    if (!proj.length) return res.status(400).json({ error: 'Unknown project' });
+    const rows = await sql`
+      INSERT INTO fin_project_invoices
+        (project_id, month, year, invoice_number, invoice_date, amount_invoiced,
+         notes, status, created_by, created_by_name, created_by_role)
+      VALUES (${project_id}, ${Number(month)}, ${Number(year)},
+              ${invoice_number?.trim() || null},
+              ${invoice_date || null},
+              ${Number(amount_invoiced)},
+              ${notes?.trim() || null},
+              'pending',
+              ${gate.user?.id ?? null}, ${gate.user?.name ?? null}, ${gate.user?.role ?? null})
+      RETURNING *`;
+    const inv = rows[0];
+    notifyAdminsAndHR(
+      'invoice_raised',
+      'Invoice Raised',
+      `${gate.user?.name ?? 'A coordinator'} raised ${fmtMoney(Number(amount_invoiced))} on ${proj[0].name}${invoice_number ? ` (${invoice_number})` : ''}.`
+    ).catch(()=>{});
+    res.status(201).json(inv);
+  } catch (err: any) { res.status(500).json({ error: err.message || 'Server error' }); }
+});
+
+app.put('/api/finance/invoices/:id', async (req, res) => {
+  await runStartupMigrations();
+  const gate = await requireAdminOrCoord(req, res);
+  if (!gate.ok) return;
+  try {
+    const id = Number(req.params.id);
+    const existing = (await sql`SELECT * FROM fin_project_invoices WHERE id=${id}`) as any[];
+    if (!existing.length) return res.status(404).json({ error: 'Invoice not found' });
+    const inv = existing[0];
+    const isAdmin = gate.user?.role === 'admin';
+    // Coordinator can only edit own pending invoices; admin can edit any.
+    if (!isAdmin) {
+      if (inv.status !== 'pending') return res.status(403).json({ error: 'Cleared invoices can only be edited by admin' });
+      if (inv.created_by !== gate.user?.id) return res.status(403).json({ error: 'You can only edit invoices you created' });
+    }
+    const { invoice_number, invoice_date, amount_invoiced, amount_received, notes, month, year, status } = req.body;
+    const wasCleared = inv.status === 'cleared';
+    const rows = await sql`
+      UPDATE fin_project_invoices SET
+        invoice_number=COALESCE(${invoice_number?.trim() || null}, invoice_number),
+        invoice_date=COALESCE(${invoice_date || null}, invoice_date),
+        amount_invoiced=COALESCE(${amount_invoiced != null ? Number(amount_invoiced) : null}, amount_invoiced),
+        amount_received=${isAdmin && amount_received !== undefined ? (amount_received == null ? null : Number(amount_received)) : inv.amount_received},
+        notes=COALESCE(${notes !== undefined ? (notes?.trim() || null) : null}, notes),
+        month=COALESCE(${month != null ? Number(month) : null}, month),
+        year=COALESCE(${year != null ? Number(year) : null}, year),
+        status=COALESCE(${isAdmin && status ? status : null}, status),
+        updated_at=NOW()
+      WHERE id=${id}
+      RETURNING *`;
+    if (wasCleared && inv.created_by) {
+      notifyUser(inv.created_by, 'invoice_adjusted', 'Invoice Adjusted',
+        `Admin updated cleared invoice${inv.invoice_number ? ` ${inv.invoice_number}` : ''}.`).catch(()=>{});
+    }
+    res.json(rows[0]);
+  } catch (err: any) { res.status(500).json({ error: err.message || 'Server error' }); }
+});
+
+app.patch('/api/finance/invoices/:id/clear', async (req, res) => {
+  await runStartupMigrations();
+  if (!(await requireAdmin(req, res))) return;
+  try {
+    const id = Number(req.params.id);
+    const existing = (await sql`SELECT i.*, p.name AS project_name FROM fin_project_invoices i LEFT JOIN projects p ON p.id=i.project_id WHERE i.id=${id}`) as any[];
+    if (!existing.length) return res.status(404).json({ error: 'Invoice not found' });
+    const inv = existing[0];
+    const { amount_received, cleared_date, notes } = req.body;
+    // amount_received defaults to amount_invoiced when omitted — the common
+    // "paid in full" case.
+    const received = amount_received != null ? Number(amount_received) : Number(inv.amount_invoiced);
+    if (received < 0) return res.status(400).json({ error: 'amount_received cannot be negative' });
+    const adminUser = (await sql`SELECT id, name FROM app_users WHERE id=${(req.headers['x-user-id'] as string) || ''}`) as any[];
+    const adminName = adminUser[0]?.name ?? null;
+    const adminId = adminUser[0]?.id ?? null;
+    const rows = await sql`
+      UPDATE fin_project_invoices SET
+        amount_received=${received},
+        status='cleared',
+        cleared_date=${cleared_date || new Date().toISOString().slice(0, 10)},
+        cleared_by=${adminId},
+        cleared_by_name=${adminName},
+        notes=COALESCE(${notes?.trim() || null}, notes),
+        updated_at=NOW()
+      WHERE id=${id}
+      RETURNING *`;
+    if (inv.created_by) {
+      const variance = received - Number(inv.amount_invoiced);
+      const varianceMsg = variance === 0 ? 'paid in full' : variance < 0 ? `short by ${fmtMoney(Math.abs(variance))}` : `extra ${fmtMoney(variance)}`;
+      notifyUser(inv.created_by, 'invoice_cleared', 'Invoice Cleared ✅',
+        `${inv.project_name} · ${fmtMoney(received)} received (${varianceMsg}).`).catch(()=>{});
+    }
+    res.json(rows[0]);
+  } catch (err: any) { res.status(500).json({ error: err.message || 'Server error' }); }
+});
+
+app.patch('/api/finance/invoices/:id/reopen', async (req, res) => {
+  await runStartupMigrations();
+  if (!(await requireAdmin(req, res))) return;
+  try {
+    const id = Number(req.params.id);
+    const existing = (await sql`SELECT * FROM fin_project_invoices WHERE id=${id}`) as any[];
+    if (!existing.length) return res.status(404).json({ error: 'Invoice not found' });
+    const rows = await sql`
+      UPDATE fin_project_invoices SET
+        status='pending', amount_received=NULL, cleared_date=NULL,
+        cleared_by=NULL, cleared_by_name=NULL, updated_at=NOW()
+      WHERE id=${id}
+      RETURNING *`;
+    if (existing[0].created_by) {
+      notifyUser(existing[0].created_by, 'invoice_reopened', 'Invoice Reopened',
+        `Admin reopened invoice${existing[0].invoice_number ? ` ${existing[0].invoice_number}` : ''} — marked pending again.`).catch(()=>{});
+    }
+    res.json(rows[0]);
+  } catch (err: any) { res.status(500).json({ error: err.message || 'Server error' }); }
+});
+
+app.delete('/api/finance/invoices/:id', async (req, res) => {
+  await runStartupMigrations();
+  const gate = await requireAdminOrCoord(req, res);
+  if (!gate.ok) return;
+  try {
+    const id = Number(req.params.id);
+    const existing = (await sql`SELECT * FROM fin_project_invoices WHERE id=${id}`) as any[];
+    if (!existing.length) return res.status(404).json({ error: 'Invoice not found' });
+    const inv = existing[0];
+    const isAdmin = gate.user?.role === 'admin';
+    if (!isAdmin) {
+      if (inv.status !== 'pending') return res.status(403).json({ error: 'Only admin can delete a cleared invoice' });
+      if (inv.created_by !== gate.user?.id) return res.status(403).json({ error: 'You can only delete invoices you created' });
+    }
+    await sql`DELETE FROM fin_project_invoices WHERE id=${id}`;
     res.json({ success: true });
   } catch (err: any) { res.status(500).json({ error: err.message || 'Server error' }); }
 });

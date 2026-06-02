@@ -40,6 +40,8 @@ export interface FinSettings {
 
 export interface FinTotals {
   revenue: number; directCost: number; projectExpenses: number;
+  totalInvoiced: number; totalReceived: number; totalPending: number;
+  pendingInvoiceCount: number; clearedInvoiceCount: number;
   benchCost: number; indirectSalaries: number;
   supervisionCost: number; supervisorHeadcount: number; otherCosts: number;
   overheadPool: number; grossProfit: number; grossMargin: number; netProfit: number; netMargin: number;
@@ -51,10 +53,33 @@ export interface FinProjectRow {
   id: string; name: string; client_name: string | null;
   billing_type: 'fixed' | 'hourly'; hourly_rate: number; billable_hours: number; fixed_amount: number;
   revenue: number; directCost: number; directHours: number; projectExpenses: number;
+  invoiced: number; received: number; pendingCount: number; clearedCount: number; invoiceCount: number;
   grossProfit: number; grossMargin: number;
   overhead: number; supervision: number; supervisorNames: string[];
   netProfit: number; netMargin: number; effectiveCostPerHour: number; revenuePerHour: number;
   team: { id: string; name: string; designation: string | null; hours: number; rate: number; cost: number }[];
+}
+
+export interface FinInvoice {
+  id: number;
+  project_id: string;
+  project_name?: string;
+  project_client_name?: string | null;
+  month: number;
+  year: number;
+  invoice_number: string | null;
+  invoice_date: string | null;
+  amount_invoiced: number;
+  amount_received: number | null;
+  status: 'pending' | 'cleared' | 'cancelled';
+  cleared_date: string | null;
+  cleared_by: string | null;
+  cleared_by_name: string | null;
+  notes: string | null;
+  created_by: string | null;
+  created_by_name: string | null;
+  created_by_role: string | null;
+  created_at: string;
 }
 
 export interface FinProjectExpense {
@@ -134,4 +159,23 @@ export const financeApi = {
   updateProjectExpense: (id: number, data: { vendor?: string; description?: string; amount?: number; category?: string; month?: number; year?: number }) =>
     request<FinProjectExpense>(`/project-expenses/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
   deleteProjectExpense: (id: number) => request<any>(`/project-expenses/${id}`, { method: 'DELETE' }),
+
+  // ── Invoices (coordinator raises → admin clears) ──
+  getInvoices: (params: { project_id?: string; month?: number; year?: number; status?: 'pending' | 'cleared' | 'cancelled' }) => {
+    const qs = new URLSearchParams();
+    if (params.project_id) qs.set('project_id', params.project_id);
+    if (params.month) qs.set('month', String(params.month));
+    if (params.year) qs.set('year', String(params.year));
+    if (params.status) qs.set('status', params.status);
+    return request<FinInvoice[]>(`/invoices?${qs}`);
+  },
+  addInvoice: (data: { project_id: string; month: number; year: number; invoice_number?: string; invoice_date?: string; amount_invoiced: number; notes?: string }) =>
+    request<FinInvoice>('/invoices', { method: 'POST', body: JSON.stringify(data) }),
+  updateInvoice: (id: number, data: { invoice_number?: string; invoice_date?: string; amount_invoiced?: number; amount_received?: number | null; notes?: string; month?: number; year?: number; status?: 'pending' | 'cleared' | 'cancelled' }) =>
+    request<FinInvoice>(`/invoices/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
+  clearInvoice: (id: number, data: { amount_received?: number; cleared_date?: string; notes?: string }) =>
+    request<FinInvoice>(`/invoices/${id}/clear`, { method: 'PATCH', body: JSON.stringify(data) }),
+  reopenInvoice: (id: number) =>
+    request<FinInvoice>(`/invoices/${id}/reopen`, { method: 'PATCH', body: JSON.stringify({}) }),
+  deleteInvoice: (id: number) => request<any>(`/invoices/${id}`, { method: 'DELETE' }),
 };
