@@ -110,11 +110,26 @@ export default function ProjectHours() {
     if (!me) return new Set<string>();
     return new Set((employees as any[]).filter(e => e.reporting_manager_id === me.id).map(e => e.id));
   }, [employees, me]);
+  // Projects this user is responsible for — either as reviewer (approves hour logs)
+  // or as the project lead. Both relationships count for the Mine view.
   const myProjects = useMemo(() => {
     if (!me) return [] as any[];
-    return (projects as any[]).filter(p => p.project_reporting_id === me.id);
+    return (projects as any[]).filter(p =>
+      p.project_reporting_id === me.id || p.project_lead_id === me.id
+    );
   }, [projects, me]);
   const hasMine = (reportsTo.size > 0) || (myProjects.length > 0);
+
+  // Role gating. Admin / HR / project_coordinator see all three tabs;
+  // anyone else (a plain employee who got here because they lead/review projects)
+  // only sees the Mine tab — they shouldn't see capacity or plan for everyone.
+  const role = user?.role ?? 'employee';
+  const isAdminLike = role === 'admin' || role === 'hr_manager' || role === 'project_coordinator';
+
+  // Reset to Mine when a non-admin viewer lands here.
+  useEffect(() => {
+    if (!isAdminLike) setView('mine');
+  }, [isAdminLike]);
 
   const load = useCallback(() => {
     setLoading(true);
@@ -235,12 +250,18 @@ export default function ProjectHours() {
         </div>
       )}
 
-      {/* Tab bar */}
+      {/* Tab bar — non-admin viewers (team leads who got here because they
+          lead/review a project) only see the Mine tab. Capacity & Plan are
+          for admin / HR / coordinator. */}
       <div className="inline-flex items-center gap-1 bg-surface rounded-xl-2 border border-outline shadow-elev-1 p-1">
-        <TabButton active={view === 'capacity'} onClick={() => setView('capacity')} icon={LayoutGrid} label="Capacity"
-          sub="Who's working how much" />
-        <TabButton active={view === 'plan'} onClick={() => setView('plan')} icon={Pencil} label="Plan"
-          sub="Edit allocations" />
+        {isAdminLike && (
+          <TabButton active={view === 'capacity'} onClick={() => setView('capacity')} icon={LayoutGrid} label="Capacity"
+            sub="Who's working how much" />
+        )}
+        {isAdminLike && (
+          <TabButton active={view === 'plan'} onClick={() => setView('plan')} icon={Pencil} label="Plan"
+            sub="Edit allocations" />
+        )}
         {hasMine && (
           <TabButton active={view === 'mine'} onClick={() => setView('mine')} icon={UsersIcon} label="Mine"
             sub="My team & projects"

@@ -79,6 +79,11 @@ export default function Sidebar() {
   const isCoord = role === 'project_coordinator';
   const isAdminLike = role === 'admin' || role === 'hr_manager';
 
+  // Is this user a project lead (project_lead_id) on any active project?
+  // Same gate as project reviewer — both relationships should unlock the
+  // Mine tab on /hours.
+  const [isProjectLead, setIsProjectLead] = useState(false);
+
   useEffect(() => {
     const showPersonal = isEmployee || isCoord;
     if (!showPersonal || !user?.employee_id_ref) return;
@@ -90,11 +95,16 @@ export default function Sidebar() {
           .then((members: any[]) => setIsManager(members.length > 0))
           .catch(() => {});
         api.getProjects({ status: 'active' })
-          .then((projs: any[]) => setIsProjectReviewer(projs.some(p => p.project_reporting_id === emp.id)))
+          .then((projs: any[]) => {
+            setIsProjectReviewer(projs.some(p => p.project_reporting_id === emp.id));
+            setIsProjectLead(projs.some(p => p.project_lead_id === emp.id));
+          })
           .catch(() => {});
       })
       .catch(() => {});
   }, [user?.employee_id_ref, isEmployee, isCoord]);
+
+  const isTeamLead = isProjectReviewer || isProjectLead;
 
   // Build the set of groups visible to this role
   const groups: NavGroup[] = [];
@@ -114,6 +124,10 @@ export default function Sidebar() {
     items: [
       { to: '/my', icon: User, label: 'My portal', end: true },
       ...(isManager ? [{ to: '/my-team', icon: Users, label: 'My team' } as NavItem] : []),
+      // Team leads (project_reporting OR project_lead on any project) need to see
+      // all the projects they own, not just hours from their direct reports.
+      // /hours's Mine tab is the right view for that.
+      ...(isEmployee && isTeamLead ? [{ to: '/hours', icon: Briefcase, label: 'My projects', end: true } as NavItem] : []),
       ...(isEmployee && isProjectReviewer ? [{ to: '/hours/approvals', icon: ClipboardCheck, label: 'Approvals', end: true } as NavItem] : []),
     ],
   } : null;

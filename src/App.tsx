@@ -59,7 +59,10 @@ function AppRoutes() {
 
         {/* Project Mgmt routes */}
         <Route path="projects" element={<ProtectedRoute roles={['admin', 'hr_manager', 'project_coordinator']}><Projects /></ProtectedRoute>} />
-        <Route path="hours" element={<ProtectedRoute roles={['admin', 'hr_manager', 'project_coordinator']}><ProjectHours /></ProtectedRoute>} />
+        {/* /hours: open to anyone. The page itself decides which tabs are visible
+            based on role + whether the viewer leads/reviews any projects. Team
+            leads (role=employee) need this to see all projects they lead. */}
+        <Route path="hours" element={<ProtectedRoute><ProjectHours /></ProtectedRoute>} />
         <Route path="hours/approvals" element={<ProtectedRoute><HoursApproval /></ProtectedRoute>} />
 
         {/* Employee routes — project_coordinator is also an employee */}
