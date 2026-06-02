@@ -2,6 +2,7 @@ import { Outlet, useLocation } from 'react-router-dom';
 import Sidebar from './Sidebar';
 import TopBar from './TopBar';
 import CommandPalette from '../CommandPalette';
+import ShiftEndReminder from '../ShiftEndReminder';
 
 const pageTitles: Record<string, string> = {
   '/': 'Dashboard',
@@ -18,6 +19,7 @@ const pageTitles: Record<string, string> = {
   '/projects': 'Projects',
   '/hours': 'Project Hours',
   '/hours/approvals': 'Hour Approvals',
+  '/hours/compliance': 'Daily Log Compliance',
   '/my': 'My Portal',
   '/my-team': 'My Team',
 };
@@ -37,6 +39,7 @@ export default function Layout() {
       <Sidebar />
       <div className="flex-1 flex flex-col min-w-0">
         <TopBar title={title} />
+        <ShiftEndReminder />
         <main className="flex-1 p-6 overflow-auto">
           <Outlet />
         </main>

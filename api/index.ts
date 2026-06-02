@@ -3710,6 +3710,129 @@ app.get('/api/hours-summary', async (req, res) => {
   } catch (err: any) { res.status(500).json({ error: err.message || 'Server error' }); }
 });
 
+// ── Daily-log compliance ─────────────────────────────────────────────────
+// GET /api/hours-compliance?date=YYYY-MM-DD&manager_id=<optional>
+// Returns:
+//   not_logged: employees with at least one project assignment this month
+//               who have logged ZERO hours for the given date.
+//   pending:    hour_logs in 'pending' state grouped by reviewer, with the
+//               oldest-pending-days metric so it's clear who's been sitting
+//               on logs the longest.
+// If manager_id is provided, not_logged is scoped to that manager's full
+// sub-tree (recursive). Without it, the response is org-wide.
+app.get('/api/hours-compliance', async (req, res) => {
+  try {
+    await runStartupMigrations();
+    const dateStr = (req.query.date as string) || new Date().toISOString().slice(0, 10);
+    const date = new Date(dateStr + 'T00:00:00Z');
+    if (Number.isNaN(date.getTime())) return res.status(400).json({ error: 'Invalid date' });
+    const month = date.getUTCMonth() + 1;
+    const year = date.getUTCFullYear();
+    const managerId = (req.query.manager_id as string) || null;
+
+    // Sub-tree employee ids when scoping to a manager — direct reports + the
+    // entire chain beneath them.
+    let scopeIds: string[] | null = null;
+    if (managerId) {
+      const rows = await sql`
+        WITH RECURSIVE team AS (
+          SELECT id FROM employees WHERE reporting_manager_id = ${managerId}
+          UNION ALL
+          SELECT e.id FROM employees e JOIN team t ON e.reporting_manager_id = t.id
+        )
+        SELECT id FROM team`;
+      scopeIds = (rows as any[]).map(r => r.id);
+      if (scopeIds.length === 0) scopeIds = ['__none__']; // ensure IN clause is non-empty
+    }
+
+    // Eligible = anyone with at least one assignment this month. Sub-tree
+    // filter applied via array overlap when scopeIds is set.
+    const eligible = await sql`
+      SELECT DISTINCT e.id, e.name, e.designation, e.department,
+             e.reporting_manager_id, m.name AS reporting_manager_name,
+             (SELECT COUNT(*) FROM project_assignments pa
+                WHERE pa.employee_id = e.id AND pa.month=${month} AND pa.year=${year}) AS assignment_count
+      FROM employees e
+      LEFT JOIN employees m ON m.id = e.reporting_manager_id
+      WHERE e.status='active'
+        AND EXISTS (
+          SELECT 1 FROM project_assignments pa
+          WHERE pa.employee_id = e.id AND pa.month=${month} AND pa.year=${year}
+        )
+        AND (${scopeIds}::text[] IS NULL OR e.id = ANY(${scopeIds}::text[]))
+      ORDER BY e.name`;
+
+    // Who DID log on the given date — sum hours from hour_log_days.
+    const logged = await sql`
+      SELECT employee_id, SUM(COALESCE(hours, 0))::numeric AS hours_today
+      FROM hour_log_days
+      WHERE log_date = ${dateStr}
+      GROUP BY employee_id`;
+    const loggedMap = new Map<string, number>();
+    for (const r of logged as any[]) loggedMap.set(r.employee_id, Number(r.hours_today));
+
+    const notLogged = (eligible as any[]).filter(e => !((loggedMap.get(e.id) ?? 0) > 0));
+
+    // Pending approvals — grouped by the reviewer (project_reporting_id on
+    // the project). Includes age of oldest pending so a triage view is easy.
+    const pending = await sql`
+      SELECT p.project_reporting_id AS reviewer_id,
+             p.project_reporting_name AS reviewer_name,
+             COUNT(*)::int AS log_count,
+             COALESCE(SUM(hl.hours_logged), 0)::numeric AS total_hours,
+             MIN(hl.submitted_at) AS oldest_pending_at
+      FROM hour_logs hl
+      JOIN projects p ON p.id = hl.project_id
+      WHERE hl.status = 'pending'
+        AND (${scopeIds}::text[] IS NULL OR hl.employee_id = ANY(${scopeIds}::text[]))
+      GROUP BY p.project_reporting_id, p.project_reporting_name
+      ORDER BY oldest_pending_at ASC`;
+
+    // Pending logs per submitting employee — same scope rules.
+    const pendingByEmployee = await sql`
+      SELECT hl.employee_id, hl.employee_name,
+             COUNT(*)::int AS log_count,
+             COALESCE(SUM(hl.hours_logged), 0)::numeric AS total_hours,
+             MIN(hl.submitted_at) AS oldest_pending_at
+      FROM hour_logs hl
+      WHERE hl.status = 'pending'
+        AND (${scopeIds}::text[] IS NULL OR hl.employee_id = ANY(${scopeIds}::text[]))
+      GROUP BY hl.employee_id, hl.employee_name
+      ORDER BY total_hours DESC`;
+
+    res.json({
+      date: dateStr,
+      month, year,
+      eligible_count: (eligible as any[]).length,
+      not_logged_count: notLogged.length,
+      logged_count: (eligible as any[]).length - notLogged.length,
+      not_logged: notLogged.map(e => ({
+        employee_id: e.id,
+        employee_name: e.name,
+        designation: e.designation,
+        department: e.department,
+        reporting_manager_id: e.reporting_manager_id,
+        reporting_manager_name: e.reporting_manager_name,
+        assignment_count: Number(e.assignment_count),
+      })),
+      pending_by_reviewer: (pending as any[]).map(r => ({
+        reviewer_id: r.reviewer_id,
+        reviewer_name: r.reviewer_name || 'Unassigned',
+        log_count: Number(r.log_count),
+        total_hours: Number(r.total_hours),
+        oldest_pending_at: r.oldest_pending_at,
+      })),
+      pending_by_employee: (pendingByEmployee as any[]).map(r => ({
+        employee_id: r.employee_id,
+        employee_name: r.employee_name,
+        log_count: Number(r.log_count),
+        total_hours: Number(r.total_hours),
+        oldest_pending_at: r.oldest_pending_at,
+      })),
+    });
+  } catch (err: any) { res.status(500).json({ error: err.message || 'Server error' }); }
+});
+
 // ════════════════════════════════════════════════════════════════════════
 // ── Finance / CFO module (admin-only) ───────────────────────────────────
 // ════════════════════════════════════════════════════════════════════════

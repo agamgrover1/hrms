@@ -390,4 +390,28 @@ export const api = {
       over_plan_log_count: number;
       pending_review_count: number;
     }>(`/hours-summary?month=${month}&year=${year}`),
+
+  getHoursCompliance: (params: { date?: string; manager_id?: string }) => {
+    const qs = new URLSearchParams();
+    if (params.date) qs.set('date', params.date);
+    if (params.manager_id) qs.set('manager_id', params.manager_id);
+    return request<{
+      date: string; month: number; year: number;
+      eligible_count: number; not_logged_count: number; logged_count: number;
+      not_logged: Array<{
+        employee_id: string; employee_name: string;
+        designation: string | null; department: string | null;
+        reporting_manager_id: string | null; reporting_manager_name: string | null;
+        assignment_count: number;
+      }>;
+      pending_by_reviewer: Array<{
+        reviewer_id: string | null; reviewer_name: string;
+        log_count: number; total_hours: number; oldest_pending_at: string | null;
+      }>;
+      pending_by_employee: Array<{
+        employee_id: string; employee_name: string;
+        log_count: number; total_hours: number; oldest_pending_at: string | null;
+      }>;
+    }>(`/hours-compliance?${qs}`);
+  },
 };

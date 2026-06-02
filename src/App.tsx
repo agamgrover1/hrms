@@ -19,6 +19,7 @@ import MyTeam from './pages/employee/MyTeam';
 import Projects from './pages/Projects';
 import ProjectHours from './pages/ProjectHours';
 import HoursApproval from './pages/HoursApproval';
+import HoursCompliance from './pages/HoursCompliance';
 import Finance from './pages/finance/Finance';
 
 function landingFor(role: string): string {
@@ -64,6 +65,7 @@ function AppRoutes() {
             leads (role=employee) need this to see all projects they lead. */}
         <Route path="hours" element={<ProtectedRoute><ProjectHours /></ProtectedRoute>} />
         <Route path="hours/approvals" element={<ProtectedRoute><HoursApproval /></ProtectedRoute>} />
+        <Route path="hours/compliance" element={<ProtectedRoute><HoursCompliance /></ProtectedRoute>} />
 
         {/* Employee routes — project_coordinator is also an employee */}
         <Route path="my" element={<ProtectedRoute roles={['employee', 'project_coordinator']}><MyPortal /></ProtectedRoute>} />
