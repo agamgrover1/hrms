@@ -55,7 +55,7 @@ function RejectInput({ onClose, onConfirm, placeholder = 'Enter reason…', conf
   return (
     <>
       <textarea value={reason} onChange={e => setReason(e.target.value)} rows={3} placeholder={placeholder} autoFocus
-        className="w-full bg-surface border border-outline text-on-surface rounded-lg px-3 py-2.5 text-sm focus:outline-none resize-none mb-4" />
+        className="w-full bg-surface-2 border border-outline text-on-surface placeholder:text-on-surface-subtle caret-accent rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-accent/30 focus:border-accent resize-none mb-4" />
       <div className="flex gap-3">
         <button onClick={onClose} className="flex-1 py-2.5 border border-outline text-on-surface-muted rounded-lg text-sm font-medium hover:bg-surface-2">Cancel</button>
         <button onClick={() => { if (reason.trim()) onConfirm(reason.trim()); }} disabled={!reason.trim()}
@@ -261,11 +261,27 @@ export default function MyTeam() {
   const lateToday     = teamMembers.filter(m => teamAttendance[m.id]?.find((r: any) => r.date === todayStr)?.status === 'late').length;
   const onLeaveToday  = teamMembers.filter(m => leaveStatuses.has(teamAttendance[m.id]?.find((r: any) => r.date === todayStr)?.status ?? '')).length;
 
-  // Attendance per member (stacked bar)
+  // Attendance per member (stacked bar). Use a unique key per row so Recharts'
+  // category axis doesn't collapse two team members who share a first name into
+  // one bar — happens whenever the team has e.g. two Amrits or two Vivek+Vimla.
+  const firstNameCounts: Record<string, number> = {};
+  for (const m of teamMembers) {
+    const first = (m.name || '').split(' ')[0] || '—';
+    firstNameCounts[first] = (firstNameCounts[first] ?? 0) + 1;
+  }
   const attBarData = teamMembers.map(m => {
     const att = teamAttendance[m.id] ?? [];
+    const parts = (m.name || '').split(' ');
+    const first = parts[0] || '—';
+    // If multiple team members share the first name, append the last initial.
+    const display = firstNameCounts[first] > 1 && parts[1]
+      ? `${first} ${parts[1][0]}.`
+      : first;
     return {
-      name: m.name.split(' ')[0],
+      // dataKey must be unique per row — fall back to employee id for the edge case
+      // where two members still collide (same first name + same last initial).
+      name: display,
+      _key: m.id,
       Present: att.filter((r: any) => r.status === 'present').length,
       Late: att.filter((r: any) => r.status === 'late').length,
       WFH: att.filter((r: any) => ['wfh','wfh_half'].includes(r.status)).length,
@@ -273,6 +289,13 @@ export default function MyTeam() {
       Absent: att.filter((r: any) => r.status === 'absent').length,
     };
   });
+  // Final dedupe pass — if two display labels still collide, suffix with #2, #3…
+  const seen: Record<string, number> = {};
+  for (const row of attBarData) {
+    const c = (seen[row.name] ?? 0) + 1;
+    seen[row.name] = c;
+    if (c > 1) row.name = `${row.name} #${c}`;
+  }
 
   const totalWfhToday = teamMembers.filter(m =>
     ['wfh','wfh_half'].includes(teamAttendance[m.id]?.find((r: any) => r.date === todayStr)?.status ?? '')
