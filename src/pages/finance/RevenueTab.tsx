@@ -1,5 +1,5 @@
-import { useEffect, useState } from 'react';
-import { Copy, Plus, X } from 'lucide-react';
+import { useEffect, useMemo, useState } from 'react';
+import { Copy, FileText, Plus, X } from 'lucide-react';
 import { financeApi } from '../../services/financeApi';
 import { useAuth } from '../../context/AuthContext';
 import { MONTHS, money } from './format';
@@ -11,9 +11,12 @@ type Row = {
   billing_type: 'fixed' | 'hourly'; fixed_amount: number; hourly_rate: number; billable_hours: number;
 };
 
+type InvoiceSummary = { invoiced: number; received: number; pendingCount: number; clearedCount: number };
+
 export default function RevenueTab({ month, year, onChanged }: { month: number; year: number; onChanged: () => void }) {
   const { user } = useAuth();
   const [rows, setRows] = useState<Row[]>([]);
+  const [invoicesByProject, setInvoicesByProject] = useState<Map<string, InvoiceSummary>>(new Map());
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState('');
   const [saving, setSaving] = useState<string | null>(null);
@@ -23,16 +26,35 @@ export default function RevenueTab({ month, year, onChanged }: { month: number; 
 
   const load = () => {
     setLoading(true); setErr('');
-    financeApi.getRevenue(month, year)
-      .then((data) => setRows(data.map((r) => ({
-        id: r.id, name: r.name, client_name: r.client_name,
-        billing_type: (r.billing_type as any) || 'fixed',
-        fixed_amount: Number(r.fixed_amount || 0), hourly_rate: Number(r.hourly_rate || 0), billable_hours: Number(r.billable_hours || 0),
-      }))))
+    Promise.all([
+      financeApi.getRevenue(month, year),
+      // Show a "this project has invoices" indicator per row, so admin knows
+      // when not to bother filling in fallback amounts here.
+      financeApi.getInvoices({ month, year }).catch(() => []),
+    ])
+      .then(([rev, inv]) => {
+        setRows((rev as any[]).map((r) => ({
+          id: r.id, name: r.name, client_name: r.client_name,
+          billing_type: (r.billing_type as any) || 'fixed',
+          fixed_amount: Number(r.fixed_amount || 0), hourly_rate: Number(r.hourly_rate || 0), billable_hours: Number(r.billable_hours || 0),
+        })));
+        const map = new Map<string, InvoiceSummary>();
+        for (const i of inv as any[]) {
+          if (i.status === 'cancelled') continue;
+          const e = map.get(i.project_id) || { invoiced: 0, received: 0, pendingCount: 0, clearedCount: 0 };
+          e.invoiced += Number(i.amount_invoiced || 0);
+          if (i.status === 'cleared') { e.received += Number(i.amount_received || 0); e.clearedCount += 1; }
+          else if (i.status === 'pending') { e.pendingCount += 1; }
+          map.set(i.project_id, e);
+        }
+        setInvoicesByProject(map);
+      })
       .catch((e) => setErr(e.message))
       .finally(() => setLoading(false));
   };
   useEffect(load, [month, year]);
+
+  const invoicedProjectCount = useMemo(() => invoicesByProject.size, [invoicesByProject]);
 
   const set = (id: string, patch: Partial<Row>) => setRows((rs) => rs.map((r) => (r.id === id ? { ...r, ...patch } : r)));
 
@@ -71,8 +93,22 @@ export default function RevenueTab({ month, year, onChanged }: { month: number; 
   return (
     <div className="space-y-4">
       {err && <div className="rounded-xl-2 border border-danger/30 bg-danger-container/40 p-3 text-sm text-danger">{err}</div>}
+
+      {/* How the two revenue sources interact — explain it once at the top. */}
+      <div className="rounded-xl-2 border border-outline bg-surface-2/60 p-4 text-xs text-on-surface-muted">
+        <p className="text-on-surface font-semibold text-sm mb-1">Billing setup · fallback when no invoices exist</p>
+        <p>
+          For projects on a fixed retainer or simple hourly billing, set their amount here as a default. Once a project starts using the <b className="text-on-surface">Invoices</b> tab, those invoices override anything you enter on this row — so you don't need to fill it in. Rows with invoices are marked below.
+        </p>
+      </div>
+
       <div className="flex flex-wrap items-center justify-between gap-2">
-        <p className="text-sm text-on-surface-muted">What each client pays for <b className="text-on-surface">{MONTHS[month - 1]} {year}</b>. Visible to admins only.</p>
+        <p className="text-sm text-on-surface-muted">
+          Billing for <b className="text-on-surface">{MONTHS[month - 1]} {year}</b>
+          {invoicedProjectCount > 0 && (
+            <> · <span className="text-success font-medium">{invoicedProjectCount}</span> project{invoicedProjectCount === 1 ? '' : 's'} already on invoices (no need to edit here).</>
+          )}
+        </p>
         <div className="flex items-center gap-2">
           <button onClick={() => setShowAdd((v) => !v)} className="flex items-center gap-1.5 rounded-xl-2 bg-brand px-3 py-2 text-xs font-medium text-on-brand hover:opacity-90">
             {showAdd ? <X size={14} /> : <Plus size={14} />} {showAdd ? 'Cancel' : 'New project'}
@@ -151,11 +187,27 @@ export default function RevenueTab({ month, year, onChanged }: { month: number; 
           <tbody className="divide-y divide-outline">
             {rows.map((r) => {
               const revenue = r.billing_type === 'hourly' ? r.hourly_rate * r.billable_hours : r.fixed_amount;
+              const inv = invoicesByProject.get(r.id);
+              const hasInvoices = !!inv;
               return (
-                <tr key={r.id} className="hover:bg-surface-2/50">
+                <tr key={r.id} className={`hover:bg-surface-2/50 ${hasInvoices ? 'bg-success-container/15' : ''}`}>
                   <td className="px-4 py-2">
-                    <div className="font-medium text-on-surface">{r.name}</div>
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <span className={`font-medium ${hasInvoices ? 'text-on-surface-muted' : 'text-on-surface'}`}>{r.name}</span>
+                      {hasInvoices && (
+                        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-success-container text-success" title="This project has invoices for the month — those drive the P&L, not the amount below.">
+                          <FileText size={10} strokeWidth={2.5} />
+                          Using invoices
+                          {inv && inv.pendingCount > 0 && <span className="text-warning">· {inv.pendingCount} pending</span>}
+                        </span>
+                      )}
+                    </div>
                     <div className="text-xs text-on-surface-subtle">{r.client_name || '—'}</div>
+                    {hasInvoices && inv && (
+                      <div className="text-[10px] text-on-surface-subtle mt-0.5 num-mono">
+                        Invoiced {money(inv.invoiced)}{inv.received > 0 && ` · Received ${money(inv.received)}`}
+                      </div>
+                    )}
                   </td>
                   <td className="px-3 py-2">
                     <select value={r.billing_type} onChange={(e) => set(r.id, { billing_type: e.target.value as any })}
@@ -165,24 +217,27 @@ export default function RevenueTab({ month, year, onChanged }: { month: number; 
                     </select>
                   </td>
                   <td className="px-3 py-2">
-                    <input type="number" value={r.fixed_amount} disabled={r.billing_type !== 'fixed'}
+                    <input type="number" value={r.fixed_amount} disabled={r.billing_type !== 'fixed' || hasInvoices}
                       onChange={(e) => set(r.id, { fixed_amount: Number(e.target.value) })}
                       className="w-28 rounded-lg border border-outline bg-surface px-2 py-1.5 text-right text-sm text-on-surface outline-none focus:border-brand disabled:opacity-40" />
                   </td>
                   <td className="px-3 py-2">
-                    <input type="number" value={r.hourly_rate} disabled={r.billing_type !== 'hourly'}
+                    <input type="number" value={r.hourly_rate} disabled={r.billing_type !== 'hourly' || hasInvoices}
                       onChange={(e) => set(r.id, { hourly_rate: Number(e.target.value) })}
                       className="w-24 rounded-lg border border-outline bg-surface px-2 py-1.5 text-right text-sm text-on-surface outline-none focus:border-brand disabled:opacity-40" />
                   </td>
                   <td className="px-3 py-2">
-                    <input type="number" value={r.billable_hours} disabled={r.billing_type !== 'hourly'}
+                    <input type="number" value={r.billable_hours} disabled={r.billing_type !== 'hourly' || hasInvoices}
                       onChange={(e) => set(r.id, { billable_hours: Number(e.target.value) })}
                       className="w-24 rounded-lg border border-outline bg-surface px-2 py-1.5 text-right text-sm text-on-surface outline-none focus:border-brand disabled:opacity-40" />
                   </td>
-                  <td className="px-3 py-2 text-right tabular-nums font-medium text-on-surface">{money(revenue)}</td>
+                  <td className={`px-3 py-2 text-right tabular-nums font-medium ${hasInvoices ? 'text-on-surface-subtle line-through' : 'text-on-surface'}`} title={hasInvoices ? 'Overridden by invoices' : ''}>
+                    {money(revenue)}
+                  </td>
                   <td className="px-3 py-2 text-right">
-                    <button onClick={() => save(r)} disabled={saving === r.id}
-                      className="rounded-lg bg-brand px-3 py-1.5 text-xs font-medium text-on-brand hover:opacity-90 disabled:opacity-50">
+                    <button onClick={() => save(r)} disabled={saving === r.id || hasInvoices}
+                      title={hasInvoices ? 'This project is on invoices — edit those instead.' : ''}
+                      className="rounded-lg bg-brand px-3 py-1.5 text-xs font-medium text-on-brand hover:opacity-90 disabled:opacity-40 disabled:cursor-not-allowed">
                       {saving === r.id ? '…' : 'Save'}
                     </button>
                   </td>

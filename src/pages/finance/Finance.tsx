@@ -17,7 +17,7 @@ const ALL_TABS: { id: TabId; label: string; icon: typeof LineChart }[] = [
   { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard },
   { id: 'trends', label: 'Trends', icon: LineChart },
   { id: 'invoices', label: 'Invoices', icon: FileText },
-  { id: 'revenue', label: 'Revenue', icon: IndianRupee },
+  { id: 'revenue', label: 'Billing setup', icon: IndianRupee },
   { id: 'people', label: 'Classification', icon: Users },
   { id: 'overhead', label: 'Overhead', icon: Building2 },
   { id: 'settings', label: 'Settings', icon: SlidersHorizontal },
