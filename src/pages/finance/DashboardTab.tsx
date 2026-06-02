@@ -1,13 +1,16 @@
-import { useEffect, useMemo, useState } from 'react';
-import { X, Briefcase } from 'lucide-react';
+import { Fragment, useEffect, useMemo, useState } from 'react';
+import { X, Briefcase, Users as UsersIcon } from 'lucide-react';
 import { financeApi, type FinModel, type FinEmployeeRow } from '../../services/financeApi';
 import { MONTHS, money, moneyShort, pct, hrs, marginTone } from './format';
+
+type UtilGroupKey = 'none' | 'department' | 'designation';
 
 export default function DashboardTab({ month, year, rev }: { month: number; year: number; rev: number }) {
   const [model, setModel] = useState<FinModel | null>(null);
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState('');
   const [drilldown, setDrilldown] = useState<FinEmployeeRow | null>(null);
+  const [utilGroup, setUtilGroup] = useState<UtilGroupKey>('none');
 
   useEffect(() => {
     setLoading(true); setErr('');
@@ -166,17 +169,93 @@ export default function DashboardTab({ month, year, rev }: { month: number; year
       )}
 
       {/* Utilization */}
-      <div className="rounded-xl-2 border border-outline bg-surface overflow-hidden">
-        <div className="px-5 py-3 border-b border-outline text-sm font-semibold text-on-surface">Direct staff utilization <span className="text-xs font-normal text-on-surface-subtle ml-2">· click any row for project breakdown</span></div>
-        <div className="divide-y divide-outline">
-          {model.employeeRows.filter((e) => e.cost_type === 'direct').length === 0 ? (
-            <div className="p-6 text-center text-sm text-on-surface-muted">No direct (billable) staff classified.</div>
-          ) : (
-            model.employeeRows.filter((e) => e.cost_type === 'direct').sort((a, b) => (b.utilization ?? 0) - (a.utilization ?? 0)).map((e) => {
+      <UtilizationSection
+        model={model}
+        groupBy={utilGroup}
+        setGroupBy={setUtilGroup}
+        onPick={setDrilldown}
+      />
+    </div>
+  );
+}
+
+function UtilizationSection({ model, groupBy, setGroupBy, onPick }: {
+  model: FinModel;
+  groupBy: UtilGroupKey;
+  setGroupBy: (k: UtilGroupKey) => void;
+  onPick: (e: FinEmployeeRow) => void;
+}) {
+  const c = model.settings.currency;
+  const direct = useMemo(
+    () => model.employeeRows.filter(e => e.cost_type === 'direct').sort((a, b) => (b.utilization ?? 0) - (a.utilization ?? 0)),
+    [model.employeeRows]
+  );
+
+  const groups = useMemo(() => {
+    if (groupBy === 'none') {
+      return [{ name: null as string | null, rows: direct, totalAlloc: 0, totalCap: 0, totalBench: 0 }];
+    }
+    const keyOf = (e: FinEmployeeRow) => (groupBy === 'department' ? e.department : e.designation) || '—';
+    const buckets = new Map<string, FinEmployeeRow[]>();
+    for (const e of direct) {
+      const k = keyOf(e);
+      const arr = buckets.get(k);
+      if (arr) arr.push(e); else buckets.set(k, [e]);
+    }
+    return Array.from(buckets.entries())
+      .sort((a, b) => a[0].localeCompare(b[0]))
+      .map(([name, rows]) => ({
+        name,
+        rows,
+        totalAlloc: rows.reduce((s, r) => s + r.allocatedHours, 0),
+        totalCap: rows.reduce((s, r) => s + r.capacity, 0),
+        totalBench: rows.reduce((s, r) => s + r.benchCost, 0),
+      }));
+  }, [direct, groupBy]);
+
+  return (
+    <div className="rounded-xl-2 border border-outline bg-surface overflow-hidden">
+      <div className="px-5 py-3 border-b border-outline flex flex-wrap items-center justify-between gap-3">
+        <div className="text-sm font-semibold text-on-surface">
+          Direct staff utilization
+          <span className="text-xs font-normal text-on-surface-subtle ml-2">· click any row for project breakdown</span>
+        </div>
+        <div className="inline-flex items-center gap-1 bg-surface-2 border border-outline rounded-lg px-1 py-0.5">
+          <span className="text-[10px] uppercase tracking-[0.14em] font-bold text-on-surface-subtle pl-1.5">Group</span>
+          {([
+            { key: 'none', label: 'None' },
+            { key: 'department', label: 'Team' },
+            { key: 'designation', label: 'Role' },
+          ] as Array<{ key: UtilGroupKey; label: string }>).map(opt => (
+            <button key={opt.key} onClick={() => setGroupBy(opt.key)}
+              className={`px-2 py-1 rounded-md text-[11px] font-semibold transition-colors ${
+                groupBy === opt.key ? 'bg-accent text-on-accent' : 'text-on-surface-muted hover:text-on-surface hover:bg-surface-3'
+              }`}>{opt.label}</button>
+          ))}
+        </div>
+      </div>
+      <div className="divide-y divide-outline">
+        {direct.length === 0 ? (
+          <div className="p-6 text-center text-sm text-on-surface-muted">No direct (billable) staff classified.</div>
+        ) : groups.map(g => (
+          <Fragment key={g.name ?? '__all__'}>
+            {g.name !== null && (
+              <div className="flex items-center justify-between gap-3 px-5 py-2 bg-gradient-to-r from-brand-container/40 to-transparent">
+                <div className="inline-flex items-center gap-2">
+                  <UsersIcon size={13} className="text-brand" />
+                  <span className="font-display text-sm font-bold text-on-surface">{g.name}</span>
+                  <span className="num-mono text-[10px] font-semibold text-on-surface-muted bg-surface px-1.5 py-0.5 rounded-full">{g.rows.length}</span>
+                </div>
+                <div className="text-[11px] text-on-surface-muted num-mono">
+                  {hrs(g.totalAlloc)}/{hrs(g.totalCap)} · {pct(g.totalCap > 0 ? g.totalAlloc / g.totalCap : null)} · bench {money(g.totalBench, c)}
+                </div>
+              </div>
+            )}
+            {g.rows.map(e => {
               const u = e.utilization ?? 0;
               const barColor = u > 1 ? 'bg-danger' : u >= 0.8 ? 'bg-success' : 'bg-warning';
               return (
-                <button key={e.id} onClick={() => setDrilldown(e)}
+                <button key={e.id} onClick={() => onPick(e)}
                   className="flex w-full items-center gap-4 px-5 py-2.5 text-left hover:bg-surface-2/60 transition-colors group">
                   <div className="w-44 shrink-0">
                     <div className="text-sm font-medium text-on-surface truncate group-hover:text-accent transition-colors">{e.name}</div>
@@ -189,9 +268,9 @@ export default function DashboardTab({ month, year, rev }: { month: number; year
                   <div className="w-40 text-right text-xs text-on-surface-subtle">{hrs(e.allocatedHours)}/{hrs(e.capacity)} · bench {money(e.benchCost, c)}</div>
                 </button>
               );
-            })
-          )}
-        </div>
+            })}
+          </Fragment>
+        ))}
       </div>
     </div>
   );
