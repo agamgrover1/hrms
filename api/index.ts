@@ -665,6 +665,26 @@ app.put('/api/employees/:id', async (req, res) => {
           designation=${designation}
         WHERE employee_id_ref=${updated.employee_id}`.catch(()=>{});
     }
+    // Cascade the name change to every table that denormalises employee_name.
+    // Without this, renaming an employee leaves stale labels on past assignments,
+    // logs, leave requests, etc. — reviewers see the OLD name on these surfaces.
+    if (updated?.id && name !== undefined) {
+      const empId = updated.id;
+      const cascades = [
+        sql`UPDATE project_assignments SET employee_name=${name} WHERE employee_id=${empId}`,
+        sql`UPDATE hour_logs           SET employee_name=${name} WHERE employee_id=${empId}`,
+        sql`UPDATE hour_log_days       SET employee_name=${name} WHERE employee_id=${empId}`,
+        sql`UPDATE leave_requests      SET employee_name=${name} WHERE employee_id=${empId}`,
+        sql`UPDATE wfh_requests        SET employee_name=${name} WHERE employee_id=${empId}`,
+        sql`UPDATE employee_warnings   SET employee_name=${name} WHERE employee_id=${empId}`,
+        sql`UPDATE employee_pips       SET employee_name=${name} WHERE employee_id=${empId}`,
+        sql`UPDATE upsell_requests     SET employee_name=${name} WHERE employee_id=${empId}`,
+        sql`UPDATE expense_requests    SET employee_name=${name} WHERE employee_id=${empId}`,
+        sql`UPDATE repair_tickets      SET employee_name=${name} WHERE employee_id=${empId}`,
+      ];
+      // Best-effort — a missing table (in a fresh DB) shouldn't fail the update.
+      await Promise.all(cascades.map(p => (p as any).catch(() => {})));
+    }
     res.json(updated);
   } catch (err) { res.status(500).json({ error: 'Server error' }); }
 });
