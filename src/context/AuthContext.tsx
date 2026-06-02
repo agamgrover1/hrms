@@ -1,6 +1,13 @@
-import { createContext, useContext, useState, useEffect } from 'react';
+import { createContext, useContext, useEffect, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import { api } from '../services/api';
+
+// Inactivity policy. The session auto-logs-out after this many ms of no
+// keyboard/mouse/touch activity. Activity in any tab resets the clock for
+// every tab (via the `storage` event).
+const INACTIVITY_LIMIT_MS = 30 * 60 * 1000;   // 30 minutes
+const ACTIVITY_KEY = 'digitalleap_hrms_last_activity';
+const CHECK_INTERVAL_MS = 30 * 1000;          // poll every 30s — fine granularity isn't needed
 
 export type Role = 'admin' | 'hr_manager' | 'project_coordinator' | 'employee';
 
@@ -24,7 +31,9 @@ interface AuthContextType {
   users: AppUser[];
   usersLoading: boolean;
   login: (email: string, password: string) => Promise<{ success: boolean; error?: string }>;
-  logout: () => void;
+  logout: (opts?: { expired?: boolean }) => void;
+  sessionExpired: boolean;
+  clearSessionExpired: () => void;
   createUser: (data: any) => Promise<{ success: boolean; error?: string }>;
   updateUser: (id: string, data: any) => Promise<void>;
   deleteUser: (id: string) => Promise<void>;
@@ -38,10 +47,21 @@ const SESSION_KEY = 'digitalleap_hrms_session';
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<AppUser | null>(() => {
     const stored = localStorage.getItem(SESSION_KEY);
-    return stored ? JSON.parse(stored) : null;
+    if (!stored) return null;
+    // If the tab was closed past the inactivity window, don't restore — force a
+    // fresh login. Catches "left tab open overnight, came back to it" too.
+    const lastActive = Number(localStorage.getItem(ACTIVITY_KEY) || 0);
+    if (lastActive && Date.now() - lastActive > INACTIVITY_LIMIT_MS) {
+      localStorage.removeItem(SESSION_KEY);
+      localStorage.removeItem(ACTIVITY_KEY);
+      return null;
+    }
+    return JSON.parse(stored);
   });
   const [users, setUsers] = useState<AppUser[]>([]);
   const [usersLoading, setUsersLoading] = useState(false);
+  const [sessionExpired, setSessionExpired] = useState(false);
+  const lastActivityRef = useRef<number>(Number(localStorage.getItem(ACTIVITY_KEY) || Date.now()));
 
   const refreshUsers = async () => {
     setUsersLoading(true);
@@ -66,17 +86,75 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       const appUser: AppUser = { ...u, employeeId: u.employee_id_ref };
       setUser(appUser);
       localStorage.setItem(SESSION_KEY, JSON.stringify(appUser));
+      // Seed activity timestamp so the timeout clock starts now.
+      const now = Date.now();
+      lastActivityRef.current = now;
+      localStorage.setItem(ACTIVITY_KEY, String(now));
+      setSessionExpired(false);
       return { success: true };
     } catch (err: any) {
       return { success: false, error: err.message || 'Login failed' };
     }
   };
 
-  const logout = () => {
+  const logout = (opts?: { expired?: boolean }) => {
     setUser(null);
     setUsers([]);
     localStorage.removeItem(SESSION_KEY);
+    localStorage.removeItem(ACTIVITY_KEY);
+    if (opts?.expired) setSessionExpired(true);
   };
+
+  // ── Inactivity tracking ────────────────────────────────────────────────
+  // Listen for any keyboard/mouse/touch input and bump the activity clock.
+  // A periodic check forces logout once the gap exceeds the limit. The
+  // timestamp is mirrored to localStorage so activity in one tab keeps
+  // sibling tabs alive, and a logout in one tab logs out the others.
+  useEffect(() => {
+    if (!user) return;
+    const bump = () => {
+      const now = Date.now();
+      // Throttle: only write to localStorage once every 10s — pen-strokes and
+      // mouse-moves would otherwise hammer it.
+      if (now - lastActivityRef.current > 10_000) {
+        lastActivityRef.current = now;
+        try { localStorage.setItem(ACTIVITY_KEY, String(now)); } catch { /* quota — ignore */ }
+      } else {
+        lastActivityRef.current = now;
+      }
+    };
+    const onStorage = (e: StorageEvent) => {
+      if (e.key === ACTIVITY_KEY && e.newValue) {
+        lastActivityRef.current = Number(e.newValue);
+      }
+      if (e.key === SESSION_KEY && !e.newValue) {
+        // Another tab logged out — mirror it here.
+        setUser(null);
+        setUsers([]);
+      }
+    };
+    const tick = () => {
+      const last = Math.max(lastActivityRef.current, Number(localStorage.getItem(ACTIVITY_KEY) || 0));
+      if (Date.now() - last > INACTIVITY_LIMIT_MS) {
+        logout({ expired: true });
+      }
+    };
+    const events: (keyof WindowEventMap)[] = ['mousemove', 'mousedown', 'keydown', 'scroll', 'touchstart', 'click'];
+    events.forEach(ev => window.addEventListener(ev, bump, { passive: true }));
+    window.addEventListener('storage', onStorage);
+    const interval = window.setInterval(tick, CHECK_INTERVAL_MS);
+    // Also tick when the tab regains focus — covers "came back after lunch".
+    const onFocus = () => tick();
+    window.addEventListener('focus', onFocus);
+    document.addEventListener('visibilitychange', onFocus);
+    return () => {
+      events.forEach(ev => window.removeEventListener(ev, bump));
+      window.removeEventListener('storage', onStorage);
+      window.removeEventListener('focus', onFocus);
+      document.removeEventListener('visibilitychange', onFocus);
+      window.clearInterval(interval);
+    };
+  }, [user]);
 
   const createUser = async (data: any) => {
     try {
@@ -109,7 +187,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   };
 
   return (
-    <AuthContext.Provider value={{ user, users, usersLoading, login, logout, createUser, updateUser, deleteUser, toggleUserActive, refreshUsers }}>
+    <AuthContext.Provider value={{
+      user, users, usersLoading, login, logout,
+      sessionExpired, clearSessionExpired: () => setSessionExpired(false),
+      createUser, updateUser, deleteUser, toggleUserActive, refreshUsers,
+    }}>
       {children}
     </AuthContext.Provider>
   );

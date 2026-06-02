@@ -1,9 +1,9 @@
 import { useState } from 'react';
-import { Eye, EyeOff, Lock, Mail, AlertCircle } from 'lucide-react';
+import { Clock, Eye, EyeOff, Lock, Mail, AlertCircle } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 
 export default function Login() {
-  const { login } = useAuth();
+  const { login, sessionExpired, clearSessionExpired } = useAuth();
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [showPass, setShowPass] = useState(false);
@@ -13,6 +13,7 @@ export default function Login() {
   const handleSubmit = async (e: { preventDefault: () => void }) => {
     e.preventDefault();
     setError('');
+    clearSessionExpired();
     setLoading(true);
     await new Promise(r => setTimeout(r, 400));
     const result = await login(email, password);
@@ -131,6 +132,13 @@ export default function Login() {
                     </button>
                   </div>
                 </div>
+
+                {sessionExpired && !error && (
+                  <div className="flex items-center gap-2 p-3 bg-warning-container border border-warning/30 rounded-xl-2 text-warning text-sm">
+                    <Clock size={15} className="flex-shrink-0" />
+                    Signed out after 30 minutes of inactivity. Sign in again to continue.
+                  </div>
+                )}
 
                 {error && (
                   <div className="flex items-center gap-2 p-3 bg-danger-container border border-danger/20 rounded-xl-2 text-danger text-sm">
