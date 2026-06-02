@@ -41,6 +41,20 @@ interface DayRow {
   notes: string | null;
 }
 
+interface AssignmentRow {
+  id: string;
+  project_id: string;
+  project_name?: string;
+  project_client_name?: string | null;
+  project_flag?: string | null;
+  monthly_hours: number;
+  w1_hours: number;
+  w2_hours: number;
+  w3_hours: number;
+  w4_hours: number;
+  w5_hours: number;
+}
+
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 
 function allocFor(log: LogRow): number {
@@ -53,6 +67,7 @@ export default function EmployeeHoursDetailModal({ employeeId, employeeName, mon
   const canEditAny = user?.role === 'admin' || user?.role === 'hr_manager' || user?.role === 'project_coordinator';
   const [logs, setLogs] = useState<LogRow[]>([]);
   const [days, setDays] = useState<DayRow[]>([]);
+  const [assignments, setAssignments] = useState<AssignmentRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editDraft, setEditDraft] = useState<{ hours: string; desc: string; reason: string }>({ hours: '', desc: '', reason: '' });
@@ -66,6 +81,7 @@ export default function EmployeeHoursDetailModal({ employeeId, employeeName, mon
     Promise.all([
       api.getHourLogs({ employee_id: employeeId, month, year }).then(d => setLogs(d as LogRow[])).catch(() => {}),
       api.getHourLogDays({ employee_id: employeeId, month, year }).then(d => setDays(d as DayRow[])).catch(() => setDays([])),
+      api.getProjectAssignments({ employee_id: employeeId, month, year }).then(d => setAssignments(d as AssignmentRow[])).catch(() => setAssignments([])),
     ]).finally(() => setLoading(false));
   };
 
@@ -218,13 +234,94 @@ export default function EmployeeHoursDetailModal({ employeeId, employeeName, mon
             <div className="flex items-center justify-center py-12">
               <div className="w-6 h-6 border-4 border-outline border-t-accent rounded-full animate-spin" />
             </div>
-          ) : weeks.length === 0 ? (
-            <div className="px-6 py-16 text-center">
-              <ClockIcon size={28} className="mx-auto text-on-surface-subtle mb-2" />
-              <p className="text-sm text-on-surface-muted">No hour logs for {employeeName} in {MONTHS[month - 1]} {year}.</p>
-            </div>
           ) : (
-            <div className="p-5 space-y-4">
+            <div className="p-5 space-y-5">
+              {/* ── Projects assigned this month — what coordinator planned ── */}
+              {assignments.length > 0 && (
+                <div className="rounded-xl-2 border border-outline bg-surface shadow-elev-1 overflow-hidden">
+                  <div className="px-4 py-2.5 bg-surface-2 border-b border-outline flex items-center justify-between">
+                    <p className="text-[10px] uppercase tracking-[0.16em] font-bold text-on-surface-muted">
+                      Projects assigned · {MONTHS[month-1]} {year}
+                    </p>
+                    <p className="text-[10px] text-on-surface-subtle">
+                      <span className="num-mono font-semibold text-on-surface">{assignments.length}</span> project{assignments.length === 1 ? '' : 's'}
+                      <span className="mx-1.5">·</span>
+                      <span className="num-mono font-semibold text-on-surface">{assignments.reduce((s, a) => s + Number(a.monthly_hours), 0)}h</span> planned
+                    </p>
+                  </div>
+                  <table className="w-full text-xs">
+                    <thead className="bg-surface-2/50 text-on-surface-subtle">
+                      <tr>
+                        <th className="px-4 py-2 text-left font-bold tracking-wider">Project</th>
+                        <th className="px-2 py-2 text-center font-bold">W1</th>
+                        <th className="px-2 py-2 text-center font-bold">W2</th>
+                        <th className="px-2 py-2 text-center font-bold">W3</th>
+                        <th className="px-2 py-2 text-center font-bold">W4</th>
+                        <th className="px-2 py-2 text-center font-bold">W5</th>
+                        <th className="px-2 py-2 text-center font-bold bg-surface-3">M</th>
+                        <th className="px-3 py-2 text-right font-bold">Logged / Plan</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-outline">
+                      {assignments
+                        .slice()
+                        .sort((a, b) => (a.project_name ?? '').localeCompare(b.project_name ?? ''))
+                        .map(a => {
+                          // Sum approved + pending logs for this assignment across the month
+                          const projectLogs = logs.filter(l => l.project_id === a.project_id);
+                          const approvedH = projectLogs.filter(l => l.status === 'approved').reduce((s, l) => s + Number(l.hours_logged), 0);
+                          const pendingH  = projectLogs.filter(l => l.status === 'pending').reduce((s, l) => s + Number(l.hours_logged), 0);
+                          const plan = Number(a.monthly_hours);
+                          const totalCounted = approvedH + pendingH;
+                          const over = approvedH > plan;
+                          return (
+                            <tr key={a.id} className="hover:bg-surface-2/40 transition-colors">
+                              <td className="px-4 py-2">
+                                <p className="font-semibold text-on-surface leading-tight">
+                                  {a.project_flag && (
+                                    <span className={`inline-block w-1.5 h-1.5 rounded-full mr-1.5 align-middle ${a.project_flag === 'red' ? 'bg-danger' : 'bg-warning'}`} />
+                                  )}
+                                  {a.project_name}
+                                </p>
+                                {a.project_client_name && <p className="text-[10px] text-on-surface-muted">{a.project_client_name}</p>}
+                              </td>
+                              {[a.w1_hours, a.w2_hours, a.w3_hours, a.w4_hours, a.w5_hours].map((h, i) => (
+                                <td key={i} className="px-2 py-2 text-center">
+                                  <span className={`num-mono ${Number(h) > 0 ? 'text-on-surface font-semibold' : 'text-on-surface-subtle'}`}>{Number(h)}</span>
+                                </td>
+                              ))}
+                              <td className="px-2 py-2 text-center bg-surface-2 font-bold">
+                                <span className="num-mono text-on-surface">{plan}</span>
+                              </td>
+                              <td className="px-3 py-2 text-right">
+                                <p className={`num-mono font-bold ${over ? 'text-warning' : approvedH === 0 && pendingH === 0 ? 'text-on-surface-subtle' : 'text-on-surface'}`}>
+                                  {approvedH}<span className="text-on-surface-muted font-normal">/{plan}</span>
+                                </p>
+                                {pendingH > 0 && (
+                                  <p className="text-[10px] text-warning">
+                                    +<span className="num-mono">{pendingH}h</span> pending
+                                  </p>
+                                )}
+                              </td>
+                            </tr>
+                          );
+                        })}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+
+              {/* ── Week-by-week submitted logs ── */}
+              {weeks.length === 0 ? (
+                <div className="px-6 py-12 text-center bg-surface-2/30 rounded-xl-2 border border-outline border-dashed">
+                  <ClockIcon size={24} className="mx-auto text-on-surface-subtle mb-2" />
+                  <p className="text-sm text-on-surface-muted">No hour logs submitted yet for {employeeName} in {MONTHS[month-1]} {year}.</p>
+                  {assignments.length > 0 && (
+                    <p className="text-xs text-on-surface-subtle mt-1">Plan above shows what's allocated — actuals will appear once they log time.</p>
+                  )}
+                </div>
+              ) : (
+              <div className="space-y-4">
               {weeks.map(weekNum => {
                 const rows = grouped[weekNum];
                 const weekApproved = rows.filter(l => l.status === 'approved').reduce((s, l) => s + Number(l.hours_logged), 0);
@@ -505,6 +602,8 @@ export default function EmployeeHoursDetailModal({ employeeId, employeeName, mon
                   </div>
                 );
               })}
+              </div>
+              )}
             </div>
           )}
         </div>
