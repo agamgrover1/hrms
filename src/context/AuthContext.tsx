@@ -31,9 +31,7 @@ interface AuthContextType {
   users: AppUser[];
   usersLoading: boolean;
   login: (email: string, password: string) => Promise<{ success: boolean; error?: string }>;
-  logout: (opts?: { expired?: boolean }) => void;
-  sessionExpired: boolean;
-  clearSessionExpired: () => void;
+  logout: () => void;
   createUser: (data: any) => Promise<{ success: boolean; error?: string }>;
   updateUser: (id: string, data: any) => Promise<void>;
   deleteUser: (id: string) => Promise<void>;
@@ -60,7 +58,6 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   });
   const [users, setUsers] = useState<AppUser[]>([]);
   const [usersLoading, setUsersLoading] = useState(false);
-  const [sessionExpired, setSessionExpired] = useState(false);
   const lastActivityRef = useRef<number>(Number(localStorage.getItem(ACTIVITY_KEY) || Date.now()));
 
   const refreshUsers = async () => {
@@ -90,19 +87,17 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       const now = Date.now();
       lastActivityRef.current = now;
       localStorage.setItem(ACTIVITY_KEY, String(now));
-      setSessionExpired(false);
       return { success: true };
     } catch (err: any) {
       return { success: false, error: err.message || 'Login failed' };
     }
   };
 
-  const logout = (opts?: { expired?: boolean }) => {
+  const logout = () => {
     setUser(null);
     setUsers([]);
     localStorage.removeItem(SESSION_KEY);
     localStorage.removeItem(ACTIVITY_KEY);
-    if (opts?.expired) setSessionExpired(true);
   };
 
   // ── Inactivity tracking ────────────────────────────────────────────────
@@ -136,7 +131,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     const tick = () => {
       const last = Math.max(lastActivityRef.current, Number(localStorage.getItem(ACTIVITY_KEY) || 0));
       if (Date.now() - last > INACTIVITY_LIMIT_MS) {
-        logout({ expired: true });
+        logout();
       }
     };
     const events: (keyof WindowEventMap)[] = ['mousemove', 'mousedown', 'keydown', 'scroll', 'touchstart', 'click'];
@@ -189,7 +184,6 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   return (
     <AuthContext.Provider value={{
       user, users, usersLoading, login, logout,
-      sessionExpired, clearSessionExpired: () => setSessionExpired(false),
       createUser, updateUser, deleteUser, toggleUserActive, refreshUsers,
     }}>
       {children}
