@@ -693,6 +693,43 @@ async function runStartupMigrations() {
   await sql`CREATE INDEX IF NOT EXISTS idx_fin_invoices_project ON fin_project_invoices(project_id, year, month)`.catch(()=>{});
   await sql`CREATE INDEX IF NOT EXISTS idx_fin_invoices_status ON fin_project_invoices(status)`.catch(()=>{});
 
+  // Multi-currency support — most invoices are raised in USD but the bank
+  // receives INR after FX conversion. We keep both: amount_invoiced is what
+  // the coordinator typed (in `currency`), amount_invoiced_inr is the INR
+  // equivalent at fx_rate, used as the home-currency revenue figure.
+  try {
+    await sql`ALTER TABLE fin_project_invoices ADD COLUMN IF NOT EXISTS currency TEXT DEFAULT 'INR'`;
+    await sql`ALTER TABLE fin_project_invoices ADD COLUMN IF NOT EXISTS fx_rate NUMERIC`;
+    await sql`ALTER TABLE fin_project_invoices ADD COLUMN IF NOT EXISTS amount_invoiced_inr NUMERIC`;
+    // Backfill: legacy rows had no currency → they were all INR @ rate 1
+    await sql`
+      UPDATE fin_project_invoices
+      SET currency=COALESCE(currency,'INR'),
+          fx_rate=COALESCE(fx_rate, 1),
+          amount_invoiced_inr=COALESCE(amount_invoiced_inr, amount_invoiced)
+      WHERE currency IS NULL OR amount_invoiced_inr IS NULL`;
+  } catch { /* idempotent best-effort */ }
+
+  // Daily FX-rate cache so we don't hammer Frankfurter on every invoice load.
+  // Frankfurter only returns business-day rates; weekends/holidays fall back
+  // to the last business day (its native behavior).
+  await sql`
+    CREATE TABLE IF NOT EXISTS fin_fx_rates (
+      rate_date DATE NOT NULL,
+      from_currency TEXT NOT NULL,
+      to_currency TEXT NOT NULL,
+      rate NUMERIC NOT NULL,
+      fetched_at TIMESTAMPTZ DEFAULT NOW(),
+      PRIMARY KEY (rate_date, from_currency, to_currency)
+    )`;
+
+  // Mark Upwork-billed projects so the UI can label invoices appropriately
+  // and pre-select USD on the invoice form. 'direct' is the catch-all for
+  // anything not on Upwork (retainer, project-based, etc.).
+  try {
+    await sql`ALTER TABLE projects ADD COLUMN IF NOT EXISTS billing_source TEXT DEFAULT 'direct'`;
+  } catch { /* idempotent */ }
+
   // Role-based playbook — every employee with that role inherits these items.
   // Sections (Daily / Weekly / Monthly / etc.) group items; frequency drives
   // the colored pill on each item. where_to_do is a short nav breadcrumb
@@ -3332,7 +3369,7 @@ app.post('/api/projects', async (req, res) => {
       name, client_name, project_type, dashboard_url,
       project_reporting_id, project_reporting_name,
       project_lead_id, project_lead_name,
-      status, flag, flag_reason, notes, created_by, total_hours_cap,
+      status, flag, flag_reason, notes, created_by, total_hours_cap, billing_source,
     } = req.body;
     if (!name) return res.status(400).json({ error: 'name is required' });
     const capVal = total_hours_cap === '' || total_hours_cap === null || total_hours_cap === undefined ? null : Number(total_hours_cap);
@@ -3343,12 +3380,12 @@ app.post('/api/projects', async (req, res) => {
     const rows = await sql`
       INSERT INTO projects (id, name, client_name, project_type, dashboard_url,
         project_reporting_id, project_reporting_name, project_lead_id, project_lead_name,
-        status, flag, flag_reason, notes, created_by, total_hours_cap)
+        status, flag, flag_reason, notes, created_by, total_hours_cap, billing_source)
       VALUES (${id}, ${name}, ${client_name ?? null}, ${project_type ?? null}, ${dashboard_url ?? null},
         ${project_reporting_id ?? null}, ${project_reporting_name ?? null},
         ${project_lead_id ?? null}, ${project_lead_name ?? null},
         ${status ?? 'active'}, ${flag ?? null}, ${flag_reason ?? null}, ${notes ?? null}, ${created_by ?? null},
-        ${capVal})
+        ${capVal}, ${billing_source ?? 'direct'})
       RETURNING *`;
     res.status(201).json(rows[0]);
   } catch (err: any) { res.status(500).json({ error: err.message || 'Server error' }); }
@@ -3360,7 +3397,7 @@ app.put('/api/projects/:id', async (req, res) => {
       name, client_name, project_type, dashboard_url,
       project_reporting_id, project_reporting_name,
       project_lead_id, project_lead_name,
-      status, flag, flag_reason, notes, total_hours_cap,
+      status, flag, flag_reason, notes, total_hours_cap, billing_source,
     } = req.body;
     // Detect status flipping to 'archived' so we can clean up future-month
     // assignments (planning should stop from that day onward).
@@ -3373,6 +3410,7 @@ app.put('/api/projects/:id', async (req, res) => {
     if (updateCap && capVal !== null && (Number.isNaN(capVal) || capVal < 0)) {
       return res.status(400).json({ error: 'total_hours_cap must be a non-negative number' });
     }
+    const updateBilling = billing_source !== undefined;
     const rows = updateCap
       ? await sql`
         UPDATE projects SET
@@ -3382,7 +3420,8 @@ app.put('/api/projects/:id', async (req, res) => {
           project_lead_id=${project_lead_id ?? null}, project_lead_name=${project_lead_name ?? null},
           status=${status ?? 'active'}, flag=${flag ?? null}, flag_reason=${flag_reason ?? null},
           notes=${notes ?? null},
-          total_hours_cap=${capVal}
+          total_hours_cap=${capVal},
+          billing_source=COALESCE(${updateBilling ? (billing_source || 'direct') : null}, billing_source)
         WHERE id=${req.params.id} RETURNING *`
       : await sql`
         UPDATE projects SET
@@ -3391,7 +3430,8 @@ app.put('/api/projects/:id', async (req, res) => {
           project_reporting_id=${project_reporting_id ?? null}, project_reporting_name=${project_reporting_name ?? null},
           project_lead_id=${project_lead_id ?? null}, project_lead_name=${project_lead_name ?? null},
           status=${status ?? 'active'}, flag=${flag ?? null}, flag_reason=${flag_reason ?? null},
-          notes=${notes ?? null}
+          notes=${notes ?? null},
+          billing_source=COALESCE(${updateBilling ? (billing_source || 'direct') : null}, billing_source)
         WHERE id=${req.params.id} RETURNING *`;
     if (!rows.length) return res.status(404).json({ error: 'Project not found' });
     if (isArchiving) {
@@ -4320,20 +4360,19 @@ async function finComputeMonth(month: number, year: number) {
     projExpenseByProject.set(e.project_id, (projExpenseByProject.get(e.project_id) || 0) + Number(e.amount));
   }
 
-  // Per-project invoice totals — coordinator-raised + admin-cleared amounts.
-  // Cancelled invoices are excluded. When invoices exist for a project, they
-  // override the legacy fin_project_revenue figure as the revenue source.
-  //
-  // `realized` is the hybrid revenue figure that actually drives the P&L:
-  // for each invoice, take the received amount if cleared, else the invoiced
-  // amount. So pending invoices count at face value (expected) and cleared
-  // ones count at the real money received. A short-paid invoice (TDS, FX)
-  // immediately drops the project's revenue on clearance.
+  // Per-project invoice totals — always in INR (home currency). USD/foreign
+  // amounts were converted at the invoice's fx_rate when raised, then stored
+  // in amount_invoiced_inr. `realized` is the hybrid revenue figure that
+  // drives the P&L: cleared invoices count at amount_received (which is also
+  // INR), pending invoices count at amount_invoiced_inr (expected revenue).
+  // Variance between billed-INR and received-INR (Upwork fees, TDS, FX swing)
+  // immediately hits net profit on clearance.
   const invoiceAgg = (await sql`
     SELECT project_id,
-      SUM(amount_invoiced)::numeric AS invoiced,
+      SUM(COALESCE(amount_invoiced_inr, amount_invoiced))::numeric AS invoiced,
       SUM(CASE WHEN status='cleared' THEN COALESCE(amount_received, 0) ELSE 0 END)::numeric AS received,
-      SUM(CASE WHEN status='cleared' THEN COALESCE(amount_received, 0) ELSE amount_invoiced END)::numeric AS realized,
+      SUM(CASE WHEN status='cleared' THEN COALESCE(amount_received, 0)
+                ELSE COALESCE(amount_invoiced_inr, amount_invoiced) END)::numeric AS realized,
       COUNT(*) FILTER (WHERE status='pending')::int AS pending_count,
       COUNT(*) FILTER (WHERE status='cleared')::int AS cleared_count,
       COUNT(*)::int AS invoice_count
@@ -4838,6 +4877,76 @@ app.delete('/api/finance/project-expenses/:id', async (req, res) => {
   } catch (err: any) { res.status(500).json({ error: err.message || 'Server error' }); }
 });
 
+// ── FX rates (Frankfurter, cached per business day) ──────────────────────
+// Coordinator raises invoices in USD (or other foreign currency) but the
+// company's home currency is INR — every dashboard number rolls up in INR.
+// We fetch the day's spot rate once and cache it; subsequent reads for the
+// same date are instant. Frankfurter (ECB-sourced) is free and key-less.
+
+async function getFxRate(date: string, from: string, to: string): Promise<{ rate: number; source: 'cache' | 'frankfurter' | 'fallback'; effective_date: string }> {
+  if (from === to) return { rate: 1, source: 'cache', effective_date: date };
+  // 1) Check cache for exact date
+  const cached = await sql`
+    SELECT rate, rate_date FROM fin_fx_rates
+    WHERE from_currency=${from} AND to_currency=${to} AND rate_date=${date}
+    LIMIT 1`.catch(() => []);
+  if ((cached as any[]).length > 0) {
+    const r = (cached as any[])[0];
+    return { rate: Number(r.rate), source: 'cache', effective_date: String(r.rate_date).slice(0, 10) };
+  }
+  // 2) Fetch from Frankfurter — returns the closest business-day rate if the
+  //    requested date is a weekend/holiday.
+  try {
+    const url = `https://api.frankfurter.app/${date}?from=${from}&to=${to}`;
+    const resp = await fetch(url);
+    if (resp.ok) {
+      const data: any = await resp.json();
+      const rate = Number(data?.rates?.[to]);
+      const effective = String(data?.date || date);
+      if (rate > 0) {
+        // Cache both: the originally-requested date AND the effective date
+        // Frankfurter returned (so future lookups for the same business day
+        // are also instant).
+        await sql`
+          INSERT INTO fin_fx_rates (rate_date, from_currency, to_currency, rate)
+          VALUES (${date}, ${from}, ${to}, ${rate})
+          ON CONFLICT (rate_date, from_currency, to_currency) DO UPDATE SET rate=EXCLUDED.rate, fetched_at=NOW()`.catch(()=>{});
+        if (effective !== date) {
+          await sql`
+            INSERT INTO fin_fx_rates (rate_date, from_currency, to_currency, rate)
+            VALUES (${effective}, ${from}, ${to}, ${rate})
+            ON CONFLICT (rate_date, from_currency, to_currency) DO UPDATE SET rate=EXCLUDED.rate, fetched_at=NOW()`.catch(()=>{});
+        }
+        return { rate, source: 'frankfurter', effective_date: effective };
+      }
+    }
+  } catch { /* fall through to last-known cached rate */ }
+  // 3) Fall back to most recent cached rate for the pair, regardless of date
+  const recent = await sql`
+    SELECT rate, rate_date FROM fin_fx_rates
+    WHERE from_currency=${from} AND to_currency=${to}
+    ORDER BY rate_date DESC LIMIT 1`.catch(() => []);
+  if ((recent as any[]).length > 0) {
+    const r = (recent as any[])[0];
+    return { rate: Number(r.rate), source: 'fallback', effective_date: String(r.rate_date).slice(0, 10) };
+  }
+  // Last-resort hard fallback so we never crash. ~current USD→INR.
+  return { rate: 83.5, source: 'fallback', effective_date: date };
+}
+
+app.get('/api/finance/fx-rate', async (req, res) => {
+  await runStartupMigrations();
+  const gate = await requireAdminOrCoord(req, res);
+  if (!gate.ok) return;
+  try {
+    const date = (req.query.date as string) || new Date().toISOString().slice(0, 10);
+    const from = ((req.query.from as string) || 'USD').toUpperCase();
+    const to = ((req.query.to as string) || 'INR').toUpperCase();
+    const r = await getFxRate(date, from, to);
+    res.json({ date, from, to, ...r });
+  } catch (err: any) { res.status(500).json({ error: err.message || 'Server error' }); }
+});
+
 // ── Project invoices ─────────────────────────────────────────────────────
 // Coordinator raises an invoice (amount_invoiced, status='pending').
 // Admin marks it cleared with the actual received amount (which may differ
@@ -4845,6 +4954,12 @@ app.delete('/api/finance/project-expenses/:id', async (req, res) => {
 // can compare what was billed vs what landed in the bank.
 
 const fmtMoney = (n: number) => `₹${Math.round(n).toLocaleString('en-IN')}`;
+const fmtMoneyCcy = (n: number, ccy: string) => {
+  const v = Math.round(n).toLocaleString('en-IN');
+  if (ccy === 'INR') return `₹${v}`;
+  if (ccy === 'USD') return `$${v}`;
+  return `${ccy} ${v}`;
+};
 
 app.get('/api/finance/invoices', async (req, res) => {
   await runStartupMigrations();
@@ -4873,19 +4988,38 @@ app.post('/api/finance/invoices', async (req, res) => {
   const gate = await requireAdminOrCoord(req, res);
   if (!gate.ok) return;
   try {
-    const { project_id, month, year, invoice_number, invoice_date, amount_invoiced, notes } = req.body;
+    const { project_id, month, year, invoice_number, invoice_date, amount_invoiced, notes, currency, fx_rate } = req.body;
     if (!project_id || !month || !year) return res.status(400).json({ error: 'project_id, month, year are required' });
     if (amount_invoiced == null || Number(amount_invoiced) <= 0) return res.status(400).json({ error: 'amount_invoiced must be > 0' });
     const proj = (await sql`SELECT id, name FROM projects WHERE id=${project_id}`) as any[];
     if (!proj.length) return res.status(400).json({ error: 'Unknown project' });
+
+    const ccy = (currency || 'INR').toUpperCase();
+    // FX rate: client may pass one (so it matches the live conversion shown
+    // in the UI). If absent for a non-INR invoice, auto-fetch using the
+    // invoice date so the rate matches "the day work was billed".
+    let fxRate: number;
+    if (fx_rate != null) {
+      fxRate = Number(fx_rate);
+    } else if (ccy === 'INR') {
+      fxRate = 1;
+    } else {
+      const d = (invoice_date as string) || new Date().toISOString().slice(0, 10);
+      const r = await getFxRate(d, ccy, 'INR');
+      fxRate = r.rate;
+    }
+    const inr = Number(amount_invoiced) * fxRate;
+
     const rows = await sql`
       INSERT INTO fin_project_invoices
         (project_id, month, year, invoice_number, invoice_date, amount_invoiced,
+         currency, fx_rate, amount_invoiced_inr,
          notes, status, created_by, created_by_name, created_by_role)
       VALUES (${project_id}, ${Number(month)}, ${Number(year)},
               ${invoice_number?.trim() || null},
               ${invoice_date || null},
               ${Number(amount_invoiced)},
+              ${ccy}, ${fxRate}, ${inr},
               ${notes?.trim() || null},
               'pending',
               ${gate.user?.id ?? null}, ${gate.user?.name ?? null}, ${gate.user?.role ?? null})
@@ -4894,7 +5028,7 @@ app.post('/api/finance/invoices', async (req, res) => {
     notifyAdminsAndHR(
       'invoice_raised',
       'Invoice Raised',
-      `${gate.user?.name ?? 'A coordinator'} raised ${fmtMoney(Number(amount_invoiced))} on ${proj[0].name}${invoice_number ? ` (${invoice_number})` : ''}.`
+      `${gate.user?.name ?? 'A coordinator'} raised ${fmtMoneyCcy(Number(amount_invoiced), ccy)}${ccy !== 'INR' ? ` (≈ ${fmtMoney(inr)})` : ''} on ${proj[0].name}${invoice_number ? ` (${invoice_number})` : ''}.`
     ).catch(()=>{});
     res.status(201).json(inv);
   } catch (err: any) { res.status(500).json({ error: err.message || 'Server error' }); }
@@ -4915,13 +5049,31 @@ app.put('/api/finance/invoices/:id', async (req, res) => {
       if (inv.status !== 'pending') return res.status(403).json({ error: 'Cleared invoices can only be edited by admin' });
       if (inv.created_by !== gate.user?.id) return res.status(403).json({ error: 'You can only edit invoices you created' });
     }
-    const { invoice_number, invoice_date, amount_invoiced, amount_received, notes, month, year, status } = req.body;
+    const { invoice_number, invoice_date, amount_invoiced, amount_received, notes, month, year, status, currency, fx_rate } = req.body;
     const wasCleared = inv.status === 'cleared';
+
+    // Recompute INR equivalent whenever amount, currency, or fx_rate changes.
+    // Admin edits to amount_received stay in INR (the bank reality).
+    const newCcy = currency ? String(currency).toUpperCase() : inv.currency || 'INR';
+    const newAmt = amount_invoiced != null ? Number(amount_invoiced) : Number(inv.amount_invoiced);
+    let newRate: number;
+    if (fx_rate != null) newRate = Number(fx_rate);
+    else if (newCcy === 'INR') newRate = 1;
+    else if (newCcy === inv.currency) newRate = Number(inv.fx_rate ?? 1);
+    else {
+      const d = (invoice_date as string) || inv.invoice_date || new Date().toISOString().slice(0, 10);
+      newRate = (await getFxRate(d, newCcy, 'INR')).rate;
+    }
+    const newInr = newAmt * newRate;
+
     const rows = await sql`
       UPDATE fin_project_invoices SET
         invoice_number=COALESCE(${invoice_number?.trim() || null}, invoice_number),
         invoice_date=COALESCE(${invoice_date || null}, invoice_date),
-        amount_invoiced=COALESCE(${amount_invoiced != null ? Number(amount_invoiced) : null}, amount_invoiced),
+        amount_invoiced=${newAmt},
+        currency=${newCcy},
+        fx_rate=${newRate},
+        amount_invoiced_inr=${newInr},
         amount_received=${isAdmin && amount_received !== undefined ? (amount_received == null ? null : Number(amount_received)) : inv.amount_received},
         notes=COALESCE(${notes !== undefined ? (notes?.trim() || null) : null}, notes),
         month=COALESCE(${month != null ? Number(month) : null}, month),

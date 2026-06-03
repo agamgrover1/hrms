@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { Plus, X, CheckCircle2, Clock, RotateCcw, Pencil, Trash2, MoreVertical, AlertTriangle, FileText, Ban } from 'lucide-react';
+import { Plus, X, CheckCircle2, Clock, RotateCcw, Pencil, Trash2, MoreVertical, AlertTriangle, FileText, Ban, Briefcase } from 'lucide-react';
 import { financeApi, type FinInvoice } from '../../services/financeApi';
 import { api } from '../../services/api';
 import { useAuth } from '../../context/AuthContext';
@@ -7,13 +7,32 @@ import { MONTHS, money } from './format';
 
 type StatusFilter = 'all' | 'pending' | 'cleared';
 
+const CURRENCIES = [
+  { code: 'USD', label: '$ USD', symbol: '$' },
+  { code: 'INR', label: '₹ INR', symbol: '₹' },
+  { code: 'EUR', label: '€ EUR', symbol: '€' },
+  { code: 'GBP', label: '£ GBP', symbol: '£' },
+  { code: 'AUD', label: 'A$ AUD', symbol: 'A$' },
+  { code: 'CAD', label: 'C$ CAD', symbol: 'C$' },
+];
+const symbolOf = (ccy: string) => CURRENCIES.find(c => c.code === ccy)?.symbol ?? ccy + ' ';
+const fmtCcy = (n: number, ccy: string) => `${symbolOf(ccy)}${Math.round(n).toLocaleString('en-IN')}`;
+
 const BLANK_NEW = {
   project_id: '',
   invoice_number: '',
   invoice_date: new Date().toISOString().slice(0, 10),
   amount_invoiced: '',
+  currency: 'USD',  // most invoices are USD; coordinator can switch to INR for domestic
   notes: '',
 };
+
+interface ProjectLite {
+  id: string;
+  name: string;
+  client_name: string | null;
+  billing_source?: string | null;
+}
 
 export default function InvoicesTab({ month, year, onChanged }: { month: number; year: number; onChanged: () => void }) {
   const { user } = useAuth();
@@ -21,7 +40,7 @@ export default function InvoicesTab({ month, year, onChanged }: { month: number;
   const userId = user?.id;
 
   const [invoices, setInvoices] = useState<FinInvoice[]>([]);
-  const [projects, setProjects] = useState<Array<{ id: string; name: string; client_name: string | null }>>([]);
+  const [projects, setProjects] = useState<ProjectLite[]>([]);
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState('');
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('all');
@@ -30,6 +49,11 @@ export default function InvoicesTab({ month, year, onChanged }: { month: number;
   const [np, setNp] = useState({ ...BLANK_NEW });
   const [creating, setCreating] = useState(false);
 
+  // Live FX rate for the new-invoice modal. Refetched when currency or
+  // invoice_date changes so the "= ₹X" preview matches what'll be stored.
+  const [fxRate, setFxRate] = useState<number | null>(null);
+  const [fxLoading, setFxLoading] = useState(false);
+
   const [clearTarget, setClearTarget] = useState<FinInvoice | null>(null);
   const [editTarget, setEditTarget] = useState<FinInvoice | null>(null);
 
@@ -37,7 +61,7 @@ export default function InvoicesTab({ month, year, onChanged }: { month: number;
     setLoading(true); setErr('');
     Promise.all([
       financeApi.getInvoices({ month, year }),
-      api.getProjects({ status: 'active' }) as Promise<Array<{ id: string; name: string; client_name: string | null }>>,
+      api.getProjects({ status: 'active' }) as Promise<ProjectLite[]>,
     ])
       .then(([inv, projs]) => {
         setInvoices(inv);
@@ -48,16 +72,41 @@ export default function InvoicesTab({ month, year, onChanged }: { month: number;
   };
   useEffect(load, [month, year]);
 
+  // When the new-invoice modal is open, keep the FX rate in sync with the
+  // chosen currency + date. INR has no conversion.
+  useEffect(() => {
+    if (!showAdd) return;
+    if (np.currency === 'INR') { setFxRate(1); return; }
+    setFxLoading(true);
+    financeApi.getFxRate({ date: np.invoice_date, from: np.currency, to: 'INR' })
+      .then(r => setFxRate(r.rate))
+      .catch(() => setFxRate(null))
+      .finally(() => setFxLoading(false));
+  }, [showAdd, np.currency, np.invoice_date]);
+
+  // When the user picks a project, if it's flagged as Upwork-billed and they
+  // haven't manually changed the currency yet, default to USD.
+  useEffect(() => {
+    if (!showAdd || !np.project_id) return;
+    const proj = projects.find(p => p.id === np.project_id);
+    if (proj?.billing_source === 'upwork' && np.currency !== 'USD') {
+      setNp(prev => ({ ...prev, currency: 'USD' }));
+    }
+  }, [np.project_id, showAdd, projects]);
+
   const filtered = useMemo(() => {
     if (statusFilter === 'all') return invoices.filter(i => i.status !== 'cancelled');
     return invoices.filter(i => i.status === statusFilter);
   }, [invoices, statusFilter]);
 
   const totals = useMemo(() => {
+    // All tiles roll up in INR — the company's home currency. For invoices in
+    // foreign currency, amount_invoiced_inr is the conversion-at-billing-time.
     const active = invoices.filter(i => i.status !== 'cancelled');
-    const invoiced = active.reduce((s, i) => s + Number(i.amount_invoiced || 0), 0);
+    const inrOf = (i: FinInvoice) => Number(i.amount_invoiced_inr ?? i.amount_invoiced ?? 0);
+    const invoiced = active.reduce((s, i) => s + inrOf(i), 0);
     const received = active.filter(i => i.status === 'cleared').reduce((s, i) => s + Number(i.amount_received || 0), 0);
-    const pending = active.filter(i => i.status === 'pending').reduce((s, i) => s + Number(i.amount_invoiced || 0), 0);
+    const pending = active.filter(i => i.status === 'pending').reduce((s, i) => s + inrOf(i), 0);
     const pendingCount = active.filter(i => i.status === 'pending').length;
     return { invoiced, received, pending, pendingCount };
   }, [invoices]);
@@ -74,6 +123,9 @@ export default function InvoicesTab({ month, year, onChanged }: { month: number;
         invoice_number: np.invoice_number.trim() || undefined,
         invoice_date: np.invoice_date || undefined,
         amount_invoiced: amt,
+        currency: np.currency,
+        // Pass the live rate the user saw so the stored INR matches their preview.
+        fx_rate: np.currency === 'INR' ? 1 : (fxRate ?? undefined),
         notes: np.notes.trim() || undefined,
       });
       setNp({ ...BLANK_NEW });
@@ -170,27 +222,45 @@ export default function InvoicesTab({ month, year, onChanged }: { month: number;
               </thead>
               <tbody className="divide-y divide-outline">
                 {filtered.map(inv => {
-                  const variance = (Number(inv.amount_received ?? 0)) - Number(inv.amount_invoiced);
                   const isCancelled = inv.status === 'cancelled';
                   const isCleared = inv.status === 'cleared';
                   const canEditAsCoord = !isAdmin && inv.status === 'pending' && inv.created_by === userId;
                   const canDeleteAsCoord = canEditAsCoord;
+                  // For variance: compare apples-to-apples in INR — amount_received
+                  // is INR, amount_invoiced_inr is the INR equivalent at billing rate.
+                  const invInr = Number(inv.amount_invoiced_inr ?? inv.amount_invoiced ?? 0);
+                  const recvInr = Number(inv.amount_received ?? 0);
+                  const inrVariance = recvInr - invInr;
+                  const isForeign = inv.currency && inv.currency !== 'INR';
                   return (
                     <tr key={inv.id} className={`hover:bg-surface-2/50 ${isCancelled ? 'opacity-50 line-through' : ''}`}>
                       <td className="px-4 py-2.5">
-                        <div className="font-medium text-on-surface">{inv.project_name || '—'}</div>
+                        <div className="font-medium text-on-surface inline-flex items-center gap-1.5">
+                          {inv.project_name || '—'}
+                          {isForeign && (
+                            <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-bold bg-accent-container text-accent">{inv.currency}</span>
+                          )}
+                        </div>
                         {inv.project_client_name && <div className="text-xs text-on-surface-subtle">{inv.project_client_name}</div>}
                       </td>
                       <td className="px-3 py-2.5 text-on-surface-muted num-mono text-xs">{inv.invoice_number || '—'}</td>
                       <td className="px-3 py-2.5 text-on-surface-muted text-xs">{formatDate(inv.invoice_date)}</td>
-                      <td className="px-3 py-2.5 text-right num-mono text-on-surface">{money(Number(inv.amount_invoiced))}</td>
                       <td className="px-3 py-2.5 text-right num-mono">
-                        {isCleared ? <span className="text-on-surface">{money(Number(inv.amount_received ?? 0))}</span> : <span className="text-on-surface-subtle">—</span>}
+                        <div className="text-on-surface">{fmtCcy(Number(inv.amount_invoiced), inv.currency || 'INR')}</div>
+                        {isForeign && (
+                          <div className="text-[10px] text-on-surface-subtle" title={`at 1 ${inv.currency} = ₹${Number(inv.fx_rate ?? 0).toFixed(4)}`}>
+                            ≈ {money(invInr)}
+                          </div>
+                        )}
+                      </td>
+                      <td className="px-3 py-2.5 text-right num-mono">
+                        {isCleared ? <span className="text-on-surface">{money(recvInr)}</span> : <span className="text-on-surface-subtle">—</span>}
                       </td>
                       <td className="px-3 py-2.5 text-right num-mono text-xs">
                         {isCleared ? (
-                          <span className={variance === 0 ? 'text-on-surface-subtle' : variance < 0 ? 'text-danger' : 'text-success'}>
-                            {variance > 0 ? '+' : ''}{money(variance)}
+                          <span className={inrVariance === 0 ? 'text-on-surface-subtle' : inrVariance < 0 ? 'text-danger' : 'text-success'}
+                            title={isForeign ? `Compared against ₹${Math.round(invInr).toLocaleString('en-IN')} (INR equivalent at billing rate)` : undefined}>
+                            {inrVariance > 0 ? '+' : ''}{money(inrVariance)}
                           </span>
                         ) : <span className="text-on-surface-subtle">—</span>}
                       </td>
@@ -231,8 +301,20 @@ export default function InvoicesTab({ month, year, onChanged }: { month: number;
               <select value={np.project_id} onChange={e => setNp({ ...np, project_id: e.target.value })}
                 className="w-full px-3 py-2 rounded-lg bg-surface-2 border border-outline text-sm text-on-surface focus:outline-none focus:ring-2 focus:ring-accent/30">
                 <option value="">— pick a project —</option>
-                {projects.map(p => <option key={p.id} value={p.id}>{p.name}{p.client_name ? ` · ${p.client_name}` : ''}</option>)}
+                {projects.map(p => <option key={p.id} value={p.id}>{p.name}{p.billing_source === 'upwork' ? ' · Upwork' : ''}{p.client_name ? ` · ${p.client_name}` : ''}</option>)}
               </select>
+              {(() => {
+                const proj = projects.find(p => p.id === np.project_id);
+                if (proj?.billing_source === 'upwork') {
+                  return (
+                    <p className="mt-1.5 text-[11px] text-on-surface-muted inline-flex items-center gap-1">
+                      <Briefcase size={11} className="text-brand" />
+                      Upwork project — defaults to USD. Earnings clear from Upwork wallet on withdrawal.
+                    </p>
+                  );
+                }
+                return null;
+              })()}
             </Field>
             <div className="grid grid-cols-2 gap-3">
               <Field label="Invoice #">
@@ -245,11 +327,35 @@ export default function InvoicesTab({ month, year, onChanged }: { month: number;
                   className="w-full px-3 py-2 rounded-lg bg-surface-2 border border-outline text-sm text-on-surface focus:outline-none focus:ring-2 focus:ring-accent/30" />
               </Field>
             </div>
-            <Field label="Amount invoiced (₹)" required>
-              <input type="number" min="0" step="0.01" value={np.amount_invoiced}
-                onChange={e => setNp({ ...np, amount_invoiced: e.target.value })}
-                className="w-full px-3 py-2 rounded-lg bg-surface-2 border border-outline text-sm text-on-surface num-mono focus:outline-none focus:ring-2 focus:ring-accent/30" />
-            </Field>
+            <div className="grid grid-cols-3 gap-3">
+              <Field label="Currency">
+                <select value={np.currency} onChange={e => setNp({ ...np, currency: e.target.value })}
+                  className="w-full px-3 py-2 rounded-lg bg-surface-2 border border-outline text-sm text-on-surface focus:outline-none focus:ring-2 focus:ring-accent/30">
+                  {CURRENCIES.map(c => <option key={c.code} value={c.code}>{c.label}</option>)}
+                </select>
+              </Field>
+              <Field label={`Amount invoiced (${symbolOf(np.currency).trim()})`} required>
+                <div className="col-span-2">
+                  <input type="number" min="0" step="0.01" value={np.amount_invoiced}
+                    onChange={e => setNp({ ...np, amount_invoiced: e.target.value })}
+                    className="w-full px-3 py-2 rounded-lg bg-surface-2 border border-outline text-sm text-on-surface num-mono focus:outline-none focus:ring-2 focus:ring-accent/30" />
+                </div>
+              </Field>
+              <Field label="≈ in INR">
+                <div className="px-3 py-2 rounded-lg bg-surface-3 border border-outline text-sm text-on-surface-muted num-mono">
+                  {np.currency === 'INR' ? '—' :
+                    fxLoading ? '…' :
+                    fxRate && Number(np.amount_invoiced) > 0
+                      ? fmtCcy(Number(np.amount_invoiced) * fxRate, 'INR')
+                      : '—'}
+                </div>
+              </Field>
+            </div>
+            {np.currency !== 'INR' && fxRate && (
+              <p className="text-[11px] text-on-surface-subtle -mt-1">
+                Rate: 1 {np.currency} = ₹{fxRate.toFixed(4)} ({np.invoice_date}). This locks at submit so the variance vs received amount is meaningful.
+              </p>
+            )}
             <Field label="Notes (optional)">
               <textarea value={np.notes} onChange={e => setNp({ ...np, notes: e.target.value })}
                 rows={2} placeholder="e.g. Retainer Jun 2026"
@@ -374,13 +480,17 @@ function Item({ icon: Icon, label, onClick, tone = 'text-on-surface' }: { icon: 
 }
 
 function ClearModal({ inv, onClose, onSaved }: { inv: FinInvoice; onClose: () => void; onSaved: () => void }) {
-  const [amount, setAmount] = useState(String(inv.amount_invoiced));
+  // Received amount is ALWAYS in INR (the bank reality). For comparison we
+  // use amount_invoiced_inr — the INR equivalent locked at billing time.
+  const invInr = Number(inv.amount_invoiced_inr ?? inv.amount_invoiced);
+  const isForeign = !!inv.currency && inv.currency !== 'INR';
+  const [amount, setAmount] = useState(String(Math.round(invInr)));
   const [date, setDate] = useState(new Date().toISOString().slice(0, 10));
   const [notes, setNotes] = useState(inv.notes || '');
   const [saving, setSaving] = useState(false);
   const [err, setErr] = useState('');
 
-  const variance = Number(amount) - Number(inv.amount_invoiced);
+  const variance = Number(amount) - invInr;
 
   const submit = async () => {
     const amt = Number(amount);
@@ -401,16 +511,24 @@ function ClearModal({ inv, onClose, onSaved }: { inv: FinInvoice; onClose: () =>
     <Modal onClose={onClose} title={`Mark cleared · ${inv.project_name}`}>
       <div className="space-y-3">
         <div className="rounded-lg bg-surface-2 border border-outline p-3 text-xs text-on-surface-muted">
-          Invoiced amount: <b className="text-on-surface num-mono">{money(Number(inv.amount_invoiced))}</b>
+          {isForeign ? (
+            <>
+              Invoiced: <b className="text-on-surface num-mono">{fmtCcy(Number(inv.amount_invoiced), inv.currency)}</b>
+              {' '}<span className="text-on-surface-subtle">≈</span> <b className="text-on-surface num-mono">{money(invInr)}</b>
+              {' '}<span className="text-on-surface-subtle">@ 1 {inv.currency} = ₹{Number(inv.fx_rate ?? 0).toFixed(4)}</span>
+            </>
+          ) : (
+            <>Invoiced amount: <b className="text-on-surface num-mono">{money(invInr)}</b></>
+          )}
           {inv.invoice_number && <span> · {inv.invoice_number}</span>}
         </div>
-        <Field label="Amount received (₹)" required>
+        <Field label="Amount received (₹) — actual INR in your bank" required>
           <input type="number" min="0" step="0.01" value={amount} onChange={e => setAmount(e.target.value)}
             className="w-full px-3 py-2 rounded-lg bg-surface-2 border border-outline text-sm text-on-surface num-mono focus:outline-none focus:ring-2 focus:ring-accent/30" />
           {variance !== 0 && (
             <p className={`text-xs mt-1 inline-flex items-center gap-1 ${variance < 0 ? 'text-danger' : 'text-success'}`}>
               <AlertTriangle size={11} />
-              {variance < 0 ? `Short by ${money(Math.abs(variance))} — TDS, FX or partial payment?` : `Extra ${money(variance)} received over invoice.`}
+              {variance < 0 ? `Short by ${money(Math.abs(variance))} vs INR equivalent — ${isForeign ? 'Upwork/Payoneer fees + FX swing?' : 'TDS or partial payment?'}` : `Extra ${money(variance)} received over INR equivalent.`}
             </p>
           )}
         </Field>

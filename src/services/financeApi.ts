@@ -74,6 +74,9 @@ export interface FinInvoice {
   invoice_number: string | null;
   invoice_date: string | null;
   amount_invoiced: number;
+  currency: string;
+  fx_rate: number | null;
+  amount_invoiced_inr: number;
   amount_received: number | null;
   status: 'pending' | 'cleared' | 'cancelled';
   cleared_date: string | null;
@@ -84,6 +87,15 @@ export interface FinInvoice {
   created_by_name: string | null;
   created_by_role: string | null;
   created_at: string;
+}
+
+export interface FxRate {
+  date: string;
+  from: string;
+  to: string;
+  rate: number;
+  source: 'cache' | 'frankfurter' | 'fallback';
+  effective_date: string;
 }
 
 export interface FinProjectExpense {
@@ -175,10 +187,17 @@ export const financeApi = {
     if (params.status) qs.set('status', params.status);
     return request<FinInvoice[]>(`/invoices?${qs}`);
   },
-  addInvoice: (data: { project_id: string; month: number; year: number; invoice_number?: string; invoice_date?: string; amount_invoiced: number; notes?: string }) =>
+  addInvoice: (data: { project_id: string; month: number; year: number; invoice_number?: string; invoice_date?: string; amount_invoiced: number; currency?: string; fx_rate?: number; notes?: string }) =>
     request<FinInvoice>('/invoices', { method: 'POST', body: JSON.stringify(data) }),
-  updateInvoice: (id: number, data: { invoice_number?: string; invoice_date?: string; amount_invoiced?: number; amount_received?: number | null; notes?: string; month?: number; year?: number; status?: 'pending' | 'cleared' | 'cancelled' }) =>
+  updateInvoice: (id: number, data: { invoice_number?: string; invoice_date?: string; amount_invoiced?: number; currency?: string; fx_rate?: number; amount_received?: number | null; notes?: string; month?: number; year?: number; status?: 'pending' | 'cleared' | 'cancelled' }) =>
     request<FinInvoice>(`/invoices/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
+  getFxRate: (params: { date?: string; from?: string; to?: string }) => {
+    const qs = new URLSearchParams();
+    if (params.date) qs.set('date', params.date);
+    if (params.from) qs.set('from', params.from);
+    if (params.to) qs.set('to', params.to);
+    return request<FxRate>(`/fx-rate?${qs}`);
+  },
   clearInvoice: (id: number, data: { amount_received?: number; cleared_date?: string; notes?: string }) =>
     request<FinInvoice>(`/invoices/${id}/clear`, { method: 'PATCH', body: JSON.stringify(data) }),
   reopenInvoice: (id: number) =>

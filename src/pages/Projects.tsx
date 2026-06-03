@@ -20,6 +20,7 @@ interface Project {
   notes: string | null;
   total_hours_cap?: number | null;
   consumed_hours_total?: number | null;
+  billing_source?: 'direct' | 'upwork' | null;
 }
 
 const PROJECT_TYPES = [
@@ -283,7 +284,14 @@ export default function Projects() {
                           className={`mt-0.5 ${p.flag === 'red' ? 'text-danger' : 'text-warning'}`} />
                       )}
                       <div>
-                        <p className={`font-semibold text-on-surface ${archived ? 'line-through' : ''}`}>{p.name}</p>
+                        <p className={`font-semibold text-on-surface ${archived ? 'line-through' : ''} inline-flex items-center gap-1.5`}>
+                          {p.name}
+                          {(p as any).billing_source === 'upwork' && (
+                            <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-bold bg-accent-container text-accent">
+                              <Briefcase size={9} strokeWidth={2.5} /> Upwork
+                            </span>
+                          )}
+                        </p>
                         <div className="flex flex-wrap items-center gap-2 mt-0.5">
                           {p.client_name && <span className="text-xs text-on-surface-muted">{p.client_name}</span>}
                           {p.dashboard_url && (
@@ -802,6 +810,7 @@ function ProjectForm({
     flag_reason: existing?.flag_reason ?? '',
     notes: existing?.notes ?? '',
     total_hours_cap: (existing as any)?.total_hours_cap != null ? String((existing as any).total_hours_cap) : '',
+    billing_source: (existing as any)?.billing_source ?? 'direct',
   });
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
@@ -834,6 +843,7 @@ function ProjectForm({
       flag_reason: form.flag ? form.flag_reason.trim() || null : null,
       notes: form.notes.trim() || null,
       total_hours_cap: trimmedCap === '' ? null : Number(trimmedCap),
+      billing_source: form.billing_source || 'direct',
       created_by: createdBy ?? null,
     };
     try {
@@ -941,6 +951,32 @@ function ProjectForm({
                 <span className="num-mono font-semibold text-on-surface">{Math.round(Number((existing as any).consumed_hours_total))}h</span> approved so far across all months.
               </p>
             )}
+          </div>
+
+          {/* Billing source — Upwork projects route through the wallet so the
+              invoice flow flags them. Coordinator gets USD-default + label. */}
+          <div>
+            <label className={labelCls}>Billing source</label>
+            <div className="flex gap-2">
+              <button type="button" onClick={() => setF('billing_source', 'direct')}
+                className={`flex-1 px-3 py-2.5 rounded-lg text-sm font-semibold border transition-colors ${
+                  form.billing_source !== 'upwork'
+                    ? 'border-accent bg-accent-container/40 text-accent'
+                    : 'border-outline bg-surface text-on-surface-muted hover:bg-surface-2'
+                }`}>
+                Direct invoice
+                <span className="block text-[10px] font-normal opacity-80 mt-0.5">Client pays directly — invoice + bank transfer</span>
+              </button>
+              <button type="button" onClick={() => setF('billing_source', 'upwork')}
+                className={`flex-1 px-3 py-2.5 rounded-lg text-sm font-semibold border transition-colors ${
+                  form.billing_source === 'upwork'
+                    ? 'border-accent bg-accent-container/40 text-accent'
+                    : 'border-outline bg-surface text-on-surface-muted hover:bg-surface-2'
+                }`}>
+                Upwork
+                <span className="block text-[10px] font-normal opacity-80 mt-0.5">Earnings accrue in Upwork wallet → admin withdraws monthly</span>
+              </button>
+            </div>
           </div>
           <div>
             <label className={labelCls}>Notes</label>
