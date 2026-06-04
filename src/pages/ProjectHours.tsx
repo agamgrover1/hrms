@@ -254,20 +254,33 @@ export default function ProjectHours() {
         </button>
       </div>
 
-      {/* Summary strip — in Mine view, scope to whoever's data this user is
-          allowed to see (themselves + their reports + employees on their
-          projects). Org-wide totals only show when the viewer is on the
-          Capacity / Plan tab, which is admin/coord-only. */}
+      {/* Summary strip — non-admin viewers (and admin/coord on the Mine tab)
+          ALWAYS get scoped numbers. Only admin on Capacity / Plan tabs sees
+          the org-wide totals. We default scoped path to zero while `me` is
+          still resolving so users never see org-wide numbers leak through. */}
       {summary && (() => {
-        const isMine = view === 'mine';
-        let allocated = Number(summary.total_allocated || 0);
-        let pendingCount = Number(summary.pending_review_count || 0);
-        let overPlan = Number(summary.total_logged_over_plan || 0);
-        let overPlanLogs = Number(summary.over_plan_log_count || 0);
-        let empCount = summary.employees.length;
-        let scopeLabel = ''; // appended to tile labels when scoped
+        const isAdminOrgView = isAdminLike && view !== 'mine';
+        const shouldScope = !isAdminOrgView;  // everyone else gets scoped
 
-        if (isMine && me) {
+        let allocated: number;
+        let pendingCount: number;
+        let overPlan: number;
+        let overPlanLogs: number;
+        let empCount: number;
+        let scopeLabel = '';
+
+        if (!shouldScope) {
+          // Admin viewing Capacity / Plan — org-wide numbers.
+          allocated    = Number(summary.total_allocated || 0);
+          pendingCount = Number(summary.pending_review_count || 0);
+          overPlan     = Number(summary.total_logged_over_plan || 0);
+          overPlanLogs = Number(summary.over_plan_log_count || 0);
+          empCount     = summary.employees.length;
+        } else if (!me) {
+          // Mine-scope path but `me` hasn't resolved yet — show zeros, not
+          // org-wide. The page re-renders the moment `me` lands.
+          allocated = 0; pendingCount = 0; overPlan = 0; overPlanLogs = 0; empCount = 0;
+        } else {
           // Iterate over ASSIGNMENTS — each row is one employee's hours on
           // one project. An assignment is in-scope when:
           //   - the employee is the viewer themselves, OR
@@ -296,8 +309,9 @@ export default function ProjectHours() {
           pendingCount = Math.round(scopedEmps.reduce((s: number, e: any) => s + Number(e.logged_pending || 0), 0));
           overPlan = scopedEmps.reduce((s: number, e: any) => s + Number(e.logged_over_plan || 0), 0);
           overPlanLogs = scopedEmps.reduce((s: number, e: any) => s + Number(e.over_plan_log_count || 0), 0);
+        }
 
-          // Pick the right label suffix based on what they actually see.
+        if (shouldScope) {
           if (reportsTo.size > 0) scopeLabel = '· my team';
           else if (myProjects.length > 0) scopeLabel = '· my projects';
           else scopeLabel = '· me';
@@ -305,12 +319,12 @@ export default function ProjectHours() {
         return (
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
             <SummaryTile
-              label={isMine ? `Allocated ${scopeLabel}` : "Allocated this month"}
+              label={shouldScope ? `Allocated ${scopeLabel}` : "Allocated this month"}
               value={`${allocated} h`} blobClass="bg-brand/15" stagger={1}
             />
             <SummaryTile
-              label={isMine ? `Pending review ${scopeLabel}` : "Pending review"}
-              value={isMine ? `${pendingCount} h` : String(pendingCount)}
+              label={shouldScope ? `Pending review ${scopeLabel}` : "Pending review"}
+              value={shouldScope ? `${pendingCount} h` : String(pendingCount)}
               blobClass="bg-warning/20" stagger={2}
               accentClass={pendingCount > 0 ? 'text-danger' : undefined}
             />
@@ -322,7 +336,7 @@ export default function ProjectHours() {
               accentClass={overPlan > 0 ? 'text-warning' : 'text-on-surface-muted'}
             />
             <SummaryTile
-              label={isMine ? `On plan ${scopeLabel}` : "Employees on plan"}
+              label={shouldScope ? `On plan ${scopeLabel}` : "Employees on plan"}
               value={String(empCount)} blobClass="bg-accent-container" stagger={4}
             />
           </div>
