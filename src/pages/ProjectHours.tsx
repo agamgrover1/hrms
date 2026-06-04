@@ -253,21 +253,53 @@ export default function ProjectHours() {
         </button>
       </div>
 
-      {/* Summary strip */}
-      {summary && (
-        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-          <SummaryTile label="Allocated this month" value={`${summary.total_allocated} h`} blobClass="bg-brand/15" stagger={1} />
-          <SummaryTile label="Pending review" value={String(summary.pending_review_count)} blobClass="bg-warning/20" stagger={2} accentClass={summary.pending_review_count > 0 ? 'text-danger' : undefined} />
-          <SummaryTile
-            label={Number(summary.total_logged_over_plan ?? 0) > 0 ? `Over plan · ${summary.over_plan_log_count ?? 0} logs` : 'Over plan'}
-            value={`+${Math.round(Number(summary.total_logged_over_plan ?? 0))} h`}
-            blobClass={Number(summary.total_logged_over_plan ?? 0) > 0 ? 'bg-danger/20' : 'bg-success/15'}
-            stagger={3}
-            accentClass={Number(summary.total_logged_over_plan ?? 0) > 0 ? 'text-warning' : 'text-on-surface-muted'}
-          />
-          <SummaryTile label="Employees on plan" value={String(summary.employees.length)} blobClass="bg-accent-container" stagger={4} />
-        </div>
-      )}
+      {/* Summary strip — in Mine view, scope to the manager's sub-tree so
+          the numbers reflect THEIR team, not the whole org. Capacity / Plan
+          (admin/coord only) keep the org-wide totals. */}
+      {summary && (() => {
+        const scopedToTeam = view === 'mine' && reportsTo.size > 0;
+        let allocated = Number(summary.total_allocated || 0);
+        let pendingCount = Number(summary.pending_review_count || 0);
+        let overPlan = Number(summary.total_logged_over_plan || 0);
+        let overPlanLogs = Number(summary.over_plan_log_count || 0);
+        let empCount = summary.employees.length;
+        if (scopedToTeam) {
+          const teamEmps = summary.employees.filter((e: any) => reportsTo.has(e.employee_id));
+          allocated = teamEmps.reduce((s: number, e: any) => s + Number(e.monthly || 0), 0);
+          // Pending review HOURS for the team — the server doesn't break out
+          // counts per employee, so we use logged_pending which IS per-employee.
+          // Display as hours rather than log count when scoped.
+          pendingCount = Math.round(teamEmps.reduce((s: number, e: any) => s + Number(e.logged_pending || 0), 0));
+          overPlan = teamEmps.reduce((s: number, e: any) => s + Number(e.logged_over_plan || 0), 0);
+          overPlanLogs = teamEmps.reduce((s: number, e: any) => s + Number(e.over_plan_log_count || 0), 0);
+          empCount = teamEmps.length;
+        }
+        return (
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+            <SummaryTile
+              label={scopedToTeam ? "Allocated · my team" : "Allocated this month"}
+              value={`${allocated} h`} blobClass="bg-brand/15" stagger={1}
+            />
+            <SummaryTile
+              label={scopedToTeam ? "Pending review · my team" : "Pending review"}
+              value={scopedToTeam ? `${pendingCount} h` : String(pendingCount)}
+              blobClass="bg-warning/20" stagger={2}
+              accentClass={pendingCount > 0 ? 'text-danger' : undefined}
+            />
+            <SummaryTile
+              label={overPlan > 0 ? `Over plan · ${overPlanLogs} logs` : 'Over plan'}
+              value={`+${Math.round(overPlan)} h`}
+              blobClass={overPlan > 0 ? 'bg-danger/20' : 'bg-success/15'}
+              stagger={3}
+              accentClass={overPlan > 0 ? 'text-warning' : 'text-on-surface-muted'}
+            />
+            <SummaryTile
+              label={scopedToTeam ? "Team on plan" : "Employees on plan"}
+              value={String(empCount)} blobClass="bg-accent-container" stagger={4}
+            />
+          </div>
+        );
+      })()}
 
       {/* Tab bar — non-admin viewers (team leads who got here because they
           lead/review a project) only see the Mine tab. Capacity & Plan are

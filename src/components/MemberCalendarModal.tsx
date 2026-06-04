@@ -4,8 +4,8 @@ import { X, ChevronLeft, ChevronRight, Clock } from 'lucide-react';
 interface AttendanceRow {
   date: string;          // YYYY-MM-DD
   status: string;        // present | late | absent | weekend | leave_full | leave_half | wfh | wfh_half | …
-  clock_in?: string | null;
-  clock_out?: string | null;
+  check_in?: string | null;
+  check_out?: string | null;
   total_hours?: number | null;
 }
 
@@ -169,14 +169,17 @@ export default function MemberCalendarModal({ member, attendance, leaves, onClos
                   title={[
                     `${MONTHS[cursor.m-1]} ${c.day}`,
                     info.label,
-                    rec?.clock_in ? `Clock-in: ${rec.clock_in}` : null,
-                    rec?.clock_out ? `Clock-out: ${rec.clock_out}` : null,
+                    rec?.check_in ? `Check-in: ${rec.check_in}` : null,
+                    rec?.check_out ? `Check-out: ${rec.check_out}` : null,
                     leaveRow ? `Leave: ${leaveRow.type}${leaveRow.reason ? ` · ${leaveRow.reason}` : ''}` : null,
                   ].filter(Boolean).join(' · ')}>
                   <span className="num-mono text-xs font-bold">{c.day}</span>
                   {info.dotCls && <span className={`w-1.5 h-1.5 rounded-full mt-0.5 ${info.dotCls}`} />}
-                  {rec?.clock_in && !isLeaveStatus(rec.status) && !rec.status?.startsWith('leave') && (
-                    <span className="text-[8px] num-mono opacity-80 mt-0.5">{rec.clock_in?.slice(0, 5)}</span>
+                  {rec?.check_in && !isLeaveStatus(rec.status) && !rec.status?.startsWith('leave') && (
+                    <span className="text-[8px] num-mono opacity-80 mt-0.5">{rec.check_in?.slice(0, 5)}</span>
+                  )}
+                  {rec?.check_out && !isLeaveStatus(rec.status) && !rec.status?.startsWith('leave') && (
+                    <span className="text-[8px] num-mono opacity-60">{rec.check_out?.slice(0, 5)}</span>
                   )}
                 </div>
               );
@@ -211,7 +214,7 @@ export default function MemberCalendarModal({ member, attendance, leaves, onClos
 
         <div className="px-5 py-2.5 border-t border-outline bg-surface-2/30 text-[11px] text-on-surface-subtle inline-flex items-center gap-2">
           <Clock size={11} />
-          Today's clock-in highlighted with accent ring. Hover any day for clock-in/out times.
+          Today highlighted with accent ring. Each working day shows check-in/check-out times below the date; hover for full details.
         </div>
       </div>
     </div>

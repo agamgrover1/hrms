@@ -523,12 +523,12 @@ export default function MyTeam() {
                     <span className="num-mono text-on-surface">
                       {todayStatus && leaveStatuses.has(todayStatus) ? (
                         <span className="text-warning font-semibold">On leave</span>
-                      ) : todayRec?.clock_in ? (
+                      ) : todayRec?.check_in ? (
                         <>
-                          <span>{todayRec.clock_in}</span>
+                          <span>{todayRec.check_in}</span>
                           <span className="text-on-surface-subtle mx-1">→</span>
-                          <span className={todayRec.clock_out ? 'text-on-surface' : 'text-success font-semibold'}>
-                            {todayRec.clock_out || 'still in'}
+                          <span className={todayRec.check_out ? 'text-on-surface' : 'text-success font-semibold'}>
+                            {todayRec.check_out || 'still in'}
                           </span>
                         </>
                       ) : (
