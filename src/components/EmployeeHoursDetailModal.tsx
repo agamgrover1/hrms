@@ -22,6 +22,7 @@ interface LogRow {
   week_num: number;
   hours_logged: number;
   work_description: string | null;
+  effective_description?: string | null;
   status: string;
   rejection_reason: string | null;
   reviewed_by_name: string | null;
@@ -387,8 +388,8 @@ export default function EmployeeHoursDetailModal({ employeeId, employeeName, mon
                                   />
                                 ) : (
                                   <>
-                                    {log.work_description && (
-                                      <p className="text-xs text-on-surface-muted mt-1 leading-relaxed line-clamp-2">{log.work_description}</p>
+                                    {(log.effective_description || log.work_description) && (
+                                      <p className="text-xs text-on-surface-muted mt-1 leading-relaxed line-clamp-2">{log.effective_description || log.work_description}</p>
                                     )}
                                     {log.status === 'rejected' && log.rejection_reason && (
                                       <p className="text-xs text-danger mt-1 flex items-center gap-1">

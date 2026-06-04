@@ -35,6 +35,7 @@ interface HourLog {
   week_num: number;
   hours_logged: number;
   work_description: string | null;
+  effective_description: string | null;  // server-side fallback: aggregates day notes when work_description is empty
   status: string;
   rejection_reason: string | null;
   reviewed_by_name: string | null;
@@ -301,7 +302,7 @@ export default function HoursApproval() {
                           </div>
                         </td>
                         <td className="px-4 py-3 text-on-surface-muted text-xs max-w-md">
-                          {log.work_description || <span className="text-on-surface-subtle italic">—</span>}
+                          {(log.effective_description || log.work_description) || <span className="text-on-surface-subtle italic">—</span>}
                           {log.status === 'rejected' && log.rejection_reason && (
                             <p className="text-danger mt-1 flex items-center gap-1">
                               <XCircle size={11} /> {log.rejection_reason}

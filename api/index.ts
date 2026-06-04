@@ -3743,7 +3743,24 @@ app.get('/api/hour-logs', async (req, res) => {
              pa.monthly_hours AS assignment_monthly_hours,
              COALESCE(au.admin_edit_count, 0) AS admin_edit_count,
              au.last_admin_edit_at,
-             au.last_admin_editor
+             au.last_admin_editor,
+             -- Fallback: if the weekly work_description is empty but the
+             -- employee wrote per-day notes, stitch them together at query
+             -- time so the Approvals UI never shows "—" when there IS data.
+             -- Format: "DD: note · DD: note" in date order.
+             COALESCE(
+               NULLIF(TRIM(hl.work_description), ''),
+               (
+                 SELECT STRING_AGG(
+                   TO_CHAR(d.log_date::date, 'DD') || ': ' || TRIM(d.notes),
+                   ' · ' ORDER BY d.log_date
+                 )
+                 FROM hour_log_days d
+                 WHERE d.assignment_id = hl.assignment_id
+                   AND d.week_num = hl.week_num
+                   AND d.notes IS NOT NULL AND LENGTH(TRIM(d.notes)) > 0
+               )
+             ) AS effective_description
       FROM hour_logs hl
       JOIN projects p ON p.id = hl.project_id
       LEFT JOIN project_assignments pa ON pa.id = hl.assignment_id

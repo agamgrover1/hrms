@@ -2379,6 +2379,7 @@ interface MHLog {
   month: number; year: number; week_num: number;
   hours_logged: number;
   work_description: string | null;
+  effective_description?: string | null;
   status: string;
   rejection_reason: string | null;
   reviewed_by_name: string | null;
@@ -2551,7 +2552,7 @@ function WeekCell({ alloc, log, onClick }: { alloc: number; log?: MHLog; onClick
   // Surface the description so the employee can see what they (or their
   // daily entries) recorded without having to re-open the modal. Hover
   // tooltip shows the full text, the cell shows a one-line preview.
-  const desc = (log.work_description ?? '').trim();
+  const desc = (log.effective_description ?? log.work_description ?? '').trim();
   return (
     <button onClick={onClick}
       title={desc ? `What you logged: ${desc}` : undefined}

@@ -254,36 +254,54 @@ export default function ProjectHours() {
         </button>
       </div>
 
-      {/* Summary strip — in Mine view, scope to the manager's sub-tree so
-          the numbers reflect THEIR team, not the whole org. Capacity / Plan
-          (admin/coord only) keep the org-wide totals. */}
+      {/* Summary strip — in Mine view, scope to whoever's data this user is
+          allowed to see (themselves + their reports + employees on their
+          projects). Org-wide totals only show when the viewer is on the
+          Capacity / Plan tab, which is admin/coord-only. */}
       {summary && (() => {
-        const scopedToTeam = view === 'mine' && reportsTo.size > 0;
+        const isMine = view === 'mine';
         let allocated = Number(summary.total_allocated || 0);
         let pendingCount = Number(summary.pending_review_count || 0);
         let overPlan = Number(summary.total_logged_over_plan || 0);
         let overPlanLogs = Number(summary.over_plan_log_count || 0);
         let empCount = summary.employees.length;
-        if (scopedToTeam) {
-          const teamEmps = summary.employees.filter((e: any) => reportsTo.has(e.employee_id));
-          allocated = teamEmps.reduce((s: number, e: any) => s + Number(e.monthly || 0), 0);
-          // Pending review HOURS for the team — the server doesn't break out
-          // counts per employee, so we use logged_pending which IS per-employee.
-          // Display as hours rather than log count when scoped.
-          pendingCount = Math.round(teamEmps.reduce((s: number, e: any) => s + Number(e.logged_pending || 0), 0));
-          overPlan = teamEmps.reduce((s: number, e: any) => s + Number(e.logged_over_plan || 0), 0);
-          overPlanLogs = teamEmps.reduce((s: number, e: any) => s + Number(e.over_plan_log_count || 0), 0);
-          empCount = teamEmps.length;
+        let scopeLabel = ''; // appended to tile labels when scoped
+
+        if (isMine && me) {
+          // Build the set of employee_ids this viewer can see numbers for:
+          //   - themselves
+          //   - their reporting sub-tree (descendants)
+          //   - everyone assigned to projects they review or lead
+          const visible = new Set<string>([me.id]);
+          for (const id of reportsTo) visible.add(id);
+          const myProjectIds = new Set(myProjects.map(p => p.id));
+          for (const a of assignments) {
+            if (a.employee_id && myProjectIds.has(a.project_id)) visible.add(a.employee_id);
+          }
+          const scopedEmps = summary.employees.filter((e: any) => visible.has(e.employee_id));
+          allocated = scopedEmps.reduce((s: number, e: any) => s + Number(e.monthly || 0), 0);
+          // Pending review HOURS for the visible set — the server's pending
+          // count is org-wide and can't be broken per-employee, so we use
+          // logged_pending (per-employee) and display as hours.
+          pendingCount = Math.round(scopedEmps.reduce((s: number, e: any) => s + Number(e.logged_pending || 0), 0));
+          overPlan = scopedEmps.reduce((s: number, e: any) => s + Number(e.logged_over_plan || 0), 0);
+          overPlanLogs = scopedEmps.reduce((s: number, e: any) => s + Number(e.over_plan_log_count || 0), 0);
+          empCount = scopedEmps.length;
+
+          // Pick the right label suffix based on what they actually see.
+          if (reportsTo.size > 0) scopeLabel = '· my team';
+          else if (myProjects.length > 0) scopeLabel = '· my projects';
+          else scopeLabel = '· me';
         }
         return (
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
             <SummaryTile
-              label={scopedToTeam ? "Allocated · my team" : "Allocated this month"}
+              label={isMine ? `Allocated ${scopeLabel}` : "Allocated this month"}
               value={`${allocated} h`} blobClass="bg-brand/15" stagger={1}
             />
             <SummaryTile
-              label={scopedToTeam ? "Pending review · my team" : "Pending review"}
-              value={scopedToTeam ? `${pendingCount} h` : String(pendingCount)}
+              label={isMine ? `Pending review ${scopeLabel}` : "Pending review"}
+              value={isMine ? `${pendingCount} h` : String(pendingCount)}
               blobClass="bg-warning/20" stagger={2}
               accentClass={pendingCount > 0 ? 'text-danger' : undefined}
             />
@@ -295,7 +313,7 @@ export default function ProjectHours() {
               accentClass={overPlan > 0 ? 'text-warning' : 'text-on-surface-muted'}
             />
             <SummaryTile
-              label={scopedToTeam ? "Team on plan" : "Employees on plan"}
+              label={isMine ? `On plan ${scopeLabel}` : "Employees on plan"}
               value={String(empCount)} blobClass="bg-accent-container" stagger={4}
             />
           </div>
