@@ -1532,7 +1532,6 @@ export default function MyPortal() {
           paid:              { label: 'Completed',         bg: '#f5f3ff', color: '#7c3aed' },
           cancelled:         { label: 'Cancelled',         bg: '#f3f4f6', color: '#6b7280' },
         };
-        const fmtINR = (n:any) => n==null||n===''?'—':`₹${Number(n).toLocaleString('en-IN')}`;
         return (
           <div className="space-y-5">
             {/* Assigned laptops */}
@@ -1595,14 +1594,12 @@ export default function MyPortal() {
                             <div className="flex flex-wrap gap-3 text-[11px] text-on-surface-subtle mt-2">
                               {t.picked_up_at && <span>📦 Picked up: {new Date(t.picked_up_at).toLocaleDateString('en-IN',{day:'numeric',month:'short'})}</span>}
                               {t.returned_at && <span>✓ Returned: {new Date(t.returned_at).toLocaleDateString('en-IN',{day:'numeric',month:'short'})}</span>}
-                              {t.paid_at && <span>💰 Paid: {new Date(t.paid_at).toLocaleDateString('en-IN',{day:'numeric',month:'short'})}</span>}
+                              {t.paid_at && <span>✓ Settled: {new Date(t.paid_at).toLocaleDateString('en-IN',{day:'numeric',month:'short'})}</span>}
                             </div>
                           )}
-                          {t.final_cost != null && (
-                            <div className="text-xs text-on-surface-muted mt-2 pt-2 border-t border-outline">
-                              Cost: <span className="font-bold">{fmtINR(t.final_cost)}</span>
-                            </div>
-                          )}
+                          {/* Repair cost intentionally hidden from the employee — they only
+                              need status visibility, not the rupee amount. Admin/HR see costs
+                              under /asset-repairs. */}
                         </div>
                       );
                     })}
