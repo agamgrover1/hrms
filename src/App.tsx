@@ -70,7 +70,7 @@ function AppRoutes() {
         <Route path="notifications" element={<ProtectedRoute><Notifications /></ProtectedRoute>} />
 
         {/* Employee routes — project_coordinator is also an employee */}
-        <Route path="my" element={<ProtectedRoute roles={['employee', 'project_coordinator']}><MyPortal /></ProtectedRoute>} />
+        <Route path="my" element={<ProtectedRoute roles={['employee', 'project_coordinator', 'hr_manager']}><MyPortal /></ProtectedRoute>} />
         <Route path="my-team" element={<ProtectedRoute roles={['employee', 'project_coordinator']}><MyTeam /></ProtectedRoute>} />
       </Route>
 

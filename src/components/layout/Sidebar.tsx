@@ -117,10 +117,14 @@ export default function Sidebar() {
 
   const isTeamLead = isProjectReviewer || isProjectLead;
 
-  // Build the set of groups visible to this role
+  // Build the set of groups visible to this role.
+  // HR is people-ops only — they don't need Project Mgmt (Projects / Hours
+  // grid / Approvals / Compliance), so it's gated behind admin only here.
+  // HR also has a personal portal (they're employees too).
   const groups: NavGroup[] = [];
   if (isAdminLike) {
-    groups.push(workspaceGroup, opsGroup, projectGroup);
+    groups.push(workspaceGroup, opsGroup);
+    if (role === 'admin') groups.push(projectGroup);
     if (role === 'admin') groups.push(financeGroup); // admin-only finance module
     groups.push(settingsGroup);
   } else if (isCoord) {
@@ -129,8 +133,10 @@ export default function Sidebar() {
     groups.push(coordFinanceGroup);
   }
 
-  // Personal nav for employees + coordinators
-  const personalGroup: NavGroup | null = (isEmployee || isCoord) ? {
+  // Personal nav — every non-admin role gets a "You" section, including HR.
+  // (Admin is the only role that's purely org-facing.)
+  const showPersonal = isEmployee || isCoord || role === 'hr_manager';
+  const personalGroup: NavGroup | null = showPersonal ? {
     id: 'personal',
     label: 'You',
     items: [

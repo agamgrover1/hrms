@@ -360,8 +360,11 @@ export default function MyPortal() {
     a => !(a.month === currentMonth && a.year === currentYear)
   );
 
-  const presentDays = attendance.filter(r => r.status === 'present').length;
+  // Late employees ARE present — they just arrived after the cutoff. So the
+  // "Present" headline tile counts both, and "Late" is a sub-stat of present.
+  const onTimeDays  = attendance.filter(r => r.status === 'present').length;
   const lateDays    = attendance.filter(r => r.status === 'late').length;
+  const presentDays = onTimeDays + lateDays;
   const absentDays  = attendance.filter(r => r.status === 'absent').length;
 
   const handleApplyLeave = async (data: any) => {

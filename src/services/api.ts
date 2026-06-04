@@ -260,6 +260,15 @@ export const api = {
   getOptionalLeaveAvailable: (employeeId: string, year: number) =>
     request<{ dates: any[]; used_count: number; remaining: number }>(`/optional-leave/available?employee_id=${employeeId}&year=${year}`),
 
+  // Holidays — admin/HR edit; visible to all authenticated users.
+  getHolidays: (year?: number) =>
+    request<Array<{ id: number; date: string; name: string; type: string; notes: string | null }>>(`/holidays${year ? `?year=${year}` : ''}`),
+  addHoliday: (data: { date: string; name: string; type?: string; notes?: string }) =>
+    request<any>('/holidays', { method: 'POST', body: JSON.stringify(data) }),
+  updateHoliday: (id: number, data: { date: string; name: string; type?: string; notes?: string }) =>
+    request<any>(`/holidays/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
+  deleteHoliday: (id: number) => request<any>(`/holidays/${id}`, { method: 'DELETE' }),
+
   // Notifications
   getNotifications: (userId: string, limit?: number) =>
     request<any[]>(`/notifications?user_id=${userId}${limit ? `&limit=${limit}` : ''}`),

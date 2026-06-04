@@ -3,10 +3,11 @@ import { X, ChevronLeft, ChevronRight, Clock } from 'lucide-react';
 
 interface AttendanceRow {
   date: string;          // YYYY-MM-DD
-  status: string;        // present | late | absent | weekend | leave_full | leave_half | wfh | wfh_half | …
+  status: string;        // present | late | absent | weekend | leave_full | leave_half | wfh | wfh_half | holiday | …
   check_in?: string | null;
   check_out?: string | null;
   total_hours?: number | null;
+  holiday_name?: string | null;
 }
 
 interface LeaveRow {
@@ -168,7 +169,7 @@ export default function MemberCalendarModal({ member, attendance, leaves, onClos
                   className={`aspect-square rounded-lg border ${info.cls || 'bg-surface-2/30 text-on-surface-muted'} ${isToday ? 'border-accent ring-2 ring-accent/30' : 'border-outline/40'} relative flex flex-col items-center justify-center p-1 transition-colors hover:shadow-elev-1`}
                   title={[
                     `${MONTHS[cursor.m-1]} ${c.day}`,
-                    info.label,
+                    rec?.holiday_name ? `Holiday: ${rec.holiday_name}` : info.label,
                     rec?.check_in ? `Check-in: ${rec.check_in}` : null,
                     rec?.check_out ? `Check-out: ${rec.check_out}` : null,
                     leaveRow ? `Leave: ${leaveRow.type}${leaveRow.reason ? ` · ${leaveRow.reason}` : ''}` : null,

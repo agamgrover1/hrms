@@ -1,9 +1,10 @@
 import { Fragment, useState, useEffect, useMemo, useCallback } from 'react';
-import { Plus, Trash2, X, Search, Copy, ExternalLink, Flag, ClipboardCheck, LayoutGrid, Pencil, Users as UsersIcon, ChevronRight, AlertTriangle } from 'lucide-react';
+import { Plus, Trash2, X, Search, Copy, ExternalLink, Flag, ClipboardCheck, LayoutGrid, Pencil, Users as UsersIcon, ChevronRight, AlertTriangle, CalendarDays } from 'lucide-react';
 import { Link } from 'react-router-dom';
 import { api } from '../services/api';
 import { useAuth } from '../context/AuthContext';
 import EmployeeHoursDetailModal from '../components/EmployeeHoursDetailModal';
+import { ProjectDailyActivityModal } from './Projects';
 
 interface Assignment {
   id: string;
@@ -879,6 +880,10 @@ function MineView({ summary, assignments, myProjects, reportsToIds, loading, mon
   openDetail: (employeeId: string, employeeName: string, focusWeek?: number) => void;
 }) {
   const [drillProject, setDrillProject] = useState<{ id: string; name: string; rows: any[] } | null>(null);
+  // Per-day activity grid (employees × days × hours) for a project — same
+  // modal the Projects page uses. Surfaced here so project leads / reviewers
+  // can see the daily breakdown without leaving /hours.
+  const [dailyFor, setDailyFor] = useState<any | null>(null);
 
   const teamRows = useMemo(() => {
     if (!summary) return [] as any[];
@@ -1014,10 +1019,10 @@ function MineView({ summary, assignments, myProjects, reportsToIds, loading, mon
           </div>
           <div className="divide-y divide-outline">
             {projectStats.map(({ project, totalPlanned, employees: empNames, rows }: any) => (
-              <button key={project.id} onClick={() => setDrillProject({ id: project.id, name: project.name, rows })}
-                className="w-full text-left px-5 py-4 hover:bg-surface-2/60 transition-colors group">
+              <div key={project.id} className="px-5 py-4 hover:bg-surface-2/60 transition-colors group">
                 <div className="flex items-start justify-between gap-3">
-                  <div className="min-w-0">
+                  <button onClick={() => setDrillProject({ id: project.id, name: project.name, rows })}
+                    className="flex-1 text-left min-w-0">
                     <div className="flex items-center gap-2">
                       <p className="font-display text-base font-bold text-on-surface tracking-tight group-hover:text-accent transition-colors">{project.name}</p>
                       <ChevronRight size={13} className="text-on-surface-subtle group-hover:text-accent transition-colors" />
@@ -1033,14 +1038,21 @@ function MineView({ summary, assignments, myProjects, reportsToIds, loading, mon
                         ? <>{empNames.length} on plan: <span className="text-on-surface">{empNames.slice(0,4).join(', ')}{empNames.length > 4 ? ` +${empNames.length - 4}` : ''}</span></>
                         : 'No one assigned yet this month'}
                     </p>
-                  </div>
-                  <div className="text-right flex-shrink-0">
-                    <p className="text-[10px] uppercase tracking-[0.16em] font-bold text-on-surface-muted">Planned</p>
-                    <p className="num-mono text-xl font-bold text-on-surface mt-0.5">{totalPlanned}<span className="text-xs text-on-surface-muted ml-0.5">h</span></p>
-                    <p className="text-[10px] text-on-surface-subtle mt-0.5">{rows.length} assignment{rows.length === 1 ? '' : 's'}</p>
+                  </button>
+                  <div className="text-right flex-shrink-0 flex flex-col items-end gap-2">
+                    <div>
+                      <p className="text-[10px] uppercase tracking-[0.16em] font-bold text-on-surface-muted">Planned</p>
+                      <p className="num-mono text-xl font-bold text-on-surface mt-0.5">{totalPlanned}<span className="text-xs text-on-surface-muted ml-0.5">h</span></p>
+                      <p className="text-[10px] text-on-surface-subtle mt-0.5">{rows.length} assignment{rows.length === 1 ? '' : 's'}</p>
+                    </div>
+                    <button onClick={() => setDailyFor(project)}
+                      className="inline-flex items-center gap-1 px-2 py-1 rounded-lg text-[11px] font-semibold border border-outline bg-surface text-on-surface-muted hover:bg-surface-2 hover:text-on-surface transition-colors"
+                      title="See daily hours logged by employees on this project">
+                      <CalendarDays size={11} /> Daily view
+                    </button>
                   </div>
                 </div>
-              </button>
+              </div>
             ))}
           </div>
         </div>
@@ -1055,6 +1067,14 @@ function MineView({ summary, assignments, myProjects, reportsToIds, loading, mon
           summary={summary}
           openDetail={(eid, ename, fw) => { setDrillProject(null); openDetail(eid, ename, fw); }}
           onClose={() => setDrillProject(null)}
+        />
+      )}
+
+      {/* Per-day activity grid (same as Projects page) for project leads */}
+      {dailyFor && (
+        <ProjectDailyActivityModal
+          project={dailyFor}
+          onClose={() => setDailyFor(null)}
         />
       )}
     </div>

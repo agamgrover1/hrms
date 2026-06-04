@@ -1,9 +1,10 @@
 import { useState, useEffect } from 'react';
-import { Settings, Plus, Trash2, Edit3, Check, X, Clock, Briefcase, Building2, CalendarDays, BookOpen } from 'lucide-react';
+import { Settings, Plus, Trash2, Edit3, Check, X, Clock, Briefcase, Building2, CalendarDays, BookOpen, PartyPopper } from 'lucide-react';
 import { api } from '../services/api';
 import RoleResponsibilitiesTab from '../components/admin/RoleResponsibilitiesTab';
+import HolidaysTab from '../components/admin/HolidaysTab';
 
-type Tab = 'departments' | 'designations' | 'shifts' | 'optional_leave' | 'roles';
+type Tab = 'departments' | 'designations' | 'shifts' | 'optional_leave' | 'roles' | 'holidays';
 
 function fmt12(t: string) {
   if (!t) return '';
@@ -155,6 +156,7 @@ export default function Config() {
     { key: 'designations',  label: 'Designations',   icon: Briefcase   },
     { key: 'shifts',        label: 'Shifts',         icon: Clock       },
     { key: 'optional_leave',label: 'Optional Leaves',icon: CalendarDays},
+    { key: 'holidays',      label: 'Holidays',       icon: PartyPopper },
     { key: 'roles',         label: 'Roles & Responsibilities', icon: BookOpen },
   ];
 
@@ -424,6 +426,9 @@ export default function Config() {
           </div>
         </div>
       )}
+
+      {/* ── Holidays ── */}
+      {tab === 'holidays' && <HolidaysTab />}
 
       {/* ── Roles & Responsibilities ── */}
       {tab === 'roles' && <RoleResponsibilitiesTab />}

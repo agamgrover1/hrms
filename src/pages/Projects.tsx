@@ -410,7 +410,7 @@ export default function Projects() {
 // ── Daily activity modal — project-centric view: employees × days ──────────
 // Reporting managers / coordinators / admins use this to see how many hours
 // were spent on a specific project each day, by whom, with the day's notes.
-function ProjectDailyActivityModal({ project, onClose }: { project: Project; onClose: () => void }) {
+export function ProjectDailyActivityModal({ project, onClose }: { project: Project; onClose: () => void }) {
   const today = new Date();
   const [month, setMonth] = useState(today.getMonth() + 1);
   const [year, setYear] = useState(today.getFullYear());

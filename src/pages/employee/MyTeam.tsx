@@ -135,6 +135,16 @@ export default function MyTeam() {
     Object.fromEntries(SCORE_CATEGORIES.map(c => [c.key, 75]))
   );
   const [reviewComment, setReviewComment] = useState('');
+  // Review period picker — defaults to LAST month since managers usually add
+  // reviews in the first week of the new month for the prior month's work.
+  const [reviewMonth, setReviewMonth] = useState(() => {
+    const n = new Date();
+    return n.getMonth() === 0 ? 12 : n.getMonth();
+  });
+  const [reviewYear, setReviewYear] = useState(() => {
+    const n = new Date();
+    return n.getMonth() === 0 ? n.getFullYear() - 1 : n.getFullYear();
+  });
   const [paramNotes, setParamNotes] = useState<Record<string, string>>({});
   const [savingReview, setSavingReview] = useState(false);
   const [reviewError, setReviewError] = useState('');
@@ -237,13 +247,13 @@ export default function MyTeam() {
       const overall = Math.round(Object.values(scores).reduce((a, b) => a + b, 0) / SCORE_CATEGORIES.length);
       await api.saveMonthlyPerformance({
         employee_id: showReview.id, reviewer_id: empDbId, reviewer_name: user?.name,
-        month: currentMonth, year: currentYear,
+        month: reviewMonth, year: reviewYear,
         ...Object.fromEntries(SCORE_CATEGORIES.map(c => [c.key, scores[c.key]])) as any,
         overall_score: overall, comments: reviewComment,
         parameter_notes: paramNotes,
         requester_role: user?.role,
       });
-      api.getMonthlyPerformance(showReview.id, currentYear)
+      api.getMonthlyPerformance(showReview.id, reviewYear)
         .then(perf => setTeamPerf(prev => ({ ...prev, [showReview.id]: perf })));
       setShowReview(null);
     } catch (err: any) {
@@ -410,12 +420,15 @@ export default function MyTeam() {
                 {attBarData.length === 0 || Object.keys(teamAttendance).length === 0 ? (
                   <div className="flex items-center justify-center h-40 text-on-surface-subtle text-sm">Loading attendance data…</div>
                 ) : (
-                  <ResponsiveContainer width="100%" height={220}>
+                  // Height scales with member count so every team member has a
+                  // visible row + label. Was hard-coded 220px → Recharts auto-
+                  // skipped Y-axis labels when 7+ members couldn't fit.
+                  <ResponsiveContainer width="100%" height={Math.max(220, attBarData.length * 32 + 40)}>
                     <BarChart data={attBarData} barSize={18} layout="vertical"
                       margin={{ left: 8, right: 16, top: 4, bottom: 4 }}>
                       <CartesianGrid strokeDasharray="3 3" stroke="rgba(148, 163, 184, 0.18)" horizontal={false} />
-                      <XAxis type="number" tick={{ fontSize: 10, fill: '#94a3b8' }} axisLine={false} tickLine={false} />
-                      <YAxis type="category" dataKey="name" tick={{ fontSize: 12, fill: '#94a3b8', fontWeight: 600 }}
+                      <XAxis type="number" tick={{ fontSize: 10, fill: '#94a3b8' }} axisLine={false} tickLine={false} allowDecimals={false} />
+                      <YAxis type="category" dataKey="name" interval={0} tick={{ fontSize: 12, fill: '#94a3b8', fontWeight: 600 }}
                         axisLine={false} tickLine={false} width={64} />
                       <Tooltip contentStyle={{ background: 'rgb(var(--surface-3))', borderRadius: 12, border: '1px solid rgb(var(--outline))', boxShadow: 'var(--elev-3)', color: 'rgb(var(--on-surface))', fontSize: 12 }} />
                       <Legend iconSize={10} wrapperStyle={{ fontSize: 11 }} />
@@ -895,12 +908,30 @@ export default function MyTeam() {
               <div>
                 <h3 className="font-display text-xl font-bold tracking-tight">Monthly Review</h3>
                 <p className="text-sm mt-0.5 text-white/60">
-                  {showReview.name} · {MONTHS_SHORT[currentMonth - 1]} <span className="num-mono">{currentYear}</span>
+                  {showReview.name} · for <span className="font-semibold text-white">{MONTHS_SHORT[reviewMonth - 1]} <span className="num-mono">{reviewYear}</span></span>
                 </p>
               </div>
               <button onClick={() => setShowReview(null)}><X size={18} className="text-white/60 hover:text-white" /></button>
             </div>
             <div className="p-6 space-y-4 max-h-[65vh] overflow-y-auto">
+              {/* Review period picker — defaults to last month since the typical
+                  case is writing it in week 1 of the new month. */}
+              <div className="rounded-xl-2 p-3 bg-surface-2 border border-outline flex items-center justify-between gap-3 flex-wrap">
+                <div>
+                  <p className="text-xs font-semibold uppercase tracking-wide text-on-surface-muted">Review period</p>
+                  <p className="text-xs text-on-surface-subtle mt-0.5">Pick the month this review is for.</p>
+                </div>
+                <div className="flex items-center gap-2">
+                  <select value={reviewMonth} onChange={e => setReviewMonth(Number(e.target.value))}
+                    className="text-sm bg-surface border border-outline rounded-lg px-2.5 py-1.5 text-on-surface focus:outline-none focus:border-accent">
+                    {MONTHS_SHORT.map((m, i) => <option key={m} value={i + 1}>{m}</option>)}
+                  </select>
+                  <select value={reviewYear} onChange={e => setReviewYear(Number(e.target.value))}
+                    className="text-sm bg-surface border border-outline rounded-lg px-2.5 py-1.5 text-on-surface focus:outline-none focus:border-accent num-mono">
+                    {[currentYear - 1, currentYear, currentYear + 1].map(y => <option key={y} value={y}>{y}</option>)}
+                  </select>
+                </div>
+              </div>
               {/* Overall preview */}
               <div className="rounded-xl-2 p-3 text-center bg-surface-2 border border-outline">
                 <p className="text-xs font-semibold uppercase tracking-wide text-on-surface-muted mb-1">Overall Score</p>

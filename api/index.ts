@@ -480,6 +480,17 @@ async function runStartupMigrations() {
       late_after TEXT NOT NULL, created_at TIMESTAMPTZ DEFAULT NOW()
     )`;
   await sql`
+    CREATE TABLE IF NOT EXISTS holidays (
+      id SERIAL PRIMARY KEY,
+      date DATE NOT NULL UNIQUE,
+      name TEXT NOT NULL,
+      type TEXT NOT NULL DEFAULT 'public',
+      notes TEXT,
+      created_at TIMESTAMPTZ DEFAULT NOW(),
+      updated_at TIMESTAMPTZ DEFAULT NOW()
+    )`;
+  await sql`CREATE INDEX IF NOT EXISTS idx_holidays_date ON holidays(date)`.catch(()=>{});
+  await sql`
     CREATE TABLE IF NOT EXISTS optional_leave_dates (
       id TEXT PRIMARY KEY, date DATE NOT NULL, label TEXT NOT NULL,
       year INTEGER NOT NULL, created_at TIMESTAMPTZ DEFAULT NOW(),
@@ -1078,7 +1089,27 @@ app.get('/api/attendance', async (req, res) => {
       rows = await sql`SELECT * FROM attendance_records ORDER BY date DESC, employee_id`;
     }
     const todayV = new Date().toISOString().split('T')[0];
-    res.json((rows as any[]).map(normDateV).filter((r: any) => !isWeekendV(r.date) && r.date <= todayV));
+    // Pull holidays in scope so we can mark any matching date as 'holiday'
+    // (overriding 'absent' / etc). The UI then knows not to count it against
+    // the employee.
+    let holidayRows: any[] = [];
+    try {
+      holidayRows = (month && year)
+        ? await sql`SELECT date, name FROM holidays WHERE EXTRACT(MONTH FROM date)=${Number(month)} AND EXTRACT(YEAR FROM date)=${Number(year)}` as any
+        : await sql`SELECT date, name FROM holidays` as any;
+    } catch { holidayRows = []; }
+    const holidayMap = new Map<string, string>();
+    for (const h of holidayRows) {
+      const d = String(h.date instanceof Date ? h.date.toISOString() : h.date).slice(0, 10);
+      holidayMap.set(d, h.name);
+    }
+    const result = (rows as any[])
+      .map(normDateV)
+      .filter((r: any) => !isWeekendV(r.date) && r.date <= todayV)
+      .map((r: any) => holidayMap.has(r.date)
+        ? { ...r, status: 'holiday', holiday_name: holidayMap.get(r.date) }
+        : r);
+    res.json(result);
   } catch (err) { res.status(500).json({ error: 'Server error' }); }
 });
 
@@ -2514,6 +2545,67 @@ app.post('/api/optional-leave/dates', async (req, res) => {
 app.delete('/api/optional-leave/dates/:id', async (req, res) => {
   try { await sql`DELETE FROM optional_leave_dates WHERE id=${req.params.id}`; res.json({ success: true }); }
   catch { res.status(500).json({ error: 'Server error' }); }
+});
+
+// ── Holidays (org-wide non-working days) ──────────────────────────────────
+// Editable by admin/HR via Config; visible to all authenticated users so the
+// holiday markings show up in attendance calendars / my-portal / my-team.
+async function isAdminOrHR(req: any): Promise<boolean> {
+  const userId = req.header('x-user-id') || req.query.__uid;
+  if (!userId) return false;
+  const rows = await sql`SELECT role, active FROM app_users WHERE id=${userId} LIMIT 1`;
+  const u = (rows as any[])[0];
+  return !!u && u.active === true && (u.role === 'admin' || u.role === 'hr_manager');
+}
+
+app.get('/api/holidays', async (req, res) => {
+  try {
+    await runStartupMigrations();
+    const year = req.query.year ? Number(req.query.year) : null;
+    const rows = year
+      ? await sql`SELECT * FROM holidays WHERE EXTRACT(YEAR FROM date)=${year} ORDER BY date`
+      : await sql`SELECT * FROM holidays ORDER BY date`;
+    res.json(rows);
+  } catch (err: any) { res.status(500).json({ error: err.message || 'Server error' }); }
+});
+
+app.post('/api/holidays', async (req, res) => {
+  try {
+    await runStartupMigrations();
+    if (!(await isAdminOrHR(req))) return res.status(403).json({ error: 'Admin / HR only' });
+    const { date, name, type, notes } = req.body;
+    if (!date || !name?.trim()) return res.status(400).json({ error: 'date and name are required' });
+    const rows = await sql`
+      INSERT INTO holidays (date, name, type, notes)
+      VALUES (${date}, ${name.trim()}, ${type || 'public'}, ${notes?.trim() || null})
+      ON CONFLICT (date) DO UPDATE SET
+        name=EXCLUDED.name, type=EXCLUDED.type, notes=EXCLUDED.notes, updated_at=NOW()
+      RETURNING *`;
+    res.status(201).json(rows[0]);
+  } catch (err: any) { res.status(500).json({ error: err.message || 'Server error' }); }
+});
+
+app.put('/api/holidays/:id', async (req, res) => {
+  try {
+    await runStartupMigrations();
+    if (!(await isAdminOrHR(req))) return res.status(403).json({ error: 'Admin / HR only' });
+    const { date, name, type, notes } = req.body;
+    if (!date || !name?.trim()) return res.status(400).json({ error: 'date and name are required' });
+    const rows = await sql`
+      UPDATE holidays SET date=${date}, name=${name.trim()}, type=${type || 'public'},
+        notes=${notes?.trim() || null}, updated_at=NOW()
+      WHERE id=${Number(req.params.id)} RETURNING *`;
+    if (!rows.length) return res.status(404).json({ error: 'Holiday not found' });
+    res.json(rows[0]);
+  } catch (err: any) { res.status(500).json({ error: err.message || 'Server error' }); }
+});
+
+app.delete('/api/holidays/:id', async (req, res) => {
+  try {
+    if (!(await isAdminOrHR(req))) return res.status(403).json({ error: 'Admin / HR only' });
+    await sql`DELETE FROM holidays WHERE id=${Number(req.params.id)}`;
+    res.json({ success: true });
+  } catch (err: any) { res.status(500).json({ error: err.message || 'Server error' }); }
 });
 
 app.get('/api/optional-leave/available', async (req, res) => {
