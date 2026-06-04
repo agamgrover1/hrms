@@ -4,5 +4,11 @@
   "rewrites": [
     { "source": "/api/(.*)", "destination": "/api/index" },
     { "source": "/(.*)", "destination": "/index.html" }
+  ],
+  "crons": [
+    {
+      "path": "/api/attendance/biometric-sync/cron",
+      "schedule": "*/30 * * * *"
+    }
   ]
 }

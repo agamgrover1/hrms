@@ -1425,8 +1425,14 @@ async function runBiometricSyncV(trigger: string, triggeredBy?: string, fromDate
     throw new Error('BIOMETRIC_API_URL and BIOMETRIC_API_KEY environment variables are not configured');
   }
   const today = new Date().toISOString().split('T')[0];
-  const from  = fromDate ?? today;
-  const to    = toDate   ?? from;
+  // Default window covers TODAY + the day before. Biometric punches for
+  // "yesterday" sometimes only land in the eTimeOffice DB after midnight
+  // (when an employee clocks out late) so the auto-sync needs to keep
+  // updating the prior day until everyone has cleared. Explicit fromDate /
+  // toDate from the caller override this.
+  const yest = (() => { const d = new Date(); d.setDate(d.getDate() - 1); return d.toISOString().slice(0, 10); })();
+  const from  = fromDate ?? yest;
+  const to    = toDate   ?? today;
   const label = from === to ? from : `${from} to ${to}`;
   const toEt  = (d: string) => { const [y,m,dy]=d.split('-'); return `${dy}/${m}/${y}`; };
 
@@ -1514,6 +1520,31 @@ app.get('/api/attendance/biometric-sync/history', async (_req, res) => {
     const rows = await sql`SELECT * FROM attendance_sync_log ORDER BY synced_at DESC LIMIT 20`;
     res.json(rows);
   } catch (err) { res.status(500).json({ error: 'Server error' }); }
+});
+
+// Vercel Cron hits this — scheduled every 30 min in vercel.json. Vercel
+// signs cron requests with a bearer token from CRON_SECRET (set in the
+// project's env vars). We accept either that, or the Vercel platform's own
+// 'x-vercel-cron' header, so the endpoint can't be triggered externally.
+app.all('/api/attendance/biometric-sync/cron', async (req, res) => {
+  try {
+    const auth = req.header('authorization') || '';
+    const platformCron = !!req.header('x-vercel-cron');
+    const secret = process.env.CRON_SECRET;
+    const okToken = secret ? auth === `Bearer ${secret}` : false;
+    if (!okToken && !platformCron) {
+      return res.status(401).json({ error: 'Unauthorized' });
+    }
+    const result = await runBiometricSyncV('auto', 'vercel-cron');
+    res.json(result);
+  } catch (err: any) {
+    const today = new Date().toISOString().split('T')[0];
+    try {
+      await sql`INSERT INTO attendance_sync_log (sync_id,triggered,triggered_by,date_range,status,error_msg)
+        VALUES(${crypto.randomUUID()},'auto','vercel-cron',${today},'failed',${err.message})`;
+    } catch { /* non-fatal */ }
+    res.status(500).json({ error: err.message ?? 'Sync failed' });
+  }
 });
 
 app.post('/api/attendance/biometric-sync', async (req, res) => {
