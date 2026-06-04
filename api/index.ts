@@ -444,6 +444,16 @@ async function runStartupMigrations() {
       status TEXT DEFAULT 'active',  -- active | in_repair | retired
       notes TEXT, created_at TIMESTAMPTZ DEFAULT NOW()
     )`;
+  // Asset categories — admin/HR can add new categories (mouse, keyboard,
+  // monitor, etc.) so assets aren't restricted to laptops. Seeded with a
+  // sensible default set the first time the table is created.
+  await sql`
+    CREATE TABLE IF NOT EXISTS asset_categories (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL UNIQUE,
+      created_at TIMESTAMPTZ DEFAULT NOW()
+    )`;
+  await sql`ALTER TABLE assets ADD COLUMN IF NOT EXISTS category_id TEXT`.catch(()=>{});
   await sql`
     CREATE TABLE IF NOT EXISTS repair_tickets (
       id TEXT PRIMARY KEY,
@@ -2792,7 +2802,23 @@ const REPAIR_APPROVAL_THRESHOLD = 10000;
 async function ensureRepairTables() {
   await sql`CREATE TABLE IF NOT EXISTS vendors (id TEXT PRIMARY KEY, name TEXT NOT NULL, contact_person TEXT, phone TEXT, email TEXT, gst_no TEXT, address TEXT, notes TEXT, active BOOLEAN DEFAULT TRUE, created_at TIMESTAMPTZ DEFAULT NOW())`.catch(()=>{});
   await sql`CREATE TABLE IF NOT EXISTS assets (id TEXT PRIMARY KEY, asset_tag TEXT UNIQUE NOT NULL, model TEXT, serial_no TEXT, purchase_date DATE, assigned_to_id TEXT, assigned_to_name TEXT, status TEXT DEFAULT 'active', notes TEXT, created_at TIMESTAMPTZ DEFAULT NOW())`.catch(()=>{});
+  await sql`CREATE TABLE IF NOT EXISTS asset_categories (id TEXT PRIMARY KEY, name TEXT NOT NULL UNIQUE, created_at TIMESTAMPTZ DEFAULT NOW())`.catch(()=>{});
+  await sql`ALTER TABLE assets ADD COLUMN IF NOT EXISTS category_id TEXT`.catch(()=>{});
   await sql`CREATE TABLE IF NOT EXISTS repair_tickets (id TEXT PRIMARY KEY, asset_id TEXT, laptop_info TEXT, employee_id TEXT, employee_name TEXT, vendor_id TEXT, issue TEXT NOT NULL, status TEXT DEFAULT 'reported', quoted_cost NUMERIC, final_cost NUMERIC, requires_approval BOOLEAN DEFAULT FALSE, approved_by TEXT, approved_at TIMESTAMPTZ, rejected_by TEXT, rejected_at TIMESTAMPTZ, rejection_reason TEXT, payment_status TEXT DEFAULT 'unpaid', payment_mode TEXT, payment_date DATE, notes TEXT, reported_at TIMESTAMPTZ DEFAULT NOW(), picked_up_at TIMESTAMPTZ, returned_at TIMESTAMPTZ, paid_at TIMESTAMPTZ, cancelled_at TIMESTAMPTZ, created_by TEXT, updated_at TIMESTAMPTZ DEFAULT NOW())`.catch(()=>{});
+  // Seed default categories the first time (idempotent — ON CONFLICT skips).
+  for (const c of [
+    { id: 'laptop',   name: 'Laptop' },
+    { id: 'desktop',  name: 'Desktop' },
+    { id: 'monitor',  name: 'Monitor' },
+    { id: 'keyboard', name: 'Keyboard' },
+    { id: 'mouse',    name: 'Mouse' },
+    { id: 'headset',  name: 'Headset' },
+    { id: 'phone',    name: 'Phone' },
+    { id: 'printer',  name: 'Printer' },
+    { id: 'router',   name: 'Router / Networking' },
+  ]) {
+    await sql`INSERT INTO asset_categories (id, name) VALUES (${c.id}, ${c.name}) ON CONFLICT (id) DO NOTHING`.catch(()=>{});
+  }
 }
 
 // ── Vendors ───────────────────────────────────────────────────────────────
@@ -2831,26 +2857,56 @@ app.delete('/api/vendors/:id', async (req, res) => {
   } catch (e: any) { res.status(500).json({ error: e.message }); }
 });
 
+// ── Asset categories ─────────────────────────────────────────────────────
+app.get('/api/asset-categories', async (_req, res) => {
+  try {
+    await ensureRepairTables();
+    res.json(await sql`SELECT * FROM asset_categories ORDER BY name ASC`);
+  } catch (e: any) { res.status(500).json({ error: e.message }); }
+});
+
+app.post('/api/asset-categories', async (req, res) => {
+  try {
+    await ensureRepairTables();
+    const { name } = req.body;
+    if (!name?.trim()) return res.status(400).json({ error: 'Category name is required' });
+    const id = name.trim().toLowerCase().replace(/\s+/g, '-').replace(/[^a-z0-9-]/g, '');
+    const rows = await sql`INSERT INTO asset_categories (id, name) VALUES (${id}, ${name.trim()}) ON CONFLICT (id) DO UPDATE SET name=EXCLUDED.name RETURNING *`;
+    res.status(201).json((rows as any[])[0]);
+  } catch (e: any) { res.status(500).json({ error: e.message }); }
+});
+
+app.delete('/api/asset-categories/:id', async (req, res) => {
+  try {
+    // Block delete if any asset is using this category — preserves data
+    const inUse = await sql`SELECT COUNT(*)::int AS c FROM assets WHERE category_id=${req.params.id}`;
+    if (Number((inUse as any[])[0]?.c || 0) > 0) {
+      return res.status(409).json({ error: 'Category in use by existing assets — reassign them first' });
+    }
+    await sql`DELETE FROM asset_categories WHERE id=${req.params.id}`;
+    res.json({ success: true });
+  } catch (e: any) { res.status(500).json({ error: e.message }); }
+});
+
 // ── Assets ────────────────────────────────────────────────────────────────
 app.get('/api/assets', async (req, res) => {
   try {
     await ensureRepairTables();
     const { assigned_to_id } = req.query as any;
-    if (assigned_to_id) {
-      res.json(await sql`SELECT * FROM assets WHERE assigned_to_id=${assigned_to_id} ORDER BY asset_tag ASC`);
-    } else {
-      res.json(await sql`SELECT * FROM assets ORDER BY asset_tag ASC`);
-    }
+    const rows = assigned_to_id
+      ? await sql`SELECT a.*, c.name AS category_name FROM assets a LEFT JOIN asset_categories c ON c.id = a.category_id WHERE a.assigned_to_id=${assigned_to_id} ORDER BY a.asset_tag ASC`
+      : await sql`SELECT a.*, c.name AS category_name FROM assets a LEFT JOIN asset_categories c ON c.id = a.category_id ORDER BY a.asset_tag ASC`;
+    res.json(rows);
   } catch (e: any) { res.status(500).json({ error: e.message }); }
 });
 
 app.post('/api/assets', async (req, res) => {
   try {
     await ensureRepairTables();
-    const { asset_tag, model, serial_no, purchase_date, assigned_to_id, assigned_to_name, status, notes } = req.body;
+    const { asset_tag, category_id, model, serial_no, purchase_date, assigned_to_id, assigned_to_name, status, notes } = req.body;
     if (!asset_tag?.trim()) return res.status(400).json({ error: 'Asset tag is required' });
     const id = `asset_${Date.now()}`;
-    const rows = await sql`INSERT INTO assets (id, asset_tag, model, serial_no, purchase_date, assigned_to_id, assigned_to_name, status, notes) VALUES (${id}, ${asset_tag.trim()}, ${model ?? null}, ${serial_no ?? null}, ${purchase_date ?? null}, ${assigned_to_id ?? null}, ${assigned_to_name ?? null}, ${status ?? 'active'}, ${notes ?? null}) RETURNING *`;
+    const rows = await sql`INSERT INTO assets (id, asset_tag, category_id, model, serial_no, purchase_date, assigned_to_id, assigned_to_name, status, notes) VALUES (${id}, ${asset_tag.trim()}, ${category_id ?? null}, ${model ?? null}, ${serial_no ?? null}, ${purchase_date ?? null}, ${assigned_to_id ?? null}, ${assigned_to_name ?? null}, ${status ?? 'active'}, ${notes ?? null}) RETURNING *`;
     res.status(201).json((rows as any[])[0]);
   } catch (e: any) {
     if (e.message?.includes('unique')) return res.status(409).json({ error: 'Asset tag already exists' });
@@ -2860,9 +2916,9 @@ app.post('/api/assets', async (req, res) => {
 
 app.put('/api/assets/:id', async (req, res) => {
   try {
-    const { asset_tag, model, serial_no, purchase_date, assigned_to_id, assigned_to_name, status, notes } = req.body;
+    const { asset_tag, category_id, model, serial_no, purchase_date, assigned_to_id, assigned_to_name, status, notes } = req.body;
     if (!asset_tag?.trim()) return res.status(400).json({ error: 'Asset tag is required' });
-    const rows = await sql`UPDATE assets SET asset_tag=${asset_tag.trim()}, model=${model ?? null}, serial_no=${serial_no ?? null}, purchase_date=${purchase_date ?? null}, assigned_to_id=${assigned_to_id ?? null}, assigned_to_name=${assigned_to_name ?? null}, status=${status ?? 'active'}, notes=${notes ?? null} WHERE id=${req.params.id} RETURNING *`;
+    const rows = await sql`UPDATE assets SET asset_tag=${asset_tag.trim()}, category_id=${category_id ?? null}, model=${model ?? null}, serial_no=${serial_no ?? null}, purchase_date=${purchase_date ?? null}, assigned_to_id=${assigned_to_id ?? null}, assigned_to_name=${assigned_to_name ?? null}, status=${status ?? 'active'}, notes=${notes ?? null} WHERE id=${req.params.id} RETURNING *`;
     if (!(rows as any[]).length) return res.status(404).json({ error: 'Asset not found' });
     res.json((rows as any[])[0]);
   } catch (e: any) {
@@ -2880,14 +2936,42 @@ app.delete('/api/assets/:id', async (req, res) => {
   } catch (e: any) { res.status(500).json({ error: e.message }); }
 });
 
+// ── Per-asset repair history ─────────────────────────────────────────────
+// Admin/HR only — returns every repair ever recorded against this asset
+// with a running spend total. Powers the "Repair history" panel on the
+// asset detail card so you can backtrack how much you've sunk into a piece
+// of hardware over time.
+app.get('/api/assets/:id/repair-history', async (req, res) => {
+  try {
+    await ensureRepairTables();
+    if (!(await isAdminOrHR(req))) return res.status(403).json({ error: 'Admin / HR only' });
+    const rows = await sql`
+      SELECT r.*, v.name AS vendor_name
+      FROM repair_tickets r
+      LEFT JOIN vendors v ON v.id = r.vendor_id
+      WHERE r.asset_id=${req.params.id}
+      ORDER BY COALESCE(r.reported_at, r.created_by::timestamptz) DESC` as any[];
+    const totalSpend = (rows as any[]).reduce((s, r) =>
+      s + Number(r.final_cost ?? r.quoted_cost ?? 0), 0);
+    res.json({
+      asset_id: req.params.id,
+      tickets: rows,
+      ticket_count: rows.length,
+      total_spend: totalSpend,
+    });
+  } catch (e: any) { res.status(500).json({ error: e.message }); }
+});
+
 // ── Repair tickets ────────────────────────────────────────────────────────
 app.get('/api/repair-tickets', async (req, res) => {
   try {
     await ensureRepairTables();
-    const { employee_id } = req.query as any;
+    const { employee_id, asset_id } = req.query as any;
     let rows: any[];
     if (employee_id) {
       rows = await sql`SELECT * FROM repair_tickets WHERE employee_id=${employee_id} ORDER BY reported_at DESC` as any[];
+    } else if (asset_id) {
+      rows = await sql`SELECT * FROM repair_tickets WHERE asset_id=${asset_id} ORDER BY reported_at DESC` as any[];
     } else {
       rows = await sql`SELECT * FROM repair_tickets ORDER BY reported_at DESC` as any[];
     }
@@ -2919,23 +3003,48 @@ app.get('/api/repair-tickets', async (req, res) => {
 app.post('/api/repair-tickets', async (req, res) => {
   try {
     await ensureRepairTables();
-    const { asset_id, laptop_info, employee_id, employee_name, vendor_id, issue, quoted_cost, notes, created_by } = req.body;
+    const {
+      asset_id, laptop_info, employee_id, employee_name, vendor_id, issue,
+      quoted_cost, final_cost, notes, created_by,
+      // Optional back-dating fields — used when admin enters historic repairs
+      // ("we had this fixed in March, cost ₹4,500"). status defaults to
+      // 'reported' for ongoing repairs and 'paid' for historic entries.
+      reported_at, status, payment_status, payment_date,
+    } = req.body;
     if (!issue?.trim()) return res.status(400).json({ error: 'Issue description is required' });
     if (!employee_id) return res.status(400).json({ error: 'Employee is required' });
     if (quoted_cost != null && quoted_cost !== '' && Number(quoted_cost) < 0) {
       return res.status(400).json({ error: 'Cost cannot be negative' });
     }
-    // Prevent multiple open tickets for the same asset — keeps asset.status consistent
-    if (asset_id) {
+    // Prevent multiple open tickets for the same asset — keeps asset.status
+    // consistent. Historic entries (status='paid' or status='cancelled')
+    // skip this check so admin can log past repairs even while a new one is
+    // open.
+    const incomingStatus = (status as string) || 'reported';
+    const isHistoric = incomingStatus === 'paid' || incomingStatus === 'cancelled';
+    if (asset_id && !isHistoric) {
       const openRows = await sql`SELECT id FROM repair_tickets WHERE asset_id=${asset_id} AND status NOT IN ('paid','cancelled')`;
       if ((openRows as any[]).length > 0) {
         return res.status(409).json({ error: 'This asset already has an open repair ticket. Close or cancel the existing one first.' });
       }
     }
     const id = `rep_${Date.now()}`;
-    const rows = await sql`INSERT INTO repair_tickets (id, asset_id, laptop_info, employee_id, employee_name, vendor_id, issue, quoted_cost, notes, created_by) VALUES (${id}, ${asset_id ?? null}, ${laptop_info ?? null}, ${employee_id}, ${employee_name ?? null}, ${vendor_id ?? null}, ${issue.trim()}, ${quoted_cost ?? null}, ${notes ?? null}, ${created_by ?? null}) RETURNING *`;
-    // Mark asset as in_repair if linked
-    if (asset_id) await sql`UPDATE assets SET status='in_repair' WHERE id=${asset_id}`.catch(()=>{});
+    const rows = await sql`
+      INSERT INTO repair_tickets (
+        id, asset_id, laptop_info, employee_id, employee_name, vendor_id, issue,
+        quoted_cost, final_cost, notes, created_by,
+        status, payment_status, payment_date,
+        reported_at, paid_at
+      )
+      VALUES (
+        ${id}, ${asset_id ?? null}, ${laptop_info ?? null}, ${employee_id}, ${employee_name ?? null}, ${vendor_id ?? null}, ${issue.trim()},
+        ${quoted_cost ?? null}, ${final_cost ?? null}, ${notes ?? null}, ${created_by ?? null},
+        ${incomingStatus}, ${payment_status ?? (isHistoric ? 'paid' : 'unpaid')}, ${payment_date ?? null},
+        ${reported_at ?? null}, ${isHistoric && payment_date ? payment_date : null}
+      )
+      RETURNING *`;
+    // Mark asset as in_repair only for active (non-historic) tickets
+    if (asset_id && !isHistoric) await sql`UPDATE assets SET status='in_repair' WHERE id=${asset_id}`.catch(()=>{});
     const ticket = (rows as any[])[0];
     // Activity log
     recordAssetActivity({

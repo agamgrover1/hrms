@@ -178,9 +178,23 @@ export const api = {
   createAsset: (data: any) => request<any>('/assets', { method: 'POST', body: JSON.stringify(data) }),
   updateAsset: (id: string, data: any) => request<any>(`/assets/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
   deleteAsset: (id: string) => request<any>(`/assets/${id}`, { method: 'DELETE' }),
+  getAssetRepairHistory: (assetId: string) =>
+    request<{ asset_id: string; tickets: any[]; ticket_count: number; total_spend: number }>(`/assets/${assetId}/repair-history`),
 
-  getRepairTickets: (employeeId?: string) =>
-    request<any[]>(`/repair-tickets${employeeId ? `?employee_id=${employeeId}` : ''}`),
+  getAssetCategories: () => request<Array<{ id: string; name: string }>>(`/asset-categories`),
+  createAssetCategory: (name: string) =>
+    request<{ id: string; name: string }>('/asset-categories', { method: 'POST', body: JSON.stringify({ name }) }),
+  deleteAssetCategory: (id: string) =>
+    request<any>(`/asset-categories/${id}`, { method: 'DELETE' }),
+
+  getRepairTickets: (params?: string | { employee_id?: string; asset_id?: string }) => {
+    if (typeof params === 'string') return request<any[]>(`/repair-tickets?employee_id=${params}`);
+    const qs = new URLSearchParams();
+    if (params?.employee_id) qs.set('employee_id', params.employee_id);
+    if (params?.asset_id) qs.set('asset_id', params.asset_id);
+    const q = qs.toString();
+    return request<any[]>(`/repair-tickets${q ? `?${q}` : ''}`);
+  },
   createRepairTicket: (data: any) => request<any>('/repair-tickets', { method: 'POST', body: JSON.stringify(data) }),
   updateRepairTicket: (id: string, data: any) => request<any>(`/repair-tickets/${id}`, { method: 'PATCH', body: JSON.stringify(data) }),
   approveRepairTicket: (id: string, approved_by?: string) =>

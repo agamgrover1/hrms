@@ -3,7 +3,6 @@ import Sidebar from './Sidebar';
 import TopBar from './TopBar';
 import CommandPalette from '../CommandPalette';
 import ShiftEndReminder from '../ShiftEndReminder';
-import AttendanceAutoSync from '../AttendanceAutoSync';
 
 const pageTitles: Record<string, string> = {
   '/': 'Dashboard',
@@ -47,7 +46,6 @@ export default function Layout() {
         </main>
       </div>
       <CommandPalette />
-      <AttendanceAutoSync />
     </div>
   );
 }

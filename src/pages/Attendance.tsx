@@ -435,7 +435,7 @@ export default function Attendance() {
                   <div className="flex items-center gap-2 mt-0.5 flex-wrap">
                     <span className="flex items-center gap-1 text-xs text-on-surface-subtle">
                       <Activity size={10} className="text-success" />
-                      Auto-sync: daily server cron + every 30 min while HR/admin online · today + yesterday
+                      Daily auto-sync · today + yesterday
                     </span>
                     {lastSync && (
                       <span className="num-mono text-xs text-on-surface-subtle">

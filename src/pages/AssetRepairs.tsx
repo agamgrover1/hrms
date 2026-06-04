@@ -1,7 +1,7 @@
 import { useState, useEffect, useMemo } from 'react';
 import {
   Wrench, Laptop, Building2, Plus, Trash2, Pencil, X, Check, AlertTriangle,
-  Clock, CheckCircle, XCircle, DollarSign, Search, IndianRupee,
+  Clock, CheckCircle, XCircle, DollarSign, Search, IndianRupee, History,
 } from 'lucide-react';
 import { api } from '../services/api';
 import { useAuth } from '../context/AuthContext';
@@ -45,6 +45,8 @@ export default function AssetRepairs() {
   const [editingVendor, setEditingVendor] = useState<any | null>(null);
   const [showAssetForm, setShowAssetForm] = useState(false);
   const [editingAsset, setEditingAsset] = useState<any | null>(null);
+  const [historyAsset, setHistoryAsset] = useState<any | null>(null);
+  const [showAddPastRepair, setShowAddPastRepair] = useState<any | null>(null); // asset
   const [showTicketForm, setShowTicketForm] = useState(false);
   const [editingTicket, setEditingTicket] = useState<any | null>(null);
   const [rejectingTicket, setRejectingTicket] = useState<any | null>(null);
@@ -140,6 +142,7 @@ export default function AssetRepairs() {
               assets={assets} employees={employees} tickets={tickets}
               onCreate={() => { setEditingAsset(null); setShowAssetForm(true); }}
               onEdit={(a) => { setEditingAsset(a); setShowAssetForm(true); }}
+              onHistory={(a: any) => setHistoryAsset(a)}
               onDelete={async (a) => {
                 if (!confirm(`Delete asset ${a.asset_tag}?`)) return;
                 await api.deleteAsset(a.id);
@@ -177,6 +180,30 @@ export default function AssetRepairs() {
           employees={employees}
           onClose={() => setShowAssetForm(false)}
           onSaved={() => { setShowAssetForm(false); refetchAssets(); }}
+        />
+      )}
+      {historyAsset && (
+        <AssetHistoryModal
+          asset={historyAsset}
+          vendors={vendors}
+          onClose={() => setHistoryAsset(null)}
+          onAddPast={() => setShowAddPastRepair(historyAsset)}
+        />
+      )}
+      {showAddPastRepair && (
+        <PastRepairModal
+          asset={showAddPastRepair}
+          employees={employees}
+          vendors={vendors}
+          currentUser={user}
+          onClose={() => setShowAddPastRepair(null)}
+          onSaved={() => {
+            setShowAddPastRepair(null);
+            refetchTickets();
+            // History modal will refetch automatically on next open; if open
+            // now, force a refresh by re-setting the asset state.
+            if (historyAsset) setHistoryAsset({ ...historyAsset });
+          }}
         />
       )}
       {showTicketForm && (
@@ -374,7 +401,7 @@ function TicketsTab({ tickets, vendors, assets, employees, vendorById, assetById
 }
 
 // ── Assets Tab ────────────────────────────────────────────────────────────
-function AssetsTab({ assets, employees, tickets, onCreate, onEdit, onDelete }: any) {
+function AssetsTab({ assets, employees, tickets, onCreate, onEdit, onDelete, onHistory }: any) {
   const empById = (id: string) => employees.find((e: any) => e.id === id);
   const openTicketCount = (assetId: string) =>
     tickets.filter((t: any) => t.asset_id === assetId && !['paid', 'cancelled'].includes(t.status)).length;
@@ -398,7 +425,7 @@ function AssetsTab({ assets, employees, tickets, onCreate, onEdit, onDelete }: a
             <table className="w-full text-sm">
               <thead>
                 <tr className="bg-surface-2">
-                  {['Tag', 'Model', 'Serial', 'Assigned To', 'Status', 'Active Tickets', ''].map(h => (
+                  {['Tag', 'Category', 'Model', 'Serial', 'Assigned To', 'Status', 'Active', ''].map(h => (
                     <th key={h} className="text-left px-4 py-3 text-xs font-semibold text-on-surface-subtle uppercase tracking-wide">{h}</th>
                   ))}
                 </tr>
@@ -409,6 +436,11 @@ function AssetsTab({ assets, employees, tickets, onCreate, onEdit, onDelete }: a
                   return (
                     <tr key={a.id} className="border-t border-outline hover:bg-surface-2/60">
                       <td className="px-4 py-3 num-mono font-semibold text-on-surface">{a.asset_tag}</td>
+                      <td className="px-4 py-3 text-xs">
+                        {a.category_name
+                          ? <span className="inline-flex items-center px-2 py-0.5 rounded-full bg-brand-container/60 text-brand font-semibold text-[10px]">{a.category_name}</span>
+                          : <span className="text-on-surface-subtle">—</span>}
+                      </td>
                       <td className="px-4 py-3 text-on-surface-muted">{a.model ?? '—'}</td>
                       <td className="px-4 py-3 text-xs text-on-surface-subtle num-mono">{a.serial_no ?? '—'}</td>
                       <td className="px-4 py-3 text-sm text-on-surface-muted">{a.assigned_to_name ?? empById(a.assigned_to_id)?.name ?? '—'}</td>
@@ -425,8 +457,9 @@ function AssetsTab({ assets, employees, tickets, onCreate, onEdit, onDelete }: a
                       </td>
                       <td className="px-4 py-3">
                         <div className="flex gap-1">
-                          <button onClick={() => onEdit(a)} className="text-on-surface-subtle hover:text-on-surface p-1 transition-colors"><Pencil size={12}/></button>
-                          <button onClick={() => onDelete(a)} className="text-on-surface-subtle hover:text-danger p-1 transition-colors"><Trash2 size={12}/></button>
+                          <button onClick={() => onHistory(a)} title="Repair history" className="text-on-surface-subtle hover:text-accent p-1 transition-colors"><History size={12}/></button>
+                          <button onClick={() => onEdit(a)} title="Edit" className="text-on-surface-subtle hover:text-on-surface p-1 transition-colors"><Pencil size={12}/></button>
+                          <button onClick={() => onDelete(a)} title="Delete" className="text-on-surface-subtle hover:text-danger p-1 transition-colors"><Trash2 size={12}/></button>
                         </div>
                       </td>
                     </tr>
@@ -582,6 +615,7 @@ function VendorFormModal({ initial, onClose, onSaved }: any) {
 function AssetFormModal({ initial, employees, onClose, onSaved }: any) {
   const [form, setForm] = useState({
     asset_tag: initial?.asset_tag ?? '',
+    category_id: initial?.category_id ?? '',
     model: initial?.model ?? '',
     serial_no: initial?.serial_no ?? '',
     purchase_date: initial?.purchase_date?.split?.('T')[0] ?? '',
@@ -589,8 +623,27 @@ function AssetFormModal({ initial, employees, onClose, onSaved }: any) {
     status: initial?.status ?? 'active',
     notes: initial?.notes ?? '',
   });
+  const [categories, setCategories] = useState<Array<{ id: string; name: string }>>([]);
+  const [creatingCategory, setCreatingCategory] = useState(false);
+  const [newCategoryName, setNewCategoryName] = useState('');
   const [error, setError] = useState('');
   const [saving, setSaving] = useState(false);
+
+  useEffect(() => { api.getAssetCategories().then(setCategories).catch(() => {}); }, []);
+
+  const handleAddCategory = async () => {
+    if (!newCategoryName.trim()) return;
+    try {
+      const c = await api.createAssetCategory(newCategoryName.trim());
+      setCategories(prev => {
+        const exists = prev.some(x => x.id === c.id);
+        return exists ? prev : [...prev, c].sort((a, b) => a.name.localeCompare(b.name));
+      });
+      setForm({ ...form, category_id: c.id });
+      setNewCategoryName('');
+      setCreatingCategory(false);
+    } catch (e: any) { setError(e.message); }
+  };
 
   const handleSave = async () => {
     if (!form.asset_tag.trim()) { setError('Asset tag is required'); return; }
@@ -619,6 +672,41 @@ function AssetFormModal({ initial, employees, onClose, onSaved }: any) {
             <input value={form.model} onChange={e => setForm({ ...form, model: e.target.value })} placeholder="Dell XPS 15"
               className="w-full text-sm border border-outline rounded-lg px-3 py-2 bg-surface text-on-surface placeholder:text-on-surface-subtle focus:outline-none focus:border-accent focus:ring-2 focus:ring-accent/20"/>
           </div>
+        </div>
+
+        {/* Category picker — pre-seeded with laptop / mouse / monitor etc.
+            "+ Add new" inlines a small input so HR doesn't have to leave the
+            modal to register a new asset type. */}
+        <div>
+          <label className="text-xs font-semibold text-on-surface-subtle block mb-1">Category</label>
+          {!creatingCategory ? (
+            <div className="flex gap-2">
+              <select value={form.category_id} onChange={e => setForm({ ...form, category_id: e.target.value })}
+                className="flex-1 text-sm border border-outline rounded-lg px-3 py-2 bg-surface text-on-surface focus:outline-none focus:border-accent focus:ring-2 focus:ring-accent/20">
+                <option value="">— pick a category —</option>
+                {categories.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
+              </select>
+              <button type="button" onClick={() => setCreatingCategory(true)}
+                className="px-3 py-2 text-xs font-semibold rounded-lg border border-outline bg-surface-2 text-on-surface hover:bg-surface-3 transition-colors whitespace-nowrap">
+                + Add new
+              </button>
+            </div>
+          ) : (
+            <div className="flex gap-2">
+              <input autoFocus value={newCategoryName} onChange={e => setNewCategoryName(e.target.value)}
+                onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); handleAddCategory(); } if (e.key === 'Escape') { setCreatingCategory(false); setNewCategoryName(''); } }}
+                placeholder="e.g. Tablet, Webcam, Dongle"
+                className="flex-1 text-sm border border-outline rounded-lg px-3 py-2 bg-surface text-on-surface focus:outline-none focus:border-accent focus:ring-2 focus:ring-accent/20" />
+              <button type="button" onClick={handleAddCategory}
+                className="px-3 py-2 text-xs font-semibold rounded-lg bg-accent text-on-accent hover:opacity-90">
+                Add
+              </button>
+              <button type="button" onClick={() => { setCreatingCategory(false); setNewCategoryName(''); }}
+                className="px-2 py-2 text-xs font-semibold rounded-lg border border-outline bg-surface-2 text-on-surface-muted hover:bg-surface-3">
+                Cancel
+              </button>
+            </div>
+          )}
         </div>
         <div className="grid grid-cols-2 gap-3">
           <div>
@@ -1021,3 +1109,206 @@ function ModalActions({ onClose, onSave, saving }: any) {
     </div>
   );
 }
+
+// ── Per-asset repair history modal ────────────────────────────────────────
+// Shows running total spent on this asset plus every repair ticket (current
+// + historic) in reverse-chronological order. Admin can add a past repair
+// inline so legacy data ("we fixed this in March, ₹4,500") gets backfilled.
+function AssetHistoryModal({ asset, vendors, onClose, onAddPast }: any) {
+  const [data, setData] = useState<{ tickets: any[]; ticket_count: number; total_spend: number } | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [err, setErr] = useState('');
+
+  useEffect(() => {
+    setLoading(true); setErr('');
+    api.getAssetRepairHistory(asset.id)
+      .then((d) => setData({ tickets: d.tickets, ticket_count: d.ticket_count, total_spend: d.total_spend }))
+      .catch(e => setErr(e.message))
+      .finally(() => setLoading(false));
+  }, [asset.id, asset]);
+
+  const fmtINR = (n: any) => n == null || n === '' ? '—' : `₹${Number(n).toLocaleString('en-IN')}`;
+  const fmtDate = (d: any) => {
+    if (!d) return '—';
+    try { return new Date(d).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' }); } catch { return '—'; }
+  };
+  const vendorName = (id?: string) => vendors?.find?.((v: any) => v.id === id)?.name ?? '—';
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm" onClick={onClose}>
+      <div className="bg-surface rounded-xl-3 border border-outline shadow-elev-3 w-full max-w-3xl max-h-[90vh] overflow-hidden flex flex-col" onClick={e => e.stopPropagation()}>
+        <div className="px-5 py-4 border-b border-outline bg-gradient-to-r from-brand-container/40 to-surface flex items-start justify-between gap-3">
+          <div>
+            <h3 className="font-display text-xl font-bold tracking-tight text-on-surface">{asset.asset_tag}</h3>
+            <p className="text-xs text-on-surface-muted mt-0.5">
+              {asset.category_name && <><span>{asset.category_name}</span> · </>}
+              {asset.model || 'Unknown model'} · repair history
+            </p>
+          </div>
+          <button onClick={onClose} className="p-1.5 rounded-lg hover:bg-surface-2"><X size={18} className="text-on-surface-muted" /></button>
+        </div>
+
+        {/* Total-spend strip */}
+        <div className="px-5 py-3 border-b border-outline grid grid-cols-2 gap-3 bg-surface-2/30">
+          <div>
+            <p className="text-[10px] uppercase tracking-[0.16em] font-bold text-on-surface-subtle">Total spent on repairs</p>
+            <p className="num-mono text-2xl font-bold text-on-surface mt-0.5">{fmtINR(data?.total_spend ?? 0)}</p>
+          </div>
+          <div className="text-right">
+            <p className="text-[10px] uppercase tracking-[0.16em] font-bold text-on-surface-subtle">Tickets</p>
+            <p className="num-mono text-2xl font-bold text-on-surface mt-0.5">{data?.ticket_count ?? 0}</p>
+          </div>
+        </div>
+
+        {err && <div className="mx-5 mt-3 rounded-xl-2 border border-danger/30 bg-danger-container/40 p-3 text-sm text-danger">{err}</div>}
+
+        <div className="flex-1 overflow-y-auto p-5 space-y-3">
+          {loading ? (
+            <div className="py-10 text-center text-sm text-on-surface-subtle">Loading…</div>
+          ) : !data || data.tickets.length === 0 ? (
+            <div className="py-10 text-center">
+              <Wrench size={28} className="mx-auto text-on-surface-subtle mb-2" />
+              <p className="text-sm text-on-surface-muted">No repairs recorded for this asset.</p>
+              <p className="text-xs text-on-surface-subtle mt-1">Add a past repair below to backfill legacy data.</p>
+            </div>
+          ) : (
+            data.tickets.map((t: any) => {
+              const cost = t.final_cost ?? t.quoted_cost;
+              const isHistoric = t.status === 'paid' || t.status === 'cancelled';
+              return (
+                <div key={t.id} className="rounded-xl-2 border border-outline p-3 hover:bg-surface-2/40 transition-colors">
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="min-w-0 flex-1">
+                      <p className="text-sm font-semibold text-on-surface">{t.issue}</p>
+                      <p className="text-[11px] text-on-surface-muted mt-0.5">
+                        {fmtDate(t.reported_at)}
+                        {t.paid_at && t.paid_at !== t.reported_at && <> · settled {fmtDate(t.paid_at)}</>}
+                        {t.vendor_id && <> · {t.vendor_name || vendorName(t.vendor_id)}</>}
+                      </p>
+                      {t.notes && <p className="text-xs text-on-surface-muted mt-1 italic">{t.notes}</p>}
+                    </div>
+                    <div className="text-right shrink-0">
+                      <p className={`num-mono font-bold ${cost ? 'text-on-surface' : 'text-on-surface-subtle'}`}>{fmtINR(cost)}</p>
+                      <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded-full mt-1 inline-block ${
+                        isHistoric ? 'bg-success-container text-success' :
+                        t.status === 'reported' ? 'bg-warning-container text-warning' :
+                        'bg-accent-container text-accent'
+                      }`}>{(t.status as string).replace('_', ' ')}</span>
+                    </div>
+                  </div>
+                </div>
+              );
+            })
+          )}
+        </div>
+
+        <div className="px-5 py-3 border-t border-outline bg-surface-2/30 flex items-center justify-between gap-3">
+          <p className="text-[11px] text-on-surface-subtle">
+            All historic + active repairs for this asset. Each new repair you log against this tag will appear here automatically.
+          </p>
+          <button onClick={onAddPast}
+            className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-semibold bg-accent text-on-accent rounded-lg hover:opacity-90">
+            <Plus size={13} /> Add past repair
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── Add a historic repair (backdated entry) ──────────────────────────────
+// Lets admin record repairs that happened before the system tracked them —
+// minimal form: date, issue, cost, optional vendor + notes. Saved as
+// status='paid' so it doesn't block creating new active tickets for the
+// same asset.
+function PastRepairModal({ asset, employees, vendors, currentUser, onClose, onSaved }: any) {
+  const [form, setForm] = useState({
+    reported_at: '',          // YYYY-MM-DD — required
+    issue: '',                // free text — required
+    final_cost: '',           // number — required
+    vendor_id: '',
+    notes: '',
+  });
+  const [error, setError] = useState('');
+  const [saving, setSaving] = useState(false);
+
+  const save = async () => {
+    if (!form.reported_at) { setError('Repair date is required'); return; }
+    if (!form.issue.trim()) { setError('Issue description is required'); return; }
+    if (form.final_cost === '' || Number(form.final_cost) < 0) { setError('Cost must be a non-negative number'); return; }
+    setSaving(true); setError('');
+    try {
+      const empForAsset = employees.find((e: any) => e.id === asset.assigned_to_id);
+      // Fall back to the current user as the "employee" recorded against the
+      // ticket if the asset isn't assigned to anyone — the schema requires
+      // employee_id to be set.
+      const employeeId = empForAsset?.id ?? currentUser?.employee_id_ref;
+      if (!employeeId) { setError('No employee to associate with this repair — assign the asset to someone first.'); setSaving(false); return; }
+      await api.createRepairTicket({
+        asset_id: asset.id,
+        laptop_info: asset.model || asset.asset_tag,
+        employee_id: employeeId,
+        employee_name: empForAsset?.name ?? null,
+        vendor_id: form.vendor_id || null,
+        issue: form.issue.trim(),
+        final_cost: Number(form.final_cost),
+        notes: form.notes.trim() || null,
+        created_by: currentUser?.name ?? null,
+        status: 'paid',                            // historic = already completed
+        payment_status: 'paid',
+        reported_at: form.reported_at,             // back-dated
+        payment_date: form.reported_at,
+      });
+      onSaved();
+    } catch (e: any) { setError(e.message); }
+    finally { setSaving(false); }
+  };
+
+  return (
+    <Modal title={`Add past repair · ${asset.asset_tag}`} onClose={onClose}>
+      <div className="space-y-3">
+        <div className="rounded-lg bg-surface-2 border border-outline p-3 text-xs text-on-surface-muted">
+          Use this to backfill a repair that already happened. Saved as <b className="text-on-surface">completed</b> so it doesn't block new active tickets for this asset.
+        </div>
+        <div className="grid grid-cols-2 gap-3">
+          <div>
+            <label className="text-xs font-semibold text-on-surface-subtle block mb-1">Repair date *</label>
+            <input type="date" value={form.reported_at} max={new Date().toISOString().slice(0, 10)}
+              onChange={e => setForm({ ...form, reported_at: e.target.value })}
+              className="w-full text-sm border border-outline rounded-lg px-3 py-2 bg-surface text-on-surface focus:outline-none focus:border-accent focus:ring-2 focus:ring-accent/20 num-mono" />
+          </div>
+          <div>
+            <label className="text-xs font-semibold text-on-surface-subtle block mb-1">Cost (₹) *</label>
+            <input type="number" min="0" step="0.01" value={form.final_cost}
+              onChange={e => setForm({ ...form, final_cost: e.target.value })}
+              placeholder="4500"
+              className="w-full text-sm border border-outline rounded-lg px-3 py-2 bg-surface text-on-surface placeholder:text-on-surface-subtle focus:outline-none focus:border-accent focus:ring-2 focus:ring-accent/20 num-mono" />
+          </div>
+        </div>
+        <div>
+          <label className="text-xs font-semibold text-on-surface-subtle block mb-1">Issue / what was done *</label>
+          <input value={form.issue} onChange={e => setForm({ ...form, issue: e.target.value })}
+            placeholder="e.g. Keyboard replacement, battery service"
+            className="w-full text-sm border border-outline rounded-lg px-3 py-2 bg-surface text-on-surface placeholder:text-on-surface-subtle focus:outline-none focus:border-accent focus:ring-2 focus:ring-accent/20" />
+        </div>
+        <div>
+          <label className="text-xs font-semibold text-on-surface-subtle block mb-1">Vendor</label>
+          <select value={form.vendor_id} onChange={e => setForm({ ...form, vendor_id: e.target.value })}
+            className="w-full text-sm border border-outline rounded-lg px-3 py-2 bg-surface text-on-surface focus:outline-none focus:border-accent focus:ring-2 focus:ring-accent/20">
+            <option value="">— Optional —</option>
+            {vendors?.map?.((v: any) => <option key={v.id} value={v.id}>{v.name}</option>)}
+          </select>
+        </div>
+        <div>
+          <label className="text-xs font-semibold text-on-surface-subtle block mb-1">Notes</label>
+          <textarea value={form.notes} onChange={e => setForm({ ...form, notes: e.target.value })} rows={2}
+            placeholder="Anything worth remembering about this repair"
+            className="w-full text-sm border border-outline rounded-lg px-3 py-2 bg-surface text-on-surface focus:outline-none focus:border-accent focus:ring-2 focus:ring-accent/20 resize-none" />
+        </div>
+        {error && <p className="text-xs text-danger bg-danger-container border border-danger/20 rounded-lg px-3 py-2">{error}</p>}
+        <ModalActions onClose={onClose} onSave={save} saving={saving} />
+      </div>
+    </Modal>
+  );
+}
+
