@@ -367,8 +367,13 @@ export default function Config() {
             ) : (
               <div className="relative divide-y divide-outline mb-4">
                 {olDates.map(d => {
-                  const dateObj = new Date(d.date + 'T12:00:00Z');
-                  const isPast = d.date < new Date().toISOString().slice(0,10);
+                  // Neon returns DATE columns as full ISO timestamps, so we
+                  // must slice to YYYY-MM-DD before reparsing — otherwise the
+                  // concat creates an invalid string and toLocaleDateString
+                  // returns "Invalid Date" / NaN day.
+                  const dateStr = String(d.date ?? '').slice(0, 10);
+                  const dateObj = new Date(dateStr + 'T12:00:00Z');
+                  const isPast = dateStr < new Date().toISOString().slice(0, 10);
                   return (
                     <div key={d.id} className="flex items-center gap-3 py-3 group/row">
                       <div className={`w-12 h-12 rounded-xl-2 flex flex-col items-center justify-center flex-shrink-0 ${isPast ? 'bg-surface-2' : 'bg-accent/10'}`}>
