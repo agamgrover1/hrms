@@ -391,6 +391,7 @@ export default function ProjectHours() {
           loading={loading}
           month={month}
           year={year}
+          search={search}
           openDetail={(employeeId, employeeName, focusWeek) =>
             setDetail({ employeeId, employeeName, focusWeek })
           }
@@ -834,7 +835,7 @@ function CapacityView({ summary, employees, loading, search, month, year, openDe
 }
 
 // ── Mine view: my direct reports + projects I review ───────────────────────
-function MineView({ summary, assignments, myProjects, reportsToIds, loading, month, year, openDetail }: {
+function MineView({ summary, assignments, myProjects, reportsToIds, loading, month, year, search, openDetail }: {
   summary: any;
   assignments: any[];
   myProjects: any[];
@@ -842,23 +843,36 @@ function MineView({ summary, assignments, myProjects, reportsToIds, loading, mon
   loading: boolean;
   month: number;
   year: number;
+  search: string;
   openDetail: (employeeId: string, employeeName: string, focusWeek?: number) => void;
 }) {
+  const [drillProject, setDrillProject] = useState<{ id: string; name: string; rows: any[] } | null>(null);
+
   const teamRows = useMemo(() => {
     if (!summary) return [] as any[];
     if (reportsToIds.size === 0) return [] as any[];
-    return summary.employees.filter((e: any) => reportsToIds.has(e.employee_id));
-  }, [summary, reportsToIds]);
+    const rows = summary.employees.filter((e: any) => reportsToIds.has(e.employee_id));
+    const term = (search ?? '').trim().toLowerCase();
+    if (!term) return rows;
+    return rows.filter((r: any) => (r.employee_name ?? '').toLowerCase().includes(term));
+  }, [summary, reportsToIds, search]);
 
   // Aggregate per project: how many employees are assigned + their hours this month
   const projectStats = useMemo(() => {
-    return myProjects.map(p => {
+    const term = (search ?? '').trim().toLowerCase();
+    const stats = myProjects.map(p => {
       const rows = assignments.filter(a => a.project_id === p.id);
       const totalPlanned = rows.reduce((s, a) => s + Number(a.monthly_hours || 0), 0);
       const employeeNames = Array.from(new Set(rows.map(a => a.employee_name).filter(Boolean)));
       return { project: p, totalPlanned, employees: employeeNames, rows };
     });
-  }, [myProjects, assignments]);
+    if (!term) return stats;
+    return stats.filter(s =>
+      (s.project.name ?? '').toLowerCase().includes(term) ||
+      (s.project.client_name ?? '').toLowerCase().includes(term) ||
+      s.employees.some((n: string) => (n ?? '').toLowerCase().includes(term))
+    );
+  }, [myProjects, assignments, search]);
 
   if (loading) {
     return <div className="bg-surface rounded-xl-2 border border-outline shadow-elev-1 py-16 text-center text-on-surface-subtle">Loading…</div>;
@@ -968,11 +982,13 @@ function MineView({ summary, assignments, myProjects, reportsToIds, loading, mon
           </div>
           <div className="divide-y divide-outline">
             {projectStats.map(({ project, totalPlanned, employees: empNames, rows }: any) => (
-              <div key={project.id} className="px-5 py-4 hover:bg-surface-2/40 transition-colors">
+              <button key={project.id} onClick={() => setDrillProject({ id: project.id, name: project.name, rows })}
+                className="w-full text-left px-5 py-4 hover:bg-surface-2/60 transition-colors group">
                 <div className="flex items-start justify-between gap-3">
                   <div className="min-w-0">
                     <div className="flex items-center gap-2">
-                      <p className="font-display text-base font-bold text-on-surface tracking-tight">{project.name}</p>
+                      <p className="font-display text-base font-bold text-on-surface tracking-tight group-hover:text-accent transition-colors">{project.name}</p>
+                      <ChevronRight size={13} className="text-on-surface-subtle group-hover:text-accent transition-colors" />
                       {project.flag && (
                         <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold ${project.flag === 'red' ? 'bg-danger-container text-danger' : 'bg-warning-container text-warning'}`}>
                           <Flag size={10} />{project.flag === 'red' ? 'At risk' : 'Watch'}
@@ -992,11 +1008,117 @@ function MineView({ summary, assignments, myProjects, reportsToIds, loading, mon
                     <p className="text-[10px] text-on-surface-subtle mt-0.5">{rows.length} assignment{rows.length === 1 ? '' : 's'}</p>
                   </div>
                 </div>
-              </div>
+              </button>
             ))}
           </div>
         </div>
       )}
+
+      {/* Project drill-in: per-employee hours on this project for the month */}
+      {drillProject && (
+        <ProjectDrillModal
+          project={drillProject}
+          month={month}
+          year={year}
+          summary={summary}
+          openDetail={(eid, ename, fw) => { setDrillProject(null); openDetail(eid, ename, fw); }}
+          onClose={() => setDrillProject(null)}
+        />
+      )}
     </div>
   );
 }
+
+// Drill-in modal: list the people assigned to a single project for the month,
+// with their per-week plan + the team's running plan/logged total. Click a row
+// to jump into the per-employee detail (which shows daily breakdown).
+function ProjectDrillModal({ project, month, year, summary, openDetail, onClose }: {
+  project: { id: string; name: string; rows: any[] };
+  month: number;
+  year: number;
+  summary: any;
+  openDetail: (employeeId: string, employeeName: string, focusWeek?: number) => void;
+  onClose: () => void;
+}) {
+  // Per-employee logged-this-month numbers come from the summary; we look up
+  // by employee_id. The per-project per-employee logged figure isn't a server
+  // field, so we show the employee's TOTAL logged for the month as context.
+  const summaryByEmp = useMemo(() => {
+    const m = new Map<string, any>();
+    if (summary?.employees) for (const e of summary.employees) m.set(e.employee_id, e);
+    return m;
+  }, [summary]);
+
+  const rows = useMemo(() => {
+    return [...project.rows].sort((a, b) => Number(b.monthly_hours || 0) - Number(a.monthly_hours || 0));
+  }, [project.rows]);
+
+  const totalPlanned = rows.reduce((s, a) => s + Number(a.monthly_hours || 0), 0);
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm" onClick={onClose}>
+      <div className="bg-surface rounded-xl-3 border border-outline shadow-elev-3 w-full max-w-3xl max-h-[88vh] overflow-hidden flex flex-col" onClick={e => e.stopPropagation()}>
+        <div className="px-5 py-4 border-b border-outline bg-gradient-to-r from-brand-container/40 to-surface flex items-start justify-between gap-3">
+          <div>
+            <h3 className="font-display text-xl font-bold tracking-tight text-on-surface">{project.name}</h3>
+            <p className="text-xs text-on-surface-muted mt-0.5">
+              {MONTHS[month-1]} {year} · {rows.length} on plan · <span className="num-mono text-on-surface">{totalPlanned}h</span> total planned
+            </p>
+          </div>
+          <button onClick={onClose} className="p-1.5 rounded-lg hover:bg-surface-2 transition-colors">
+            <X size={18} className="text-on-surface-muted" />
+          </button>
+        </div>
+        <div className="flex-1 overflow-y-auto">
+          {rows.length === 0 ? (
+            <div className="py-16 text-center text-sm text-on-surface-muted">No one assigned to this project this month.</div>
+          ) : (
+            <table className="w-full text-sm">
+              <thead className="bg-surface-2/40 sticky top-0">
+                <tr className="text-left text-[10px] font-bold text-on-surface-muted uppercase tracking-[0.16em] border-b border-outline">
+                  <th className="px-5 py-3">Employee</th>
+                  {['W1','W2','W3','W4','W5'].map(w => <th key={w} className="px-2 py-3 text-center min-w-[56px]">{w}</th>)}
+                  <th className="px-3 py-3 text-center bg-surface-3 min-w-[80px]">Plan</th>
+                  <th className="px-3 py-3 text-right">Logged (month)</th>
+                  <th className="px-3 py-3"></th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-outline">
+                {rows.map((a: any) => {
+                  const s = summaryByEmp.get(a.employee_id) || {};
+                  const logged = Number(s.logged_approved ?? 0);
+                  return (
+                    <tr key={a.id} className="hover:bg-surface-2/40 cursor-pointer"
+                      onClick={() => openDetail(a.employee_id, a.employee_name || '—')}>
+                      <td className="px-5 py-3 font-semibold text-on-surface whitespace-nowrap">
+                        {a.employee_name || '—'}
+                      </td>
+                      {[a.w1_hours, a.w2_hours, a.w3_hours, a.w4_hours, a.w5_hours].map((h: number, i: number) => (
+                        <td key={i} className="px-2 py-3 text-center num-mono text-sm text-on-surface-muted">
+                          {Number(h) > 0 ? Number(h) : <span className="text-on-surface-subtle">—</span>}
+                        </td>
+                      ))}
+                      <td className="px-3 py-3 text-center num-mono font-bold text-on-surface bg-surface-2/30">
+                        {Number(a.monthly_hours)}
+                      </td>
+                      <td className="px-3 py-3 text-right num-mono text-on-surface-muted">
+                        {logged > 0 ? `${logged}h` : <span className="text-on-surface-subtle">—</span>}
+                      </td>
+                      <td className="px-3 py-3 text-right">
+                        <ChevronRight size={14} className="text-on-surface-subtle" />
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          )}
+        </div>
+        <div className="px-5 py-3 border-t border-outline bg-surface-2/30 text-[11px] text-on-surface-subtle">
+          Click any row to drill into that person's daily log for the month.
+        </div>
+      </div>
+    </div>
+  );
+}
+

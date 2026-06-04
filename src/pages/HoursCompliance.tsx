@@ -53,7 +53,14 @@ export default function HoursCompliance() {
       .catch(e => setErr(e.message))
       .finally(() => setLoading(false));
   };
-  useEffect(load, [date, scope, me?.id]);
+  // Wait for `me` to resolve before firing for non-admin viewers — otherwise
+  // we briefly fetch org-wide data with managerId=undefined, then refire with
+  // the correct id, causing a flash of "all employees" on first load.
+  useEffect(() => {
+    if (scope === 'mine' && !me) return;
+    load();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [date, scope, me?.id]);
 
   const compliance = useMemo(() => {
     if (!data || data.eligible_count === 0) return 0;

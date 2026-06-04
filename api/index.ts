@@ -3787,6 +3787,18 @@ async function recomputeWeeklyFromDays(assignment_id: string, week_num: number):
     FROM hour_log_days
     WHERE assignment_id=${assignment_id} AND week_num=${week_num}`;
   const r = (sumRows as any[])[0];
+  // Aggregate day-level notes into a single weekly description, in date order.
+  // This keeps work_description in sync with what the employee actually wrote
+  // each day — otherwise the My Hours grid + Approval table would show NULL
+  // even though the employee filled out per-day notes.
+  const dayNoteRows = await sql`
+    SELECT log_date, notes FROM hour_log_days
+    WHERE assignment_id=${assignment_id} AND week_num=${week_num}
+      AND notes IS NOT NULL AND length(trim(notes)) > 0
+    ORDER BY log_date ASC`;
+  const aggregatedDesc = (dayNoteRows as any[])
+    .map(d => `${String(d.log_date).slice(0, 10).slice(8)}: ${d.notes.trim()}`)
+    .join(' · ') || null;
   const existing = await sql`SELECT id, status FROM hour_logs WHERE assignment_id=${assignment_id} AND week_num=${week_num}`;
   const e = (existing as any[])[0];
   if (!r || Number(r.day_count) === 0) {
@@ -3800,6 +3812,7 @@ async function recomputeWeeklyFromDays(assignment_id: string, week_num: number):
     await sql`
       UPDATE hour_logs SET
         hours_logged=${Number(r.total)},
+        work_description=${aggregatedDesc},
         status='pending',
         rejection_reason=NULL,
         reviewed_by_id=NULL, reviewed_by_name=NULL, reviewed_at=NULL,
@@ -3815,7 +3828,7 @@ async function recomputeWeeklyFromDays(assignment_id: string, week_num: number):
     INSERT INTO hour_logs (id, assignment_id, project_id, employee_id, employee_name,
       month, year, week_num, hours_logged, work_description, status)
     VALUES (${id}, ${assignment_id}, ${r.project_id}, ${r.employee_id}, ${r.employee_name},
-      ${r.month}, ${r.year}, ${week_num}, ${Number(r.total)}, NULL, 'pending')`;
+      ${r.month}, ${r.year}, ${week_num}, ${Number(r.total)}, ${aggregatedDesc}, 'pending')`;
   await sql`UPDATE hour_log_days SET hour_log_id=${id}
             WHERE assignment_id=${assignment_id} AND week_num=${week_num} AND hour_log_id IS NULL`;
   return id;

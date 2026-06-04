@@ -4,6 +4,7 @@ import { Users, Calendar, TrendingUp, CheckCircle, XCircle, AlertCircle,
   X, Save, RefreshCw, Clock, UserCheck, Monitor } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
 import { api } from '../../services/api';
+import MemberCalendarModal from '../../components/MemberCalendarModal';
 import { GOAL_STATUSES, GOAL_STATUS_CONFIG } from '../Performance';
 import type { GoalStatus } from '../Performance';
 import {
@@ -114,6 +115,9 @@ export default function MyTeam() {
   const [approvingLeave, setApprovingLeave] = useState<Record<string, boolean>>({});
   const [rejectTarget, setRejectTarget] = useState<string | null>(null);
   const [viewLeavesFor, setViewLeavesFor] = useState<any | null>(null);
+  // Per-member calendar drill-in: a month grid showing every day color-coded
+  // by attendance + leave status. Click a member card → opens this.
+  const [calendarFor, setCalendarFor] = useState<any | null>(null);
   const [memberLeaves, setMemberLeaves] = useState<any[]>([]);
   const [memberBalance, setMemberBalance] = useState<any | null>(null);
   const [loadingMemberLeaves, setLoadingMemberLeaves] = useState(false);
@@ -492,18 +496,47 @@ export default function MyTeam() {
               const trend = latest && prev ? latest.overall_score - prev.overall_score : 0;
               const att = teamAttendance[m.id] ?? [];
               const attRate = att.length ? Math.round(att.filter((r: any) => ['present','late'].includes(r.status)).length / Math.max(att.filter((r: any) => r.status !== 'weekend').length, 1) * 100) : null;
+              // Today's clock-in / clock-out (if any). The Compliance page shows
+              // who hasn't logged hours — this shows who hasn't clocked in.
+              const todayRec = att.find((r: any) => (r.date ?? '').slice(0, 10) === todayStr);
+              const todayStatus = todayRec?.status as string | undefined;
               return (
-                <div key={m.id} className="group bg-surface rounded-xl-2 border border-outline shadow-elev-1 hover:shadow-elev-2 transition-shadow p-4">
+                <button key={m.id} onClick={() => setCalendarFor(m)}
+                  className="text-left group bg-surface rounded-xl-2 border border-outline shadow-elev-1 hover:shadow-elev-2 hover:border-accent/40 transition-all p-4">
                   <div className="flex items-center gap-3 mb-3">
                     <div className="w-9 h-9 rounded-xl-2 flex items-center justify-center text-xs font-bold text-white flex-shrink-0"
                       style={{ background: memberColors[i] }}>
                       {m.name?.split(' ').map((n: string) => n[0]).join('').slice(0, 2)}
                     </div>
                     <div className="min-w-0">
-                      <p className="font-semibold text-sm text-on-surface truncate">{m.name}</p>
+                      <p className="font-semibold text-sm text-on-surface truncate group-hover:text-accent transition-colors">{m.name}</p>
                       <p className="text-xs text-on-surface-muted truncate">{m.designation}</p>
                     </div>
                   </div>
+
+                  {/* Today's clock-in / clock-out strip */}
+                  <div className="rounded-lg bg-surface-2/60 border border-outline px-2.5 py-1.5 mb-2 flex items-center justify-between gap-2 text-xs">
+                    <span className="inline-flex items-center gap-1.5 text-on-surface-muted">
+                      <Clock size={11} className="text-on-surface-subtle" />
+                      Today
+                    </span>
+                    <span className="num-mono text-on-surface">
+                      {todayStatus && leaveStatuses.has(todayStatus) ? (
+                        <span className="text-warning font-semibold">On leave</span>
+                      ) : todayRec?.clock_in ? (
+                        <>
+                          <span>{todayRec.clock_in}</span>
+                          <span className="text-on-surface-subtle mx-1">→</span>
+                          <span className={todayRec.clock_out ? 'text-on-surface' : 'text-success font-semibold'}>
+                            {todayRec.clock_out || 'still in'}
+                          </span>
+                        </>
+                      ) : (
+                        <span className="text-on-surface-subtle">Not in yet</span>
+                      )}
+                    </span>
+                  </div>
+
                   <div className="grid grid-cols-2 gap-2">
                     <div className="rounded-xl-2 p-2.5 text-center bg-surface-2">
                       <p className="num-mono text-lg font-semibold" style={{ color: latest ? perfColor(latest.overall_score) : 'rgb(var(--on-surface-subtle))' }}>
@@ -523,11 +556,24 @@ export default function MyTeam() {
                       {trend > 0 ? '▲' : '▼'} {Math.abs(trend)} pts vs last month
                     </p>
                   )}
-                </div>
+                  <p className="text-[10px] text-on-surface-subtle mt-2 inline-flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                    Click to view monthly calendar →
+                  </p>
+                </button>
               );
             })}
           </div>
         </div>
+      )}
+
+      {/* Per-member calendar drill-in */}
+      {calendarFor && (
+        <MemberCalendarModal
+          member={calendarFor}
+          attendance={teamAttendance[calendarFor.id] ?? []}
+          leaves={teamAllLeaves.filter((l: any) => l.employee_id === calendarFor.id)}
+          onClose={() => setCalendarFor(null)}
+        />
       )}
 
       {/* ── LEAVES TAB ────────────────────────────────────────────────────── */}

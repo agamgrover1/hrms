@@ -2545,12 +2545,24 @@ function WeekCell({ alloc, log, onClick }: { alloc: number; log?: MHLog; onClick
     : log.status === 'rejected'
     ? { dot: '#dc2626', text: 'text-danger' }
     : { dot: '#d97706', text: 'text-warning' };
+  // Surface the description so the employee can see what they (or their
+  // daily entries) recorded without having to re-open the modal. Hover
+  // tooltip shows the full text, the cell shows a one-line preview.
+  const desc = (log.work_description ?? '').trim();
   return (
     <button onClick={onClick}
-      className={`inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-md text-xs hover:bg-surface-2 ${pillCfg.text} font-semibold`}>
-      <span className="w-1.5 h-1.5 rounded-full" style={{ background: pillCfg.dot }} />
-      {Number(log.hours_logged)} / {alloc}
-      <Edit2 size={10} className="opacity-50" />
+      title={desc ? `What you logged: ${desc}` : undefined}
+      className={`inline-flex flex-col items-stretch min-w-[80px] gap-0.5 px-2.5 py-1.5 rounded-md text-xs hover:bg-surface-2 ${pillCfg.text} font-semibold`}>
+      <span className="inline-flex items-center justify-center gap-1.5">
+        <span className="w-1.5 h-1.5 rounded-full" style={{ background: pillCfg.dot }} />
+        {Number(log.hours_logged)} / {alloc}
+        <Edit2 size={10} className="opacity-50" />
+      </span>
+      {desc && (
+        <span className="text-[10px] font-normal text-on-surface-muted leading-snug truncate max-w-[120px]">
+          {desc}
+        </span>
+      )}
     </button>
   );
 }
