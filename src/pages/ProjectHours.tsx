@@ -268,25 +268,34 @@ export default function ProjectHours() {
         let scopeLabel = ''; // appended to tile labels when scoped
 
         if (isMine && me) {
-          // Build the set of employee_ids this viewer can see numbers for:
-          //   - themselves
-          //   - their reporting sub-tree (descendants)
-          //   - everyone assigned to projects they review or lead
-          const visible = new Set<string>([me.id]);
-          for (const id of reportsTo) visible.add(id);
+          // Iterate over ASSIGNMENTS — each row is one employee's hours on
+          // one project. An assignment is in-scope when:
+          //   - the employee is the viewer themselves, OR
+          //   - the employee reports to them (descendants), OR
+          //   - the project is one they review or lead.
+          // Summing assignment.monthly_hours gives the actual planned hours
+          // FOR work this user has visibility into, not the full org-wide
+          // monthly of every employee who happens to touch their project.
           const myProjectIds = new Set(myProjects.map(p => p.id));
-          for (const a of assignments) {
-            if (a.employee_id && myProjectIds.has(a.project_id)) visible.add(a.employee_id);
-          }
-          const scopedEmps = summary.employees.filter((e: any) => visible.has(e.employee_id));
-          allocated = scopedEmps.reduce((s: number, e: any) => s + Number(e.monthly || 0), 0);
-          // Pending review HOURS for the visible set — the server's pending
-          // count is org-wide and can't be broken per-employee, so we use
-          // logged_pending (per-employee) and display as hours.
+          const visibleAssignments = assignments.filter((a: any) =>
+            a.employee_id === me.id ||
+            reportsTo.has(a.employee_id) ||
+            myProjectIds.has(a.project_id)
+          );
+          allocated = visibleAssignments.reduce((s: number, a: any) => s + Number(a.monthly_hours || 0), 0);
+          empCount = new Set(visibleAssignments.map((a: any) => a.employee_id)).size;
+
+          // Pending / Over plan still rely on summary.employees (per-employee
+          // totals across all of their work). For a reviewer's tile this is an
+          // over-approximation — those employees may have pending logs on
+          // OTHER projects too — but it's the best signal available without a
+          // per-project pending breakdown from the server, and erring high is
+          // better than missing real pending work.
+          const visibleEmpIds = new Set(visibleAssignments.map((a: any) => a.employee_id));
+          const scopedEmps = summary.employees.filter((e: any) => visibleEmpIds.has(e.employee_id));
           pendingCount = Math.round(scopedEmps.reduce((s: number, e: any) => s + Number(e.logged_pending || 0), 0));
           overPlan = scopedEmps.reduce((s: number, e: any) => s + Number(e.logged_over_plan || 0), 0);
           overPlanLogs = scopedEmps.reduce((s: number, e: any) => s + Number(e.over_plan_log_count || 0), 0);
-          empCount = scopedEmps.length;
 
           // Pick the right label suffix based on what they actually see.
           if (reportsTo.size > 0) scopeLabel = '· my team';
