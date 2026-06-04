@@ -2740,7 +2740,14 @@ function HourLogModal({
                     onChange={e => setDay(iso, { notes: e.target.value })}
                     placeholder={h > 0 ? 'What did you work on?' : '—'}
                     disabled={h === 0 && !d.existing}
-                    className="flex-1 min-w-0 text-sm bg-transparent border border-transparent hover:border-outline focus:border-accent focus:ring-2 focus:ring-accent/20 focus:bg-surface rounded-lg px-2 py-1.5 placeholder:text-on-surface-subtle transition-colors disabled:opacity-50"
+                    className={`flex-1 min-w-0 text-sm rounded-lg px-2.5 py-1.5 transition-colors placeholder:text-on-surface-subtle focus:outline-none focus:ring-2 focus:ring-accent/20 disabled:opacity-50 ${
+                      h > 0
+                        ? (d.notes.trim()
+                            ? 'bg-surface border border-outline focus:border-accent'
+                            // Empty + hours filled → soft amber hint so the employee notices
+                            : 'bg-warning-container/30 border border-warning/40 focus:border-accent')
+                        : 'bg-transparent border border-transparent'
+                    }`}
                   />
                 </div>
               </div>
