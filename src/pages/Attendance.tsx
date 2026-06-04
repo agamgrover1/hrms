@@ -303,9 +303,13 @@ export default function Attendance() {
     setSyncSuccess('');
     try {
       const today = new Date().toISOString().split('T')[0];
+      // For the "Sync Today" button, cover yesterday + today so late
+      // punches from the previous evening get picked up (eTimeOffice
+      // sometimes delivers them after midnight).
+      const yest = (() => { const d = new Date(); d.setDate(d.getDate() - 1); return d.toISOString().slice(0, 10); })();
       const fromDate = fullMonth
         ? `${today.slice(0, 7)}-01`   // first day of current month
-        : today;
+        : yest;                       // yesterday → today
       const result = await api.syncBiometric(user?.name ?? 'HR', fromDate, today);
       const label = fullMonth ? 'Month sync complete' : 'Sync complete';
       setSyncSuccess(`${label} — ${result.records_updated} updated, ${result.records_created} created`);
@@ -431,7 +435,7 @@ export default function Attendance() {
                   <div className="flex items-center gap-2 mt-0.5 flex-wrap">
                     <span className="flex items-center gap-1 text-xs text-on-surface-subtle">
                       <Activity size={10} className="text-success" />
-                      Auto-sync every 30 min · today + yesterday
+                      Auto-sync: daily server cron + every 30 min while HR/admin online · today + yesterday
                     </span>
                     {lastSync && (
                       <span className="num-mono text-xs text-on-surface-subtle">
@@ -463,7 +467,7 @@ export default function Attendance() {
                   className="flex items-center gap-1.5 px-4 py-2 text-xs font-semibold text-on-accent bg-accent hover:opacity-90 rounded-xl-2 shadow-elev-1 transition-all disabled:opacity-60"
                 >
                   <RefreshCw size={13} className={syncing ? 'animate-spin' : ''} />
-                  {syncing ? 'Syncing…' : 'Sync Today'}
+                  {syncing ? 'Syncing…' : 'Sync Today + Yesterday'}
                 </button>
                 {/* Toggle history */}
                 <button
