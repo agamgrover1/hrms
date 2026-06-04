@@ -2885,11 +2885,34 @@ app.get('/api/repair-tickets', async (req, res) => {
   try {
     await ensureRepairTables();
     const { employee_id } = req.query as any;
+    let rows: any[];
     if (employee_id) {
-      res.json(await sql`SELECT * FROM repair_tickets WHERE employee_id=${employee_id} ORDER BY reported_at DESC`);
+      rows = await sql`SELECT * FROM repair_tickets WHERE employee_id=${employee_id} ORDER BY reported_at DESC` as any[];
     } else {
-      res.json(await sql`SELECT * FROM repair_tickets ORDER BY reported_at DESC`);
+      rows = await sql`SELECT * FROM repair_tickets ORDER BY reported_at DESC` as any[];
     }
+    // Hide cost / payment / vendor / approval fields from employees so the
+    // money trail (quoted, final, payment_mode, payment dates, vendor) never
+    // shows up — not even in DevTools. Admin/HR (and the case where no
+    // employee_id was supplied — only callable by admin UIs) keep full data.
+    const userId = req.header('x-user-id') || (req.query as any).__uid;
+    let isAdminish = false;
+    if (userId) {
+      const u = await sql`SELECT role, active FROM app_users WHERE id=${userId} LIMIT 1`.catch(() => []);
+      const ur = (u as any[])[0];
+      isAdminish = !!ur && ur.active === true && (ur.role === 'admin' || ur.role === 'hr_manager');
+    }
+    if (!isAdminish && employee_id) {
+      const stripped = ['quoted_cost', 'final_cost', 'payment_status', 'payment_mode', 'payment_date',
+                        'paid_at', 'vendor_id', 'approved_by', 'approved_at', 'rejected_by',
+                        'rejected_at', 'rejection_reason', 'requires_approval', 'notes'];
+      rows = rows.map(r => {
+        const out: any = { ...r };
+        for (const k of stripped) delete out[k];
+        return out;
+      });
+    }
+    res.json(rows);
   } catch (e: any) { res.status(500).json({ error: e.message }); }
 });
 
