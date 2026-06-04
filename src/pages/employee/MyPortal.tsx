@@ -1,6 +1,6 @@
 import { useState, useEffect, useMemo, Component, type ReactNode } from 'react';
 import { useSearchParams } from 'react-router-dom';
-import { Clock, Calendar, DollarSign, User, CheckCircle, XCircle, AlertCircle, Plus, X, Target, FileText, Lock, Trash2, Save, Users, Monitor, Briefcase, Edit2, BookOpen } from 'lucide-react';
+import { Clock, Calendar, DollarSign, User, CheckCircle, XCircle, AlertCircle, Plus, X, Target, FileText, Lock, Trash2, Save, Users, Monitor, Briefcase, Edit2, BookOpen, Wrench } from 'lucide-react';
 import MyRoleTab from '../../components/MyRoleTab';
 import { useAuth } from '../../context/AuthContext';
 import { api } from '../../services/api';
@@ -243,6 +243,12 @@ export default function MyPortal() {
   const [myExpenses, setMyExpenses] = useState<any[]>([]);
   const [myAssets, setMyAssets] = useState<any[]>([]);
   const [myRepairTickets, setMyRepairTickets] = useState<any[]>([]);
+  // "Raise repair ticket" flow for employees with at least one assigned
+  // asset. The modal is opened with a specific asset pre-selected.
+  const [reportingRepairFor, setReportingRepairFor] = useState<any | null>(null);
+  const [repairForm, setRepairForm] = useState({ issue: '', notes: '' });
+  const [repairSubmitting, setRepairSubmitting] = useState(false);
+  const [repairError, setRepairError] = useState('');
   const [showExpenseForm, setShowExpenseForm] = useState(false);
   const [expCategories, setExpCategories] = useState<string[]>([]);
   const [expenseForm, setExpenseForm] = useState({ category: '', description: '', amount: '', receipt_note: '', expense_date: '' });
@@ -1532,11 +1538,40 @@ export default function MyPortal() {
           paid:              { label: 'Completed',         bg: '#f5f3ff', color: '#7c3aed' },
           cancelled:         { label: 'Cancelled',         bg: '#f3f4f6', color: '#6b7280' },
         };
+        // Open-ticket lookup so the "Report issue" button knows when the
+        // asset already has a repair in flight (one-open-ticket-per-asset
+        // server constraint).
+        const openByAsset = new Map<string, any>();
+        for (const t of myRepairTickets) {
+          if (t.asset_id && !['paid', 'cancelled'].includes(t.status)) openByAsset.set(t.asset_id, t);
+        }
+
+        const openRepairModal = (asset: any) => {
+          setRepairForm({ issue: '', notes: '' });
+          setRepairError('');
+          setReportingRepairFor(asset);
+        };
+
         return (
           <div className="space-y-5">
             {/* Assigned laptops */}
             <div>
-              <p className="text-xs font-bold text-on-surface-subtle uppercase tracking-wider mb-3">My Assigned Devices</p>
+              <div className="flex items-center justify-between mb-3">
+                <p className="text-xs font-bold text-on-surface-subtle uppercase tracking-wider">My Assigned Devices</p>
+                {myAssets.length > 0 && (
+                  <button
+                    onClick={() => {
+                      // If only one asset, open the modal directly with it.
+                      // If multiple, pick the first asset without an open ticket;
+                      // employee can switch via the per-card button below.
+                      const eligible = myAssets.find(a => !openByAsset.has(a.id)) ?? myAssets[0];
+                      openRepairModal(eligible);
+                    }}
+                    className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs font-semibold bg-accent text-on-accent hover:opacity-90 transition-opacity">
+                    <Wrench size={13} /> Raise repair ticket
+                  </button>
+                )}
+              </div>
               {myAssets.length === 0 ? (
                 <div className="bg-surface rounded-2xl border border-outline shadow-sm p-8 text-center">
                   <Monitor size={28} className="text-gray-200 mx-auto mb-2"/>
@@ -1545,26 +1580,43 @@ export default function MyPortal() {
                 </div>
               ) : (
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                  {myAssets.map(a => (
-                    <div key={a.id} className="bg-surface rounded-xl border border-outline shadow-sm p-4">
-                      <div className="flex items-center gap-3">
-                        <div className="w-10 h-10 rounded-xl bg-primary-50 flex items-center justify-center">
-                          <Monitor size={18} className="text-primary-600"/>
+                  {myAssets.map(a => {
+                    const openTicket = openByAsset.get(a.id);
+                    return (
+                      <div key={a.id} className="bg-surface rounded-xl border border-outline shadow-sm p-4">
+                        <div className="flex items-center gap-3">
+                          <div className="w-10 h-10 rounded-xl bg-primary-50 flex items-center justify-center">
+                            <Monitor size={18} className="text-primary-600"/>
+                          </div>
+                          <div className="flex-1 min-w-0">
+                            <p className="font-mono text-sm font-bold text-on-surface">{a.asset_tag}</p>
+                            <p className="text-xs text-on-surface-subtle truncate">{a.model ?? 'Unknown model'}</p>
+                          </div>
+                          <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${
+                            a.status === 'active' ? 'bg-success-container text-success' :
+                            a.status === 'in_repair' ? 'bg-warning-container text-warning' :
+                                                       'bg-surface-2 text-on-surface-subtle'}`}>
+                            {(a.status ?? '').replace('_',' ')}
+                          </span>
                         </div>
-                        <div className="flex-1 min-w-0">
-                          <p className="font-mono text-sm font-bold text-on-surface">{a.asset_tag}</p>
-                          <p className="text-xs text-on-surface-subtle truncate">{a.model ?? 'Unknown model'}</p>
+                        {a.serial_no && <p className="text-[10px] text-on-surface-subtle font-mono mt-2">SN: {a.serial_no}</p>}
+                        <div className="mt-3 pt-3 border-t border-outline flex items-center justify-between">
+                          {openTicket ? (
+                            <span className="text-[11px] text-warning inline-flex items-center gap-1">
+                              <Clock size={11} /> Repair already in progress
+                            </span>
+                          ) : (
+                            <span className="text-[11px] text-on-surface-subtle">Something not working?</span>
+                          )}
+                          <button onClick={() => openRepairModal(a)}
+                            disabled={!!openTicket}
+                            className="text-[11px] font-semibold text-accent hover:underline disabled:opacity-50 disabled:no-underline disabled:cursor-not-allowed inline-flex items-center gap-1">
+                            <Wrench size={11} /> {openTicket ? 'View status' : 'Report issue'}
+                          </button>
                         </div>
-                        <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${
-                          a.status === 'active' ? 'bg-success-container text-success' :
-                          a.status === 'in_repair' ? 'bg-warning-container text-warning' :
-                                                     'bg-surface-2 text-on-surface-subtle'}`}>
-                          {(a.status ?? '').replace('_',' ')}
-                        </span>
                       </div>
-                      {a.serial_no && <p className="text-[10px] text-on-surface-subtle font-mono mt-2">SN: {a.serial_no}</p>}
-                    </div>
-                  ))}
+                    );
+                  })}
                 </div>
               )}
             </div>
@@ -1607,6 +1659,97 @@ export default function MyPortal() {
                 </div>
               )}
             </div>
+
+            {/* Raise repair ticket — picks the asset from state when opened */}
+            {reportingRepairFor && (
+              <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm" onClick={() => !repairSubmitting && setReportingRepairFor(null)}>
+                <div className="bg-surface rounded-xl-3 border border-outline shadow-elev-3 w-full max-w-md" onClick={e => e.stopPropagation()}>
+                  <div className="px-5 py-4 border-b border-outline flex items-center justify-between">
+                    <div>
+                      <h3 className="text-base font-bold text-on-surface">Raise repair ticket</h3>
+                      <p className="text-xs text-on-surface-muted mt-0.5 num-mono">
+                        {reportingRepairFor.asset_tag} · {reportingRepairFor.model ?? 'Unknown model'}
+                      </p>
+                    </div>
+                    <button onClick={() => !repairSubmitting && setReportingRepairFor(null)} className="p-1.5 rounded-lg hover:bg-surface-2"><X size={16} className="text-on-surface-muted" /></button>
+                  </div>
+                  <div className="p-5 space-y-3">
+                    {/* Asset picker — only shown when the employee has more than one device */}
+                    {myAssets.length > 1 && (
+                      <label className="block">
+                        <span className="block text-[10px] font-bold uppercase tracking-[0.14em] text-on-surface-subtle mb-1">Which device?</span>
+                        <select value={reportingRepairFor.id}
+                          onChange={e => {
+                            const a = myAssets.find(x => x.id === e.target.value);
+                            if (a) setReportingRepairFor(a);
+                          }}
+                          className="w-full px-3 py-2 rounded-lg bg-surface-2 border border-outline text-sm text-on-surface focus:outline-none focus:ring-2 focus:ring-accent/30">
+                          {myAssets.map(a => {
+                            const taken = openByAsset.has(a.id);
+                            return <option key={a.id} value={a.id} disabled={taken}>{a.asset_tag}{a.model ? ` · ${a.model}` : ''}{taken ? ' (repair already in progress)' : ''}</option>;
+                          })}
+                        </select>
+                      </label>
+                    )}
+                    <label className="block">
+                      <span className="block text-[10px] font-bold uppercase tracking-[0.14em] text-on-surface-subtle mb-1">
+                        What's wrong? <span className="text-danger">*</span>
+                      </span>
+                      <input value={repairForm.issue} onChange={e => setRepairForm(f => ({ ...f, issue: e.target.value }))}
+                        placeholder="e.g. Screen flickering, battery drains fast"
+                        className="w-full px-3 py-2 rounded-lg bg-surface-2 border border-outline text-sm text-on-surface placeholder:text-on-surface-subtle focus:outline-none focus:ring-2 focus:ring-accent/30" />
+                    </label>
+                    <label className="block">
+                      <span className="block text-[10px] font-bold uppercase tracking-[0.14em] text-on-surface-subtle mb-1">More detail (optional)</span>
+                      <textarea value={repairForm.notes} onChange={e => setRepairForm(f => ({ ...f, notes: e.target.value }))} rows={3}
+                        placeholder="When did it start? Steps to reproduce? Anything else IT should know?"
+                        className="w-full px-3 py-2 rounded-lg bg-surface-2 border border-outline text-sm text-on-surface placeholder:text-on-surface-subtle focus:outline-none focus:ring-2 focus:ring-accent/30" />
+                    </label>
+                    <p className="text-[11px] text-on-surface-subtle">
+                      HR / admin will see this ticket and arrange pickup. You'll get a notification when the status changes.
+                    </p>
+                    {repairError && <p className="text-xs text-danger">{repairError}</p>}
+                  </div>
+                  <div className="px-5 py-3 border-t border-outline flex items-center justify-end gap-2 bg-surface-2/30">
+                    <button onClick={() => setReportingRepairFor(null)} disabled={repairSubmitting}
+                      className="px-3 py-2 rounded-lg text-sm font-medium text-on-surface-muted hover:bg-surface-2 disabled:opacity-50">
+                      Cancel
+                    </button>
+                    <button
+                      onClick={async () => {
+                        if (!repairForm.issue.trim()) { setRepairError('Please describe the issue'); return; }
+                        if (!empDbId) { setRepairError('Could not find your employee record — refresh the page'); return; }
+                        if (openByAsset.has(reportingRepairFor.id)) {
+                          setRepairError('A repair is already in progress for this device. Wait for it to close before reporting another issue.');
+                          return;
+                        }
+                        setRepairSubmitting(true); setRepairError('');
+                        try {
+                          await api.createRepairTicket({
+                            asset_id: reportingRepairFor.id,
+                            laptop_info: reportingRepairFor.model || reportingRepairFor.asset_tag,
+                            employee_id: empDbId,
+                            employee_name: user?.name ?? null,
+                            issue: repairForm.issue.trim(),
+                            notes: repairForm.notes.trim() || null,
+                            created_by: user?.name ?? null,
+                          });
+                          // Refetch tickets so the new one shows in Repair History
+                          api.getRepairTickets(empDbId).then(setMyRepairTickets).catch(() => {});
+                          setReportingRepairFor(null);
+                          setRepairForm({ issue: '', notes: '' });
+                        } catch (e: any) { setRepairError(e.message); }
+                        finally { setRepairSubmitting(false); }
+                      }}
+                      disabled={repairSubmitting || !repairForm.issue.trim()}
+                      className="px-4 py-2 rounded-lg text-sm font-semibold bg-accent text-on-accent hover:opacity-90 disabled:opacity-50 inline-flex items-center gap-1.5">
+                      <Wrench size={13} />
+                      {repairSubmitting ? 'Submitting…' : 'Submit ticket'}
+                    </button>
+                  </div>
+                </div>
+              </div>
+            )}
           </div>
         );
       })()}
