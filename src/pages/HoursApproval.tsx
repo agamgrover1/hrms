@@ -36,6 +36,7 @@ interface HourLog {
   hours_logged: number;
   work_description: string | null;
   effective_description: string | null;  // server-side fallback: aggregates day notes when work_description is empty
+  day_notes: Array<{ date: string; hours: number; notes: string | null }> | null;
   status: string;
   rejection_reason: string | null;
   reviewed_by_name: string | null;
@@ -268,7 +269,7 @@ export default function HoursApproval() {
                     <th className="px-4 py-2 text-right">Allocated</th>
                     <th className="px-4 py-2 text-right">Logged</th>
                     <th className="px-4 py-2">Submitted</th>
-                    <th className="px-4 py-2">Description</th>
+                    <th className="px-4 py-2">What they worked on</th>
                     <th className="px-4 py-2">Status</th>
                     <th className="px-4 py-2 text-right">Action</th>
                   </tr>
@@ -302,7 +303,7 @@ export default function HoursApproval() {
                           </div>
                         </td>
                         <td className="px-4 py-3 text-on-surface-muted text-xs max-w-md">
-                          {(log.effective_description || log.work_description) || <span className="text-on-surface-subtle italic">—</span>}
+                          <DescriptionCell log={log} />
                           {log.status === 'rejected' && log.rejection_reason && (
                             <p className="text-danger mt-1 flex items-center gap-1">
                               <XCircle size={11} /> {log.rejection_reason}
@@ -347,6 +348,34 @@ export default function HoursApproval() {
       )}
     </div>
   );
+}
+
+// Renders the "What they worked on" cell. Prefers structured per-day notes
+// (each day on its own row, with hours, so the reviewer sees the daily
+// shape of the work). Falls back to the aggregated effective_description
+// or the legacy work_description when day-level data is missing.
+function DescriptionCell({ log }: { log: HourLog }) {
+  const days = (log.day_notes ?? []).filter(d => (d.notes ?? '').trim().length > 0);
+  if (days.length > 0) {
+    return (
+      <ul className="space-y-1">
+        {days.map((d) => {
+          const dt = new Date(String(d.date).slice(0, 10) + 'T12:00:00Z');
+          const dayLabel = dt.toLocaleDateString('en-IN', { weekday: 'short', day: 'numeric' });
+          return (
+            <li key={d.date} className="flex items-start gap-2 leading-snug">
+              <span className="num-mono text-[10px] font-semibold text-on-surface-subtle min-w-[42px] uppercase tracking-wide">{dayLabel}</span>
+              <span className="num-mono text-[10px] font-bold text-accent min-w-[28px]">{Number(d.hours)}h</span>
+              <span className="text-on-surface flex-1">{d.notes}</span>
+            </li>
+          );
+        })}
+      </ul>
+    );
+  }
+  const fallback = log.effective_description || log.work_description;
+  if (fallback) return <span>{fallback}</span>;
+  return <span className="text-on-surface-subtle italic">—</span>;
 }
 
 function StatusPill({ status }: { status: string }) {

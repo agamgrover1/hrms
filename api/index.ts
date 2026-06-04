@@ -3760,7 +3760,20 @@ app.get('/api/hour-logs', async (req, res) => {
                    AND d.week_num = hl.week_num
                    AND d.notes IS NOT NULL AND LENGTH(TRIM(d.notes)) > 0
                )
-             ) AS effective_description
+             ) AS effective_description,
+             -- Structured per-day data so the reviewer can see each day's
+             -- date + hours + note as its own row instead of a stitched
+             -- string. Empty when the employee didn't use the daily flow.
+             (
+               SELECT JSON_AGG(JSON_BUILD_OBJECT(
+                 'date', d.log_date,
+                 'hours', d.hours,
+                 'notes', d.notes
+               ) ORDER BY d.log_date)
+               FROM hour_log_days d
+               WHERE d.assignment_id = hl.assignment_id
+                 AND d.week_num = hl.week_num
+             ) AS day_notes
       FROM hour_logs hl
       JOIN projects p ON p.id = hl.project_id
       LEFT JOIN project_assignments pa ON pa.id = hl.assignment_id
