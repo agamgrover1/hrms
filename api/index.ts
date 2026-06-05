@@ -655,6 +655,23 @@ async function runStartupMigrations() {
       billable_hours NUMERIC NOT NULL DEFAULT 0,
       PRIMARY KEY (project_id, month, year)
     )`;
+  // Multi-currency support on Billing Setup — mirrors what we did for
+  // invoices. Lets coordinators set Upwork projects in USD; the INR
+  // equivalent is locked at save time using the FX-rate endpoint.
+  try {
+    await sql`ALTER TABLE fin_project_revenue ADD COLUMN IF NOT EXISTS currency TEXT DEFAULT 'INR'`;
+    await sql`ALTER TABLE fin_project_revenue ADD COLUMN IF NOT EXISTS fx_rate NUMERIC`;
+    await sql`ALTER TABLE fin_project_revenue ADD COLUMN IF NOT EXISTS revenue_inr NUMERIC`;
+    // Backfill legacy rows: assume INR @ rate 1, INR = fixed or hourly*hours
+    await sql`
+      UPDATE fin_project_revenue
+      SET currency=COALESCE(currency, 'INR'),
+          fx_rate=COALESCE(fx_rate, 1),
+          revenue_inr=COALESCE(revenue_inr,
+            CASE WHEN billing_type='hourly' THEN hourly_rate * billable_hours
+                 ELSE fixed_amount END)
+      WHERE currency IS NULL OR revenue_inr IS NULL`;
+  } catch { /* idempotent */ }
   await sql`
     CREATE TABLE IF NOT EXISTS fin_other_costs (
       id SERIAL PRIMARY KEY,
@@ -4695,6 +4712,10 @@ async function finComputeMonth(month: number, year: number) {
     if (inv && Number(inv.invoiced) > 0) return Number(inv.realized);
     const r = revByProj.get(p.id);
     if (!r) return 0;
+    // Billing-Setup fallback. revenue_inr was populated at save time when the
+    // coordinator picked a currency (USD for Upwork, INR for direct). For
+    // legacy rows without revenue_inr we recompute on the fly assuming INR.
+    if (r.revenue_inr != null) return Number(r.revenue_inr);
     return r.billing_type === 'hourly' ? Number(r.hourly_rate) * Number(r.billable_hours) : Number(r.fixed_amount);
   };
 
@@ -4982,13 +5003,18 @@ app.put('/api/finance/employees/:id', async (req, res) => {
 // Per-project monthly revenue (admin-only)
 app.get('/api/finance/revenue', async (req, res) => {
   await runStartupMigrations();
-  if (!(await requireAdmin(req, res))) return;
+  // Coordinators need to set USD amounts on Upwork projects in Billing Setup,
+  // so this endpoint is open to admin/HR/coord. The Finance dashboard itself
+  // (where org-wide totals live) stays admin-only.
+  const gate = await requireAdminOrCoord(req, res);
+  if (!gate.ok) return;
   try {
     const month = Number(req.query.month), year = Number(req.query.year);
     if (!month || !year) return res.status(400).json({ error: 'month and year are required' });
     const rows = await sql`
-      SELECT p.id, p.name, p.client_name,
-             r.billing_type, r.fixed_amount, r.hourly_rate, r.billable_hours
+      SELECT p.id, p.name, p.client_name, p.billing_source,
+             r.billing_type, r.fixed_amount, r.hourly_rate, r.billable_hours,
+             r.currency, r.fx_rate, r.revenue_inr
       FROM projects p
       LEFT JOIN fin_project_revenue r ON r.project_id = p.id AND r.month = ${month} AND r.year = ${year}
       WHERE p.status = 'active'
@@ -4998,17 +5024,34 @@ app.get('/api/finance/revenue', async (req, res) => {
 });
 app.put('/api/finance/revenue', async (req, res) => {
   await runStartupMigrations();
-  if (!(await requireAdmin(req, res))) return;
+  const gate = await requireAdminOrCoord(req, res);
+  if (!gate.ok) return;
   try {
-    const { project_id, month, year, billing_type, fixed_amount, hourly_rate, billable_hours } = req.body;
+    const { project_id, month, year, billing_type, fixed_amount, hourly_rate, billable_hours, currency, fx_rate } = req.body;
     if (!project_id || !month || !year) return res.status(400).json({ error: 'project_id, month, year are required' });
+    const ccy = (currency || 'INR').toUpperCase();
+    // FX rate: if client passes one (it shows the live preview to the user),
+    // use it; otherwise look up. INR is always 1.
+    let rate: number;
+    if (fx_rate != null) rate = Number(fx_rate);
+    else if (ccy === 'INR') rate = 1;
+    else {
+      const today = new Date().toISOString().slice(0, 10);
+      rate = (await getFxRate(today, ccy, 'INR')).rate;
+    }
+    const fa = Number(fixed_amount) || 0;
+    const hr = Number(hourly_rate) || 0;
+    const bh = Number(billable_hours) || 0;
+    const rawRevenue = (billing_type || 'fixed') === 'hourly' ? hr * bh : fa;
+    const revenueInr = rawRevenue * rate;
     await sql`
-      INSERT INTO fin_project_revenue (project_id, month, year, billing_type, fixed_amount, hourly_rate, billable_hours)
+      INSERT INTO fin_project_revenue (project_id, month, year, billing_type, fixed_amount, hourly_rate, billable_hours, currency, fx_rate, revenue_inr)
       VALUES (${project_id}, ${Number(month)}, ${Number(year)}, ${billing_type || 'fixed'},
-              ${Number(fixed_amount) || 0}, ${Number(hourly_rate) || 0}, ${Number(billable_hours) || 0})
+              ${fa}, ${hr}, ${bh}, ${ccy}, ${rate}, ${revenueInr})
       ON CONFLICT (project_id, month, year) DO UPDATE SET
         billing_type = EXCLUDED.billing_type, fixed_amount = EXCLUDED.fixed_amount,
-        hourly_rate = EXCLUDED.hourly_rate, billable_hours = EXCLUDED.billable_hours`;
+        hourly_rate = EXCLUDED.hourly_rate, billable_hours = EXCLUDED.billable_hours,
+        currency = EXCLUDED.currency, fx_rate = EXCLUDED.fx_rate, revenue_inr = EXCLUDED.revenue_inr`;
     res.json({ ok: true });
   } catch (err: any) { res.status(500).json({ error: err.message || 'Server error' }); }
 });

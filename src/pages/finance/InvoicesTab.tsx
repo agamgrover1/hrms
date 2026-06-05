@@ -178,15 +178,19 @@ export default function InvoicesTab({ month, year, onChanged }: { month: number;
         </button>
       </div>
 
-      {/* KPI strip */}
-      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-        <Tile label="Invoiced" value={money(totals.invoiced)} sub="accrual · what we billed" tone="text-on-surface" />
-        <Tile label="Received" value={money(totals.received)} sub="cash · what landed in bank" tone="text-success" />
-        <Tile label="Pending" value={money(totals.pending)} sub={`${totals.pendingCount} invoice${totals.pendingCount === 1 ? '' : 's'} awaiting clearance`} tone={totals.pendingCount > 0 ? 'text-warning' : 'text-on-surface-subtle'} />
-        <Tile label="Variance" value={money(totals.received - totals.invoiced)}
-          sub={totals.received < totals.invoiced ? 'short on cleared' : totals.received > totals.invoiced ? 'extra on cleared' : 'on track'}
-          tone={totals.received < totals.invoiced ? 'text-danger' : 'text-on-surface'} />
-      </div>
+      {/* KPI strip — hidden for project_coordinator since they shouldn't see
+          aggregate totals. They only raise invoices; reconciliation totals are
+          admin's view. */}
+      {isAdmin && (
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+          <Tile label="Invoiced" value={money(totals.invoiced)} sub="accrual · what we billed" tone="text-on-surface" />
+          <Tile label="Received" value={money(totals.received)} sub="cash · what landed in bank" tone="text-success" />
+          <Tile label="Pending" value={money(totals.pending)} sub={`${totals.pendingCount} invoice${totals.pendingCount === 1 ? '' : 's'} awaiting clearance`} tone={totals.pendingCount > 0 ? 'text-warning' : 'text-on-surface-subtle'} />
+          <Tile label="Variance" value={money(totals.received - totals.invoiced)}
+            sub={totals.received < totals.invoiced ? 'short on cleared' : totals.received > totals.invoiced ? 'extra on cleared' : 'on track'}
+            tone={totals.received < totals.invoiced ? 'text-danger' : 'text-on-surface'} />
+        </div>
+      )}
 
       {err && <div className="rounded-xl-2 border border-danger/30 bg-danger-container/40 p-3 text-sm text-danger">{err}</div>}
 
@@ -213,8 +217,9 @@ export default function InvoicesTab({ month, year, onChanged }: { month: number;
                   <th className="text-left font-semibold px-3 py-2.5">Invoice #</th>
                   <th className="text-left font-semibold px-3 py-2.5">Date</th>
                   <th className="text-right font-semibold px-3 py-2.5">Invoiced</th>
-                  <th className="text-right font-semibold px-3 py-2.5">Received</th>
-                  <th className="text-right font-semibold px-3 py-2.5">Δ</th>
+                  {/* Coordinator doesn't see Received / variance — admin reconciliation territory */}
+                  {isAdmin && <th className="text-right font-semibold px-3 py-2.5">Received</th>}
+                  {isAdmin && <th className="text-right font-semibold px-3 py-2.5">Δ</th>}
                   <th className="text-left font-semibold px-3 py-2.5">Status</th>
                   <th className="text-left font-semibold px-3 py-2.5">Raised by</th>
                   <th className="px-3 py-2.5"></th>
@@ -253,17 +258,21 @@ export default function InvoicesTab({ month, year, onChanged }: { month: number;
                           </div>
                         )}
                       </td>
-                      <td className="px-3 py-2.5 text-right num-mono">
-                        {isCleared ? <span className="text-on-surface">{money(recvInr)}</span> : <span className="text-on-surface-subtle">—</span>}
-                      </td>
-                      <td className="px-3 py-2.5 text-right num-mono text-xs">
-                        {isCleared ? (
-                          <span className={inrVariance === 0 ? 'text-on-surface-subtle' : inrVariance < 0 ? 'text-danger' : 'text-success'}
-                            title={isForeign ? `Compared against ₹${Math.round(invInr).toLocaleString('en-IN')} (INR equivalent at billing rate)` : undefined}>
-                            {inrVariance > 0 ? '+' : ''}{money(inrVariance)}
-                          </span>
-                        ) : <span className="text-on-surface-subtle">—</span>}
-                      </td>
+                      {isAdmin && (
+                        <td className="px-3 py-2.5 text-right num-mono">
+                          {isCleared ? <span className="text-on-surface">{money(recvInr)}</span> : <span className="text-on-surface-subtle">—</span>}
+                        </td>
+                      )}
+                      {isAdmin && (
+                        <td className="px-3 py-2.5 text-right num-mono text-xs">
+                          {isCleared ? (
+                            <span className={inrVariance === 0 ? 'text-on-surface-subtle' : inrVariance < 0 ? 'text-danger' : 'text-success'}
+                              title={isForeign ? `Compared against ₹${Math.round(invInr).toLocaleString('en-IN')} (INR equivalent at billing rate)` : undefined}>
+                              {inrVariance > 0 ? '+' : ''}{money(inrVariance)}
+                            </span>
+                          ) : <span className="text-on-surface-subtle">—</span>}
+                        </td>
+                      )}
                       <td className="px-3 py-2.5">
                         <StatusPill status={inv.status} />
                       </td>

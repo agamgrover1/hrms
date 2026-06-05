@@ -32,7 +32,12 @@ export default function Finance() {
   const location = useLocation();
 
   // Coordinator only sees Invoices. Admin sees everything.
-  const visibleTabs = useMemo(() => isAdmin ? ALL_TABS : ALL_TABS.filter(t => t.id === 'invoices'), [isAdmin]);
+  // Coordinator gets Invoices + Billing Setup (so they can record amounts
+  // for Upwork / fixed-fee projects in their preferred currency). Admin gets
+  // everything.
+  const visibleTabs = useMemo(() =>
+    isAdmin ? ALL_TABS : ALL_TABS.filter(t => t.id === 'invoices' || t.id === 'revenue'),
+  [isAdmin]);
   const defaultTab: TabId = isAdmin ? 'dashboard' : 'invoices';
 
   const [tab, setTab] = useState<TabId>(defaultTab);
@@ -103,7 +108,7 @@ export default function Finance() {
       {tab === 'dashboard' && isAdmin && <DashboardTab month={month} year={year} rev={rev} />}
       {tab === 'trends' && isAdmin && <TrendsTab month={month} year={year} rev={rev} />}
       {tab === 'invoices' && <InvoicesTab month={month} year={year} onChanged={refresh} />}
-      {tab === 'revenue' && isAdmin && <RevenueTab month={month} year={year} onChanged={refresh} />}
+      {tab === 'revenue' && <RevenueTab month={month} year={year} onChanged={refresh} />}
       {tab === 'people' && isAdmin && <PeopleTab onChanged={refresh} />}
       {tab === 'overhead' && isAdmin && <OverheadTab month={month} year={year} onChanged={refresh} />}
       {tab === 'settings' && isAdmin && <SettingsTab onChanged={refresh} />}

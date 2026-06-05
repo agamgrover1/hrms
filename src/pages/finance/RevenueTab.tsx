@@ -6,9 +6,22 @@ import { MONTHS, money } from './format';
 
 const BLANK_NEW = { name: '', client_name: '', billing_type: 'fixed', fixed_amount: '', hourly_rate: '', billable_hours: '' };
 
+const CURRENCIES = [
+  { code: 'INR', label: '₹ INR', symbol: '₹' },
+  { code: 'USD', label: '$ USD', symbol: '$' },
+  { code: 'EUR', label: '€ EUR', symbol: '€' },
+  { code: 'GBP', label: '£ GBP', symbol: '£' },
+  { code: 'AUD', label: 'A$ AUD', symbol: 'A$' },
+  { code: 'CAD', label: 'C$ CAD', symbol: 'C$' },
+];
+const symbolOf = (ccy: string) => CURRENCIES.find(c => c.code === ccy)?.symbol ?? `${ccy} `;
+const fmtCcy = (n: number, ccy: string) => `${symbolOf(ccy)}${Math.round(n).toLocaleString('en-IN')}`;
+
 type Row = {
   id: string; name: string; client_name: string | null;
+  billing_source?: string | null;
   billing_type: 'fixed' | 'hourly'; fixed_amount: number; hourly_rate: number; billable_hours: number;
+  currency: string; fx_rate: number | null;
 };
 
 type InvoiceSummary = { invoiced: number; received: number; pendingCount: number; clearedCount: number };
@@ -35,8 +48,14 @@ export default function RevenueTab({ month, year, onChanged }: { month: number; 
       .then(([rev, inv]) => {
         setRows((rev as any[]).map((r) => ({
           id: r.id, name: r.name, client_name: r.client_name,
+          billing_source: r.billing_source,
           billing_type: (r.billing_type as any) || 'fixed',
           fixed_amount: Number(r.fixed_amount || 0), hourly_rate: Number(r.hourly_rate || 0), billable_hours: Number(r.billable_hours || 0),
+          // Default Upwork projects to USD, everyone else to INR. If a value
+          // already exists in the DB (admin / coord set it earlier), respect
+          // that — don't auto-change once saved.
+          currency: r.currency || (r.billing_source === 'upwork' ? 'USD' : 'INR'),
+          fx_rate: r.fx_rate != null ? Number(r.fx_rate) : null,
         })));
         const map = new Map<string, InvoiceSummary>();
         for (const i of inv as any[]) {
@@ -61,7 +80,21 @@ export default function RevenueTab({ month, year, onChanged }: { month: number; 
   const save = async (r: Row) => {
     setSaving(r.id);
     try {
-      await financeApi.saveRevenue({ project_id: r.id, month, year, billing_type: r.billing_type, fixed_amount: r.fixed_amount, hourly_rate: r.hourly_rate, billable_hours: r.billable_hours });
+      // Look up live FX if currency != INR and no rate cached on row yet.
+      let rate = r.fx_rate;
+      if (r.currency !== 'INR' && (rate == null || rate <= 0)) {
+        try {
+          const fx = await financeApi.getFxRate({ from: r.currency, to: 'INR' });
+          rate = fx.rate;
+          set(r.id, { fx_rate: rate });
+        } catch { /* server will look up if missing */ }
+      }
+      await financeApi.saveRevenue({
+        project_id: r.id, month, year,
+        billing_type: r.billing_type,
+        fixed_amount: r.fixed_amount, hourly_rate: r.hourly_rate, billable_hours: r.billable_hours,
+        currency: r.currency, fx_rate: r.currency === 'INR' ? 1 : (rate ?? undefined),
+      });
       onChanged();
     } catch (e: any) { setErr(e.message); } finally { setSaving(null); }
   };
@@ -172,11 +205,12 @@ export default function RevenueTab({ month, year, onChanged }: { month: number; 
       )}
 
       <div className="rounded-xl-2 border border-outline bg-surface overflow-x-auto">
-        <table className="w-full text-sm min-w-[760px]">
+        <table className="w-full text-sm min-w-[900px]">
           <thead>
             <tr className="text-[11px] uppercase tracking-wide text-on-surface-subtle border-b border-outline bg-surface-2">
               <th className="text-left font-semibold px-4 py-2.5">Project</th>
               <th className="text-left font-semibold px-3 py-2.5">Billing</th>
+              <th className="text-left font-semibold px-3 py-2.5">Currency</th>
               <th className="text-right font-semibold px-3 py-2.5">Fixed /mo</th>
               <th className="text-right font-semibold px-3 py-2.5">Rate/h</th>
               <th className="text-right font-semibold px-3 py-2.5">Billable h</th>
@@ -194,6 +228,9 @@ export default function RevenueTab({ month, year, onChanged }: { month: number; 
                   <td className="px-4 py-2">
                     <div className="flex items-center gap-2 flex-wrap">
                       <span className={`font-medium ${hasInvoices ? 'text-on-surface-muted' : 'text-on-surface'}`}>{r.name}</span>
+                      {r.billing_source === 'upwork' && (
+                        <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-bold bg-accent-container text-accent">Upwork</span>
+                      )}
                       {hasInvoices && (
                         <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-success-container text-success" title="This project has invoices for the month — those drive the P&L, not the amount below.">
                           <FileText size={10} strokeWidth={2.5} />
@@ -217,6 +254,15 @@ export default function RevenueTab({ month, year, onChanged }: { month: number; 
                     </select>
                   </td>
                   <td className="px-3 py-2">
+                    {/* Currency selector — Upwork projects default to USD on
+                        load. Switching here re-fetches the FX rate on save. */}
+                    <select value={r.currency} onChange={(e) => set(r.id, { currency: e.target.value, fx_rate: null })}
+                      disabled={hasInvoices}
+                      className="rounded-lg border border-outline bg-surface px-2 py-1.5 text-sm text-on-surface outline-none focus:border-brand disabled:opacity-40">
+                      {CURRENCIES.map(c => <option key={c.code} value={c.code}>{c.label}</option>)}
+                    </select>
+                  </td>
+                  <td className="px-3 py-2">
                     <input type="number" value={r.fixed_amount} disabled={r.billing_type !== 'fixed' || hasInvoices}
                       onChange={(e) => set(r.id, { fixed_amount: Number(e.target.value) })}
                       className="w-28 rounded-lg border border-outline bg-surface px-2 py-1.5 text-right text-sm text-on-surface outline-none focus:border-brand disabled:opacity-40" />
@@ -232,7 +278,12 @@ export default function RevenueTab({ month, year, onChanged }: { month: number; 
                       className="w-24 rounded-lg border border-outline bg-surface px-2 py-1.5 text-right text-sm text-on-surface outline-none focus:border-brand disabled:opacity-40" />
                   </td>
                   <td className={`px-3 py-2 text-right tabular-nums font-medium ${hasInvoices ? 'text-on-surface-subtle line-through' : 'text-on-surface'}`} title={hasInvoices ? 'Overridden by invoices' : ''}>
-                    {money(revenue)}
+                    <div>{fmtCcy(revenue, r.currency)}</div>
+                    {r.currency !== 'INR' && revenue > 0 && r.fx_rate && (
+                      <div className="text-[10px] text-on-surface-subtle font-normal">
+                        ≈ {money(revenue * r.fx_rate)}
+                      </div>
+                    )}
                   </td>
                   <td className="px-3 py-2 text-right">
                     <button onClick={() => save(r)} disabled={saving === r.id || hasInvoices}
@@ -245,7 +296,7 @@ export default function RevenueTab({ month, year, onChanged }: { month: number; 
               );
             })}
             {rows.length === 0 && (
-              <tr><td colSpan={7} className="px-4 py-8 text-center text-on-surface-muted">No active projects. Create projects under Project Mgmt → Projects.</td></tr>
+              <tr><td colSpan={8} className="px-4 py-8 text-center text-on-surface-muted">No active projects. Create projects under Project Mgmt → Projects.</td></tr>
             )}
           </tbody>
         </table>

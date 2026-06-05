@@ -148,9 +148,11 @@ export const financeApi = {
 
   getRevenue: (month: number, year: number) => request<Array<{
     id: string; name: string; client_name: string | null;
+    billing_source?: string | null;
     billing_type: 'fixed' | 'hourly' | null; fixed_amount: number | null; hourly_rate: number | null; billable_hours: number | null;
+    currency?: string | null; fx_rate?: number | null; revenue_inr?: number | null;
   }>>(`/revenue?month=${month}&year=${year}`),
-  saveRevenue: (data: { project_id: string; month: number; year: number; billing_type: string; fixed_amount: number; hourly_rate: number; billable_hours: number }) =>
+  saveRevenue: (data: { project_id: string; month: number; year: number; billing_type: string; fixed_amount: number; hourly_rate: number; billable_hours: number; currency?: string; fx_rate?: number }) =>
     request<any>('/revenue', { method: 'PUT', body: JSON.stringify(data) }),
   createProject: (data: { name: string; client_name?: string; month: number; year: number; billing_type: string; fixed_amount: number; hourly_rate: number; billable_hours: number; created_by?: string }) =>
     request<any>('/projects', { method: 'POST', body: JSON.stringify(data) }),
