@@ -65,6 +65,24 @@ function HubStat({ label, value, tone }: { label: string; value: number; tone: s
   );
 }
 
+// One-tap quick action button. Shows an icon tile + label + sub-text, with
+// a hover lift and a brand-accented border. Used on the Hub for the most
+// common "I need to apply for X" flows.
+function QuickAction({ icon: Icon, label, sub, accent, onClick }: {
+  icon: any; label: string; sub?: string; accent: string; onClick: () => void;
+}) {
+  return (
+    <button onClick={onClick}
+      className="text-left group bg-surface rounded-xl-2 border border-outline shadow-elev-1 hover:shadow-elev-2 hover:border-accent/40 transition-all p-4">
+      <div className={`w-9 h-9 rounded-lg flex items-center justify-center ${accent} transition-colors`}>
+        <Icon size={16} strokeWidth={2.25} />
+      </div>
+      <p className="mt-3 font-display text-sm font-bold text-on-surface group-hover:text-accent transition-colors">{label}</p>
+      {sub && <p className="text-[11px] text-on-surface-subtle mt-0.5">{sub}</p>}
+    </button>
+  );
+}
+
 function hubHints(ctx: { key: string; pendingLeaves: number; pendingWfh: number; fullDay: number; shortLeave: number; performance: any }): { badge?: string | number; badgeTone?: string; sub?: string } | null {
   switch (ctx.key) {
     case 'role':       return { sub: 'Your playbook' };
@@ -697,6 +715,35 @@ export default function MyPortal() {
                     </span>
                   )}
                 </div>
+              </div>
+            </div>
+
+            {/* Quick actions — one-tap "I need to apply for X" buttons so the
+                employee doesn't have to dig into a tab to start. Each button
+                jumps to the relevant tab AND opens its apply form. */}
+            <div>
+              <p className="text-[10px] uppercase tracking-[0.18em] font-bold text-on-surface-subtle mb-2">Quick actions</p>
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                <QuickAction icon={Calendar} label="Apply Leave"
+                  sub={`${fullDay + shortLeave} days available`} accent="bg-brand-container/60 text-brand"
+                  onClick={() => { setTab('leave'); setApplyLeave(true); }} />
+                <QuickAction icon={Briefcase} label="Log Hours"
+                  sub="Enter daily hours" accent="bg-accent-container/60 text-accent"
+                  onClick={() => setTab('my-hours')} />
+                <QuickAction icon={Monitor} label="Apply WFH"
+                  sub="Work from home" accent="bg-success-container text-success"
+                  onClick={() => {
+                    setTab('wfh');
+                    // Pre-fill today's date so the form is one click from submit
+                    setWfhForm(f => ({ ...f, date: f.date || new Date().toISOString().slice(0, 10) }));
+                  }} />
+                <QuickAction icon={DollarSign} label="Submit Expense"
+                  sub="Reimbursement claim" accent="bg-warning-container text-warning"
+                  onClick={() => {
+                    setTab('expenses');
+                    setExpenseForm({ category: expCategories[0] ?? '', description: '', amount: '', receipt_note: '', expense_date: '' });
+                    setShowExpenseForm(true);
+                  }} />
               </div>
             </div>
 
