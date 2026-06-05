@@ -65,23 +65,6 @@ function HubStat({ label, value, tone }: { label: string; value: number; tone: s
   );
 }
 
-// One-tap quick action button. Shows an icon tile + label + sub-text, with
-// a hover lift and a brand-accented border. Used on the Hub for the most
-// common "I need to apply for X" flows.
-function QuickAction({ icon: Icon, label, sub, accent, onClick }: {
-  icon: any; label: string; sub?: string; accent: string; onClick: () => void;
-}) {
-  return (
-    <button onClick={onClick}
-      className="text-left group bg-surface rounded-xl-2 border border-outline shadow-elev-1 hover:shadow-elev-2 hover:border-accent/40 transition-all p-4">
-      <div className={`w-9 h-9 rounded-lg flex items-center justify-center ${accent} transition-colors`}>
-        <Icon size={16} strokeWidth={2.25} />
-      </div>
-      <p className="mt-3 font-display text-sm font-bold text-on-surface group-hover:text-accent transition-colors">{label}</p>
-      {sub && <p className="text-[11px] text-on-surface-subtle mt-0.5">{sub}</p>}
-    </button>
-  );
-}
 
 function hubHints(ctx: { key: string; pendingLeaves: number; pendingWfh: number; fullDay: number; shortLeave: number; performance: any }): { badge?: string | number; badgeTone?: string; sub?: string } | null {
   switch (ctx.key) {
@@ -715,35 +698,6 @@ export default function MyPortal() {
                     </span>
                   )}
                 </div>
-              </div>
-            </div>
-
-            {/* Quick actions — one-tap "I need to apply for X" buttons so the
-                employee doesn't have to dig into a tab to start. Each button
-                jumps to the relevant tab AND opens its apply form. */}
-            <div>
-              <p className="text-[10px] uppercase tracking-[0.18em] font-bold text-on-surface-subtle mb-2">Quick actions</p>
-              <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-                <QuickAction icon={Calendar} label="Apply Leave"
-                  sub={`${fullDay + shortLeave} days available`} accent="bg-brand-container/60 text-brand"
-                  onClick={() => { setTab('leave'); setApplyLeave(true); }} />
-                <QuickAction icon={Briefcase} label="Log Hours"
-                  sub="Enter daily hours" accent="bg-accent-container/60 text-accent"
-                  onClick={() => setTab('my-hours')} />
-                <QuickAction icon={Monitor} label="Apply WFH"
-                  sub="Work from home" accent="bg-success-container text-success"
-                  onClick={() => {
-                    setTab('wfh');
-                    // Pre-fill today's date so the form is one click from submit
-                    setWfhForm(f => ({ ...f, date: f.date || new Date().toISOString().slice(0, 10) }));
-                  }} />
-                <QuickAction icon={DollarSign} label="Submit Expense"
-                  sub="Reimbursement claim" accent="bg-warning-container text-warning"
-                  onClick={() => {
-                    setTab('expenses');
-                    setExpenseForm({ category: expCategories[0] ?? '', description: '', amount: '', receipt_note: '', expense_date: '' });
-                    setShowExpenseForm(true);
-                  }} />
               </div>
             </div>
 
@@ -2506,7 +2460,88 @@ export default function MyPortal() {
           </div>
         </div>
       )}
+
+      {/* Floating Quick Actions — always-visible bottom-right speed dial.
+          One tap on the main FAB expands a vertical stack of actions going
+          up: Apply Leave / Log Hours / Apply WFH / Submit Expense. Each
+          action opens the relevant flow and closes the dial. */}
+      <QuickActionsFab
+        leaveBalance={(balance as any).full_day ?? 0}
+        shortBalance={(balance as any).short_leave ?? 0}
+        onLeave={() => { setTab('leave'); setApplyLeave(true); }}
+        onHours={() => setTab('my-hours')}
+        onWfh={() => {
+          setTab('wfh');
+          setWfhForm(f => ({ ...f, date: f.date || new Date().toISOString().slice(0, 10) }));
+        }}
+        onExpense={() => {
+          setTab('expenses');
+          setExpenseForm({ category: expCategories[0] ?? '', description: '', amount: '', receipt_note: '', expense_date: '' });
+          setShowExpenseForm(true);
+        }}
+      />
     </div>
+  );
+}
+
+// Speed-dial FAB. Closed state shows a single accent-colored circle with a
+// "+". Tapping it rotates the icon to "×" and reveals labeled action buttons
+// stacked above with a stagger animation. Backdrop closes the menu.
+function QuickActionsFab({ leaveBalance, shortBalance, onLeave, onHours, onWfh, onExpense }: {
+  leaveBalance: number; shortBalance: number;
+  onLeave: () => void; onHours: () => void; onWfh: () => void; onExpense: () => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const close = () => setOpen(false);
+  const wrap = (fn: () => void) => () => { fn(); close(); };
+
+  const actions = [
+    { key: 'leave',   label: 'Apply Leave',     sub: `${leaveBalance + shortBalance} days available`, icon: Calendar,    color: 'bg-brand text-on-brand',          ringColor: 'rgba(238,39,112,0.35)', onClick: onLeave },
+    { key: 'hours',   label: 'Log Hours',       sub: 'Enter daily hours',                            icon: Briefcase,   color: 'bg-accent text-on-accent',        ringColor: 'rgba(124,92,255,0.35)', onClick: onHours },
+    { key: 'wfh',     label: 'Apply WFH',       sub: 'Work from home',                                icon: Monitor,     color: 'bg-success text-on-accent',       ringColor: 'rgba(34,197,94,0.35)',  onClick: onWfh },
+    { key: 'expense', label: 'Submit Expense',  sub: 'Reimbursement claim',                          icon: DollarSign,  color: 'bg-warning text-on-accent',       ringColor: 'rgba(234,179,8,0.35)',  onClick: onExpense },
+  ];
+
+  return (
+    <>
+      {/* Backdrop — click anywhere to close */}
+      {open && (
+        <div className="fixed inset-0 z-40 bg-black/30 backdrop-blur-[2px] animate-fade-up" style={{ animationDuration: '120ms' }} onClick={close} />
+      )}
+
+      <div className="fixed bottom-6 right-6 z-50 flex flex-col items-end gap-3">
+        {/* Action chips, rendered in reverse so the first action appears nearest the FAB */}
+        {open && (
+          <div className="flex flex-col items-end gap-3">
+            {actions.slice().reverse().map((a, i) => {
+              const Icon = a.icon;
+              return (
+                <div key={a.key} className="flex items-center gap-3 animate-fade-up" style={{ animationDuration: '180ms', animationDelay: `${i * 35}ms`, animationFillMode: 'backwards' }}>
+                  <div className="bg-surface border border-outline rounded-xl-2 shadow-elev-2 px-3 py-2 text-right">
+                    <p className="text-sm font-bold text-on-surface leading-tight">{a.label}</p>
+                    {a.sub && <p className="text-[11px] text-on-surface-muted leading-tight mt-0.5">{a.sub}</p>}
+                  </div>
+                  <button onClick={wrap(a.onClick)}
+                    title={a.label}
+                    className={`w-12 h-12 rounded-full ${a.color} shadow-elev-3 hover:scale-110 active:scale-95 transition-transform flex items-center justify-center`}
+                    style={{ boxShadow: `0 6px 20px ${a.ringColor}` }}>
+                    <Icon size={18} strokeWidth={2.25} />
+                  </button>
+                </div>
+              );
+            })}
+          </div>
+        )}
+
+        {/* Main FAB */}
+        <button onClick={() => setOpen(o => !o)}
+          aria-label={open ? 'Close quick actions' : 'Open quick actions'}
+          className="w-14 h-14 rounded-full bg-accent text-on-accent shadow-elev-3 hover:scale-110 active:scale-95 transition-all flex items-center justify-center"
+          style={{ boxShadow: '0 8px 28px rgba(238,39,112,0.45)' }}>
+          <Plus size={22} strokeWidth={2.5} className={`transition-transform duration-200 ${open ? 'rotate-45' : ''}`} />
+        </button>
+      </div>
+    </>
   );
 }
 
