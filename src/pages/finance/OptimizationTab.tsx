@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
-import { TrendingUp, TrendingDown, AlertTriangle, ArrowRight, Sparkles, Award, Activity, Settings2, Info } from 'lucide-react';
-import { financeApi, type FinOptimization } from '../../services/financeApi';
+import { TrendingUp, TrendingDown, AlertTriangle, ArrowRight, Sparkles, Award, Activity, Settings2, Info, Users as UsersIcon, ChevronDown, Briefcase } from 'lucide-react';
+import { financeApi, type FinOptimization, type FinManagerPnl } from '../../services/financeApi';
 import { money, moneyShort, pct, hrs } from './format';
 
 const VERDICT_CFG: Record<string, { label: string; cls: string; sub: string }> = {
@@ -49,6 +49,7 @@ export default function OptimizationTab({ month, year, rev }: { month: number; y
       <BleedReport data={data} />
       <MarginMatrix data={data} />
       <LeverageScore data={data} />
+      <ManagerPnl month={month} year={year} rev={rev} />
     </div>
   );
 }
@@ -318,6 +319,222 @@ function LeverageScore({ data }: { data: FinOptimization }) {
         </div>
       )}
     </section>
+  );
+}
+
+// ── 4. Manager P&L ───────────────────────────────────────────────────────
+// Reporting managers don't bill hours directly, so we score them by the
+// margin their team produces (plus their own billables, if they bill).
+function ManagerPnl({ month, year, rev }: { month: number; year: number; rev: number }) {
+  const [scope, setScope] = useState<'direct' | 'subtree'>('direct');
+  const [data, setData] = useState<FinManagerPnl | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [err, setErr] = useState('');
+  const [expanded, setExpanded] = useState<string | null>(null);
+
+  useEffect(() => {
+    setLoading(true); setErr('');
+    financeApi.getManagerPnl(month, year, scope)
+      .then(setData)
+      .catch(e => setErr(e.message))
+      .finally(() => setLoading(false));
+  }, [month, year, scope, rev]);
+
+  const c = data?.currency ?? '₹';
+
+  return (
+    <section className="rounded-xl-3 border border-outline bg-surface overflow-hidden shadow-elev-1">
+      <div className="px-5 py-4 border-b border-outline bg-gradient-to-r from-accent-container/40 to-surface flex flex-wrap items-end justify-between gap-3">
+        <div>
+          <h3 className="font-display text-lg font-bold tracking-tight text-on-surface inline-flex items-center gap-2">
+            <UsersIcon size={18} className="text-accent" /> Manager P&amp;L
+          </h3>
+          <p className="text-xs text-on-surface-muted mt-0.5">
+            Reporting managers measured by team output. Net contribution = team revenue + manager's own billables − team salaries − manager salary.
+          </p>
+        </div>
+        <div className="flex items-center gap-3">
+          <div className="inline-flex items-center gap-1 bg-surface-2 border border-outline rounded-lg p-0.5">
+            {([
+              { key: 'direct', label: 'Direct reports' },
+              { key: 'subtree', label: 'Full sub-tree' },
+            ] as Array<{ key: 'direct' | 'subtree'; label: string }>).map(opt => (
+              <button key={opt.key} onClick={() => setScope(opt.key)}
+                className={`px-3 py-1.5 rounded-md text-xs font-semibold transition-colors ${
+                  scope === opt.key ? 'bg-accent text-on-accent' : 'text-on-surface-muted hover:text-on-surface'
+                }`}>{opt.label}</button>
+            ))}
+          </div>
+          {data && (
+            <div className="text-right">
+              <p className="text-[10px] uppercase tracking-[0.16em] font-bold text-on-surface-subtle">Org manager leverage</p>
+              <p className="num-mono text-xl font-bold text-on-surface mt-0.5">{data.total.org_leverage.toFixed(1)}×</p>
+              <p className="text-[11px] text-on-surface-subtle mt-0.5">{moneyShort(data.total.team_revenue_total, c)} on {moneyShort(data.total.manager_salary_total + data.total.team_salary_total, c)} all-in</p>
+            </div>
+          )}
+        </div>
+      </div>
+
+      {err && <div className="mx-5 mt-3 rounded-xl-2 border border-danger/30 bg-danger-container/40 p-3 text-sm text-danger">{err}</div>}
+
+      {loading ? (
+        <div className="p-12 text-center text-sm text-on-surface-subtle">Loading…</div>
+      ) : !data || data.managers.length === 0 ? (
+        <div className="p-12 text-center">
+          <UsersIcon size={28} className="mx-auto text-on-surface-subtle mb-2" />
+          <p className="text-sm text-on-surface-muted">No reporting managers active this month.</p>
+          <p className="text-xs text-on-surface-subtle mt-1">A manager appears here once they have at least one direct report AND a Finance Classification entry.</p>
+        </div>
+      ) : (
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="text-[10px] uppercase tracking-wide font-bold text-on-surface-subtle bg-surface-2 border-b border-outline">
+                <th className="px-4 py-2.5 text-left">Manager</th>
+                <th className="px-3 py-2.5 text-center">Reports</th>
+                <th className="px-3 py-2.5 text-right">Team revenue</th>
+                <th className="px-3 py-2.5 text-right">Team salary</th>
+                <th className="px-3 py-2.5 text-right">Mgr salary</th>
+                <th className="px-3 py-2.5 text-right">Net contr.</th>
+                <th className="px-3 py-2.5 text-right">Leverage</th>
+                <th className="px-3 py-2.5 text-right">Team util</th>
+                <th className="px-3 py-2.5"></th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-outline">
+              {data.managers.map(m => {
+                const v = VERDICT_CFG[m.verdict] ?? VERDICT_CFG.ok;
+                const isOpen = expanded === m.manager_id;
+                return (
+                  <ManagerRow key={m.manager_id}
+                    manager={m}
+                    isOpen={isOpen}
+                    onToggle={() => setExpanded(isOpen ? null : m.manager_id)}
+                    currency={c}
+                    verdictCfg={v}
+                  />
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      <div className="px-5 py-2.5 border-t border-outline bg-surface-2/30 text-[11px] text-on-surface-subtle flex flex-wrap gap-4 items-center">
+        <span className="inline-flex items-center gap-1.5"><Briefcase size={11} className="text-warning" /> Billing manager (also has own assignments)</span>
+        <span>Click any row to drill into per-report leverage</span>
+        {scope === 'subtree' && <span className="text-warning">Sub-tree mode favours senior managers — they're not "better", just have bigger trees.</span>}
+      </div>
+    </section>
+  );
+}
+
+function ManagerRow({ manager: m, isOpen, onToggle, currency: c, verdictCfg: v }: {
+  manager: FinManagerPnl['managers'][number]; isOpen: boolean; onToggle: () => void; currency: string; verdictCfg: { label: string; cls: string; sub: string };
+}) {
+  return (
+    <>
+      <tr className="hover:bg-surface-2/50 cursor-pointer" onClick={onToggle}>
+        <td className="px-4 py-2.5">
+          <div className="font-semibold text-on-surface inline-flex items-center gap-1.5">
+            {m.manager_name}
+            {m.is_billing_manager && (
+              <span title="This manager is also a billing IC" className="inline-flex items-center"><Briefcase size={11} className="text-warning" /></span>
+            )}
+          </div>
+          <div className="text-xs text-on-surface-subtle">{m.manager_designation || m.manager_department || '—'}</div>
+        </td>
+        <td className="px-3 py-2.5 text-center num-mono font-semibold text-on-surface">{m.reports_count}</td>
+        <td className="px-3 py-2.5 text-right num-mono">
+          <div className="text-on-surface">{money(m.team_revenue_produced, c)}</div>
+          {m.is_billing_manager && m.manager_revenue_produced > 0 && (
+            <div className="text-[10px] text-warning">+ {money(m.manager_revenue_produced, c)} own</div>
+          )}
+        </td>
+        <td className="px-3 py-2.5 text-right num-mono text-on-surface-muted">{money(m.team_salary, c)}</td>
+        <td className="px-3 py-2.5 text-right num-mono text-on-surface-muted">{money(m.manager_salary, c)}</td>
+        <td className={`px-3 py-2.5 text-right num-mono font-bold ${m.net_contribution >= 0 ? 'text-success' : 'text-danger'}`}>
+          {m.net_contribution >= 0 ? '+' : ''}{money(m.net_contribution, c)}
+        </td>
+        <td className="px-3 py-2.5 text-right num-mono font-bold text-on-surface">{m.leverage.toFixed(1)}×</td>
+        <td className="px-3 py-2.5 text-right num-mono text-xs">
+          <span className={m.team_utilization >= 0.8 ? 'text-success' : m.team_utilization >= 0.5 ? 'text-warning' : 'text-danger'}>
+            {pct(m.team_utilization)}
+          </span>
+        </td>
+        <td className="px-3 py-2.5">
+          <div className="flex items-center gap-2">
+            <span className={`inline-flex items-center px-1.5 py-0.5 rounded-full text-[10px] font-bold ${v.cls}`}>{v.label}</span>
+            <ChevronDown size={13} className={`text-on-surface-subtle transition-transform ${isOpen ? 'rotate-180' : ''}`} />
+          </div>
+        </td>
+      </tr>
+      {isOpen && (
+        <tr className="bg-surface-2/30">
+          <td colSpan={9} className="px-4 py-3">
+            <div className="space-y-3">
+              {/* Financial walk-through */}
+              <div className="rounded-xl-2 border border-outline bg-surface p-3 text-xs space-y-1">
+                <div className="font-bold text-on-surface mb-1">How {m.manager_name}'s P&L breaks down</div>
+                <Line label="Team revenue produced" value={money(m.team_revenue_produced, c)} />
+                {m.is_billing_manager && m.manager_revenue_produced > 0 && (
+                  <Line label={`+ ${m.manager_name}'s own billables`} value={money(m.manager_revenue_produced, c)} tone="text-warning" />
+                )}
+                <Line label="− Team salaries" value={money(m.team_salary, c)} tone="text-on-surface-muted" minus />
+                <Line label={`− ${m.manager_name}'s salary`} value={money(m.manager_salary, c)} tone="text-on-surface-muted" minus />
+                <div className="border-t-2 border-outline-strong pt-1 mt-1">
+                  <Line label="Net contribution" value={money(m.net_contribution, c)} bold tone={m.net_contribution >= 0 ? 'text-success' : 'text-danger'} />
+                  <Line label="Leverage" value={`${m.leverage.toFixed(1)}× — ${v.label}`} tone={m.net_contribution >= 0 ? 'text-success' : 'text-danger'} />
+                </div>
+              </div>
+
+              {/* Per-report breakdown */}
+              <div>
+                <p className="text-[10px] uppercase tracking-wide font-bold text-on-surface-subtle mb-1.5">Per-report breakdown ({m.reports.length})</p>
+                <table className="w-full text-xs">
+                  <thead>
+                    <tr className="text-on-surface-subtle border-b border-outline">
+                      <th className="px-2 py-1.5 text-left">Report</th>
+                      <th className="px-2 py-1.5 text-right">Salary</th>
+                      <th className="px-2 py-1.5 text-right">Util</th>
+                      <th className="px-2 py-1.5 text-right">Revenue</th>
+                      <th className="px-2 py-1.5 text-right">Leverage</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-outline">
+                    {m.reports.map(r => (
+                      <tr key={r.id}>
+                        <td className="px-2 py-1.5">
+                          <div className="text-on-surface font-medium">{r.name}</div>
+                          <div className="text-on-surface-subtle text-[10px]">{r.designation ?? '—'}</div>
+                        </td>
+                        <td className="px-2 py-1.5 text-right num-mono text-on-surface-muted">{money(r.salary, c)}</td>
+                        <td className="px-2 py-1.5 text-right num-mono">
+                          <span className={r.utilization >= 0.8 ? 'text-success' : r.utilization >= 0.5 ? 'text-warning' : 'text-danger'}>
+                            {pct(r.utilization)}
+                          </span>
+                        </td>
+                        <td className="px-2 py-1.5 text-right num-mono text-on-surface">{money(r.revenue_produced, c)}</td>
+                        <td className="px-2 py-1.5 text-right num-mono font-bold text-on-surface">{r.leverage.toFixed(1)}×</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </td>
+        </tr>
+      )}
+    </>
+  );
+}
+
+function Line({ label, value, bold, minus, tone }: { label: string; value: string; bold?: boolean; minus?: boolean; tone?: string }) {
+  return (
+    <div className="flex items-center justify-between">
+      <span className={`${bold ? 'font-bold text-on-surface' : 'text-on-surface-muted'}`}>{label}</span>
+      <span className={`num-mono ${bold ? 'font-bold' : ''} ${tone || 'text-on-surface'}`}>{minus ? '−' : ''}{value.replace('₹-', '₹')}</span>
+    </div>
   );
 }
 

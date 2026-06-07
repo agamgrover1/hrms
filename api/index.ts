@@ -5190,6 +5190,186 @@ app.get('/api/finance/optimization', async (req, res) => {
   } catch (err: any) { res.status(500).json({ error: err.message || 'Server error' }); }
 });
 
+// ── Manager P&L (admin-only) ────────────────────────────────────────────
+// Reporting managers don't have direct billable hours of their own, so we
+// measure them by their team's output. For each employee who has at least
+// one direct report this month, we sum the team's revenue_produced and
+// salary, add the manager's own salary (and their own revenue_produced if
+// they're billing — flagged as is_billing_manager), and compute:
+//   net_contribution = team_revenue + manager_revenue
+//                    − team_salary − manager_salary
+//   leverage         = (team_revenue + manager_revenue)
+//                    ÷ (team_salary + manager_salary)
+//
+// scope=direct → only direct reports
+// scope=subtree → full recursive sub-tree (descendants)
+app.get('/api/finance/manager-pnl', async (req, res) => {
+  await runStartupMigrations();
+  if (!(await requireAdmin(req, res))) return;
+  try {
+    const month = Number(req.query.month) || (new Date().getMonth() + 1);
+    const year = Number(req.query.year) || new Date().getFullYear();
+    const scope = (req.query.scope === 'subtree') ? 'subtree' : 'direct';
+
+    const model = await finComputeMonth(month, year);
+    const empById = new Map<string, any>(model.employeeRows.map((e: any) => [e.id, e]));
+    const projById = new Map<string, any>(model.projectRows.map((p: any) => [p.id, p]));
+
+    // Raw assignments to compute revenue_produced per employee
+    const assignments = (await sql`
+      SELECT project_id, employee_id, monthly_hours
+      FROM project_assignments
+      WHERE month=${month} AND year=${year}`) as any[];
+
+    // revenue_produced per employee = sum over their assignments of (hours × project rev/h)
+    const revenueByEmp = new Map<string, number>();
+    const hoursByEmp = new Map<string, number>();
+    for (const a of assignments) {
+      const p: any = projById.get(a.project_id);
+      const h = Number(a.monthly_hours || 0);
+      if (h <= 0) continue;
+      hoursByEmp.set(a.employee_id, (hoursByEmp.get(a.employee_id) || 0) + h);
+      if (!p) continue;
+      revenueByEmp.set(a.employee_id, (revenueByEmp.get(a.employee_id) || 0) + h * Number(p.revenuePerHour));
+    }
+
+    // Who has direct reports? Find all (manager_id, report_id) pairs.
+    const reportRows = (await sql`
+      SELECT id, reporting_manager_id, name, designation, department, status
+      FROM employees
+      WHERE reporting_manager_id IS NOT NULL AND status='active'`) as any[];
+
+    const directReportsByManager = new Map<string, string[]>();
+    for (const r of reportRows) {
+      const mgr = r.reporting_manager_id;
+      if (!mgr) continue;
+      const arr = directReportsByManager.get(mgr) || [];
+      arr.push(r.id);
+      directReportsByManager.set(mgr, arr);
+    }
+
+    // For sub-tree scope, walk descendants.
+    const descendantsOf = (managerId: string): string[] => {
+      const out: string[] = [];
+      const stack = [managerId];
+      const seen = new Set<string>();
+      while (stack.length) {
+        const next = stack.pop()!;
+        for (const child of directReportsByManager.get(next) || []) {
+          if (seen.has(child)) continue;
+          seen.add(child);
+          out.push(child);
+          stack.push(child);
+        }
+      }
+      return out;
+    };
+
+    const managers: any[] = [];
+    for (const [managerId, directIds] of directReportsByManager) {
+      const manager: any = empById.get(managerId);
+      if (!manager) continue; // manager not in finance_employee_meta (not classified) — skip
+      const reportIds = scope === 'subtree' ? descendantsOf(managerId) : directIds;
+      if (reportIds.length === 0) continue;
+
+      // Aggregate team
+      let teamSalary = 0;
+      let teamRevenue = 0;
+      let teamAllocatedHours = 0;
+      let teamCapacity = 0;
+      const reports: any[] = [];
+      for (const rid of reportIds) {
+        const rep: any = empById.get(rid);
+        if (!rep) continue;
+        const repRev = revenueByEmp.get(rid) || 0;
+        const repHrs = hoursByEmp.get(rid) || 0;
+        teamSalary += Number(rep.salary || 0);
+        teamRevenue += repRev;
+        teamAllocatedHours += repHrs;
+        teamCapacity += Number(rep.capacity || 0);
+        reports.push({
+          id: rep.id, name: rep.name, designation: rep.designation, department: rep.department,
+          cost_type: rep.cost_type,
+          salary: Number(rep.salary), rate: Number(rep.rate),
+          hours_allocated: repHrs, capacity: Number(rep.capacity),
+          utilization: Number(rep.capacity || 0) > 0 ? repHrs / Number(rep.capacity) : 0,
+          revenue_produced: repRev,
+          leverage: Number(rep.salary) > 0 ? repRev / Number(rep.salary) : 0,
+        });
+      }
+
+      // Manager's own billing
+      const mgrRevenue = revenueByEmp.get(managerId) || 0;
+      const mgrHours = hoursByEmp.get(managerId) || 0;
+      const isBilling = mgrRevenue > 0 || mgrHours > 0;
+
+      const mgrSalary = Number(manager.salary || 0);
+      const totalRevenue = teamRevenue + mgrRevenue;
+      const allInCost = teamSalary + mgrSalary;
+      const netContribution = totalRevenue - allInCost;
+      const leverage = allInCost > 0 ? totalRevenue / allInCost : 0;
+
+      let verdict: 'great' | 'ok' | 'underused' | 'bench';
+      if (leverage >= 4) verdict = 'great';
+      else if (leverage >= 2.5) verdict = 'ok';
+      else if (leverage >= 1.5) verdict = 'underused';
+      else verdict = 'bench';
+
+      managers.push({
+        manager_id: manager.id,
+        manager_name: manager.name,
+        manager_designation: manager.designation,
+        manager_department: manager.department,
+        manager_cost_type: manager.cost_type,
+        manager_salary: mgrSalary,
+        manager_revenue_produced: mgrRevenue,
+        manager_hours: mgrHours,
+        manager_capacity: Number(manager.capacity || 0),
+        is_billing_manager: isBilling,
+        reports_count: reports.length,
+        team_salary: teamSalary,
+        team_revenue_produced: teamRevenue,
+        team_allocated_hours: teamAllocatedHours,
+        team_capacity: teamCapacity,
+        team_utilization: teamCapacity > 0 ? teamAllocatedHours / teamCapacity : 0,
+        all_in_cost: allInCost,
+        total_revenue: totalRevenue,
+        net_contribution: netContribution,
+        leverage,
+        verdict,
+        reports: reports.sort((a, b) => b.leverage - a.leverage),
+      });
+    }
+
+    // Sort by net contribution desc
+    managers.sort((a, b) => b.net_contribution - a.net_contribution);
+
+    // Org-wide aggregate (across all listed managers, no double counting since
+    // each report appears under exactly one direct manager in 'direct' scope;
+    // in 'subtree' the same person can appear in multiple manager sub-trees,
+    // so org totals are computed from finComputeMonth itself rather than summed).
+    const orgRevenue = managers.reduce((s, m) => s + m.team_revenue_produced + m.manager_revenue_produced, 0);
+    const orgManagerSalary = managers.reduce((s, m) => s + m.manager_salary, 0);
+    const orgTeamSalary = managers.reduce((s, m) => s + m.team_salary, 0);
+    const orgAllIn = orgManagerSalary + orgTeamSalary;
+
+    res.json({
+      month, year, scope,
+      currency: model.settings.currency,
+      total: {
+        manager_count: managers.length,
+        report_count: managers.reduce((s, m) => s + m.reports_count, 0),
+        manager_salary_total: orgManagerSalary,
+        team_salary_total: orgTeamSalary,
+        team_revenue_total: orgRevenue,
+        org_leverage: orgAllIn > 0 ? orgRevenue / orgAllIn : 0,
+        org_net_contribution: orgRevenue - orgAllIn,
+      },
+      managers,
+    });
+  } catch (err: any) { res.status(500).json({ error: err.message || 'Server error' }); }
+});
+
 // GET /api/finance/trends?month=&year=  → 12 months up to and including the given month
 app.get('/api/finance/trends', async (req, res) => {
   await runStartupMigrations();

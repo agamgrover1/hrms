@@ -132,6 +132,39 @@ export interface FinModel {
 
 export type FinTrendPoint = FinTotals & { month: number; year: number };
 
+export interface FinManagerPnl {
+  month: number; year: number;
+  scope: 'direct' | 'subtree';
+  currency: string;
+  total: {
+    manager_count: number; report_count: number;
+    manager_salary_total: number; team_salary_total: number;
+    team_revenue_total: number;
+    org_leverage: number; org_net_contribution: number;
+  };
+  managers: Array<{
+    manager_id: string; manager_name: string;
+    manager_designation: string | null; manager_department: string | null;
+    manager_cost_type: 'direct' | 'indirect' | 'supervisor';
+    manager_salary: number; manager_revenue_produced: number;
+    manager_hours: number; manager_capacity: number;
+    is_billing_manager: boolean;
+    reports_count: number;
+    team_salary: number; team_revenue_produced: number;
+    team_allocated_hours: number; team_capacity: number; team_utilization: number;
+    all_in_cost: number; total_revenue: number;
+    net_contribution: number; leverage: number;
+    verdict: 'great' | 'ok' | 'underused' | 'bench';
+    reports: Array<{
+      id: string; name: string; designation: string | null; department: string | null;
+      cost_type: string;
+      salary: number; rate: number;
+      hours_allocated: number; capacity: number; utilization: number;
+      revenue_produced: number; leverage: number;
+    }>;
+  }>;
+}
+
 export interface FinOptimization {
   month: number; year: number; currency: string; threshold: number;
   bleed: {
@@ -171,6 +204,8 @@ export const financeApi = {
   getTrends: (month: number, year: number) => request<FinTrendPoint[]>(`/trends?month=${month}&year=${year}`),
   getOptimization: (month: number, year: number, threshold?: number) =>
     request<FinOptimization>(`/optimization?month=${month}&year=${year}${threshold ? `&threshold=${threshold}` : ''}`),
+  getManagerPnl: (month: number, year: number, scope: 'direct' | 'subtree' = 'direct') =>
+    request<FinManagerPnl>(`/manager-pnl?month=${month}&year=${year}&scope=${scope}`),
 
   getSettings: () => request<FinSettings>('/settings'),
   saveSettings: (data: FinSettings) => request<FinSettings>('/settings', { method: 'PUT', body: JSON.stringify(data) }),
