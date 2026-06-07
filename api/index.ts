@@ -5019,6 +5019,177 @@ app.get('/api/finance/dashboard', async (req, res) => {
   } catch (err: any) { res.status(500).json({ error: err.message || 'Server error' }); }
 });
 
+// ── Profitability Optimization (admin-only) ──────────────────────────────
+// Builds three analytical views on top of finComputeMonth:
+//   1. Bleed report — assignments ranked by monthly margin loss, each paired
+//      with the best feasible swap candidate (an employee with spare capacity
+//      whose margin on that project is better).
+//   2. Margin matrix — every direct-staff × every active-project cell with
+//      margin/h and hours, so the dashboard can render a heat-map sorted
+//      seniors-down on rows and revenue-down on columns.
+//   3. Leverage score — per-employee revenue-produced ÷ salary, with a
+//      verdict bucket (great / ok / underused / bench).
+app.get('/api/finance/optimization', async (req, res) => {
+  await runStartupMigrations();
+  if (!(await requireAdmin(req, res))) return;
+  try {
+    const month = Number(req.query.month) || (new Date().getMonth() + 1);
+    const year = Number(req.query.year) || new Date().getFullYear();
+    const threshold = Number(req.query.threshold) || 5000;  // rupees/mo minimum to surface a swap
+
+    const model = await finComputeMonth(month, year);
+    const directEmps = (model.employeeRows as any[]).filter(e => e.cost_type === 'direct');
+    const projects = (model.projectRows as any[]).filter(p => Number(p.revenue || 0) > 0 || Number(p.directHours || 0) > 0);
+
+    const empById = new Map(directEmps.map((e: any) => [e.id, e]));
+    const projById = new Map(projects.map((p: any) => [p.id, p]));
+
+    // Raw assignments — needed for finding swap candidates (their current load)
+    const allAssignments = (await sql`
+      SELECT id, project_id, employee_id, employee_name, monthly_hours
+      FROM project_assignments
+      WHERE month=${month} AND year=${year}`) as any[];
+
+    // Total hours currently allocated per employee — used to gate swap suggestions
+    const hoursByEmp = new Map<string, number>();
+    for (const a of allAssignments) {
+      hoursByEmp.set(a.employee_id, (hoursByEmp.get(a.employee_id) || 0) + Number(a.monthly_hours || 0));
+    }
+
+    // ───── 1. Bleed report ─────
+    const bleed = allAssignments.map(a => {
+      const e: any = empById.get(a.employee_id);
+      const p: any = projById.get(a.project_id);
+      const hours = Number(a.monthly_hours || 0);
+      if (!e || !p || hours <= 0) return null;
+      const margin_per_hour = Number(p.revenuePerHour) - Number(e.rate);
+      const monthly_margin = margin_per_hour * hours;
+
+      // Best swap: an OTHER direct-staff employee whose margin on this project
+      // is higher AND who has at least `hours` of remaining capacity.
+      let bestSwap: any = null;
+      for (const cand of directEmps) {
+        if (cand.id === e.id) continue;
+        const candAlloc = hoursByEmp.get(cand.id) || 0;
+        const candFree = Number(cand.capacity || 0) - candAlloc;
+        if (candFree < hours) continue;             // must fit
+        const cand_mph = Number(p.revenuePerHour) - Number(cand.rate);
+        if (cand_mph <= margin_per_hour) continue;  // must improve
+        const cand_monthly = cand_mph * hours;
+        const net_gain = cand_monthly - monthly_margin;
+        if (!bestSwap || net_gain > bestSwap.net_gain) {
+          bestSwap = {
+            candidate_employee_id: cand.id,
+            candidate_employee_name: cand.name,
+            candidate_designation: cand.designation,
+            candidate_rate: Number(cand.rate),
+            candidate_margin_per_hour: cand_mph,
+            candidate_monthly_margin: cand_monthly,
+            candidate_free_hours: candFree,
+            net_gain,
+          };
+        }
+      }
+
+      return {
+        assignment_id: a.id,
+        employee_id: e.id, employee_name: e.name, employee_designation: e.designation,
+        employee_rate: Number(e.rate),
+        project_id: p.id, project_name: p.name, project_client_name: p.client_name,
+        project_revenue_per_hour: Number(p.revenuePerHour),
+        project_revenue: Number(p.revenue),
+        hours, margin_per_hour, monthly_margin,
+        best_swap: bestSwap,
+      };
+    }).filter(Boolean) as any[];
+
+    // Sort: worst current margin first
+    bleed.sort((a, b) => a.monthly_margin - b.monthly_margin);
+
+    const actionableSwaps = bleed.filter(b => b.best_swap && b.best_swap.net_gain >= threshold);
+    const total_potential_gain = actionableSwaps.reduce((s, b) => s + b.best_swap.net_gain, 0);
+
+    // ───── 2. Margin matrix ─────
+    const matrixEmployees = [...directEmps].sort((a: any, b: any) => Number(b.rate) - Number(a.rate));
+    const matrixProjects = [...projects].sort((a: any, b: any) => Number(b.revenuePerHour) - Number(a.revenuePerHour));
+    const assignmentByPair = new Map<string, any>();
+    for (const a of allAssignments) assignmentByPair.set(`${a.employee_id}__${a.project_id}`, a);
+
+    const cells: any[] = [];
+    for (const e of matrixEmployees as any[]) {
+      for (const p of matrixProjects as any[]) {
+        const a = assignmentByPair.get(`${e.id}__${p.id}`);
+        const hours = a ? Number(a.monthly_hours || 0) : 0;
+        const margin_per_hour = Number(p.revenuePerHour) - Number(e.rate);
+        cells.push({
+          employee_id: e.id, project_id: p.id,
+          hours,
+          margin_per_hour,
+          monthly_margin: margin_per_hour * hours,
+          assigned: hours > 0,
+        });
+      }
+    }
+
+    // ───── 3. Leverage score ─────
+    const leverage = directEmps.map((e: any) => {
+      const totalHours = hoursByEmp.get(e.id) || 0;
+      // Revenue produced = sum over their assignments of (hours × project rev/h)
+      let revenue_produced = 0;
+      let projectsOn = 0;
+      for (const a of allAssignments) {
+        if (a.employee_id !== e.id) continue;
+        const p: any = projById.get(a.project_id);
+        if (!p) continue;
+        const h = Number(a.monthly_hours || 0);
+        if (h > 0) {
+          revenue_produced += h * Number(p.revenuePerHour);
+          projectsOn++;
+        }
+      }
+      const salary = Number(e.salary);
+      const lev = salary > 0 ? revenue_produced / salary : 0;
+      let verdict: 'great' | 'ok' | 'underused' | 'bench';
+      if (lev >= 4) verdict = 'great';
+      else if (lev >= 2.5) verdict = 'ok';
+      else if (lev >= 1.5) verdict = 'underused';
+      else verdict = 'bench';
+      return {
+        employee_id: e.id, name: e.name, designation: e.designation, department: e.department,
+        salary, rate: Number(e.rate),
+        hours_allocated: totalHours, capacity: Number(e.capacity),
+        utilization: Number(e.capacity || 0) > 0 ? totalHours / Number(e.capacity) : 0,
+        projects_on: projectsOn,
+        revenue_produced,
+        margin_produced: revenue_produced - salary,
+        leverage: lev,
+        verdict,
+      };
+    }).sort((a, b) => b.leverage - a.leverage);
+
+    res.json({
+      month, year,
+      currency: model.settings.currency,
+      threshold,
+      bleed: {
+        rows: bleed,
+        actionable_count: actionableSwaps.length,
+        total_potential_gain,
+      },
+      matrix: {
+        employees: matrixEmployees.map((e: any) => ({ id: e.id, name: e.name, rate: Number(e.rate), salary: Number(e.salary), designation: e.designation })),
+        projects: matrixProjects.map((p: any) => ({
+          id: p.id, name: p.name, client_name: p.client_name,
+          revenue_per_hour: Number(p.revenuePerHour), revenue: Number(p.revenue),
+          direct_hours: Number(p.directHours),
+        })),
+        cells,
+      },
+      leverage,
+    });
+  } catch (err: any) { res.status(500).json({ error: err.message || 'Server error' }); }
+});
+
 // GET /api/finance/trends?month=&year=  → 12 months up to and including the given month
 app.get('/api/finance/trends', async (req, res) => {
   await runStartupMigrations();

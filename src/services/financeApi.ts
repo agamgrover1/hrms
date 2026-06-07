@@ -132,9 +132,45 @@ export interface FinModel {
 
 export type FinTrendPoint = FinTotals & { month: number; year: number };
 
+export interface FinOptimization {
+  month: number; year: number; currency: string; threshold: number;
+  bleed: {
+    rows: Array<{
+      assignment_id: string;
+      employee_id: string; employee_name: string; employee_designation: string | null; employee_rate: number;
+      project_id: string; project_name: string; project_client_name: string | null;
+      project_revenue_per_hour: number; project_revenue: number;
+      hours: number; margin_per_hour: number; monthly_margin: number;
+      best_swap: null | {
+        candidate_employee_id: string; candidate_employee_name: string;
+        candidate_designation: string | null; candidate_rate: number;
+        candidate_margin_per_hour: number; candidate_monthly_margin: number;
+        candidate_free_hours: number; net_gain: number;
+      };
+    }>;
+    actionable_count: number;
+    total_potential_gain: number;
+  };
+  matrix: {
+    employees: Array<{ id: string; name: string; rate: number; salary: number; designation: string | null }>;
+    projects: Array<{ id: string; name: string; client_name: string | null; revenue_per_hour: number; revenue: number; direct_hours: number }>;
+    cells: Array<{ employee_id: string; project_id: string; hours: number; margin_per_hour: number; monthly_margin: number; assigned: boolean }>;
+  };
+  leverage: Array<{
+    employee_id: string; name: string; designation: string | null; department: string | null;
+    salary: number; rate: number;
+    hours_allocated: number; capacity: number; utilization: number;
+    projects_on: number; revenue_produced: number; margin_produced: number;
+    leverage: number;
+    verdict: 'great' | 'ok' | 'underused' | 'bench';
+  }>;
+}
+
 export const financeApi = {
   getDashboard: (month: number, year: number) => request<FinModel>(`/dashboard?month=${month}&year=${year}`),
   getTrends: (month: number, year: number) => request<FinTrendPoint[]>(`/trends?month=${month}&year=${year}`),
+  getOptimization: (month: number, year: number, threshold?: number) =>
+    request<FinOptimization>(`/optimization?month=${month}&year=${year}${threshold ? `&threshold=${threshold}` : ''}`),
 
   getSettings: () => request<FinSettings>('/settings'),
   saveSettings: (data: FinSettings) => request<FinSettings>('/settings', { method: 'PUT', body: JSON.stringify(data) }),

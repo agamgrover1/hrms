@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useLocation } from 'react-router-dom';
-import { LineChart, LayoutDashboard, IndianRupee, Users, Building2, SlidersHorizontal, FileText } from 'lucide-react';
+import { LineChart, LayoutDashboard, IndianRupee, Users, Building2, SlidersHorizontal, FileText, Zap } from 'lucide-react';
 import { MONTHS } from './format';
 import DashboardTab from './DashboardTab';
 import TrendsTab from './TrendsTab';
@@ -9,13 +9,15 @@ import PeopleTab from './PeopleTab';
 import OverheadTab from './OverheadTab';
 import SettingsTab from './SettingsTab';
 import InvoicesTab from './InvoicesTab';
+import OptimizationTab from './OptimizationTab';
 import { useAuth } from '../../context/AuthContext';
 
-type TabId = 'dashboard' | 'trends' | 'invoices' | 'revenue' | 'people' | 'overhead' | 'settings';
+type TabId = 'dashboard' | 'trends' | 'invoices' | 'revenue' | 'people' | 'overhead' | 'settings' | 'optimize';
 
 const ALL_TABS: { id: TabId; label: string; icon: typeof LineChart }[] = [
   { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard },
   { id: 'trends', label: 'Trends', icon: LineChart },
+  { id: 'optimize', label: 'Optimize', icon: Zap },
   { id: 'invoices', label: 'Invoices', icon: FileText },
   { id: 'revenue', label: 'Billing setup', icon: IndianRupee },
   { id: 'people', label: 'Classification', icon: Users },
@@ -107,6 +109,7 @@ export default function Finance() {
       {/* Body — gate each tab body too so a coordinator can't probe URLs. */}
       {tab === 'dashboard' && isAdmin && <DashboardTab month={month} year={year} rev={rev} />}
       {tab === 'trends' && isAdmin && <TrendsTab month={month} year={year} rev={rev} />}
+      {tab === 'optimize' && isAdmin && <OptimizationTab month={month} year={year} rev={rev} />}
       {tab === 'invoices' && <InvoicesTab month={month} year={year} onChanged={refresh} />}
       {tab === 'revenue' && <RevenueTab month={month} year={year} onChanged={refresh} />}
       {tab === 'people' && isAdmin && <PeopleTab onChanged={refresh} />}
