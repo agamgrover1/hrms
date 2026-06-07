@@ -4503,6 +4503,90 @@ app.get('/api/hours-summary', async (req, res) => {
   } catch (err: any) { res.status(500).json({ error: err.message || 'Server error' }); }
 });
 
+// ── Direct staff utilization (role-scoped, cost-stripped) ───────────────
+// Same shape as the finance dashboard's utilization rows, but exposed to
+// coordinator / HR / reporting managers without the salary / rate / bench-
+// cost fields. Lets managers see their team's utilization and lets coord
+// see everyone — but neither can derive how much someone earns.
+//
+// Scope:
+//   - admin            → everyone, salary/rate retained (kept for parity)
+//   - hr_manager       → everyone, cost fields stripped
+//   - project_coordinator → everyone, cost fields stripped
+//   - employee (manager) → their reporting sub-tree only, cost fields stripped
+//   - anyone else      → 403
+app.get('/api/hours-utilization', async (req, res) => {
+  try {
+    await runStartupMigrations();
+    const month = Number(req.query.month) || (new Date().getMonth() + 1);
+    const year = Number(req.query.year) || new Date().getFullYear();
+
+    // Identify caller
+    const userId = req.header('x-user-id') || (req.query.__uid as string);
+    if (!userId) return res.status(401).json({ error: 'Not authenticated' });
+    const userRows = await sql`SELECT id, role, employee_id_ref, active FROM app_users WHERE id=${userId} LIMIT 1`;
+    const u = (userRows as any[])[0];
+    if (!u || u.active !== true) return res.status(401).json({ error: 'Not authenticated' });
+
+    const isAdmin = u.role === 'admin';
+    const isAdminish = isAdmin || u.role === 'hr_manager' || u.role === 'project_coordinator';
+
+    // Resolve viewer's employee.id for the manager case
+    let viewerEmpId: string | null = null;
+    if (u.employee_id_ref) {
+      const er = await sql`SELECT id FROM employees WHERE employee_id=${u.employee_id_ref} LIMIT 1`;
+      viewerEmpId = (er as any[])[0]?.id ?? null;
+    }
+
+    // Build the visible-employee scope. Admin-ish roles see everyone (null
+    // sentinel). Regular employees only get access if they have direct reports;
+    // we then return their full sub-tree.
+    let visibleIds: Set<string> | null = null;
+    if (!isAdminish) {
+      if (!viewerEmpId) return res.status(403).json({ error: 'Not authorized' });
+      const subTree = await sql`
+        WITH RECURSIVE chain AS (
+          SELECT id FROM employees WHERE reporting_manager_id = ${viewerEmpId}
+          UNION ALL
+          SELECT e.id FROM employees e JOIN chain c ON e.reporting_manager_id = c.id
+        )
+        SELECT id FROM chain`;
+      const ids = (subTree as any[]).map(r => r.id);
+      if (ids.length === 0) return res.json({ month, year, employees: [], scope: 'team', total: { allocated: 0, capacity: 0, bench: 0, utilization: 0, headcount: 0 } });
+      visibleIds = new Set(ids);
+    }
+
+    const model = await finComputeMonth(month, year);
+    let rows = (model.employeeRows as any[]).filter(e => e.cost_type === 'direct');
+    if (visibleIds) rows = rows.filter(e => visibleIds!.has(e.id));
+
+    // Strip cost / salary for everyone except admin.
+    if (!isAdmin) {
+      rows = rows.map(e => {
+        const { salary, rate, allocatedCost, benchCost, ...rest } = e;
+        return rest;
+      });
+    }
+
+    // Aggregate
+    const totalAlloc = rows.reduce((s, e) => s + Number(e.allocatedHours || 0), 0);
+    const totalCap = rows.reduce((s, e) => s + Number(e.capacity || 0), 0);
+    const totalBench = rows.reduce((s, e) => s + Number(e.benchHours || 0), 0);
+    res.json({
+      month, year,
+      scope: isAdminish ? 'org' : 'team',
+      employees: rows.sort((a, b) => (b.utilization ?? 0) - (a.utilization ?? 0)),
+      total: {
+        allocated: totalAlloc,
+        capacity: totalCap,
+        bench: totalBench,
+        utilization: totalCap > 0 ? totalAlloc / totalCap : 0,
+        headcount: rows.length,
+      },
+    });
+  } catch (err: any) { res.status(500).json({ error: err.message || 'Server error' }); }
+});
+
 // ── Daily-log compliance ─────────────────────────────────────────────────
 // GET /api/hours-compliance?date=YYYY-MM-DD&manager_id=<optional>
 // Returns:

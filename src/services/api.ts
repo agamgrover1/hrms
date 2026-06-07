@@ -470,6 +470,28 @@ export const api = {
       created_at: string;
     }>>(`/employee-responsibilities/${employeeId}/audit`),
 
+  // Direct staff utilization — admin / HR / coord see everyone (admin sees
+  // costs; others get them stripped). Managers see their sub-tree only.
+  getHoursUtilization: (month?: number, year?: number) => {
+    const qs = new URLSearchParams();
+    if (month) qs.set('month', String(month));
+    if (year) qs.set('year', String(year));
+    return request<{
+      month: number; year: number;
+      scope: 'org' | 'team';
+      employees: Array<{
+        id: string; name: string; designation: string | null; department: string | null;
+        cost_type: 'direct' | 'indirect' | 'supervisor';
+        reporting_manager_id: string | null; reporting_manager_name: string | null;
+        capacity: number; allocatedHours: number; benchHours: number;
+        utilization: number | null; managedProjects?: number;
+        // Cost fields present only for admin
+        salary?: number; rate?: number; allocatedCost?: number; benchCost?: number;
+      }>;
+      total: { allocated: number; capacity: number; bench: number; utilization: number; headcount: number };
+    }>(`/hours-utilization?${qs}`);
+  },
+
   getHoursCompliance: (params: { date?: string; manager_id?: string }) => {
     const qs = new URLSearchParams();
     if (params.date) qs.set('date', params.date);

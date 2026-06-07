@@ -20,6 +20,7 @@ import Projects from './pages/Projects';
 import ProjectHours from './pages/ProjectHours';
 import HoursApproval from './pages/HoursApproval';
 import HoursCompliance from './pages/HoursCompliance';
+import HoursUtilization from './pages/HoursUtilization';
 import Notifications from './pages/Notifications';
 import Finance from './pages/finance/Finance';
 
@@ -67,6 +68,8 @@ function AppRoutes() {
         <Route path="hours" element={<ProtectedRoute><ProjectHours /></ProtectedRoute>} />
         <Route path="hours/approvals" element={<ProtectedRoute><HoursApproval /></ProtectedRoute>} />
         <Route path="hours/compliance" element={<ProtectedRoute><HoursCompliance /></ProtectedRoute>} />
+        {/* Utilization: server enforces role-based scoping + cost stripping */}
+        <Route path="hours/utilization" element={<ProtectedRoute><HoursUtilization /></ProtectedRoute>} />
         <Route path="notifications" element={<ProtectedRoute><Notifications /></ProtectedRoute>} />
 
         {/* Employee routes — project_coordinator is also an employee */}

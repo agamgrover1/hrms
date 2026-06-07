@@ -2,7 +2,7 @@ import { NavLink, useLocation } from 'react-router-dom';
 import {
   LayoutDashboard, Users, Clock3, CalendarDays, Wallet, Sparkles,
   ChevronLeft, ChevronRight, UserCog, User, SlidersHorizontal, TrendingUp, Wrench,
-  Briefcase, ClipboardCheck, Layers, LineChart, AlertTriangle, type LucideIcon,
+  Briefcase, ClipboardCheck, Layers, LineChart, AlertTriangle, Activity, type LucideIcon,
 } from 'lucide-react';
 import { useState, useEffect, useRef } from 'react';
 import { useAuth } from '../../context/AuthContext';
@@ -40,6 +40,7 @@ const projectGroup: NavGroup = {
     { to: '/projects', icon: Briefcase, label: 'Projects' },
     { to: '/hours', icon: Layers, label: 'Hours grid' },
     { to: '/hours/compliance', icon: AlertTriangle, label: 'Compliance' },
+    { to: '/hours/utilization', icon: Activity, label: 'Utilization' },
     { to: '/hours/approvals', icon: ClipboardCheck, label: 'Approvals' },
   ],
 };
@@ -148,6 +149,7 @@ export default function Sidebar() {
       ...(isEmployee && isTeamLead ? [{ to: '/hours', icon: Briefcase, label: 'My projects', end: true } as NavItem] : []),
       // Managers (anyone with reports) can check who in their team hasn't logged today.
       ...(isManager ? [{ to: '/hours/compliance', icon: AlertTriangle, label: 'Team compliance' } as NavItem] : []),
+      ...(isManager ? [{ to: '/hours/utilization', icon: Activity, label: 'Team utilization' } as NavItem] : []),
       ...(isEmployee && isProjectReviewer ? [{ to: '/hours/approvals', icon: ClipboardCheck, label: 'Approvals', end: true } as NavItem] : []),
     ],
   } : null;
