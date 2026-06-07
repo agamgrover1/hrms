@@ -117,9 +117,18 @@ export default function InvoicesTab({ month, year, onChanged }: { month: number;
     if (!(amt > 0)) { setErr('Enter an invoiced amount > 0'); return; }
     setCreating(true); setErr('');
     try {
+      // Derive period from the invoice date when provided (server does the
+      // same — keeping client in sync so the optimistic refresh shows the
+      // invoice under the right month immediately).
+      let periodMonth = month;
+      let periodYear = year;
+      if (np.invoice_date) {
+        const [yyyy, mm] = np.invoice_date.slice(0, 10).split('-').map(Number);
+        if (yyyy && mm) { periodMonth = mm; periodYear = yyyy; }
+      }
       await financeApi.addInvoice({
         project_id: np.project_id,
-        month, year,
+        month: periodMonth, year: periodYear,
         invoice_number: np.invoice_number.trim() || undefined,
         invoice_date: np.invoice_date || undefined,
         amount_invoiced: amt,

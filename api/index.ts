@@ -746,6 +746,17 @@ async function runStartupMigrations() {
           fx_rate=COALESCE(fx_rate, 1),
           amount_invoiced_inr=COALESCE(amount_invoiced_inr, amount_invoiced)
       WHERE currency IS NULL OR amount_invoiced_inr IS NULL`;
+    // Backfill: align month/year with invoice_date when they drifted (e.g.
+    // user raised in June but dated the invoice in May — the picker won, so
+    // the row says June even though it belongs to May). invoice_date is the
+    // source of truth, so we update month/year to match.
+    await sql`
+      UPDATE fin_project_invoices
+      SET month = EXTRACT(MONTH FROM invoice_date)::int,
+          year  = EXTRACT(YEAR FROM invoice_date)::int
+      WHERE invoice_date IS NOT NULL
+        AND (EXTRACT(MONTH FROM invoice_date)::int <> month
+          OR EXTRACT(YEAR FROM invoice_date)::int <> year)`;
   } catch { /* idempotent best-effort */ }
 
   // Daily FX-rate cache so we don't hammer Frankfurter on every invoice load.
@@ -5419,6 +5430,18 @@ app.post('/api/finance/invoices', async (req, res) => {
     const proj = (await sql`SELECT id, name FROM projects WHERE id=${project_id}`) as any[];
     if (!proj.length) return res.status(400).json({ error: 'Unknown project' });
 
+    // The invoice_date is the source of truth for the period an invoice
+    // belongs to. When provided, we derive month/year from it so dashboard
+    // aggregation and the period filter always match what the date says —
+    // not whatever month picker happened to be active when the form opened.
+    let effectiveMonth = Number(month);
+    let effectiveYear = Number(year);
+    if (invoice_date) {
+      const d = String(invoice_date).slice(0, 10);
+      const [yyyy, mm] = d.split('-').map(Number);
+      if (yyyy && mm) { effectiveYear = yyyy; effectiveMonth = mm; }
+    }
+
     const ccy = (currency || 'INR').toUpperCase();
     // FX rate: client may pass one (so it matches the live conversion shown
     // in the UI). If absent for a non-INR invoice, auto-fetch using the
@@ -5440,7 +5463,7 @@ app.post('/api/finance/invoices', async (req, res) => {
         (project_id, month, year, invoice_number, invoice_date, amount_invoiced,
          currency, fx_rate, amount_invoiced_inr,
          notes, status, created_by, created_by_name, created_by_role)
-      VALUES (${project_id}, ${Number(month)}, ${Number(year)},
+      VALUES (${project_id}, ${effectiveMonth}, ${effectiveYear},
               ${invoice_number?.trim() || null},
               ${invoice_date || null},
               ${Number(amount_invoiced)},
@@ -5491,6 +5514,22 @@ app.put('/api/finance/invoices/:id', async (req, res) => {
     }
     const newInr = newAmt * newRate;
 
+    // Effective date drives the period — if invoice_date is being changed
+    // (or already set), month/year are derived from it. Manual month/year
+    // overrides only apply when there's no invoice_date at all.
+    const effectiveInvoiceDate = (invoice_date as string) ?? inv.invoice_date;
+    let newMonth: number;
+    let newYear: number;
+    if (effectiveInvoiceDate) {
+      const d = String(effectiveInvoiceDate).slice(0, 10);
+      const [yyyy, mm] = d.split('-').map(Number);
+      newMonth = mm || Number(inv.month);
+      newYear = yyyy || Number(inv.year);
+    } else {
+      newMonth = month != null ? Number(month) : Number(inv.month);
+      newYear = year != null ? Number(year) : Number(inv.year);
+    }
+
     const rows = await sql`
       UPDATE fin_project_invoices SET
         invoice_number=COALESCE(${invoice_number?.trim() || null}, invoice_number),
@@ -5501,8 +5540,8 @@ app.put('/api/finance/invoices/:id', async (req, res) => {
         amount_invoiced_inr=${newInr},
         amount_received=${isAdmin && amount_received !== undefined ? (amount_received == null ? null : Number(amount_received)) : inv.amount_received},
         notes=COALESCE(${notes !== undefined ? (notes?.trim() || null) : null}, notes),
-        month=COALESCE(${month != null ? Number(month) : null}, month),
-        year=COALESCE(${year != null ? Number(year) : null}, year),
+        month=${newMonth},
+        year=${newYear},
         status=COALESCE(${isAdmin && status ? status : null}, status),
         updated_at=NOW()
       WHERE id=${id}
