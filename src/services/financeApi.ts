@@ -222,9 +222,17 @@ export const financeApi = {
     billing_source?: string | null;
     billing_type: 'fixed' | 'hourly' | null; fixed_amount: number | null; hourly_rate: number | null; billable_hours: number | null;
     currency?: string | null; fx_rate?: number | null; revenue_inr?: number | null;
+    status?: 'pending' | 'cleared' | null;
+    amount_received?: number | null; received_inr?: number | null; received_fx_rate?: number | null;
+    cleared_at?: string | null; cleared_by?: string | null; cleared_by_name?: string | null;
+    clearance_note?: string | null;
   }>>(`/revenue?month=${month}&year=${year}`),
   saveRevenue: (data: { project_id: string; month: number; year: number; billing_type: string; fixed_amount: number; hourly_rate: number; billable_hours: number; currency?: string; fx_rate?: number }) =>
     request<any>('/revenue', { method: 'PUT', body: JSON.stringify(data) }),
+  clearRevenue: (project_id: string, month: number, year: number, data: { amount_received?: number; clearance_note?: string; fx_rate?: number }) =>
+    request<any>(`/revenue/${encodeURIComponent(project_id)}/${month}/${year}/clear`, { method: 'PATCH', body: JSON.stringify(data) }),
+  reopenRevenue: (project_id: string, month: number, year: number) =>
+    request<any>(`/revenue/${encodeURIComponent(project_id)}/${month}/${year}/reopen`, { method: 'PATCH' }),
   createProject: (data: { name: string; client_name?: string; month: number; year: number; billing_type: string; fixed_amount: number; hourly_rate: number; billable_hours: number; created_by?: string }) =>
     request<any>('/projects', { method: 'POST', body: JSON.stringify(data) }),
   copyMonth: (from_month: number, from_year: number, to_month: number, to_year: number) =>

@@ -684,6 +684,19 @@ async function runStartupMigrations() {
             CASE WHEN billing_type='hourly' THEN hourly_rate * billable_hours
                  ELSE fixed_amount END)
       WHERE currency IS NULL OR revenue_inr IS NULL`;
+    // Clearance workflow for Upwork billing: coordinator enters the invoiced
+    // amount (status=pending → counts as revenue), admin marks cleared with
+    // the actual amount received (status=cleared → drives realized revenue,
+    // mirrors fin_project_invoices). Variance (Upwork fee, FX) lands on net.
+    await sql`ALTER TABLE fin_project_revenue ADD COLUMN IF NOT EXISTS status TEXT DEFAULT 'pending'`;
+    await sql`ALTER TABLE fin_project_revenue ADD COLUMN IF NOT EXISTS amount_received NUMERIC`;
+    await sql`ALTER TABLE fin_project_revenue ADD COLUMN IF NOT EXISTS received_inr NUMERIC`;
+    await sql`ALTER TABLE fin_project_revenue ADD COLUMN IF NOT EXISTS received_fx_rate NUMERIC`;
+    await sql`ALTER TABLE fin_project_revenue ADD COLUMN IF NOT EXISTS cleared_at TIMESTAMPTZ`;
+    await sql`ALTER TABLE fin_project_revenue ADD COLUMN IF NOT EXISTS cleared_by TEXT`;
+    await sql`ALTER TABLE fin_project_revenue ADD COLUMN IF NOT EXISTS cleared_by_name TEXT`;
+    await sql`ALTER TABLE fin_project_revenue ADD COLUMN IF NOT EXISTS clearance_note TEXT`;
+    await sql`UPDATE fin_project_revenue SET status='pending' WHERE status IS NULL`;
   } catch { /* idempotent */ }
   await sql`
     CREATE TABLE IF NOT EXISTS fin_other_costs (
@@ -5491,9 +5504,11 @@ async function finComputeMonth(month: number, year: number) {
     if (inv && Number(inv.invoiced) > 0) return Number(inv.realized);
     const r = revByProj.get(p.id);
     if (!r) return 0;
-    // Billing-Setup fallback. revenue_inr was populated at save time when the
-    // coordinator picked a currency (USD for Upwork, INR for direct). For
-    // legacy rows without revenue_inr we recompute on the fly assuming INR.
+    // Billing Setup (Upwork): mirror invoice behavior — cleared rows count at
+    // received_inr (real money), pending rows at revenue_inr (invoiced).
+    // received_inr was locked at clearance using the FX rate of that day, so
+    // variance vs invoiced flows through to net profit on clearance.
+    if (r.status === 'cleared' && r.received_inr != null) return Number(r.received_inr);
     if (r.revenue_inr != null) return Number(r.revenue_inr);
     return r.billing_type === 'hourly' ? Number(r.hourly_rate) * Number(r.billable_hours) : Number(r.fixed_amount);
   };
@@ -6144,7 +6159,9 @@ app.get('/api/finance/revenue', async (req, res) => {
     const rows = await sql`
       SELECT p.id, p.name, p.client_name, p.billing_source,
              r.billing_type, r.fixed_amount, r.hourly_rate, r.billable_hours,
-             r.currency, r.fx_rate, r.revenue_inr
+             r.currency, r.fx_rate, r.revenue_inr,
+             r.status, r.amount_received, r.received_inr, r.received_fx_rate,
+             r.cleared_at, r.cleared_by, r.cleared_by_name, r.clearance_note
       FROM projects p
       LEFT JOIN fin_project_revenue r ON r.project_id = p.id AND r.month = ${month} AND r.year = ${year}
       WHERE p.status = 'active'
@@ -6174,15 +6191,91 @@ app.put('/api/finance/revenue', async (req, res) => {
     const bh = Number(billable_hours) || 0;
     const rawRevenue = (billing_type || 'fixed') === 'hourly' ? hr * bh : fa;
     const revenueInr = rawRevenue * rate;
+    // Refuse to overwrite a cleared row from this endpoint — admin must reopen
+    // first. Prevents accidental "edit billing setup" wiping a received-amount
+    // record.
+    const existing = (await sql`SELECT status FROM fin_project_revenue WHERE project_id=${project_id} AND month=${Number(month)} AND year=${Number(year)}`)[0] as any;
+    if (existing?.status === 'cleared') {
+      return res.status(409).json({ error: 'This billing entry is already cleared. Reopen it first to edit.' });
+    }
     await sql`
-      INSERT INTO fin_project_revenue (project_id, month, year, billing_type, fixed_amount, hourly_rate, billable_hours, currency, fx_rate, revenue_inr)
+      INSERT INTO fin_project_revenue (project_id, month, year, billing_type, fixed_amount, hourly_rate, billable_hours, currency, fx_rate, revenue_inr, status)
       VALUES (${project_id}, ${Number(month)}, ${Number(year)}, ${billing_type || 'fixed'},
-              ${fa}, ${hr}, ${bh}, ${ccy}, ${rate}, ${revenueInr})
+              ${fa}, ${hr}, ${bh}, ${ccy}, ${rate}, ${revenueInr}, 'pending')
       ON CONFLICT (project_id, month, year) DO UPDATE SET
         billing_type = EXCLUDED.billing_type, fixed_amount = EXCLUDED.fixed_amount,
         hourly_rate = EXCLUDED.hourly_rate, billable_hours = EXCLUDED.billable_hours,
-        currency = EXCLUDED.currency, fx_rate = EXCLUDED.fx_rate, revenue_inr = EXCLUDED.revenue_inr`;
+        currency = EXCLUDED.currency, fx_rate = EXCLUDED.fx_rate, revenue_inr = EXCLUDED.revenue_inr,
+        status = COALESCE(fin_project_revenue.status, 'pending')`;
     res.json({ ok: true });
+  } catch (err: any) { res.status(500).json({ error: err.message || 'Server error' }); }
+});
+
+// Mark an Upwork billing entry as received. Admin enters the actual amount
+// (in the same currency the entry was raised), we look up the FX rate as-of
+// today and lock the INR equivalent — so realized revenue uses real money,
+// not the optimistic invoiced figure.
+app.patch('/api/finance/revenue/:project_id/:month/:year/clear', async (req, res) => {
+  await runStartupMigrations();
+  if (!(await requireAdmin(req, res))) return;
+  try {
+    const { project_id, month, year } = req.params;
+    const mY = Number(month), yY = Number(year);
+    const row = (await sql`SELECT r.*, p.name AS project_name, p.billing_source FROM fin_project_revenue r LEFT JOIN projects p ON p.id=r.project_id WHERE r.project_id=${project_id} AND r.month=${mY} AND r.year=${yY}`)[0] as any;
+    if (!row) return res.status(404).json({ error: 'No billing entry for this period' });
+    const invoiced = Number(row.revenue_inr ?? 0);
+    const invoicedNative = row.billing_type === 'hourly'
+      ? Number(row.hourly_rate) * Number(row.billable_hours)
+      : Number(row.fixed_amount);
+    const { amount_received, clearance_note, fx_rate: clientRate } = req.body ?? {};
+    // Default received to invoicedNative (most common case: paid in full).
+    const received = amount_received != null ? Number(amount_received) : invoicedNative;
+    if (received < 0) return res.status(400).json({ error: 'amount_received cannot be negative' });
+    const ccy = (row.currency || 'INR').toUpperCase();
+    let rate: number;
+    if (clientRate != null) rate = Number(clientRate);
+    else if (ccy === 'INR') rate = 1;
+    else {
+      const today = new Date().toISOString().slice(0, 10);
+      rate = (await getFxRate(today, ccy, 'INR')).rate;
+    }
+    const receivedInr = received * rate;
+    const adminUser = (await sql`SELECT id, name FROM app_users WHERE id=${(req.headers['x-user-id'] as string) || ''}`)[0] as any;
+    const updated = (await sql`
+      UPDATE fin_project_revenue SET
+        status='cleared',
+        amount_received=${received},
+        received_inr=${receivedInr},
+        received_fx_rate=${rate},
+        cleared_at=NOW(),
+        cleared_by=${adminUser?.id ?? null},
+        cleared_by_name=${adminUser?.name ?? null},
+        clearance_note=${clearance_note?.trim() || null}
+      WHERE project_id=${project_id} AND month=${mY} AND year=${yY}
+      RETURNING *`)[0];
+    // Notify the coordinator (or whoever last saved) that their billing was cleared.
+    const variance = receivedInr - invoiced;
+    const varianceMsg = Math.abs(variance) < 1 ? 'paid in full' : variance < 0 ? `short by ₹${Math.round(Math.abs(variance)).toLocaleString('en-IN')}` : `extra ₹${Math.round(variance).toLocaleString('en-IN')}`;
+    notifyAdminsAndHR('invoice_cleared', 'Upwork billing cleared',
+      `${row.project_name ?? 'Project'} (${ccy} ${received.toLocaleString('en-IN')}) — ${varianceMsg}.`).catch(() => {});
+    res.json(updated);
+  } catch (err: any) { res.status(500).json({ error: err.message || 'Server error' }); }
+});
+
+app.patch('/api/finance/revenue/:project_id/:month/:year/reopen', async (req, res) => {
+  await runStartupMigrations();
+  if (!(await requireAdmin(req, res))) return;
+  try {
+    const { project_id, month, year } = req.params;
+    const updated = (await sql`
+      UPDATE fin_project_revenue SET
+        status='pending',
+        amount_received=NULL, received_inr=NULL, received_fx_rate=NULL,
+        cleared_at=NULL, cleared_by=NULL, cleared_by_name=NULL, clearance_note=NULL
+      WHERE project_id=${project_id} AND month=${Number(month)} AND year=${Number(year)}
+      RETURNING *`)[0];
+    if (!updated) return res.status(404).json({ error: 'Billing entry not found' });
+    res.json(updated);
   } catch (err: any) { res.status(500).json({ error: err.message || 'Server error' }); }
 });
 // Create a project FROM the finance module — writes a real projects row (so it
