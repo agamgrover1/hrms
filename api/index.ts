@@ -6262,6 +6262,31 @@ app.patch('/api/finance/revenue/:project_id/:month/:year/clear', async (req, res
   } catch (err: any) { res.status(500).json({ error: err.message || 'Server error' }); }
 });
 
+// One-shot cleanup: delete fin_project_revenue rows whose project is NOT
+// flagged as Upwork. Used after we made Billing Setup Upwork-only — the
+// historical direct-project rows linger in the table and still drive revenue
+// via revenueOf() when no invoice exists. Calling this leaves only the
+// Upwork rows behind. Safe to run multiple times (subsequent runs are no-ops).
+app.post('/api/finance/revenue/cleanup-direct', async (req, res) => {
+  await runStartupMigrations();
+  if (!(await requireAdmin(req, res))) return;
+  try {
+    const dryRun = req.body?.dry_run === true;
+    const toDelete = (await sql`
+      SELECT r.project_id, r.month, r.year, p.name, p.billing_source
+      FROM fin_project_revenue r
+      JOIN projects p ON p.id = r.project_id
+      WHERE COALESCE(p.billing_source, 'direct') <> 'upwork'`) as any[];
+    if (dryRun) return res.json({ would_delete: toDelete.length, sample: toDelete.slice(0, 5) });
+    await sql`
+      DELETE FROM fin_project_revenue
+      WHERE project_id IN (
+        SELECT id FROM projects WHERE COALESCE(billing_source, 'direct') <> 'upwork'
+      )`;
+    res.json({ deleted: toDelete.length });
+  } catch (err: any) { res.status(500).json({ error: err.message || 'Server error' }); }
+});
+
 app.patch('/api/finance/revenue/:project_id/:month/:year/reopen', async (req, res) => {
   await runStartupMigrations();
   if (!(await requireAdmin(req, res))) return;

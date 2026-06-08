@@ -50,6 +50,9 @@ export default function RevenueTab({ month, year, onChanged }: { month: number; 
   const [clearForm, setClearForm] = useState<{ amount_received: string; clearance_note: string }>({ amount_received: '', clearance_note: '' });
   const [clearFxRate, setClearFxRate] = useState<number | null>(null);
   const [clearingBusy, setClearingBusy] = useState(false);
+  // One-shot cleanup of legacy direct-project rows (after Upwork-only migration).
+  const [legacyCount, setLegacyCount] = useState<number | null>(null);
+  const [cleaningLegacy, setCleaningLegacy] = useState(false);
 
   const load = () => {
     setLoading(true); setErr('');
@@ -75,6 +78,28 @@ export default function RevenueTab({ month, year, onChanged }: { month: number; 
       .finally(() => setLoading(false));
   };
   useEffect(load, [month, year]);
+
+  // Show a banner to admin if there are still legacy direct-project rows in
+  // fin_project_revenue. They no longer have a UI to be edited, but they'd
+  // still drive revenue in revenueOf() until cleaned up.
+  useEffect(() => {
+    if (!isAdmin) return;
+    financeApi.cleanupDirectRevenue(true)
+      .then(r => setLegacyCount(r.would_delete ?? 0))
+      .catch(() => setLegacyCount(null));
+  }, [isAdmin]);
+
+  const runCleanup = async () => {
+    if (!confirm(`Delete ${legacyCount} direct-project billing rows? These are legacy entries — direct projects use Invoices going forward. This cannot be undone.`)) return;
+    setCleaningLegacy(true);
+    try {
+      const r = await financeApi.cleanupDirectRevenue(false);
+      setLegacyCount(0);
+      onChanged();
+      alert(`Cleaned up ${r.deleted} rows.`);
+    } catch (e: any) { setErr(e.message); }
+    finally { setCleaningLegacy(false); }
+  };
 
   // Only show Upwork projects on this tab — direct projects belong on Invoices.
   const upworkRows = useMemo(() => rows.filter(r => r.billing_source === 'upwork'), [rows]);
@@ -183,6 +208,19 @@ export default function RevenueTab({ month, year, onChanged }: { month: number; 
           For Upwork projects, coordinator enters the contract amount here (USD by default). Once admin marks it <b className="text-on-surface">Cleared</b> with the actual amount that landed in the bank, the variance (Upwork fee, FX) flows through to net profit — same way <b className="text-on-surface">Invoices</b> work for direct clients.
         </p>
       </div>
+
+      {isAdmin && legacyCount != null && legacyCount > 0 && (
+        <div className="rounded-xl-2 border border-warning/40 bg-warning-container/30 p-4 flex items-center justify-between gap-4">
+          <div className="text-xs text-on-surface-muted">
+            <p className="text-on-surface font-semibold text-sm mb-0.5">{legacyCount} legacy direct-project billing row{legacyCount === 1 ? '' : 's'} found</p>
+            <p>These pre-date the Upwork-only switch and still feed revenue when no invoice exists. Direct projects should use Invoices instead. Click to remove them.</p>
+          </div>
+          <button onClick={runCleanup} disabled={cleaningLegacy}
+            className="rounded-xl-2 bg-warning px-3 py-2 text-xs font-semibold text-white hover:opacity-90 disabled:opacity-50 whitespace-nowrap">
+            {cleaningLegacy ? 'Clearing…' : `Clear ${legacyCount}`}
+          </button>
+        </div>
+      )}
 
       {/* KPI strip — only meaningful for admins; coords don't see cost breakdowns anywhere else either */}
       {isAdmin && (

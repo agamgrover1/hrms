@@ -233,6 +233,11 @@ export const financeApi = {
     request<any>(`/revenue/${encodeURIComponent(project_id)}/${month}/${year}/clear`, { method: 'PATCH', body: JSON.stringify(data) }),
   reopenRevenue: (project_id: string, month: number, year: number) =>
     request<any>(`/revenue/${encodeURIComponent(project_id)}/${month}/${year}/reopen`, { method: 'PATCH' }),
+  cleanupDirectRevenue: (dry_run = false) =>
+    request<{ deleted?: number; would_delete?: number; sample?: any[] }>(
+      '/revenue/cleanup-direct',
+      { method: 'POST', body: JSON.stringify({ dry_run }) },
+    ),
   createProject: (data: { name: string; client_name?: string; month: number; year: number; billing_type: string; fixed_amount: number; hourly_rate: number; billable_hours: number; created_by?: string }) =>
     request<any>('/projects', { method: 'POST', body: JSON.stringify(data) }),
   copyMonth: (from_month: number, from_year: number, to_month: number, to_year: number) =>
