@@ -421,6 +421,19 @@ async function runStartupMigrations() {
       rejection_reason TEXT, approved_amount NUMERIC, payment_note TEXT,
       created_at TIMESTAMPTZ DEFAULT NOW()
     )`;
+  // Multi-currency on the deal value. Approved/paid amount stays in INR
+  // (it's what HR actually disburses).
+  try {
+    await sql`ALTER TABLE upsell_requests ADD COLUMN IF NOT EXISTS currency TEXT DEFAULT 'INR'`;
+    await sql`ALTER TABLE upsell_requests ADD COLUMN IF NOT EXISTS fx_rate NUMERIC`;
+    await sql`ALTER TABLE upsell_requests ADD COLUMN IF NOT EXISTS deal_value_inr NUMERIC`;
+    await sql`
+      UPDATE upsell_requests
+      SET currency=COALESCE(currency, 'INR'),
+          fx_rate=COALESCE(fx_rate, 1),
+          deal_value_inr=COALESCE(deal_value_inr, deal_value)
+      WHERE currency IS NULL OR deal_value_inr IS NULL`;
+  } catch { /* idempotent */ }
   await sql`
     CREATE TABLE IF NOT EXISTS expense_requests (
       id TEXT PRIMARY KEY, employee_id TEXT NOT NULL, employee_name TEXT,
@@ -2730,16 +2743,44 @@ app.get('/api/upsell', async (req, res) => {
 });
 app.post('/api/upsell', async (req, res) => {
   try {
-    const { employee_id, employee_name, client_name, service_description, deal_value, notes } = req.body;
+    const { employee_id, employee_name, client_name, service_description, deal_value, notes, currency, fx_rate } = req.body;
     if (!employee_id || !client_name?.trim() || !service_description?.trim())
       return res.status(400).json({ error: 'employee_id, client_name, service_description are required' });
-    // Validate deal_value is positive if provided
     if (deal_value !== undefined && deal_value !== null && Number(deal_value) <= 0)
       return res.status(400).json({ error: 'Deal value must be greater than 0' });
+    // Context is now required — HR can't review an upsell without knowing
+    // what happened with the client + what we're providing. 30-char floor
+    // catches one-word entries like "more work" or "extension".
+    const trimmedNotes = (notes ?? '').trim();
+    if (trimmedNotes.length < 30) {
+      return res.status(400).json({ error: 'Please add at least 30 characters describing what happened with the client and what extras you\'re providing.' });
+    }
+    // Currency + FX
+    const ccy = (currency || 'INR').toUpperCase();
+    let rate: number;
+    if (fx_rate != null) rate = Number(fx_rate);
+    else if (ccy === 'INR') rate = 1;
+    else {
+      const today = new Date().toISOString().slice(0, 10);
+      rate = (await getFxRate(today, ccy, 'INR')).rate;
+    }
+    const dv = deal_value != null ? Number(deal_value) : null;
+    const dvInr = dv != null ? dv * rate : null;
     const id = `ups_${Date.now()}`;
-    const rows = await sql`INSERT INTO upsell_requests (id,employee_id,employee_name,client_name,service_description,deal_value,notes) VALUES (${id},${employee_id},${employee_name??null},${client_name.trim()},${service_description.trim()},${deal_value??null},${notes?.trim()??null}) RETURNING *`;
+    const rows = await sql`
+      INSERT INTO upsell_requests
+        (id, employee_id, employee_name, client_name, service_description,
+         deal_value, currency, fx_rate, deal_value_inr, notes)
+      VALUES (${id}, ${employee_id}, ${employee_name ?? null}, ${client_name.trim()}, ${service_description.trim()},
+              ${dv}, ${ccy}, ${rate}, ${dvInr}, ${trimmedNotes})
+      RETURNING *`;
+    const fmtDeal = dv != null
+      ? (ccy === 'INR'
+          ? `₹${Number(dv).toLocaleString('en-IN')}`
+          : `${ccy} ${Number(dv).toLocaleString('en-IN')} (≈ ₹${Math.round(dvInr ?? 0).toLocaleString('en-IN')})`)
+      : '';
     notifyAdminsAndHR('upsell_submitted','Upsell Incentive Request',
-      `${employee_name??'An employee'} reported an upsell for "${client_name.trim()}"${deal_value ? ` — Deal: ₹${Number(deal_value).toLocaleString('en-IN')}` : ''}. Set their incentive amount.`).catch(()=>{});
+      `${employee_name??'An employee'} reported an upsell for "${client_name.trim()}"${fmtDeal ? ` — Deal: ${fmtDeal}` : ''}. Set their incentive amount.`).catch(()=>{});
     res.status(201).json(rows[0]);
   } catch (e: any) { res.status(500).json({ error: e.message }); }
 });

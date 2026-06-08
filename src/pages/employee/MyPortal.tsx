@@ -4,6 +4,7 @@ import { Clock, Calendar, DollarSign, User, CheckCircle, XCircle, AlertCircle, P
 import MyRoleTab from '../../components/MyRoleTab';
 import { useAuth } from '../../context/AuthContext';
 import { api } from '../../services/api';
+import { financeApi } from '../../services/financeApi';
 
 function parseLocalDate(dateStr: string): Date {
   if (!dateStr) return new Date(NaN);
@@ -240,7 +241,16 @@ export default function MyPortal() {
   const [optionalError, setOptionalError] = useState('');
   const [myIncentives, setMyIncentives] = useState<any[]>([]);
   const [showUpsellForm, setShowUpsellForm] = useState(false);
-  const [upsellForm, setUpsellForm] = useState({ client_name: '', service_description: '', deal_value: '', notes: '' });
+  const [upsellForm, setUpsellForm] = useState({ client_name: '', service_description: '', deal_value: '', currency: 'INR', notes: '' });
+  const [upsellFxRate, setUpsellFxRate] = useState<number | null>(null);
+  // Refetch FX rate whenever the upsell modal is open and the currency changes.
+  useEffect(() => {
+    if (!showUpsellForm) return;
+    if (upsellForm.currency === 'INR') { setUpsellFxRate(1); return; }
+    financeApi.getFxRate({ from: upsellForm.currency, to: 'INR' })
+      .then(r => setUpsellFxRate(r.rate))
+      .catch(() => setUpsellFxRate(null));
+  }, [showUpsellForm, upsellForm.currency]);
   const [myExpenses, setMyExpenses] = useState<any[]>([]);
   const [myAssets, setMyAssets] = useState<any[]>([]);
   const [myRepairTickets, setMyRepairTickets] = useState<any[]>([]);
@@ -1276,7 +1286,7 @@ export default function MyPortal() {
         return (
           <div className="space-y-4">
             <div className="flex justify-end">
-              <button onClick={() => { setShowUpsellForm(true); setUpsellForm({ client_name:'', service_description:'', deal_value:'', notes:'' }); }}
+              <button onClick={() => { setShowUpsellForm(true); setUpsellForm({ client_name:'', service_description:'', deal_value:'', currency:'INR', notes:'' }); setUpsellFxRate(1); }}
                 className="flex items-center gap-2 px-4 py-2.5 text-white text-sm font-semibold rounded-xl shadow-sm"
                 style={{ background: 'linear-gradient(135deg, #192250 0%, #141c43 100%)' }}>
                 <Plus size={15} /> Request Incentive
@@ -1301,8 +1311,23 @@ export default function MyPortal() {
                           <div className="flex-1 min-w-0">
                             <p className="font-semibold text-on-surface">{r.client_name}</p>
                             <p className="text-xs text-on-surface-subtle mt-0.5">{r.service_description}</p>
+                            {r.notes && (
+                              <p className="text-xs text-on-surface-muted mt-1 leading-snug whitespace-pre-line">{r.notes}</p>
+                            )}
                             <div className="flex items-center gap-3 mt-2 flex-wrap">
-                              {r.deal_value && <span className="text-xs text-on-surface-subtle">Deal: <strong style={{ color: '#192250' }}>{fmtAmt(r.deal_value)}</strong></span>}
+                              {r.deal_value && (
+                                <span className="text-xs text-on-surface-subtle">
+                                  Deal:{' '}
+                                  <strong style={{ color: '#192250' }}>
+                                    {r.currency && r.currency !== 'INR'
+                                      ? `${r.currency === 'USD' ? '$' : r.currency === 'EUR' ? '€' : r.currency === 'GBP' ? '£' : r.currency + ' '}${Number(r.deal_value).toLocaleString('en-IN')}`
+                                      : fmtAmt(r.deal_value)}
+                                  </strong>
+                                  {r.currency && r.currency !== 'INR' && r.deal_value_inr && (
+                                    <span className="text-on-surface-subtle"> (≈ ₹{Math.round(Number(r.deal_value_inr)).toLocaleString('en-IN')})</span>
+                                  )}
+                                </span>
+                              )}
                               {r.approved_amount
                                 ? <span className="text-xs font-semibold" style={{ color: '#15803d' }}>Incentive: {fmtAmt(r.approved_amount)}</span>
                                 : <span className="text-xs text-on-surface-subtle italic">Incentive amount to be set by HR</span>}
@@ -1345,28 +1370,60 @@ export default function MyPortal() {
                           className="w-full text-sm border border-outline rounded-lg px-3 py-2.5 focus:outline-none focus:ring-2 focus:ring-primary-200" />
                       </div>
                     ))}
-                    <div className="grid grid-cols-2 gap-3">
-                      <div className="col-span-2">
-                        <label className="text-xs font-medium text-on-surface-muted mb-1 block">Total Deal Value (₹) <span className="text-danger">*</span></label>
-                        <input type="number" value={upsellForm.deal_value}
+                    {/* Currency + deal value side-by-side */}
+                    <div>
+                      <label className="text-xs font-medium text-on-surface-muted mb-1 block">Total Deal Value <span className="text-danger">*</span></label>
+                      <div className="flex gap-2">
+                        <select value={upsellForm.currency}
+                          onChange={e => setUpsellForm(f => ({ ...f, currency: e.target.value }))}
+                          className="text-sm border border-outline rounded-lg px-2.5 py-2.5 bg-surface focus:outline-none focus:ring-2 focus:ring-primary-200">
+                          {['INR','USD','EUR','GBP','AUD','CAD'].map(c => <option key={c} value={c}>{c}</option>)}
+                        </select>
+                        <input type="number" min="0" step="0.01" value={upsellForm.deal_value}
                           onChange={e => setUpsellForm(f => ({ ...f, deal_value: e.target.value }))}
-                          placeholder="e.g. 50000 — total value of the upsell"
-                          className="w-full text-sm border border-outline rounded-lg px-3 py-2.5 focus:outline-none" />
-                        <p className="text-xs text-on-surface-subtle mt-1">HR will review and set your incentive amount.</p>
+                          placeholder="e.g. 1500"
+                          className="flex-1 text-sm border border-outline rounded-lg px-3 py-2.5 num-mono focus:outline-none focus:ring-2 focus:ring-primary-200" />
                       </div>
+                      {upsellForm.currency !== 'INR' && upsellForm.deal_value && Number(upsellForm.deal_value) > 0 && upsellFxRate && (
+                        <p className="text-xs text-on-surface-muted mt-1 num-mono">
+                          ≈ ₹{Math.round(Number(upsellForm.deal_value) * upsellFxRate).toLocaleString('en-IN')}
+                          {' '}<span className="text-on-surface-subtle">(1 {upsellForm.currency} = ₹{upsellFxRate.toFixed(4)})</span>
+                        </p>
+                      )}
+                      <p className="text-xs text-on-surface-subtle mt-1">HR will review and set your INR incentive amount based on this.</p>
                     </div>
                     <div>
-                      <label className="text-xs font-medium text-on-surface-muted mb-1 block">Additional Notes</label>
+                      <label className="text-xs font-medium text-on-surface-muted mb-1 block">
+                        What happened & what extras are we providing? <span className="text-danger">*</span>
+                      </label>
                       <textarea value={upsellForm.notes} onChange={e => setUpsellForm(f => ({ ...f, notes: e.target.value }))}
-                        rows={3} placeholder="Describe your contribution to the upsell…"
-                        className="w-full border border-outline rounded-lg px-3 py-2.5 text-sm focus:outline-none resize-none" />
+                        rows={4} placeholder="e.g. Client asked for monthly content uplift. We added 4 extra blog posts/mo + premium keyword research at +$300/mo. Closed on the June kickoff call."
+                        className={`w-full border rounded-lg px-3 py-2.5 text-sm focus:outline-none resize-none focus:ring-2 focus:ring-primary-200 ${
+                          upsellForm.notes.trim().length > 0 && upsellForm.notes.trim().length < 30
+                            ? 'border-warning bg-warning-container/30'
+                            : 'border-outline'
+                        }`} />
+                      <p className="text-xs text-on-surface-subtle mt-1">
+                        Minimum 30 characters. HR needs this to understand the scenario before approving.
+                        {upsellForm.notes.trim().length > 0 && (
+                          <span className={`ml-1 num-mono ${upsellForm.notes.trim().length < 30 ? 'text-warning' : 'text-success'}`}>
+                            ({upsellForm.notes.trim().length}/30)
+                          </span>
+                        )}
+                      </p>
                     </div>
                     {upsellError && <p className="text-xs font-medium text-danger bg-danger-container border border-red-100 rounded-lg px-3 py-2">{upsellError}</p>}
                     <div className="flex gap-3 pt-1">
                       <button onClick={() => { setShowUpsellForm(false); setUpsellError(''); }}
                         className="flex-1 py-2.5 border border-outline rounded-lg text-sm font-medium text-on-surface-muted hover:bg-surface-2">Cancel</button>
                       <button
-                        disabled={submittingUpsell || !upsellForm.client_name.trim() || !upsellForm.service_description.trim() || !upsellForm.deal_value || Number(upsellForm.deal_value) <= 0}
+                        disabled={
+                          submittingUpsell
+                          || !upsellForm.client_name.trim()
+                          || !upsellForm.service_description.trim()
+                          || !upsellForm.deal_value || Number(upsellForm.deal_value) <= 0
+                          || upsellForm.notes.trim().length < 30
+                        }
                         onClick={async () => {
                           setUpsellError('');
                           setSubmittingUpsell(true);
@@ -1376,7 +1433,9 @@ export default function MyPortal() {
                               client_name: upsellForm.client_name.trim(),
                               service_description: upsellForm.service_description.trim(),
                               deal_value: Number(upsellForm.deal_value),
-                              notes: upsellForm.notes.trim() || undefined,
+                              currency: upsellForm.currency,
+                              fx_rate: upsellForm.currency === 'INR' ? 1 : (upsellFxRate ?? undefined),
+                              notes: upsellForm.notes.trim(),
                             });
                             setMyIncentives(prev => [created, ...prev]);
                             setShowUpsellForm(false);

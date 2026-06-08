@@ -13,6 +13,17 @@ const STATUS_BADGE: Record<string,{label:string;cls:string}> = {
   paid:     {label:'Paid',     cls:'bg-brand-container text-on-brand-container'},
 };
 const fmtAmt = (n: any) => n!=null && n!=='' ? `₹${Number(n).toLocaleString('en-IN')}` : '—';
+const currencySymbol = (ccy: string) => {
+  switch (ccy) {
+    case 'USD': return '$';
+    case 'EUR': return '€';
+    case 'GBP': return '£';
+    case 'AUD': return 'A$';
+    case 'CAD': return 'C$';
+    case 'INR':
+    default: return '₹';
+  }
+};
 
 // Chart styling — match Dashboard
 const CHART_AXIS = '#94a3b8';
@@ -135,11 +146,39 @@ function RequestTable({ rows, onAction, isIncentive }: { rows: any[]; onAction:(
           {rows.map(r=>{
             const cfg=STATUS_BADGE[r.status]??STATUS_BADGE.pending;
             return (
-              <tr key={r.id} className="border-t border-outline hover:bg-surface-2/50 transition-colors">
+              <tr key={r.id} className="border-t border-outline hover:bg-surface-2/50 transition-colors align-top">
                 <td className="px-4 py-3.5 font-medium text-on-surface">{r.employee_name??'—'}</td>
-                <td className="px-4 py-3.5 text-on-surface-muted font-medium">{isIncentive?r.client_name:r.category}</td>
-                <td className="px-4 py-3.5 text-on-surface-subtle max-w-[140px] truncate">{isIncentive?r.service_description:r.description}</td>
-                <td className="px-4 py-3.5 num-mono text-sm tabular-nums text-on-surface-muted">{fmtAmt(isIncentive?r.deal_value:r.amount)}</td>
+                <td className="px-4 py-3.5 text-on-surface-muted font-medium">
+                  {isIncentive?r.client_name:r.category}
+                  {isIncentive && r.currency && r.currency !== 'INR' && (
+                    <span className="ml-1.5 inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-bold bg-accent-container text-accent">{r.currency}</span>
+                  )}
+                </td>
+                <td className="px-4 py-3.5 text-xs text-on-surface-muted max-w-[280px]">
+                  <div className="font-medium text-on-surface mb-0.5">{isIncentive?r.service_description:r.description}</div>
+                  {isIncentive && r.notes && (
+                    <div className="text-on-surface-muted whitespace-pre-line leading-snug">{r.notes}</div>
+                  )}
+                </td>
+                <td className="px-4 py-3.5 num-mono text-sm tabular-nums">
+                  {isIncentive ? (
+                    <div>
+                      <div className="text-on-surface">
+                        {r.currency && r.currency !== 'INR'
+                          ? `${currencySymbol(r.currency)}${Number(r.deal_value ?? 0).toLocaleString('en-IN')}`
+                          : fmtAmt(r.deal_value)}
+                      </div>
+                      {r.currency && r.currency !== 'INR' && r.deal_value_inr != null && (
+                        <div className="text-[10px] text-on-surface-subtle"
+                          title={`Locked at 1 ${r.currency} = ₹${Number(r.fx_rate ?? 0).toFixed(4)}`}>
+                          ≈ ₹{Math.round(Number(r.deal_value_inr)).toLocaleString('en-IN')}
+                        </div>
+                      )}
+                    </div>
+                  ) : (
+                    <div className="text-on-surface-muted">{fmtAmt(r.amount)}</div>
+                  )}
+                </td>
                 <td className={`px-4 py-3.5 num-mono text-sm tabular-nums font-semibold ${r.approved_amount?'text-success':'text-on-surface-subtle'}`}>{fmtAmt(r.approved_amount)}</td>
                 <td className="px-4 py-3.5 text-xs text-on-surface-subtle whitespace-nowrap">
                   {new Date(r.created_at).toLocaleDateString('en-IN',{day:'numeric',month:'short',year:'numeric'})}
