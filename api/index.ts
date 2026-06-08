@@ -5450,6 +5450,13 @@ async function finComputeMonth(month: number, year: number) {
     FROM fin_employee_meta m JOIN employees e ON e.id = m.employee_id
     WHERE m.active = TRUE`) as any[];
   const projects = (await sql`SELECT id, name, client_name, project_lead_id, project_reporting_id FROM projects WHERE status='active'`) as any[];
+  // For the org-wide INVOICED / RECEIVED / PENDING tiles we need every
+  // non-cancelled invoice in the period — not just those tied to an active
+  // project. Otherwise an invoice on an archived project shows on the
+  // Invoices tab but disappears from the dashboard total. Project map keeps
+  // billing_source so we can decide whether Upwork billing setup should
+  // contribute in the absence of an invoice.
+  const allProjects = (await sql`SELECT id, billing_source, status FROM projects`) as any[];
   const revenues = (await sql`SELECT * FROM fin_project_revenue WHERE month=${month} AND year=${year}`) as any[];
   const assignments = (await sql`
     SELECT project_id, employee_id, COALESCE(monthly_hours,0) AS hours
@@ -5686,15 +5693,51 @@ async function finComputeMonth(month: number, year: number) {
     totals: {
       revenue: totalRevenue, directCost: totalDirectCost,
       projectExpenses: totalProjectExpenses,
-      // Invoice aggregates: invoiced is what was billed (accrual), received is
-      // what's actually in the bank, pending is the gap. invoiced typically
-      // equals totalRevenue when every project has invoices; differs only for
-      // projects still relying on the legacy fin_project_revenue fallback.
-      totalInvoiced: projectRows.reduce((s, p) => s + p.invoiced, 0),
-      totalReceived: projectRows.reduce((s, p) => s + p.received, 0),
-      totalPending: projectRows.reduce((s, p) => s + Math.max(p.invoiced - p.received, 0), 0),
-      pendingInvoiceCount: projectRows.reduce((s, p) => s + p.pendingCount, 0),
-      clearedInvoiceCount: projectRows.reduce((s, p) => s + p.clearedCount, 0),
+      // Invoice aggregates (org-wide). Source of truth is the full set of
+      // non-cancelled invoices in the period — NOT projectRows — because
+      // projectRows is limited to active projects, which would drop invoices
+      // raised against archived projects. We also fold in Upwork billing setup
+      // for projects without invoices, since that's the other revenue source.
+      //   invoiced = accrual (what we billed)
+      //   received = cash (what landed)
+      //   pending  = the gap, by row count
+      ...(() => {
+        // Pull all non-cancelled invoices for the period — bypassing project status.
+        // invoiceByProj already has these by project_id; we sum over its full set.
+        const invoicedProjIds = new Set<string>();
+        let totalInvoiced = 0, totalReceived = 0, pendingInvoiceCount = 0, clearedInvoiceCount = 0;
+        for (const [pid, inv] of invoiceByProj) {
+          invoicedProjIds.add(pid);
+          totalInvoiced += Number(inv.invoiced || 0);
+          totalReceived += Number(inv.received || 0);
+          pendingInvoiceCount += Number(inv.pending_count || 0);
+          clearedInvoiceCount += Number(inv.cleared_count || 0);
+        }
+        // Fold in Upwork billing setup for projects with NO invoice in the period.
+        // Pending Upwork rows count as invoiced; cleared rows also contribute to received.
+        // revByProj is keyed by project_id; we filter to upwork-tagged projects only.
+        const upworkProjIds = new Set(allProjects.filter(p => p.billing_source === 'upwork').map(p => p.id));
+        for (const [pid, r] of revByProj) {
+          if (invoicedProjIds.has(pid)) continue; // invoice already counted, don't double
+          if (!upworkProjIds.has(pid)) continue;  // only Upwork billing setup contributes here
+          const invoicedInr = Number((r as any).revenue_inr || 0);
+          if (invoicedInr <= 0) continue;
+          totalInvoiced += invoicedInr;
+          if ((r as any).status === 'cleared') {
+            totalReceived += Number((r as any).received_inr || 0);
+            clearedInvoiceCount += 1;
+          } else {
+            pendingInvoiceCount += 1;
+          }
+        }
+        return {
+          totalInvoiced,
+          totalReceived,
+          totalPending: Math.max(totalInvoiced - totalReceived, 0),
+          pendingInvoiceCount,
+          clearedInvoiceCount,
+        };
+      })(),
       benchCost, indirectSalaries,
       supervisionCost: supervisorSalariesTotal, supervisorHeadcount: supervisors.length,
       otherCosts: otherCostTotal,
