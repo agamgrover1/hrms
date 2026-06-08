@@ -5618,11 +5618,50 @@ async function finComputeMonth(month: number, year: number) {
   const overheadPool = indirectSalaries + otherCostTotal + unallocatedSupervision + (settings.include_bench_in_overhead ? benchCost : 0);
 
   const totalDirectHours = activeAllocs.reduce((s, a) => s + Number(a.hours), 0);
-  const totalRevenue = projects.reduce((s, p) => s + revenueOf(p), 0);
+  // Org-wide revenue/invoiced/received: built once over the full set of
+  // non-cancelled invoices + Upwork billing rows for the period (not limited
+  // to active projects), so the dashboard tiles agree with each other and
+  // with the Invoices tab. Per-project P&L rows below stay active-only.
+  const orgFinTotals = (() => {
+    let totalRevenue = 0, totalInvoiced = 0, totalReceived = 0;
+    let pendingInvoiceCount = 0, clearedInvoiceCount = 0;
+    const accountedByInvoice = new Set<string>();
+    for (const [pid, inv] of invoiceByProj) {
+      accountedByInvoice.add(pid);
+      totalRevenue += Number((inv as any).realized || 0);
+      totalInvoiced += Number((inv as any).invoiced || 0);
+      totalReceived += Number((inv as any).received || 0);
+      pendingInvoiceCount += Number((inv as any).pending_count || 0);
+      clearedInvoiceCount += Number((inv as any).cleared_count || 0);
+    }
+    const upworkProjIds = new Set(allProjects.filter(p => p.billing_source === 'upwork').map(p => p.id));
+    for (const [pid, r] of revByProj) {
+      if (accountedByInvoice.has(pid)) continue; // invoice wins (same precedence as revenueOf)
+      if (!upworkProjIds.has(pid)) continue;     // only Upwork billing contributes here
+      const invoicedInr = Number((r as any).revenue_inr || 0);
+      if (invoicedInr <= 0) continue;
+      totalInvoiced += invoicedInr;
+      if ((r as any).status === 'cleared') {
+        const recInr = Number((r as any).received_inr || 0);
+        totalRevenue  += recInr;       // realized = received (post-fee/FX truth)
+        totalReceived += recInr;
+        clearedInvoiceCount += 1;
+      } else {
+        totalRevenue += invoicedInr;   // realized = invoiced for pending rows
+        pendingInvoiceCount += 1;
+      }
+    }
+    return { totalRevenue, totalInvoiced, totalReceived, pendingInvoiceCount, clearedInvoiceCount };
+  })();
+  const totalRevenue = orgFinTotals.totalRevenue;
+  // Overhead distribution must sum to ~1 across active projects, so it uses
+  // the active-project revenue sum (not the comprehensive total). Otherwise
+  // revenue-method overhead would leave a portion of the pool unallocated.
+  const activeProjRevenue = projects.reduce((s, p) => s + revenueOf(p), 0);
   const shareOf = (dh: number, rev: number) => {
     switch (settings.overhead_method) {
       case 'direct_hours': return totalDirectHours > 0 ? dh / totalDirectHours : 0;
-      case 'revenue': return totalRevenue > 0 ? rev / totalRevenue : 0;
+      case 'revenue': return activeProjRevenue > 0 ? rev / activeProjRevenue : 0;
       case 'headcount': return projects.length > 0 ? 1 / projects.length : 0;
       default: return 0;
     }
@@ -5669,7 +5708,10 @@ async function finComputeMonth(month: number, year: number) {
   }).sort((a, b) => b.netProfit - a.netProfit);
 
   const totalDirectCost = projectRows.reduce((s, p) => s + p.directCost, 0);
-  const totalProjectExpenses = projectRows.reduce((s, p) => s + p.projectExpenses, 0);
+  // Project expenses: sum over the full set, not just active-project rows.
+  // A project archived mid-month can still have expenses booked against it
+  // that need to hit total cost.
+  const totalProjectExpenses = projExpenses.reduce((s, e) => s + Number(e.amount), 0);
   const grossProfit = totalRevenue - totalDirectCost - totalProjectExpenses;
   const netProfit = totalRevenue - totalDirectCost - totalProjectExpenses - benchCost - indirectSalaries - supervisorSalariesTotal - otherCostTotal;
   const totalSalary = employees.reduce((s, e) => s + Number(e.salary), 0);
@@ -5693,51 +5735,14 @@ async function finComputeMonth(month: number, year: number) {
     totals: {
       revenue: totalRevenue, directCost: totalDirectCost,
       projectExpenses: totalProjectExpenses,
-      // Invoice aggregates (org-wide). Source of truth is the full set of
-      // non-cancelled invoices in the period — NOT projectRows — because
-      // projectRows is limited to active projects, which would drop invoices
-      // raised against archived projects. We also fold in Upwork billing setup
-      // for projects without invoices, since that's the other revenue source.
-      //   invoiced = accrual (what we billed)
-      //   received = cash (what landed)
-      //   pending  = the gap, by row count
-      ...(() => {
-        // Pull all non-cancelled invoices for the period — bypassing project status.
-        // invoiceByProj already has these by project_id; we sum over its full set.
-        const invoicedProjIds = new Set<string>();
-        let totalInvoiced = 0, totalReceived = 0, pendingInvoiceCount = 0, clearedInvoiceCount = 0;
-        for (const [pid, inv] of invoiceByProj) {
-          invoicedProjIds.add(pid);
-          totalInvoiced += Number(inv.invoiced || 0);
-          totalReceived += Number(inv.received || 0);
-          pendingInvoiceCount += Number(inv.pending_count || 0);
-          clearedInvoiceCount += Number(inv.cleared_count || 0);
-        }
-        // Fold in Upwork billing setup for projects with NO invoice in the period.
-        // Pending Upwork rows count as invoiced; cleared rows also contribute to received.
-        // revByProj is keyed by project_id; we filter to upwork-tagged projects only.
-        const upworkProjIds = new Set(allProjects.filter(p => p.billing_source === 'upwork').map(p => p.id));
-        for (const [pid, r] of revByProj) {
-          if (invoicedProjIds.has(pid)) continue; // invoice already counted, don't double
-          if (!upworkProjIds.has(pid)) continue;  // only Upwork billing setup contributes here
-          const invoicedInr = Number((r as any).revenue_inr || 0);
-          if (invoicedInr <= 0) continue;
-          totalInvoiced += invoicedInr;
-          if ((r as any).status === 'cleared') {
-            totalReceived += Number((r as any).received_inr || 0);
-            clearedInvoiceCount += 1;
-          } else {
-            pendingInvoiceCount += 1;
-          }
-        }
-        return {
-          totalInvoiced,
-          totalReceived,
-          totalPending: Math.max(totalInvoiced - totalReceived, 0),
-          pendingInvoiceCount,
-          clearedInvoiceCount,
-        };
-      })(),
+      // Tile aggregates flow from orgFinTotals (computed once above). The
+      // headline tiles (REVENUE, INVOICED, RECEIVED, PENDING) all share this
+      // source so they can't drift apart.
+      totalInvoiced: orgFinTotals.totalInvoiced,
+      totalReceived: orgFinTotals.totalReceived,
+      totalPending: Math.max(orgFinTotals.totalInvoiced - orgFinTotals.totalReceived, 0),
+      pendingInvoiceCount: orgFinTotals.pendingInvoiceCount,
+      clearedInvoiceCount: orgFinTotals.clearedInvoiceCount,
       benchCost, indirectSalaries,
       supervisionCost: supervisorSalariesTotal, supervisorHeadcount: supervisors.length,
       otherCosts: otherCostTotal,
