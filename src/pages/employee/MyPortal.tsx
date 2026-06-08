@@ -66,6 +66,163 @@ function HubStat({ label, value, tone }: { label: string; value: number; tone: s
   );
 }
 
+// Pulse: score → band label/colors
+function bandLabel(b?: string | null) {
+  switch (b) {
+    case 'excellent':     return 'Excellent';
+    case 'strong':        return 'Strong';
+    case 'building':      return 'Building';
+    case 'needs_support': return 'Needs support';
+    case 'baseline':      return 'Building baseline';
+    default:              return '—';
+  }
+}
+function pulseTileTone(band?: string | null): React.CSSProperties {
+  switch (band) {
+    case 'excellent':     return { background: '#dcfce7', color: '#15803d' };
+    case 'strong':        return { background: '#e0e7ff', color: '#3730a3' };
+    case 'building':      return { background: '#fef3c7', color: '#92400e' };
+    case 'needs_support': return { background: '#fee2e2', color: '#b91c1c' };
+    default:              return { background: '#f1f5f9', color: '#475569' };
+  }
+}
+function pillarColor(score: number | null): string {
+  if (score == null) return '#94a3b8';
+  if (score >= 85) return '#16a34a';
+  if (score >= 70) return '#3730a3';
+  if (score >= 50) return '#d97706';
+  return '#dc2626';
+}
+function PulseSparkline({ trend }: { trend: Array<{ snapshot_date: string; total_score: number }> }) {
+  // sample to 12 points so it stays readable
+  const points = trend.length > 12 ? trend.filter((_, i) => i % Math.ceil(trend.length / 12) === 0) : trend;
+  const W = 140, H = 48, P = 4;
+  const min = Math.min(...points.map(p => p.total_score), 40);
+  const max = Math.max(...points.map(p => p.total_score), 90);
+  const span = Math.max(1, max - min);
+  const xy = points.map((p, i) => {
+    const x = P + (i / Math.max(1, points.length - 1)) * (W - P * 2);
+    const y = H - P - ((p.total_score - min) / span) * (H - P * 2);
+    return `${x.toFixed(1)},${y.toFixed(1)}`;
+  });
+  const last = points[points.length - 1];
+  const prev = points[points.length - 2] ?? last;
+  const delta = last && prev ? last.total_score - prev.total_score : 0;
+  return (
+    <div className="hidden sm:flex flex-col items-end">
+      <svg width={W} height={H} viewBox={`0 0 ${W} ${H}`} className="block">
+        <polyline points={xy.join(' ')} fill="none" stroke="#192250" strokeWidth="2" strokeLinejoin="round" strokeLinecap="round" />
+        {last && (
+          <circle cx={xy[xy.length - 1]?.split(',')[0]} cy={xy[xy.length - 1]?.split(',')[1]} r="3" fill="#192250" />
+        )}
+      </svg>
+      <p className={`text-[10px] num-mono mt-0.5 ${delta > 0 ? 'text-success' : delta < 0 ? 'text-danger' : 'text-on-surface-subtle'}`}>
+        {delta > 0 ? '+' : ''}{delta.toFixed(0)} vs last
+      </p>
+    </div>
+  );
+}
+const PULSE_PILLARS = [
+  { key: 'discipline',        label: 'Discipline',        hint: 'Punctuality, attendance, leave notice' },
+  { key: 'hours_hygiene',     label: 'Hours hygiene',     hint: 'Daily hours logged + notes filled' },
+  { key: 'output',            label: 'Output',            hint: 'Utilization + manager approval rate' },
+  { key: 'contribution',      label: 'Contribution',      hint: 'Goals on track + upsells raised' },
+  { key: 'manager_pulse',     label: 'Manager pulse',     hint: 'Weekly 1-tap rating from your manager' },
+  { key: 'team_stewardship',  label: 'Team stewardship',  hint: 'Your team\'s logging + your approval speed' },
+  { key: 'project_hygiene',   label: 'Project hygiene',   hint: 'Logging coverage + approval flow across projects' },
+] as const;
+function PulseBreakdownDrawer({
+  open, onClose, snapshot, trend,
+}: {
+  open: boolean; onClose: () => void;
+  snapshot: any | null;
+  trend: Array<{ snapshot_date: string; total_score: number }>;
+}) {
+  if (!open || !snapshot) return null;
+  const bd = snapshot.breakdown ?? {};
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm p-4">
+      <div className="bg-surface rounded-2xl shadow-2xl w-full max-w-2xl max-h-[90vh] overflow-hidden flex flex-col">
+        <div className="flex items-center justify-between px-6 py-4 border-b border-outline">
+          <div>
+            <h2 className="font-display font-bold text-lg" style={{ color: '#192250' }}>Performance Pulse — 30 day</h2>
+            <p className="text-xs text-on-surface-subtle mt-0.5">Automated score, computed nightly. Manual reviews continue alongside.</p>
+          </div>
+          <button onClick={onClose}><X size={18} className="text-on-surface-subtle" /></button>
+        </div>
+        <div className="overflow-y-auto px-6 py-5 space-y-5">
+          {/* Headline */}
+          <div className="flex items-center gap-4 p-4 rounded-xl-2 border border-outline" style={{ background: 'linear-gradient(135deg, #f9fafb 0%, #f3f4f6 100%)' }}>
+            <div className="w-20 h-20 rounded-2xl flex items-center justify-center font-display font-bold text-3xl num-mono" style={pulseTileTone(snapshot.band)}>
+              {snapshot.is_baseline ? '…' : snapshot.total_score}
+            </div>
+            <div>
+              <p className="text-sm font-bold text-on-surface">{snapshot.is_baseline ? 'Building baseline' : bandLabel(snapshot.band)}</p>
+              <p className="text-xs text-on-surface-muted mt-0.5">
+                {snapshot.is_baseline ? 'Your score will appear after 30 days at the company.' : 'Score is the equal-weighted average of the pillars below.'}
+              </p>
+              {trend.length > 1 && !snapshot.is_baseline && <PulseSparkline trend={trend} />}
+            </div>
+          </div>
+          {/* Pillars */}
+          <div className="space-y-2">
+            <p className="text-[10px] uppercase tracking-[0.18em] font-bold text-on-surface-subtle">Pillars</p>
+            {PULSE_PILLARS.map(p => {
+              const v = snapshot[p.key] as number | null;
+              if (v == null) return null; // skip role pillars that don't apply
+              const color = pillarColor(v);
+              return (
+                <div key={p.key} className="flex items-center gap-3 py-1.5">
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-baseline justify-between gap-2">
+                      <p className="text-sm font-semibold text-on-surface">{p.label}</p>
+                      <p className="text-xs num-mono font-bold" style={{ color }}>{v}</p>
+                    </div>
+                    <p className="text-[11px] text-on-surface-subtle">{p.hint}</p>
+                    <div className="mt-1 h-1.5 rounded-full bg-surface-2 overflow-hidden">
+                      <div className="h-full rounded-full transition-all" style={{ width: `${v}%`, background: color }} />
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+          {/* Specifics — what dragged the score */}
+          <div className="space-y-2">
+            <p className="text-[10px] uppercase tracking-[0.18em] font-bold text-on-surface-subtle">Recent signals (last 30 days)</p>
+            <ul className="text-xs text-on-surface-muted space-y-1">
+              {bd.discipline_misses && (
+                <li>Discipline: <strong>{bd.discipline_misses.late}</strong> late, <strong>{bd.discipline_misses.absences}</strong> absent, <strong>{bd.discipline_misses.leave_without_notice}</strong> last-minute leave</li>
+              )}
+              {bd.hygiene && (
+                <li>Hours hygiene: <strong>{bd.hygiene.days_logged}/{bd.hygiene.working_days}</strong> days logged · <strong>{bd.hygiene.days_with_notes}</strong> with notes</li>
+              )}
+              {bd.output_detail && (
+                <li>Output: <strong>{bd.output_detail.utilization_pct}%</strong> utilization · <strong>{bd.output_detail.approval_rate_pct}%</strong> approval rate</li>
+              )}
+              {bd.contribution_detail && (
+                <li>Contribution: <strong>{bd.contribution_detail.goals_on_track}/{bd.contribution_detail.goals_total}</strong> goals on track · <strong>{bd.contribution_detail.upsells}</strong> upsells</li>
+              )}
+              {bd.manager_pulse_detail?.ratings_in_window > 0 && (
+                <li>Manager pulse: <strong>{bd.manager_pulse_detail.ratings_in_window}</strong> ratings · avg <strong>{bd.manager_pulse_detail.avg}</strong></li>
+              )}
+              {bd.team_stewardship_detail && (
+                <li>Team: <strong>{bd.team_stewardship_detail.team_logging_hygiene}%</strong> team logging · <strong>{bd.team_stewardship_detail.approval_timeliness}%</strong> approvals within 48h</li>
+              )}
+              {bd.project_hygiene_detail && (
+                <li>Projects: <strong>{bd.project_hygiene_detail.logging_coverage}%</strong> coverage · <strong>{bd.project_hygiene_detail.approval_flow_through}%</strong> flow-through</li>
+              )}
+            </ul>
+          </div>
+        </div>
+        <div className="px-6 py-3 border-t border-outline flex justify-end">
+          <button onClick={onClose} className="text-sm px-4 py-2 rounded-lg font-medium border border-outline hover:bg-surface-2">Close</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 
 function hubHints(ctx: { key: string; pendingLeaves: number; pendingWfh: number; fullDay: number; shortLeave: number; performance: any }): { badge?: string | number; badgeTone?: string; sub?: string } | null {
   switch (ctx.key) {
@@ -279,6 +436,10 @@ export default function MyPortal() {
   const [balance, setBalance] = useState<any>({ casual: 0, sick: 0, earned: 0 });
   const [monthlyPerf, setMonthlyPerf] = useState<any[]>([]);
   const [empDbId, setEmpDbId] = useState('');
+  // Performance Pulse — automated score
+  const [pulse, setPulse] = useState<any | null>(null);
+  const [pulseTrend, setPulseTrend] = useState<Array<{ snapshot_date: string; total_score: number; band: string }>>([]);
+  const [showPulseDrawer, setShowPulseDrawer] = useState(false);
 
   // Appraisal goals state
   const [allAppraisals, setAllAppraisals] = useState<any[]>([]);
@@ -339,6 +500,9 @@ export default function MyPortal() {
         // My laptop/asset + active repair tickets
         api.getAssets(emp.id).then(setMyAssets).catch(() => {});
         api.getRepairTickets(emp.id).then(setMyRepairTickets).catch(() => {});
+        api.getMyPulse()
+          .then(p => { setPulse(p.latest ?? null); setPulseTrend(p.trend ?? []); })
+          .catch(() => {});
         // Optional leave pool for current year
         api.getOptionalLeaveAvailable(emp.id, new Date().getFullYear())
           .then(d => { setOptionalLeaveData(d); setOptionalLeaveLoaded(true); })
@@ -718,6 +882,37 @@ export default function MyPortal() {
               <HubStat label="Absent" value={absent} tone="text-danger" />
               <HubStat label="WFH days" value={approvedWfh} tone="text-on-surface" />
             </div>
+
+            {/* Performance Pulse tile — automated 30-day score */}
+            {pulse && (
+              <button
+                onClick={() => setShowPulseDrawer(true)}
+                className="w-full text-left bg-surface rounded-xl-2 border border-outline shadow-elev-1 hover:shadow-elev-2 hover:border-accent/40 transition-all p-5 group">
+                <div className="flex items-center justify-between gap-5">
+                  <div className="flex items-center gap-4">
+                    <div
+                      className="w-16 h-16 rounded-2xl flex items-center justify-center font-display font-bold text-2xl tabular-nums"
+                      style={pulseTileTone(pulse.band)}>
+                      {pulse.is_baseline ? '…' : pulse.total_score}
+                    </div>
+                    <div>
+                      <p className="text-[10px] uppercase tracking-[0.18em] font-bold text-on-surface-subtle">Performance pulse · 30-day</p>
+                      <p className="font-display text-lg font-bold text-on-surface mt-0.5">
+                        {pulse.is_baseline ? 'Building baseline' : bandLabel(pulse.band)}
+                      </p>
+                      <p className="text-xs text-on-surface-muted mt-0.5">
+                        {pulse.is_baseline
+                          ? 'New joiner — score appears after 30 days'
+                          : `Updated ${new Date(pulse.snapshot_date).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' })} · tap to see breakdown`}
+                      </p>
+                    </div>
+                  </div>
+                  {pulseTrend.length > 1 && !pulse.is_baseline && (
+                    <PulseSparkline trend={pulseTrend} />
+                  )}
+                </div>
+              </button>
+            )}
 
             {/* Section cards */}
             <div>
@@ -2524,6 +2719,12 @@ export default function MyPortal() {
           One tap on the main FAB expands a vertical stack of actions going
           up: Apply Leave / Log Hours / Apply WFH / Submit Expense. Each
           action opens the relevant flow and closes the dial. */}
+      <PulseBreakdownDrawer
+        open={showPulseDrawer}
+        onClose={() => setShowPulseDrawer(false)}
+        snapshot={pulse}
+        trend={pulseTrend}
+      />
       <QuickActionsFab
         leaveBalance={(balance as any).full_day ?? 0}
         shortBalance={(balance as any).short_leave ?? 0}

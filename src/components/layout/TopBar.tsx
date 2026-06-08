@@ -120,6 +120,17 @@ export function getNotifRoute(type: string, role: string): string {
       // Both admin and coordinator land on the Invoices tab of /finance.
       return '/finance?tab=invoices';
 
+    // ── Performance Pulse ──────────────────────────────────────────────────
+    case 'pulse_weekly_digest':
+      // Self digest — opens own breakdown drawer via Hub
+      return '/my?tab=hub';
+    case 'pulse_rating_prompt':
+      // Manager Monday nudge — opens the Pulse tab on My Team
+      return '/my-team?tab=pulse';
+    case 'pulse_score_drop':
+      // HR/Admin nudge when a report's score slips materially
+      return isHR ? '/performance/pulse' : isMgr ? '/my-team?tab=pulse' : '/my?tab=hub';
+
     // ── General ────────────────────────────────────────────────────────────────
     case 'info':
       return isHR ? '/' : '/my';
@@ -182,6 +193,10 @@ export const TYPE_CONFIG: Record<string, { icon: any; color: string; bg: string 
   invoice_cleared:         { icon: CheckCircle,    color: '#15803d', bg: '#f0fdf4' },
   invoice_adjusted:        { icon: AlertTriangle,  color: '#d97706', bg: '#fffbeb' },
   invoice_reopened:        { icon: XCircle,        color: '#dc2626', bg: '#fef2f2' },
+  // Performance Pulse
+  pulse_weekly_digest:     { icon: TrendingUp,     color: '#3730a3', bg: '#eef2ff' },
+  pulse_rating_prompt:     { icon: TrendingUp,     color: '#d97706', bg: '#fffbeb' },
+  pulse_score_drop:        { icon: AlertTriangle,  color: '#dc2626', bg: '#fef2f2' },
   // General
   info:                    { icon: CheckCircle,    color: '#15803d', bg: '#f0fdf4' },
 };

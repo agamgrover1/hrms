@@ -28,6 +28,7 @@ const opsGroup: NavGroup = {
   items: [
     { to: '/payroll', icon: Wallet, label: 'Payroll' },
     { to: '/performance', icon: Sparkles, label: 'Performance' },
+    { to: '/performance/pulse', icon: Activity, label: 'Pulse (auto)' },
     { to: '/incentives', icon: TrendingUp, label: 'Finance' },
     { to: '/asset-repairs', icon: Wrench, label: 'IT & Repairs' },
   ],

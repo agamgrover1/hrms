@@ -854,6 +854,60 @@ async function runStartupMigrations() {
     )`;
   await sql`CREATE INDEX IF NOT EXISTS idx_emp_resp_audit_emp ON employee_responsibilities_audit(employee_id, created_at DESC)`.catch(()=>{});
 
+  // ── Performance Pulse: automated 30-day score, runs alongside the manual
+  // monthly_performance reviews. snapshots = one row per employee per day,
+  // pulse_ratings = weekly manager emoji input, weights = per-dept overrides
+  // (default everywhere is equal weight).
+  await sql`
+    CREATE TABLE IF NOT EXISTS performance_score_snapshots (
+      id SERIAL PRIMARY KEY,
+      employee_id TEXT NOT NULL,
+      snapshot_date DATE NOT NULL,
+      discipline NUMERIC,
+      hours_hygiene NUMERIC,
+      output NUMERIC,
+      contribution NUMERIC,
+      manager_pulse NUMERIC,
+      team_stewardship NUMERIC,
+      project_hygiene NUMERIC,
+      total_score NUMERIC NOT NULL,
+      band TEXT NOT NULL,
+      is_baseline BOOLEAN DEFAULT FALSE,
+      breakdown JSONB,
+      created_at TIMESTAMPTZ DEFAULT NOW(),
+      UNIQUE(employee_id, snapshot_date)
+    )`;
+  await sql`CREATE INDEX IF NOT EXISTS idx_perf_snap_emp_date ON performance_score_snapshots(employee_id, snapshot_date DESC)`.catch(()=>{});
+  await sql`CREATE INDEX IF NOT EXISTS idx_perf_snap_date ON performance_score_snapshots(snapshot_date DESC)`.catch(()=>{});
+
+  await sql`
+    CREATE TABLE IF NOT EXISTS performance_manager_pulse (
+      id SERIAL PRIMARY KEY,
+      employee_id TEXT NOT NULL,
+      manager_id TEXT NOT NULL,
+      week_start DATE NOT NULL,
+      rating TEXT NOT NULL,
+      note TEXT,
+      created_at TIMESTAMPTZ DEFAULT NOW(),
+      UNIQUE(employee_id, manager_id, week_start)
+    )`;
+  await sql`CREATE INDEX IF NOT EXISTS idx_perf_pulse_emp_week ON performance_manager_pulse(employee_id, week_start DESC)`.catch(()=>{});
+
+  await sql`
+    CREATE TABLE IF NOT EXISTS performance_score_weights (
+      department TEXT PRIMARY KEY,
+      discipline NUMERIC NOT NULL DEFAULT 1,
+      hours_hygiene NUMERIC NOT NULL DEFAULT 1,
+      output NUMERIC NOT NULL DEFAULT 1,
+      contribution NUMERIC NOT NULL DEFAULT 1,
+      manager_pulse NUMERIC NOT NULL DEFAULT 1,
+      team_stewardship NUMERIC NOT NULL DEFAULT 1,
+      project_hygiene NUMERIC NOT NULL DEFAULT 1,
+      updated_at TIMESTAMPTZ DEFAULT NOW(),
+      updated_by TEXT
+    )`;
+  await sql`INSERT INTO performance_score_weights (department) VALUES ('_default') ON CONFLICT (department) DO NOTHING`;
+
   await sql`
     CREATE TABLE IF NOT EXISTS attendance_sync_log (
       id SERIAL PRIMARY KEY, sync_id TEXT UNIQUE, triggered TEXT,
@@ -1573,6 +1627,576 @@ app.get('/api/attendance/biometric-sync/history', async (_req, res) => {
   } catch (err) { res.status(500).json({ error: 'Server error' }); }
 });
 
+// ─────────────────────────────────────────────────────────────────────────
+// Performance Pulse — automated score, 30-day rolling window.
+// Runs nightly after biometric sync. Persists one snapshot per employee
+// per day so we can show trend lines without recomputing history.
+//
+// Five base pillars (everyone):
+//   Discipline, Hours hygiene, Output, Contribution, Manager pulse
+// Two role pillars (added if applicable):
+//   Team stewardship (reporting managers)
+//   Project hygiene (project coordinators)
+//
+// Each pillar produces a 0–100 sub-score; missing-signal pillars
+// redistribute their weight to the rest. Result is rounded to nearest int.
+// ─────────────────────────────────────────────────────────────────────────
+function bandFor(score: number): string {
+  if (score >= 85) return 'excellent';
+  if (score >= 70) return 'strong';
+  if (score >= 50) return 'building';
+  return 'needs_support';
+}
+function clamp(n: number, lo: number, hi: number) { return Math.max(lo, Math.min(hi, n)); }
+
+async function computePulseForDate(asOf: string) {
+  // 30-day window ending at asOf (inclusive)
+  const windowStart = new Date(asOf);
+  windowStart.setUTCDate(windowStart.getUTCDate() - 29);
+  const windowStartStr = windowStart.toISOString().slice(0, 10);
+
+  // Pulse rating cutoff (last 4 weeks)
+  const pulseStart = new Date(asOf);
+  pulseStart.setUTCDate(pulseStart.getUTCDate() - 28);
+  const pulseStartStr = pulseStart.toISOString().slice(0, 10);
+
+  const employees = await sql`
+    SELECT e.id, e.name, e.department, e.reporting_manager_id, e.join_date, e.shift, e.status,
+           u.role
+    FROM employees e
+    LEFT JOIN app_users u ON u.employee_id_ref = e.id
+    WHERE e.status = 'active' OR e.status IS NULL` as any[];
+
+  // Pre-fetch all aggregates in window once. Cheaper than per-employee.
+  const attendance = await sql`
+    SELECT employee_id, date, status, check_in, total_hours
+    FROM attendance_records
+    WHERE date BETWEEN ${windowStartStr}::date AND ${asOf}::date` as any[];
+  const leaves = await sql`
+    SELECT employee_id, from_date, to_date, status, applied_on
+    FROM leave_requests
+    WHERE NOT (to_date < ${windowStartStr}::date OR from_date > ${asOf}::date)` as any[];
+  const hourDays = await sql`
+    SELECT employee_id, project_id, log_date, hours, notes, created_at
+    FROM hour_log_days
+    WHERE log_date BETWEEN ${windowStartStr}::date AND ${asOf}::date` as any[];
+  const hourLogs = await sql`
+    SELECT employee_id, status, reviewed_at, submitted_at, hours_logged, reviewed_by_id
+    FROM hour_logs
+    WHERE submitted_at >= ${windowStartStr}::date` as any[];
+  const goals = await sql`
+    SELECT employee_id, status, progress, target_date
+    FROM performance_goals
+    WHERE created_at >= ${windowStartStr}::date OR (target_date IS NULL OR target_date >= ${windowStartStr}::date)` as any[];
+  const upsells = await sql`
+    SELECT employee_id, status, created_at
+    FROM upsell_requests
+    WHERE created_at >= ${windowStartStr}::date` as any[];
+  const pulseRatings = await sql`
+    SELECT employee_id, rating, week_start
+    FROM performance_manager_pulse
+    WHERE week_start >= ${pulseStartStr}::date` as any[];
+  const assignments = await sql`
+    SELECT project_id, employee_id, month, year, monthly_hours
+    FROM project_assignments
+    WHERE monthly_hours > 0` as any[];
+  const activeProjects = await sql`
+    SELECT id, project_reporting_id, project_lead_id, created_by
+    FROM projects WHERE status='active'` as any[];
+
+  // index lookups
+  const attByEmp = new Map<string, any[]>();
+  attendance.forEach(r => { (attByEmp.get(r.employee_id) ?? attByEmp.set(r.employee_id, []).get(r.employee_id))!.push(r); });
+  const leaveByEmp = new Map<string, any[]>();
+  leaves.forEach(r => { (leaveByEmp.get(r.employee_id) ?? leaveByEmp.set(r.employee_id, []).get(r.employee_id))!.push(r); });
+  const hdByEmp = new Map<string, any[]>();
+  hourDays.forEach(r => { (hdByEmp.get(r.employee_id) ?? hdByEmp.set(r.employee_id, []).get(r.employee_id))!.push(r); });
+  const hlByEmp = new Map<string, any[]>();
+  hourLogs.forEach(r => { (hlByEmp.get(r.employee_id) ?? hlByEmp.set(r.employee_id, []).get(r.employee_id))!.push(r); });
+  const goalsByEmp = new Map<string, any[]>();
+  goals.forEach(r => { (goalsByEmp.get(r.employee_id) ?? goalsByEmp.set(r.employee_id, []).get(r.employee_id))!.push(r); });
+  const upsellByEmp = new Map<string, any[]>();
+  upsells.forEach(r => { (upsellByEmp.get(r.employee_id) ?? upsellByEmp.set(r.employee_id, []).get(r.employee_id))!.push(r); });
+  const pulseByEmp = new Map<string, any[]>();
+  pulseRatings.forEach(r => { (pulseByEmp.get(r.employee_id) ?? pulseByEmp.set(r.employee_id, []).get(r.employee_id))!.push(r); });
+
+  // helpers
+  const workingDays = (() => {
+    let d = new Date(windowStartStr);
+    const end = new Date(asOf);
+    let c = 0;
+    while (d <= end) { const wd = d.getUTCDay(); if (wd !== 0 && wd !== 6) c++; d.setUTCDate(d.getUTCDate() + 1); }
+    return Math.max(1, c);
+  })();
+
+  const empById = new Map(employees.map(e => [e.id, e]));
+  // direct reports lookup
+  const reportsByMgr = new Map<string, any[]>();
+  employees.forEach(e => {
+    if (e.reporting_manager_id) {
+      const arr = reportsByMgr.get(e.reporting_manager_id) ?? [];
+      arr.push(e); reportsByMgr.set(e.reporting_manager_id, arr);
+    }
+  });
+
+  const snapshots: Array<{ employee_id: string; pillars: any; total: number; band: string; baseline: boolean; breakdown: any }> = [];
+
+  for (const emp of employees) {
+    const empId = emp.id;
+    const isNewJoiner = emp.join_date && (new Date(asOf).getTime() - new Date(emp.join_date).getTime()) / 86400000 < 30;
+
+    // ── Discipline ────────────────────────────────────────────────────
+    const att = attByEmp.get(empId) ?? [];
+    let lateCount = 0, absences = 0;
+    const shiftStart = emp.shift === 'night' ? '22:00' : '09:30';
+    const [shH, shM] = shiftStart.split(':').map(Number);
+    const shiftMin = shH * 60 + shM;
+    for (const a of att) {
+      if (a.status === 'absent') absences++;
+      else if (a.check_in) {
+        const [h, m] = String(a.check_in).split(':').map(Number);
+        if (!Number.isNaN(h) && (h * 60 + m) > shiftMin + 15) lateCount++; // 15-min grace
+      }
+    }
+    // Leave-without-notice: leave applied <= day of from_date
+    const lwn = (leaveByEmp.get(empId) ?? []).filter(l => {
+      if (!l.applied_on || !l.from_date) return false;
+      return new Date(l.applied_on).toISOString().slice(0, 10) >= String(l.from_date).slice(0, 10);
+    }).length;
+    const discipline = clamp(100 - lateCount * 5 - absences * 15 - lwn * 20, 0, 100);
+
+    // ── Hours hygiene ─────────────────────────────────────────────────
+    const hd = hdByEmp.get(empId) ?? [];
+    const daysLogged = new Set(hd.map(r => String(r.log_date).slice(0, 10))).size;
+    const daysWithNotes = new Set(hd.filter(r => (r.notes ?? '').trim().length > 0).map(r => String(r.log_date).slice(0, 10))).size;
+    const hh = clamp((daysLogged / workingDays) * 70 + (daysLogged ? (daysWithNotes / daysLogged) * 30 : 0), 0, 100);
+
+    // ── Output ────────────────────────────────────────────────────────
+    const hl = hlByEmp.get(empId) ?? [];
+    const totalHrsLogged = hd.reduce((s, r) => s + Number(r.hours ?? 0), 0);
+    const capacityHrs = workingDays * 8;
+    const utilPct = capacityHrs ? clamp((totalHrsLogged / capacityHrs) * 100, 0, 100) : 0;
+    const approved = hl.filter(r => r.status === 'approved').length;
+    const submitted = hl.filter(r => r.status !== 'pending').length;
+    const approvalRate = submitted ? (approved / submitted) * 100 : 100;
+    const output = clamp(utilPct * 0.7 + approvalRate * 0.3, 0, 100);
+
+    // ── Contribution ──────────────────────────────────────────────────
+    const gs = goalsByEmp.get(empId) ?? [];
+    const goalsOnTrack = gs.filter(g => g.status === 'completed' || (Number(g.progress) >= 50 && g.status !== 'at_risk')).length;
+    const goalsPct = gs.length ? (goalsOnTrack / gs.length) * 100 : null;
+    const upsellCount = (upsellByEmp.get(empId) ?? []).filter(u => u.status !== 'rejected').length;
+    const contribBonus = Math.min(40, upsellCount * 10);
+    const contribution = goalsPct == null
+      ? clamp(60 + contribBonus, 0, 100)              // no goals → baseline 60 + bonus
+      : clamp(goalsPct * 0.6 + contribBonus, 0, 100);
+
+    // ── Manager pulse ─────────────────────────────────────────────────
+    const pulses = pulseByEmp.get(empId) ?? [];
+    const pulseScores = pulses.map(p => p.rating === 'good' ? 100 : p.rating === 'ok' ? 60 : 20);
+    const managerPulse = pulseScores.length >= 2
+      ? pulseScores.reduce((s, n) => s + n, 0) / pulseScores.length
+      : null;
+
+    // ── Team stewardship (managers only) ──────────────────────────────
+    const directReports = reportsByMgr.get(empId) ?? [];
+    let teamStewardship: number | null = null;
+    let stewardshipDetail: any = null;
+    if (directReports.length > 0) {
+      // approval timeliness on logs where this person is the approver
+      const myApprovals = hourLogs.filter(r => r.reviewed_by_id === empId && r.status === 'approved');
+      let timely = 0;
+      for (const a of myApprovals) {
+        if (a.reviewed_at && a.submitted_at) {
+          const dh = (new Date(a.reviewed_at).getTime() - new Date(a.submitted_at).getTime()) / 3600000;
+          if (dh <= 48) timely++;
+        }
+      }
+      const approvalTimely = myApprovals.length ? (timely / myApprovals.length) * 100 : 100;
+      // team logging hygiene = avg of each report's hours-hygiene
+      const teamHh: number[] = [];
+      for (const r of directReports) {
+        const rhd = hdByEmp.get(r.id) ?? [];
+        const dl = new Set(rhd.map(x => String(x.log_date).slice(0, 10))).size;
+        teamHh.push((dl / workingDays) * 100);
+      }
+      const teamHygiene = teamHh.length ? teamHh.reduce((s, n) => s + n, 0) / teamHh.length : 0;
+      teamStewardship = clamp(approvalTimely * 0.5 + teamHygiene * 0.5, 0, 100);
+      stewardshipDetail = { approval_timeliness: Math.round(approvalTimely), team_logging_hygiene: Math.round(teamHygiene), team_size: directReports.length, approvals_made: myApprovals.length };
+    }
+
+    // ── Project hygiene (coordinators only) ───────────────────────────
+    let projectHygiene: number | null = null;
+    let projHygieneDetail: any = null;
+    if (emp.role === 'project_coordinator' || emp.role === 'admin') {
+      // For coordinators: across all active projects, did assigned people log? Were logs approved on time?
+      const projScores: number[] = [];
+      let totalAssigned = 0, totalLogged = 0;
+      for (const p of activeProjects) {
+        const assigned = assignments.filter(a => a.project_id === p.id);
+        if (!assigned.length) continue;
+        const empsOnProj = new Set(assigned.map(a => a.employee_id));
+        totalAssigned += empsOnProj.size;
+        let logged = 0;
+        empsOnProj.forEach(eid => {
+          // assigned employee counts as "logged" if they logged hours on THIS project in window
+          const had = (hdByEmp.get(eid) ?? []).some(d => d.project_id === p.id);
+          if (had) logged++;
+        });
+        totalLogged += logged;
+        const coverage = empsOnProj.size ? (logged / empsOnProj.size) * 100 : 0;
+        projScores.push(coverage);
+      }
+      const coverage = projScores.length ? projScores.reduce((s, n) => s + n, 0) / projScores.length : 0;
+      // approval flow-through across the org (coord owns the bottleneck globally)
+      const allLogsWindow = hourLogs.filter(r => r.status === 'approved' || r.status === 'pending');
+      const pendingOver2d = allLogsWindow.filter(r => {
+        if (r.status !== 'pending' || !r.submitted_at) return false;
+        return (new Date(asOf).getTime() - new Date(r.submitted_at).getTime()) / 86400000 > 2;
+      }).length;
+      const flowThrough = allLogsWindow.length ? clamp(100 - (pendingOver2d / allLogsWindow.length) * 100, 0, 100) : 100;
+      projectHygiene = clamp(coverage * 0.5 + flowThrough * 0.5, 0, 100);
+      projHygieneDetail = { logging_coverage: Math.round(coverage), approval_flow_through: Math.round(flowThrough), active_projects: activeProjects.length, employees_logged: totalLogged, employees_assigned: totalAssigned };
+    }
+
+    // ── Aggregate with equal weights; redistribute missing pillars ─────
+    const pillars: Record<string, number | null> = {
+      discipline, hours_hygiene: hh, output, contribution,
+      manager_pulse: managerPulse,
+      team_stewardship: teamStewardship,
+      project_hygiene: projectHygiene,
+    };
+    const present = Object.entries(pillars).filter(([, v]) => v != null) as [string, number][];
+    const total = present.length ? present.reduce((s, [, v]) => s + v, 0) / present.length : 0;
+    const rounded = Math.round(total);
+
+    const breakdown: any = {
+      discipline_misses: { late: lateCount, absences, leave_without_notice: lwn },
+      hygiene: { working_days: workingDays, days_logged: daysLogged, days_with_notes: daysWithNotes },
+      output_detail: { utilization_pct: Math.round(utilPct), approval_rate_pct: Math.round(approvalRate), hours_logged: Math.round(totalHrsLogged), capacity_hours: capacityHrs },
+      contribution_detail: { goals_total: gs.length, goals_on_track: goalsOnTrack, upsells: upsellCount },
+      manager_pulse_detail: { ratings_in_window: pulses.length, avg: managerPulse != null ? Math.round(managerPulse) : null },
+      team_stewardship_detail: stewardshipDetail,
+      project_hygiene_detail: projHygieneDetail,
+    };
+
+    snapshots.push({
+      employee_id: empId,
+      pillars: {
+        discipline: Math.round(discipline),
+        hours_hygiene: Math.round(hh),
+        output: Math.round(output),
+        contribution: Math.round(contribution),
+        manager_pulse: managerPulse != null ? Math.round(managerPulse) : null,
+        team_stewardship: teamStewardship != null ? Math.round(teamStewardship) : null,
+        project_hygiene: projectHygiene != null ? Math.round(projectHygiene) : null,
+      },
+      total: rounded,
+      band: isNewJoiner ? 'baseline' : bandFor(rounded),
+      baseline: !!isNewJoiner,
+      breakdown,
+    });
+  }
+
+  // upsert snapshots
+  for (const s of snapshots) {
+    await sql`
+      INSERT INTO performance_score_snapshots
+        (employee_id, snapshot_date, discipline, hours_hygiene, output, contribution,
+         manager_pulse, team_stewardship, project_hygiene, total_score, band, is_baseline, breakdown)
+      VALUES (${s.employee_id}, ${asOf}::date,
+              ${s.pillars.discipline}, ${s.pillars.hours_hygiene}, ${s.pillars.output}, ${s.pillars.contribution},
+              ${s.pillars.manager_pulse}, ${s.pillars.team_stewardship}, ${s.pillars.project_hygiene},
+              ${s.total}, ${s.band}, ${s.baseline}, ${JSON.stringify(s.breakdown)}::jsonb)
+      ON CONFLICT (employee_id, snapshot_date) DO UPDATE SET
+        discipline=EXCLUDED.discipline, hours_hygiene=EXCLUDED.hours_hygiene,
+        output=EXCLUDED.output, contribution=EXCLUDED.contribution,
+        manager_pulse=EXCLUDED.manager_pulse, team_stewardship=EXCLUDED.team_stewardship,
+        project_hygiene=EXCLUDED.project_hygiene, total_score=EXCLUDED.total_score,
+        band=EXCLUDED.band, is_baseline=EXCLUDED.is_baseline, breakdown=EXCLUDED.breakdown`;
+  }
+
+  // ── Notification side-effects ─────────────────────────────────────────
+  // Day of week in UTC. Friday = 5, Monday = 1. We fire the manager-prompt on
+  // Monday and the weekly self-digest on Friday so they don't pile up daily.
+  const dow = new Date(asOf).getUTCDay();
+  try {
+    // Score-drop nudges: any employee whose score is ≥10 lower than the same
+    // weekday a week ago. Notify their reporting manager. Quiet on baseline rows.
+    const drops = await sql`
+      WITH today AS (
+        SELECT employee_id, total_score
+        FROM performance_score_snapshots
+        WHERE snapshot_date=${asOf}::date AND is_baseline=FALSE
+      ),
+      prior AS (
+        SELECT employee_id, total_score AS prior_score
+        FROM performance_score_snapshots
+        WHERE snapshot_date=(${asOf}::date - INTERVAL '7 days')::date
+      )
+      SELECT t.employee_id, t.total_score, p.prior_score, e.name AS emp_name, e.reporting_manager_id
+      FROM today t
+      JOIN prior p USING (employee_id)
+      JOIN employees e ON e.id=t.employee_id
+      WHERE p.prior_score - t.total_score >= 10` as any[];
+    for (const d of drops) {
+      if (!d.reporting_manager_id) continue;
+      const mgrUser = (await sql`SELECT id FROM app_users WHERE employee_id_ref=${d.reporting_manager_id} AND active=TRUE`)[0] as any;
+      if (!mgrUser) continue;
+      await sql`INSERT INTO notifications (user_id, type, title, body)
+        VALUES (${mgrUser.id}, 'pulse_score_drop', 'Pulse drop on your team',
+                ${`${d.emp_name}'s pulse dropped ${Math.round(Number(d.prior_score) - Number(d.total_score))} pts (now ${d.total_score}). Worth a check-in.`})`;
+    }
+  } catch { /* non-fatal */ }
+
+  if (dow === 1) {
+    // Monday: nudge every manager who has at least one direct report
+    try {
+      const managers = await sql`
+        SELECT DISTINCT e.reporting_manager_id AS mgr_id
+        FROM employees e
+        WHERE e.reporting_manager_id IS NOT NULL AND COALESCE(e.status,'active')='active'` as any[];
+      for (const m of managers) {
+        const mu = (await sql`SELECT id, name FROM app_users WHERE employee_id_ref=${m.mgr_id} AND active=TRUE`)[0] as any;
+        if (!mu) continue;
+        const teamSize = ((await sql`SELECT COUNT(*)::int AS c FROM employees WHERE reporting_manager_id=${m.mgr_id} AND COALESCE(status,'active')='active'`)[0] as any)?.c ?? 0;
+        await sql`INSERT INTO notifications (user_id, type, title, body)
+          VALUES (${mu.id}, 'pulse_rating_prompt', 'Weekly pulse rating',
+                  ${`Tap a quick emoji per direct report (${teamSize}) — takes ~30s. Feeds the Manager Pulse pillar of their score.`})`;
+      }
+    } catch { /* non-fatal */ }
+  }
+
+  if (dow === 5) {
+    // Friday: self digest. Compare today vs last Friday.
+    try {
+      const weekChange = await sql`
+        WITH t AS (
+          SELECT employee_id, total_score, band, is_baseline FROM performance_score_snapshots WHERE snapshot_date=${asOf}::date
+        ),
+        p AS (
+          SELECT employee_id, total_score AS prior FROM performance_score_snapshots WHERE snapshot_date=(${asOf}::date - INTERVAL '7 days')::date
+        )
+        SELECT t.employee_id, t.total_score, t.band, t.is_baseline, p.prior
+        FROM t LEFT JOIN p USING (employee_id)` as any[];
+      for (const r of weekChange) {
+        const u = (await sql`SELECT id FROM app_users WHERE employee_id_ref=${r.employee_id} AND active=TRUE`)[0] as any;
+        if (!u) continue;
+        const body = r.is_baseline
+          ? `You're still in the baseline window — your first score appears once you've been here 30 days.`
+          : r.prior == null
+            ? `This week's pulse: ${r.total_score} (${(r.band ?? '').replace('_', ' ')}). Tap to see what's driving it.`
+            : (() => {
+                const delta = Math.round(Number(r.total_score) - Number(r.prior));
+                const sign = delta > 0 ? '+' : '';
+                return `This week's pulse: ${r.total_score} (${sign}${delta} vs last Friday). Tap for the breakdown.`;
+              })();
+        await sql`INSERT INTO notifications (user_id, type, title, body)
+          VALUES (${u.id}, 'pulse_weekly_digest', 'Your weekly pulse', ${body})`;
+      }
+    } catch { /* non-fatal */ }
+  }
+
+  return { computed: snapshots.length, as_of: asOf };
+}
+
+// Cron entry point — Vercel hits this nightly. Reuses CRON_SECRET / x-vercel-cron auth.
+app.all('/api/performance/pulse/cron', async (req, res) => {
+  try {
+    const auth = req.header('authorization') || '';
+    const platformCron = !!req.header('x-vercel-cron');
+    const secret = process.env.CRON_SECRET;
+    const okToken = secret ? auth === `Bearer ${secret}` : false;
+    if (!okToken && !platformCron) return res.status(401).json({ error: 'Unauthorized' });
+    await runStartupMigrations();
+    const today = new Date().toISOString().slice(0, 10);
+    const result = await computePulseForDate(today);
+    res.json(result);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message ?? 'Pulse compute failed' });
+  }
+});
+
+// Manual recompute (admin only — used while developing or after a backfill)
+app.post('/api/performance/pulse/recompute', requireAdmin, async (req, res) => {
+  try {
+    const asOf = (req.body?.as_of as string) || new Date().toISOString().slice(0, 10);
+    const result = await computePulseForDate(asOf);
+    res.json(result);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message ?? 'Recompute failed' });
+  }
+});
+
+// Pulse access helper:
+//   admin/hr_manager  → any employee
+//   the employee     → their own
+//   reporting manager (direct OR through chain) → their report's
+async function canViewPulse(viewer: any, targetEmpId: string): Promise<boolean> {
+  if (!viewer) return false;
+  if (viewer.role === 'admin' || viewer.role === 'hr_manager') return true;
+  if (viewer.employee_id_ref === targetEmpId) return true;
+  // walk up reporting chain
+  let cur = targetEmpId;
+  for (let i = 0; i < 10; i++) {
+    const row = (await sql`SELECT reporting_manager_id FROM employees WHERE id=${cur}`)[0] as any;
+    if (!row?.reporting_manager_id) return false;
+    if (row.reporting_manager_id === viewer.employee_id_ref) return true;
+    cur = row.reporting_manager_id;
+  }
+  return false;
+}
+
+// GET /api/performance/pulse/me — last snapshot + 8-week trend for current user
+app.get('/api/performance/pulse/me', async (req, res) => {
+  try {
+    const uid = req.header('x-user-id');
+    if (!uid) return res.status(401).json({ error: 'Sign in required' });
+    const u = (await sql`SELECT id, employee_id_ref, role FROM app_users WHERE id=${uid}`)[0] as any;
+    if (!u?.employee_id_ref) return res.status(404).json({ error: 'No employee profile linked to this user' });
+    const empId = u.employee_id_ref;
+    const latest = (await sql`SELECT * FROM performance_score_snapshots WHERE employee_id=${empId} ORDER BY snapshot_date DESC LIMIT 1`)[0] as any;
+    const trend = await sql`
+      SELECT snapshot_date, total_score, band FROM performance_score_snapshots
+      WHERE employee_id=${empId} AND snapshot_date >= (CURRENT_DATE - INTERVAL '56 days')
+      ORDER BY snapshot_date ASC` as any[];
+    res.json({ latest: latest ?? null, trend });
+  } catch (err: any) { res.status(500).json({ error: err.message ?? 'Server error' }); }
+});
+
+// GET /api/performance/pulse/team — current user's direct reports' latest scores
+app.get('/api/performance/pulse/team', async (req, res) => {
+  try {
+    const uid = req.header('x-user-id');
+    if (!uid) return res.status(401).json({ error: 'Sign in required' });
+    const u = (await sql`SELECT id, employee_id_ref, role FROM app_users WHERE id=${uid}`)[0] as any;
+    if (!u) return res.status(401).json({ error: 'Unknown user' });
+    const mgrEmpId = u.employee_id_ref;
+    if (!mgrEmpId) return res.json({ team: [] });
+    const team = await sql`
+      SELECT e.id, e.name, e.avatar, e.department, e.designation,
+             s.total_score, s.band, s.discipline, s.hours_hygiene, s.output, s.contribution,
+             s.manager_pulse, s.team_stewardship, s.project_hygiene, s.is_baseline, s.snapshot_date
+      FROM employees e
+      LEFT JOIN LATERAL (
+        SELECT * FROM performance_score_snapshots
+        WHERE employee_id=e.id ORDER BY snapshot_date DESC LIMIT 1
+      ) s ON TRUE
+      WHERE e.reporting_manager_id=${mgrEmpId} AND COALESCE(e.status,'active')='active'
+      ORDER BY s.total_score DESC NULLS LAST, e.name` as any[];
+    // also surface which reports are missing a pulse rating this week
+    const weekStart = (() => {
+      const d = new Date(); const diff = (d.getUTCDay() + 6) % 7;
+      d.setUTCDate(d.getUTCDate() - diff); return d.toISOString().slice(0, 10);
+    })();
+    const pulses = await sql`
+      SELECT employee_id, rating FROM performance_manager_pulse
+      WHERE manager_id=${mgrEmpId} AND week_start=${weekStart}::date` as any[];
+    const rated = new Set(pulses.map(p => p.employee_id));
+    res.json({
+      team: team.map(t => ({ ...t, pulse_rated_this_week: rated.has(t.id), week_start: weekStart })),
+      week_start: weekStart,
+    });
+  } catch (err: any) { res.status(500).json({ error: err.message ?? 'Server error' }); }
+});
+
+// GET /api/performance/pulse/org — admin/HR org-wide grid
+app.get('/api/performance/pulse/org', async (req, res) => {
+  try {
+    const uid = req.header('x-user-id');
+    if (!uid) return res.status(401).json({ error: 'Sign in required' });
+    const u = (await sql`SELECT id, role FROM app_users WHERE id=${uid}`)[0] as any;
+    if (!u || !['admin', 'hr_manager'].includes(u.role)) return res.status(403).json({ error: 'Admin/HR only' });
+    const rows = await sql`
+      SELECT e.id, e.name, e.avatar, e.department, e.designation, e.reporting_manager_id,
+             m.name AS reporting_manager_name,
+             s.total_score, s.band, s.discipline, s.hours_hygiene, s.output, s.contribution,
+             s.manager_pulse, s.team_stewardship, s.project_hygiene, s.is_baseline, s.snapshot_date
+      FROM employees e
+      LEFT JOIN employees m ON m.id = e.reporting_manager_id
+      LEFT JOIN LATERAL (
+        SELECT * FROM performance_score_snapshots
+        WHERE employee_id=e.id ORDER BY snapshot_date DESC LIMIT 1
+      ) s ON TRUE
+      WHERE COALESCE(e.status,'active')='active'
+      ORDER BY s.total_score DESC NULLS LAST, e.name` as any[];
+    res.json({ employees: rows });
+  } catch (err: any) { res.status(500).json({ error: err.message ?? 'Server error' }); }
+});
+
+// GET /api/performance/pulse/:employeeId — drawer detail (with access check)
+app.get('/api/performance/pulse/:employeeId', async (req, res) => {
+  try {
+    const uid = req.header('x-user-id');
+    if (!uid) return res.status(401).json({ error: 'Sign in required' });
+    const viewer = (await sql`SELECT id, employee_id_ref, role FROM app_users WHERE id=${uid}`)[0] as any;
+    const ok = await canViewPulse(viewer, req.params.employeeId);
+    if (!ok) return res.status(403).json({ error: 'Not permitted' });
+    const latest = (await sql`SELECT * FROM performance_score_snapshots WHERE employee_id=${req.params.employeeId} ORDER BY snapshot_date DESC LIMIT 1`)[0] as any;
+    const trend = await sql`
+      SELECT snapshot_date, total_score, band FROM performance_score_snapshots
+      WHERE employee_id=${req.params.employeeId} AND snapshot_date >= (CURRENT_DATE - INTERVAL '56 days')
+      ORDER BY snapshot_date ASC` as any[];
+    res.json({ latest: latest ?? null, trend });
+  } catch (err: any) { res.status(500).json({ error: err.message ?? 'Server error' }); }
+});
+
+// POST /api/performance/pulse-rating — manager submits emoji rating for a direct report
+app.post('/api/performance/pulse-rating', async (req, res) => {
+  try {
+    const uid = req.header('x-user-id');
+    if (!uid) return res.status(401).json({ error: 'Sign in required' });
+    const u = (await sql`SELECT id, employee_id_ref, name FROM app_users WHERE id=${uid}`)[0] as any;
+    if (!u?.employee_id_ref) return res.status(401).json({ error: 'Manager profile missing' });
+    const { employee_id, rating, note, week_start } = req.body ?? {};
+    if (!employee_id || !['good', 'ok', 'concern'].includes(rating)) {
+      return res.status(400).json({ error: 'employee_id and rating (good|ok|concern) are required' });
+    }
+    // verify the rater is the actual reporting manager
+    const target = (await sql`SELECT reporting_manager_id FROM employees WHERE id=${employee_id}`)[0] as any;
+    if (!target || target.reporting_manager_id !== u.employee_id_ref) {
+      return res.status(403).json({ error: 'You can only rate your direct reports' });
+    }
+    // week_start defaults to current Monday (UTC)
+    const monday = week_start || (() => {
+      const d = new Date(); const diff = (d.getUTCDay() + 6) % 7;
+      d.setUTCDate(d.getUTCDate() - diff); return d.toISOString().slice(0, 10);
+    })();
+    const row = (await sql`
+      INSERT INTO performance_manager_pulse (employee_id, manager_id, week_start, rating, note)
+      VALUES (${employee_id}, ${u.employee_id_ref}, ${monday}::date, ${rating}, ${note ?? null})
+      ON CONFLICT (employee_id, manager_id, week_start) DO UPDATE
+        SET rating=EXCLUDED.rating, note=EXCLUDED.note
+      RETURNING *`)[0];
+    res.status(201).json(row);
+  } catch (err: any) { res.status(500).json({ error: err.message ?? 'Server error' }); }
+});
+
+// GET /api/performance/pulse/weights, PUT same — admin tune per department
+app.get('/api/performance/pulse/weights', requireAdmin, async (_req, res) => {
+  try {
+    const rows = await sql`SELECT * FROM performance_score_weights ORDER BY department`;
+    res.json({ weights: rows });
+  } catch (err: any) { res.status(500).json({ error: err.message ?? 'Server error' }); }
+});
+app.put('/api/performance/pulse/weights/:dept', requireAdmin, async (req, res) => {
+  try {
+    const { discipline, hours_hygiene, output, contribution, manager_pulse, team_stewardship, project_hygiene } = req.body ?? {};
+    const row = (await sql`
+      INSERT INTO performance_score_weights
+        (department, discipline, hours_hygiene, output, contribution, manager_pulse, team_stewardship, project_hygiene, updated_at, updated_by)
+      VALUES (${req.params.dept}, ${discipline ?? 1}, ${hours_hygiene ?? 1}, ${output ?? 1}, ${contribution ?? 1},
+              ${manager_pulse ?? 1}, ${team_stewardship ?? 1}, ${project_hygiene ?? 1}, NOW(), ${req.header('x-user-id') ?? null})
+      ON CONFLICT (department) DO UPDATE SET
+        discipline=EXCLUDED.discipline, hours_hygiene=EXCLUDED.hours_hygiene, output=EXCLUDED.output,
+        contribution=EXCLUDED.contribution, manager_pulse=EXCLUDED.manager_pulse,
+        team_stewardship=EXCLUDED.team_stewardship, project_hygiene=EXCLUDED.project_hygiene,
+        updated_at=NOW(), updated_by=${req.header('x-user-id') ?? null}
+      RETURNING *`)[0];
+    res.json(row);
+  } catch (err: any) { res.status(500).json({ error: err.message ?? 'Server error' }); }
+});
+
 // Vercel Cron hits this — scheduled every 30 min in vercel.json. Vercel
 // signs cron requests with a bearer token from CRON_SECRET (set in the
 // project's env vars). We accept either that, or the Vercel platform's own
@@ -1587,7 +2211,12 @@ app.all('/api/attendance/biometric-sync/cron', async (req, res) => {
       return res.status(401).json({ error: 'Unauthorized' });
     }
     const result = await runBiometricSyncV('auto', 'vercel-cron');
-    res.json(result);
+    // Chain pulse compute — runs after attendance is fresh. Failure here
+    // does NOT fail the sync response; pulse can be re-run via /recompute.
+    let pulse: any = null;
+    try { pulse = await computePulseForDate(new Date().toISOString().slice(0, 10)); }
+    catch (e: any) { pulse = { error: e.message ?? 'pulse compute failed' }; }
+    res.json({ ...result, pulse });
   } catch (err: any) {
     const today = new Date().toISOString().split('T')[0];
     try {

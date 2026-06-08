@@ -1,6 +1,40 @@
 const BASE = '/api';
 const SESSION_KEY = 'digitalleap_hrms_session';
 
+// ── Performance Pulse types ─────────────────────────────────────────────
+export interface PulseSnapshot {
+  employee_id: string;
+  snapshot_date: string;
+  discipline: number | null;
+  hours_hygiene: number | null;
+  output: number | null;
+  contribution: number | null;
+  manager_pulse: number | null;
+  team_stewardship: number | null;
+  project_hygiene: number | null;
+  total_score: number;
+  band: 'excellent' | 'strong' | 'building' | 'needs_support' | 'baseline';
+  is_baseline: boolean;
+  breakdown: any;
+}
+export interface PulseTeamRow {
+  id: string; name: string; avatar?: string | null;
+  department?: string | null; designation?: string | null;
+  reporting_manager_id?: string | null; reporting_manager_name?: string | null;
+  total_score: number | null; band: string | null;
+  discipline: number | null; hours_hygiene: number | null;
+  output: number | null; contribution: number | null;
+  manager_pulse: number | null; team_stewardship: number | null; project_hygiene: number | null;
+  is_baseline: boolean | null; snapshot_date: string | null;
+  pulse_rated_this_week?: boolean; week_start?: string;
+}
+export interface PulseWeights {
+  department: string;
+  discipline: number; hours_hygiene: number; output: number; contribution: number;
+  manager_pulse: number; team_stewardship: number; project_hygiene: number;
+  updated_at?: string; updated_by?: string | null;
+}
+
 function currentUserId(): string {
   try {
     const raw = localStorage.getItem(SESSION_KEY);
@@ -491,6 +525,24 @@ export const api = {
       total: { allocated: number; capacity: number; bench: number; utilization: number; headcount: number };
     }>(`/hours-utilization?${qs}`);
   },
+
+  // ── Performance Pulse ────────────────────────────────────────────────
+  getMyPulse: () =>
+    request<{ latest: PulseSnapshot | null; trend: Array<{ snapshot_date: string; total_score: number; band: string }> }>(`/performance/pulse/me`),
+  getTeamPulse: () =>
+    request<{ team: PulseTeamRow[]; week_start: string }>(`/performance/pulse/team`),
+  getOrgPulse: () =>
+    request<{ employees: PulseTeamRow[] }>(`/performance/pulse/org`),
+  getEmployeePulse: (employeeId: string) =>
+    request<{ latest: PulseSnapshot | null; trend: Array<{ snapshot_date: string; total_score: number; band: string }> }>(`/performance/pulse/${employeeId}`),
+  submitPulseRating: (data: { employee_id: string; rating: 'good' | 'ok' | 'concern'; note?: string; week_start?: string }) =>
+    request(`/performance/pulse-rating`, { method: 'POST', body: JSON.stringify(data) }),
+  recomputePulse: (asOf?: string) =>
+    request<{ computed: number; as_of: string }>(`/performance/pulse/recompute`, { method: 'POST', body: JSON.stringify({ as_of: asOf }) }),
+  getPulseWeights: () =>
+    request<{ weights: PulseWeights[] }>(`/performance/pulse/weights`),
+  updatePulseWeights: (dept: string, weights: Partial<PulseWeights>) =>
+    request(`/performance/pulse/weights/${encodeURIComponent(dept)}`, { method: 'PUT', body: JSON.stringify(weights) }),
 
   getHoursCompliance: (params: { date?: string; manager_id?: string }) => {
     const qs = new URLSearchParams();

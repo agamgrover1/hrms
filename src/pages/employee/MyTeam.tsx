@@ -84,7 +84,75 @@ function ScoreSlider({ label, value, onChange }: { label: string; value: number;
 }
 
 // ── Main component ────────────────────────────────────────────────────────────
-type SubTab = 'overview' | 'leaves' | 'performance';
+type SubTab = 'overview' | 'leaves' | 'performance' | 'pulse';
+
+function pillarColorMyTeam(score: number | null): string {
+  if (score == null) return '#94a3b8';
+  if (score >= 85) return '#16a34a';
+  if (score >= 70) return '#3730a3';
+  if (score >= 50) return '#d97706';
+  return '#dc2626';
+}
+const PULSE_PILLAR_DEFS = [
+  { key: 'discipline',        label: 'Discipline' },
+  { key: 'hours_hygiene',     label: 'Hours hygiene' },
+  { key: 'output',            label: 'Output' },
+  { key: 'contribution',      label: 'Contribution' },
+  { key: 'manager_pulse',     label: 'Manager pulse' },
+  { key: 'team_stewardship',  label: 'Team stewardship' },
+  { key: 'project_hygiene',   label: 'Project hygiene' },
+] as const;
+function PulsePillarList({ snapshot }: { snapshot: any }) {
+  const bd = snapshot.breakdown ?? {};
+  return (
+    <div className="space-y-5">
+      <div className="flex items-center gap-4 p-4 rounded-xl-2 border border-outline bg-surface-2/40">
+        <div className="w-20 h-20 rounded-2xl flex items-center justify-center font-display font-bold text-3xl num-mono"
+          style={{
+            background: snapshot.band === 'excellent' ? '#dcfce7' : snapshot.band === 'strong' ? '#e0e7ff' : snapshot.band === 'building' ? '#fef3c7' : snapshot.band === 'needs_support' ? '#fee2e2' : '#f1f5f9',
+            color: snapshot.band === 'excellent' ? '#15803d' : snapshot.band === 'strong' ? '#3730a3' : snapshot.band === 'building' ? '#92400e' : snapshot.band === 'needs_support' ? '#b91c1c' : '#475569',
+          }}>
+          {snapshot.is_baseline ? '…' : snapshot.total_score}
+        </div>
+        <div>
+          <p className="text-sm font-bold text-on-surface capitalize">{(snapshot.band ?? '').replace('_', ' ')}</p>
+          <p className="text-xs text-on-surface-muted mt-0.5">Equal-weighted average across pillars below.</p>
+        </div>
+      </div>
+      <div className="space-y-2">
+        <p className="text-[10px] uppercase tracking-[0.18em] font-bold text-on-surface-subtle">Pillars</p>
+        {PULSE_PILLAR_DEFS.map(p => {
+          const v = snapshot[p.key];
+          if (v == null) return null;
+          const c = pillarColorMyTeam(v);
+          return (
+            <div key={p.key} className="py-1.5">
+              <div className="flex items-baseline justify-between gap-2">
+                <p className="text-sm font-semibold text-on-surface">{p.label}</p>
+                <p className="text-xs num-mono font-bold" style={{ color: c }}>{v}</p>
+              </div>
+              <div className="mt-1 h-1.5 rounded-full bg-surface-2 overflow-hidden">
+                <div className="h-full rounded-full" style={{ width: `${v}%`, background: c }} />
+              </div>
+            </div>
+          );
+        })}
+      </div>
+      {/* Recent signals */}
+      <div className="space-y-2">
+        <p className="text-[10px] uppercase tracking-[0.18em] font-bold text-on-surface-subtle">Recent signals</p>
+        <ul className="text-xs text-on-surface-muted space-y-1">
+          {bd.discipline_misses && <li>Discipline: <strong>{bd.discipline_misses.late}</strong> late · <strong>{bd.discipline_misses.absences}</strong> absent · <strong>{bd.discipline_misses.leave_without_notice}</strong> last-minute</li>}
+          {bd.hygiene && <li>Hours: <strong>{bd.hygiene.days_logged}/{bd.hygiene.working_days}</strong> days logged · <strong>{bd.hygiene.days_with_notes}</strong> with notes</li>}
+          {bd.output_detail && <li>Output: <strong>{bd.output_detail.utilization_pct}%</strong> utilization · <strong>{bd.output_detail.approval_rate_pct}%</strong> approvals</li>}
+          {bd.contribution_detail && <li>Contribution: <strong>{bd.contribution_detail.goals_on_track}/{bd.contribution_detail.goals_total}</strong> goals on track · <strong>{bd.contribution_detail.upsells}</strong> upsells</li>}
+          {bd.team_stewardship_detail && <li>Team stewardship: <strong>{bd.team_stewardship_detail.team_logging_hygiene}%</strong> logging · <strong>{bd.team_stewardship_detail.approval_timeliness}%</strong> approvals on time</li>}
+          {bd.project_hygiene_detail && <li>Project hygiene: <strong>{bd.project_hygiene_detail.logging_coverage}%</strong> coverage · <strong>{bd.project_hygiene_detail.approval_flow_through}%</strong> flow-through</li>}
+        </ul>
+      </div>
+    </div>
+  );
+}
 
 export default function MyTeam() {
   const { user } = useAuth();
@@ -94,6 +162,7 @@ export default function MyTeam() {
     const t = searchParams.get('tab');
     if (t === 'performance') return 'performance';
     if (t === 'leaves') return 'leaves';
+    if (t === 'pulse') return 'pulse';
     return 'overview';
   }, [searchParams]);
 
@@ -146,6 +215,41 @@ export default function MyTeam() {
     return n.getMonth() === 0 ? n.getFullYear() - 1 : n.getFullYear();
   });
   const [paramNotes, setParamNotes] = useState<Record<string, string>>({});
+
+  // ── Pulse state ────────────────────────────────────────────────────────
+  const [teamPulse, setTeamPulse] = useState<any[]>([]);
+  const [pulseWeekStart, setPulseWeekStart] = useState<string>('');
+  const [submittingPulse, setSubmittingPulse] = useState<Record<string, boolean>>({});
+  const [pulseDrawerFor, setPulseDrawerFor] = useState<any | null>(null);
+  const [pulseDrawerData, setPulseDrawerData] = useState<{ latest: any; trend: any[] } | null>(null);
+
+  // Load team pulse whenever we land on that tab
+  useEffect(() => {
+    if (subTab !== 'pulse') return;
+    api.getTeamPulse()
+      .then(d => { setTeamPulse(d.team); setPulseWeekStart(d.week_start); })
+      .catch(() => {});
+  }, [subTab]);
+
+  async function ratePulse(employeeId: string, rating: 'good' | 'ok' | 'concern') {
+    setSubmittingPulse(s => ({ ...s, [employeeId]: true }));
+    try {
+      await api.submitPulseRating({ employee_id: employeeId, rating, week_start: pulseWeekStart });
+      setTeamPulse(prev => prev.map(t => t.id === employeeId ? { ...t, pulse_rated_this_week: true, _last_rating: rating } : t));
+    } finally {
+      setSubmittingPulse(s => ({ ...s, [employeeId]: false }));
+    }
+  }
+  async function openPulseDrawer(member: any) {
+    setPulseDrawerFor(member);
+    setPulseDrawerData(null);
+    try {
+      const data = await api.getEmployeePulse(member.id);
+      setPulseDrawerData({ latest: data.latest, trend: data.trend });
+    } catch {
+      setPulseDrawerData({ latest: null, trend: [] });
+    }
+  }
   const [savingReview, setSavingReview] = useState(false);
   const [reviewError, setReviewError] = useState('');
   const [warnTarget, setWarnTarget] = useState<any | null>(null);
@@ -371,6 +475,7 @@ export default function MyTeam() {
           { key: 'overview',    label: 'Overview',    icon: Users      },
           { key: 'leaves',      label: 'Leaves',      icon: Calendar   },
           { key: 'performance', label: 'Performance', icon: TrendingUp },
+          { key: 'pulse',       label: 'Pulse',       icon: TrendingUp },
         ] as { key: SubTab; label: string; icon: any }[]).map(({ key, label, icon: Icon }) => (
           <button key={key} onClick={() => navigate(`/my-team?tab=${key}`)}
             className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-semibold transition-all ${
@@ -1047,6 +1152,133 @@ export default function MyTeam() {
                   {issuingWarn ? 'Issuing…' : 'Issue Warning'}
                 </button>
               </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── PULSE TAB ─────────────────────────────────────────────────────── */}
+      {subTab === 'pulse' && (
+        <div className="space-y-5">
+          {/* Monday rating prompt — appears only if any report isn't rated yet */}
+          {teamPulse.some(t => !t.pulse_rated_this_week) && (
+            <div className="bg-surface rounded-xl-3 border border-outline shadow-elev-1 p-5">
+              <div className="flex items-center justify-between mb-1">
+                <p className="text-[10px] uppercase tracking-[0.18em] font-bold text-on-surface-subtle">Weekly pulse</p>
+                <p className="text-[10px] text-on-surface-subtle num-mono">
+                  week of {pulseWeekStart ? new Date(pulseWeekStart).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' }) : '—'}
+                </p>
+              </div>
+              <p className="font-display text-base font-bold text-on-surface mb-3">
+                How is each of your reports doing this week?
+              </p>
+              <p className="text-xs text-on-surface-muted mb-4">
+                One tap each. This feeds the &ldquo;Manager pulse&rdquo; pillar of their automated score. Honest beats kind here &mdash; concerns trigger a conversation, not a punishment.
+              </p>
+              <div className="space-y-2">
+                {teamPulse.filter(t => !t.pulse_rated_this_week).map(t => (
+                  <div key={t.id} className="flex items-center justify-between gap-3 p-3 rounded-xl-2 bg-surface-2/40 border border-outline">
+                    <div className="flex items-center gap-3 min-w-0">
+                      <div className="w-9 h-9 rounded-full bg-brand-container/50 flex items-center justify-center font-semibold text-brand text-sm">
+                        {t.name.split(' ').map((s: string) => s[0]).slice(0, 2).join('')}
+                      </div>
+                      <div className="min-w-0">
+                        <p className="text-sm font-semibold text-on-surface truncate">{t.name}</p>
+                        <p className="text-xs text-on-surface-subtle">{t.designation ?? '—'}</p>
+                      </div>
+                    </div>
+                    <div className="flex gap-1.5">
+                      {[
+                        { r: 'good',    emoji: '🙂', label: 'Doing great' },
+                        { r: 'ok',      emoji: '😐', label: 'Steady'      },
+                        { r: 'concern', emoji: '😞', label: 'Concerned'   },
+                      ].map(b => (
+                        <button key={b.r}
+                          disabled={!!submittingPulse[t.id]}
+                          onClick={() => ratePulse(t.id, b.r as any)}
+                          title={b.label}
+                          className="w-10 h-10 rounded-xl border border-outline hover:border-accent hover:bg-accent-container/30 transition text-lg disabled:opacity-50">
+                          {b.emoji}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Team grid */}
+          <div className="bg-surface rounded-xl-3 border border-outline shadow-elev-1 overflow-hidden">
+            <div className="px-5 py-3 border-b border-outline flex items-center justify-between">
+              <p className="font-display text-base font-bold text-on-surface">Team pulse — 30 day</p>
+              <p className="text-[11px] text-on-surface-subtle">Sorted by score</p>
+            </div>
+            {teamPulse.length === 0 ? (
+              <div className="px-5 py-10 text-center text-on-surface-subtle text-sm">No team data yet.</div>
+            ) : (
+              <div className="divide-y divide-outline">
+                {teamPulse.map(t => {
+                  const total = t.total_score;
+                  const tone =
+                    t.band === 'excellent' ? 'bg-success-container text-success' :
+                    t.band === 'strong'    ? 'bg-brand-container text-brand' :
+                    t.band === 'building'  ? 'bg-warning-container text-warning' :
+                    t.band === 'needs_support' ? 'bg-danger-container text-danger' :
+                                                'bg-surface-2 text-on-surface-subtle';
+                  return (
+                    <button key={t.id} onClick={() => openPulseDrawer(t)} className="w-full px-5 py-4 hover:bg-surface-2/40 transition text-left flex items-center gap-4">
+                      <div className="w-9 h-9 rounded-full bg-brand-container/50 flex items-center justify-center font-semibold text-brand text-xs flex-shrink-0">
+                        {t.name.split(' ').map((s: string) => s[0]).slice(0, 2).join('')}
+                      </div>
+                      <div className="min-w-0 flex-1">
+                        <p className="text-sm font-semibold text-on-surface truncate">{t.name}</p>
+                        <p className="text-[11px] text-on-surface-subtle truncate">{t.designation ?? '—'}</p>
+                      </div>
+                      <div className="hidden sm:flex items-center gap-2.5 num-mono">
+                        {['discipline','hours_hygiene','output','contribution'].map(k => (
+                          <div key={k} className="text-center min-w-[36px]">
+                            <p className="text-[10px] text-on-surface-subtle uppercase tracking-wide">{k === 'hours_hygiene' ? 'Hygiene' : k.slice(0,4)}</p>
+                            <p className="text-xs font-bold" style={{ color: pillarColorMyTeam(t[k]) }}>{t[k] ?? '—'}</p>
+                          </div>
+                        ))}
+                      </div>
+                      <div className={`px-3 py-1.5 rounded-lg text-xs font-bold num-mono ${tone}`}>
+                        {t.is_baseline ? '…' : total != null ? total : '—'}
+                      </div>
+                    </button>
+                  );
+                })}
+              </div>
+            )}
+            <div className="px-5 py-3 bg-surface-2/40 border-t border-outline">
+              <p className="text-[11px] text-on-surface-subtle">
+                Coaching tool, not a punishment. Tap any row for the breakdown.
+              </p>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Pulse drawer (manager view of a report's pulse) */}
+      {pulseDrawerFor && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm p-4" onClick={() => setPulseDrawerFor(null)}>
+          <div className="bg-surface rounded-2xl shadow-2xl w-full max-w-2xl max-h-[90vh] overflow-hidden flex flex-col" onClick={e => e.stopPropagation()}>
+            <div className="flex items-center justify-between px-6 py-4 border-b border-outline">
+              <div>
+                <h2 className="font-display font-bold text-lg" style={{ color: '#192250' }}>{pulseDrawerFor.name}</h2>
+                <p className="text-xs text-on-surface-subtle mt-0.5">Performance Pulse breakdown — 30 day</p>
+              </div>
+              <button onClick={() => setPulseDrawerFor(null)}><X size={18} className="text-on-surface-subtle" /></button>
+            </div>
+            <div className="overflow-y-auto px-6 py-5">
+              {!pulseDrawerData ? (
+                <p className="text-sm text-on-surface-subtle py-8 text-center">Loading…</p>
+              ) : !pulseDrawerData.latest ? (
+                <p className="text-sm text-on-surface-subtle py-8 text-center">No snapshot yet — runs nightly.</p>
+              ) : (
+                <PulsePillarList snapshot={pulseDrawerData.latest} />
+              )}
             </div>
           </div>
         </div>
