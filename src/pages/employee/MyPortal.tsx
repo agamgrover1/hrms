@@ -884,7 +884,7 @@ export default function MyPortal() {
             </div>
 
             {/* Performance Pulse tile — automated 30-day score */}
-            {pulse && (
+            {pulse ? (
               <button
                 onClick={() => setShowPulseDrawer(true)}
                 className="w-full text-left bg-surface rounded-xl-2 border border-outline shadow-elev-1 hover:shadow-elev-2 hover:border-accent/40 transition-all p-5 group">
@@ -912,6 +912,23 @@ export default function MyPortal() {
                   )}
                 </div>
               </button>
+            ) : (
+              // No snapshot yet — show a friendly placeholder so the feature is
+              // discoverable even before the nightly cron has run for the first time.
+              <div className="w-full bg-surface rounded-xl-2 border border-dashed border-outline p-5">
+                <div className="flex items-center gap-4">
+                  <div className="w-16 h-16 rounded-2xl flex items-center justify-center bg-surface-2 text-on-surface-subtle">
+                    <Target size={22} />
+                  </div>
+                  <div>
+                    <p className="text-[10px] uppercase tracking-[0.18em] font-bold text-on-surface-subtle">Performance pulse · 30-day</p>
+                    <p className="font-display text-base font-bold text-on-surface mt-0.5">Waiting for first snapshot</p>
+                    <p className="text-xs text-on-surface-muted mt-0.5">
+                      Your automated score appears here after the nightly run. Admin can also trigger an immediate recompute on the Pulse page.
+                    </p>
+                  </div>
+                </div>
+              </div>
             )}
 
             {/* Section cards */}

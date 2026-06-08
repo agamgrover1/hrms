@@ -2017,9 +2017,13 @@ app.all('/api/performance/pulse/cron', async (req, res) => {
   }
 });
 
-// Manual recompute (admin only — used while developing or after a backfill)
+// Manual recompute (admin only — used while developing or after a backfill).
+// Runs migrations defensively in case this is the first hit since deploy and
+// the pulse tables haven't been created yet — saves a "why is it empty?"
+// debugging round-trip.
 app.post('/api/performance/pulse/recompute', requireAdmin, async (req, res) => {
   try {
+    await runStartupMigrations();
     const asOf = (req.body?.as_of as string) || new Date().toISOString().slice(0, 10);
     const result = await computePulseForDate(asOf);
     res.json(result);
@@ -2055,12 +2059,17 @@ app.get('/api/performance/pulse/me', async (req, res) => {
     const u = (await sql`SELECT id, employee_id_ref, role FROM app_users WHERE id=${uid}`)[0] as any;
     if (!u?.employee_id_ref) return res.status(404).json({ error: 'No employee profile linked to this user' });
     const empId = u.employee_id_ref;
-    const latest = (await sql`SELECT * FROM performance_score_snapshots WHERE employee_id=${empId} ORDER BY snapshot_date DESC LIMIT 1`)[0] as any;
-    const trend = await sql`
-      SELECT snapshot_date, total_score, band FROM performance_score_snapshots
-      WHERE employee_id=${empId} AND snapshot_date >= (CURRENT_DATE - INTERVAL '56 days')
-      ORDER BY snapshot_date ASC` as any[];
-    res.json({ latest: latest ?? null, trend });
+    // Tolerate the table not existing yet — first call after deploy before
+    // anyone has triggered a recompute would otherwise crash the Hub fetch.
+    let latest: any = null; let trend: any[] = [];
+    try {
+      latest = (await sql`SELECT * FROM performance_score_snapshots WHERE employee_id=${empId} ORDER BY snapshot_date DESC LIMIT 1`)[0] ?? null;
+      trend = await sql`
+        SELECT snapshot_date, total_score, band FROM performance_score_snapshots
+        WHERE employee_id=${empId} AND snapshot_date >= (CURRENT_DATE - INTERVAL '56 days')
+        ORDER BY snapshot_date ASC` as any[];
+    } catch { /* table missing — return null and let the UI prompt to recompute */ }
+    res.json({ latest, trend });
   } catch (err: any) { res.status(500).json({ error: err.message ?? 'Server error' }); }
 });
 
@@ -2072,7 +2081,10 @@ app.get('/api/performance/pulse/team', async (req, res) => {
     const u = (await sql`SELECT id, employee_id_ref, role FROM app_users WHERE id=${uid}`)[0] as any;
     if (!u) return res.status(401).json({ error: 'Unknown user' });
     const mgrEmpId = u.employee_id_ref;
-    if (!mgrEmpId) return res.json({ team: [] });
+    if (!mgrEmpId) return res.json({ team: [], week_start: null });
+    // Run migrations defensively so a manager opening this tab for the first
+    // time after deploy doesn't get a 500.
+    await runStartupMigrations();
     const team = await sql`
       SELECT e.id, e.name, e.avatar, e.department, e.designation,
              s.total_score, s.band, s.discipline, s.hours_hygiene, s.output, s.contribution,
@@ -2107,6 +2119,7 @@ app.get('/api/performance/pulse/org', async (req, res) => {
     if (!uid) return res.status(401).json({ error: 'Sign in required' });
     const u = (await sql`SELECT id, role FROM app_users WHERE id=${uid}`)[0] as any;
     if (!u || !['admin', 'hr_manager'].includes(u.role)) return res.status(403).json({ error: 'Admin/HR only' });
+    await runStartupMigrations();
     const rows = await sql`
       SELECT e.id, e.name, e.avatar, e.department, e.designation, e.reporting_manager_id,
              m.name AS reporting_manager_name,
@@ -2175,6 +2188,7 @@ app.post('/api/performance/pulse-rating', async (req, res) => {
 // GET /api/performance/pulse/weights, PUT same — admin tune per department
 app.get('/api/performance/pulse/weights', requireAdmin, async (_req, res) => {
   try {
+    await runStartupMigrations();
     const rows = await sql`SELECT * FROM performance_score_weights ORDER BY department`;
     res.json({ weights: rows });
   } catch (err: any) { res.status(500).json({ error: err.message ?? 'Server error' }); }

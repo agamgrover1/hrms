@@ -50,7 +50,9 @@ export default function PerformancePulse() {
   const load = () => {
     setLoading(true);
     api.getOrgPulse()
-      .then(d => setRows(d.employees))
+      // Defend against {employees: undefined} from older deploys — array methods
+      // would otherwise blow up the page on render.
+      .then(d => setRows(Array.isArray(d?.employees) ? d.employees : []))
       .catch(() => setRows([]))
       .finally(() => setLoading(false));
   };
@@ -97,8 +99,9 @@ export default function PerformancePulse() {
     setShowWeights(true);
     try {
       const w = await api.getPulseWeights();
-      setWeights(w.weights);
-    } catch {}
+      // Guard against missing/wrong shape — undefined.map() blows up the modal.
+      setWeights(Array.isArray(w?.weights) ? w.weights : []);
+    } catch { setWeights([]); }
   }
   async function saveWeights(w: PulseWeights) {
     setSavingDept(w.department);
