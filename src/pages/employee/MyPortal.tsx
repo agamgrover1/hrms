@@ -1872,6 +1872,16 @@ export default function MyPortal() {
                           </span>
                         </div>
                         {a.serial_no && <p className="text-[10px] text-on-surface-subtle font-mono mt-2">SN: {a.serial_no}</p>}
+                        {/* Laptop specs — shown when any are filled. Password never appears here. */}
+                        {(a.brand || a.os || a.processor || a.ram || a.storage) && (
+                          <div className="mt-2 pt-2 border-t border-dashed border-outline grid grid-cols-2 gap-x-3 gap-y-1 text-[11px]">
+                            {a.brand     && <p><span className="text-on-surface-subtle">Brand:</span> <span className="text-on-surface font-medium">{a.brand}</span></p>}
+                            {a.os        && <p><span className="text-on-surface-subtle">OS:</span> <span className="text-on-surface font-medium">{a.os}</span></p>}
+                            {a.processor && <p className="col-span-2"><span className="text-on-surface-subtle">CPU:</span> <span className="text-on-surface font-medium">{a.processor}</span></p>}
+                            {a.ram       && <p><span className="text-on-surface-subtle">RAM:</span> <span className="text-on-surface font-medium">{a.ram}</span></p>}
+                            {a.storage   && <p><span className="text-on-surface-subtle">Storage:</span> <span className="text-on-surface font-medium">{a.storage}</span></p>}
+                          </div>
+                        )}
                         <div className="mt-3 pt-3 border-t border-outline flex items-center justify-between">
                           {openTicket ? (
                             <span className="text-[11px] text-warning inline-flex items-center gap-1">

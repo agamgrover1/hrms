@@ -467,6 +467,18 @@ async function runStartupMigrations() {
       created_at TIMESTAMPTZ DEFAULT NOW()
     )`;
   await sql`ALTER TABLE assets ADD COLUMN IF NOT EXISTS category_id TEXT`.catch(()=>{});
+  // Laptop spec fields — surfaced on the asset form ONLY when category=Laptop,
+  // but stored unconditionally so HR can record the same fields for any
+  // category that has hardware specs (desktop, tablet). admin_password is
+  // server-side stripped from GET responses for non-admin/HR roles.
+  try {
+    await sql`ALTER TABLE assets ADD COLUMN IF NOT EXISTS brand TEXT`;
+    await sql`ALTER TABLE assets ADD COLUMN IF NOT EXISTS os TEXT`;
+    await sql`ALTER TABLE assets ADD COLUMN IF NOT EXISTS processor TEXT`;
+    await sql`ALTER TABLE assets ADD COLUMN IF NOT EXISTS ram TEXT`;
+    await sql`ALTER TABLE assets ADD COLUMN IF NOT EXISTS storage TEXT`;
+    await sql`ALTER TABLE assets ADD COLUMN IF NOT EXISTS admin_password TEXT`;
+  } catch { /* idempotent */ }
   await sql`
     CREATE TABLE IF NOT EXISTS repair_tickets (
       id TEXT PRIMARY KEY,
@@ -3621,17 +3633,34 @@ app.get('/api/assets', async (req, res) => {
     const rows = assigned_to_id
       ? await sql`SELECT a.*, c.name AS category_name FROM assets a LEFT JOIN asset_categories c ON c.id = a.category_id WHERE a.assigned_to_id=${assigned_to_id} ORDER BY a.asset_tag ASC`
       : await sql`SELECT a.*, c.name AS category_name FROM assets a LEFT JOIN asset_categories c ON c.id = a.category_id ORDER BY a.asset_tag ASC`;
-    res.json(rows);
+    // Strip admin_password for everyone except admin/HR. Employees viewing
+    // their own laptop should NOT see this — it's the IT-set password used
+    // for recovery, not a self-service field.
+    const canSeePw = await isAdminOrHR(req);
+    const out = (rows as any[]).map(r => canSeePw ? r : { ...r, admin_password: undefined });
+    res.json(out);
   } catch (e: any) { res.status(500).json({ error: e.message }); }
 });
 
 app.post('/api/assets', async (req, res) => {
   try {
     await ensureRepairTables();
-    const { asset_tag, category_id, model, serial_no, purchase_date, assigned_to_id, assigned_to_name, status, notes } = req.body;
+    const { asset_tag, category_id, model, serial_no, purchase_date, assigned_to_id, assigned_to_name, status, notes,
+            brand, os, processor, ram, storage, admin_password } = req.body;
     if (!asset_tag?.trim()) return res.status(400).json({ error: 'Asset tag is required' });
+    // Only admin/HR can write the password. Silently drop for everyone else
+    // so a coordinator can still create the asset, just without the password.
+    const canSetPw = await isAdminOrHR(req);
+    const pw = canSetPw ? (admin_password?.trim() || null) : null;
     const id = `asset_${Date.now()}`;
-    const rows = await sql`INSERT INTO assets (id, asset_tag, category_id, model, serial_no, purchase_date, assigned_to_id, assigned_to_name, status, notes) VALUES (${id}, ${asset_tag.trim()}, ${category_id ?? null}, ${model ?? null}, ${serial_no ?? null}, ${purchase_date ?? null}, ${assigned_to_id ?? null}, ${assigned_to_name ?? null}, ${status ?? 'active'}, ${notes ?? null}) RETURNING *`;
+    const rows = await sql`INSERT INTO assets
+      (id, asset_tag, category_id, model, serial_no, purchase_date, assigned_to_id, assigned_to_name, status, notes,
+       brand, os, processor, ram, storage, admin_password)
+      VALUES (${id}, ${asset_tag.trim()}, ${category_id ?? null}, ${model ?? null}, ${serial_no ?? null}, ${purchase_date ?? null},
+              ${assigned_to_id ?? null}, ${assigned_to_name ?? null}, ${status ?? 'active'}, ${notes ?? null},
+              ${brand?.trim() || null}, ${os?.trim() || null}, ${processor?.trim() || null},
+              ${ram?.trim() || null}, ${storage?.trim() || null}, ${pw})
+      RETURNING *`;
     res.status(201).json((rows as any[])[0]);
   } catch (e: any) {
     if (e.message?.includes('unique')) return res.status(409).json({ error: 'Asset tag already exists' });
@@ -3641,9 +3670,33 @@ app.post('/api/assets', async (req, res) => {
 
 app.put('/api/assets/:id', async (req, res) => {
   try {
-    const { asset_tag, category_id, model, serial_no, purchase_date, assigned_to_id, assigned_to_name, status, notes } = req.body;
+    const { asset_tag, category_id, model, serial_no, purchase_date, assigned_to_id, assigned_to_name, status, notes,
+            brand, os, processor, ram, storage, admin_password } = req.body;
     if (!asset_tag?.trim()) return res.status(400).json({ error: 'Asset tag is required' });
-    const rows = await sql`UPDATE assets SET asset_tag=${asset_tag.trim()}, category_id=${category_id ?? null}, model=${model ?? null}, serial_no=${serial_no ?? null}, purchase_date=${purchase_date ?? null}, assigned_to_id=${assigned_to_id ?? null}, assigned_to_name=${assigned_to_name ?? null}, status=${status ?? 'active'}, notes=${notes ?? null} WHERE id=${req.params.id} RETURNING *`;
+    const canSetPw = await isAdminOrHR(req);
+    // Only update admin_password when admin/HR explicitly sends one — empty
+    // string clears, undefined leaves it untouched. Non-admin writes can't
+    // touch it at all.
+    const shouldUpdatePw = canSetPw && admin_password !== undefined;
+    const pwPatch = shouldUpdatePw ? (admin_password?.trim() || null) : null;
+    const rows = shouldUpdatePw
+      ? await sql`UPDATE assets SET
+          asset_tag=${asset_tag.trim()}, category_id=${category_id ?? null}, model=${model ?? null},
+          serial_no=${serial_no ?? null}, purchase_date=${purchase_date ?? null},
+          assigned_to_id=${assigned_to_id ?? null}, assigned_to_name=${assigned_to_name ?? null},
+          status=${status ?? 'active'}, notes=${notes ?? null},
+          brand=${brand?.trim() || null}, os=${os?.trim() || null},
+          processor=${processor?.trim() || null}, ram=${ram?.trim() || null}, storage=${storage?.trim() || null},
+          admin_password=${pwPatch}
+          WHERE id=${req.params.id} RETURNING *`
+      : await sql`UPDATE assets SET
+          asset_tag=${asset_tag.trim()}, category_id=${category_id ?? null}, model=${model ?? null},
+          serial_no=${serial_no ?? null}, purchase_date=${purchase_date ?? null},
+          assigned_to_id=${assigned_to_id ?? null}, assigned_to_name=${assigned_to_name ?? null},
+          status=${status ?? 'active'}, notes=${notes ?? null},
+          brand=${brand?.trim() || null}, os=${os?.trim() || null},
+          processor=${processor?.trim() || null}, ram=${ram?.trim() || null}, storage=${storage?.trim() || null}
+          WHERE id=${req.params.id} RETURNING *`;
     if (!(rows as any[]).length) return res.status(404).json({ error: 'Asset not found' });
     res.json((rows as any[])[0]);
   } catch (e: any) {

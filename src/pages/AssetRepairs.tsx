@@ -441,7 +441,14 @@ function AssetsTab({ assets, employees, tickets, onCreate, onEdit, onDelete, onH
                           ? <span className="inline-flex items-center px-2 py-0.5 rounded-full bg-brand-container/60 text-brand font-semibold text-[10px]">{a.category_name}</span>
                           : <span className="text-on-surface-subtle">—</span>}
                       </td>
-                      <td className="px-4 py-3 text-on-surface-muted">{a.model ?? '—'}</td>
+                      <td className="px-4 py-3 text-on-surface-muted">
+                        <div>{[a.brand, a.model].filter(Boolean).join(' ') || '—'}</div>
+                        {(a.processor || a.ram || a.storage) && (
+                          <div className="text-[10px] text-on-surface-subtle font-normal">
+                            {[a.processor, a.ram, a.storage].filter(Boolean).join(' · ')}
+                          </div>
+                        )}
+                      </td>
                       <td className="px-4 py-3 text-xs text-on-surface-subtle num-mono">{a.serial_no ?? '—'}</td>
                       <td className="px-4 py-3 text-sm text-on-surface-muted">{a.assigned_to_name ?? empById(a.assigned_to_id)?.name ?? '—'}</td>
                       <td className="px-4 py-3">
@@ -622,12 +629,20 @@ function AssetFormModal({ initial, employees, onClose, onSaved }: any) {
     assigned_to_id: initial?.assigned_to_id ?? '',
     status: initial?.status ?? 'active',
     notes: initial?.notes ?? '',
+    // Laptop spec block — show only when category=Laptop. Stored unconditionally.
+    brand: initial?.brand ?? '',
+    os: initial?.os ?? '',
+    processor: initial?.processor ?? '',
+    ram: initial?.ram ?? '',
+    storage: initial?.storage ?? '',
+    admin_password: initial?.admin_password ?? '',
   });
   const [categories, setCategories] = useState<Array<{ id: string; name: string }>>([]);
   const [creatingCategory, setCreatingCategory] = useState(false);
   const [newCategoryName, setNewCategoryName] = useState('');
   const [error, setError] = useState('');
   const [saving, setSaving] = useState(false);
+  const [showPassword, setShowPassword] = useState(false);
 
   useEffect(() => { api.getAssetCategories().then(setCategories).catch(() => {}); }, []);
 
@@ -720,6 +735,65 @@ function AssetFormModal({ initial, employees, onClose, onSaved }: any) {
               className="w-full text-sm border border-outline rounded-lg px-3 py-2 bg-surface text-on-surface focus:outline-none focus:border-accent focus:ring-2 focus:ring-accent/20"/>
           </div>
         </div>
+
+        {/* Laptop spec block — appears when the picked category is named "Laptop"
+            (case-insensitive). For other categories the fields aren't relevant
+            so we hide them to avoid clutter. */}
+        {(() => {
+          const catName = categories.find(c => c.id === form.category_id)?.name?.toLowerCase() ?? '';
+          if (!catName.includes('laptop')) return null;
+          return (
+            <div className="space-y-3 rounded-xl border border-outline bg-surface-2/30 p-3">
+              <p className="text-[10px] uppercase tracking-[0.18em] font-bold text-on-surface-subtle">Laptop specs</p>
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="text-xs font-semibold text-on-surface-subtle block mb-1">Brand</label>
+                  <input value={form.brand} onChange={e => setForm({ ...form, brand: e.target.value })} placeholder="Dell / HP / Apple / Lenovo"
+                    className="w-full text-sm border border-outline rounded-lg px-3 py-2 bg-surface text-on-surface focus:outline-none focus:border-accent focus:ring-2 focus:ring-accent/20"/>
+                </div>
+                <div>
+                  <label className="text-xs font-semibold text-on-surface-subtle block mb-1">OS / Windows</label>
+                  <input value={form.os} onChange={e => setForm({ ...form, os: e.target.value })} placeholder="Windows 11 Pro / macOS Sonoma"
+                    className="w-full text-sm border border-outline rounded-lg px-3 py-2 bg-surface text-on-surface focus:outline-none focus:border-accent focus:ring-2 focus:ring-accent/20"/>
+                </div>
+                <div className="col-span-2">
+                  <label className="text-xs font-semibold text-on-surface-subtle block mb-1">Processor</label>
+                  <input value={form.processor} onChange={e => setForm({ ...form, processor: e.target.value })} placeholder="Intel i7-12700H / Apple M2 Pro"
+                    className="w-full text-sm border border-outline rounded-lg px-3 py-2 bg-surface text-on-surface focus:outline-none focus:border-accent focus:ring-2 focus:ring-accent/20"/>
+                </div>
+                <div>
+                  <label className="text-xs font-semibold text-on-surface-subtle block mb-1">RAM</label>
+                  <input value={form.ram} onChange={e => setForm({ ...form, ram: e.target.value })} placeholder="16 GB DDR5"
+                    className="w-full text-sm border border-outline rounded-lg px-3 py-2 bg-surface text-on-surface focus:outline-none focus:border-accent focus:ring-2 focus:ring-accent/20"/>
+                </div>
+                <div>
+                  <label className="text-xs font-semibold text-on-surface-subtle block mb-1">Storage</label>
+                  <input value={form.storage} onChange={e => setForm({ ...form, storage: e.target.value })} placeholder="512 GB SSD"
+                    className="w-full text-sm border border-outline rounded-lg px-3 py-2 bg-surface text-on-surface focus:outline-none focus:border-accent focus:ring-2 focus:ring-accent/20"/>
+                </div>
+                <div className="col-span-2">
+                  <label className="text-xs font-semibold text-on-surface-subtle block mb-1 flex items-center gap-1.5">
+                    Admin password
+                    <span className="text-[10px] font-normal text-on-surface-subtle">(visible to admin/HR only)</span>
+                  </label>
+                  <div className="flex gap-2">
+                    <input type={showPassword ? 'text' : 'password'} value={form.admin_password}
+                      onChange={e => setForm({ ...form, admin_password: e.target.value })}
+                      placeholder="Leave blank if not set"
+                      className="flex-1 text-sm border border-outline rounded-lg px-3 py-2 bg-surface text-on-surface focus:outline-none focus:border-accent focus:ring-2 focus:ring-accent/20 num-mono"/>
+                    <button type="button" onClick={() => setShowPassword(s => !s)}
+                      className="px-3 py-2 text-xs font-semibold rounded-lg border border-outline bg-surface-2 text-on-surface-muted hover:bg-surface-3 whitespace-nowrap">
+                      {showPassword ? 'Hide' : 'Show'}
+                    </button>
+                  </div>
+                  <p className="text-[10px] text-on-surface-subtle mt-1">
+                    Used by IT for recovery. Not shown to the employee on My Device.
+                  </p>
+                </div>
+              </div>
+            </div>
+          );
+        })()}
         <div>
           <label className="text-xs font-semibold text-on-surface-subtle block mb-1">Assigned To</label>
           <select value={form.assigned_to_id} onChange={e => setForm({ ...form, assigned_to_id: e.target.value })}
