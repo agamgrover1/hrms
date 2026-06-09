@@ -2329,11 +2329,32 @@ app.get('/api/performance/pulse/me', async (req, res) => {
   try {
     const uid = req.header('x-user-id');
     if (!uid) return res.status(401).json({ error: 'Sign in required' });
-    const u = (await sql`SELECT id, employee_id_ref, role FROM app_users WHERE id=${uid}`)[0] as any;
-    if (!u?.employee_id_ref) return res.status(404).json({ error: 'No employee profile linked to this user' });
-    const empId = u.employee_id_ref;
-    // Tolerate the table not existing yet — first call after deploy before
-    // anyone has triggered a recompute would otherwise crash the Hub fetch.
+    const u = (await sql`SELECT id, name, email, employee_id_ref, role FROM app_users WHERE id=${uid}`)[0] as any;
+    if (!u) return res.status(401).json({ error: 'Unknown user' });
+
+    // Resolve the user's employee record. Prefer the explicit employee_id_ref
+    // linkage. If that's missing (legacy users created before the linkage
+    // existed), fall back to matching by email first, then by name. This
+    // saves admins from having to hand-fix every old user row before scores
+    // become visible — most importantly, project coordinators who were set
+    // up without the linkage in early data.
+    let empId: string | null = u.employee_id_ref ?? null;
+    let resolvedVia: 'linkage' | 'email' | 'name' | 'none' = empId ? 'linkage' : 'none';
+    if (!empId && u.email) {
+      const m = (await sql`SELECT id FROM employees WHERE LOWER(email)=LOWER(${u.email}) LIMIT 1`)[0] as any;
+      if (m?.id) { empId = m.id; resolvedVia = 'email'; }
+    }
+    if (!empId && u.name) {
+      const m = (await sql`SELECT id FROM employees WHERE LOWER(name)=LOWER(${u.name}) LIMIT 1`)[0] as any;
+      if (m?.id) { empId = m.id; resolvedVia = 'name'; }
+    }
+    if (!empId) {
+      // Still no match — return null gracefully so the Hub shows the
+      // placeholder rather than a silent 404. Include a diagnostic field
+      // so we can surface "user not linked to an employee" in the UI.
+      return res.json({ latest: null, trend: [], resolved_via: 'none', user_name: u.name });
+    }
+
     let latest: any = null; let trend: any[] = [];
     try {
       latest = (await sql`SELECT * FROM performance_score_snapshots WHERE employee_id=${empId} ORDER BY snapshot_date DESC LIMIT 1`)[0] ?? null;
@@ -2342,7 +2363,7 @@ app.get('/api/performance/pulse/me', async (req, res) => {
         WHERE employee_id=${empId} AND snapshot_date >= (CURRENT_DATE - INTERVAL '56 days')
         ORDER BY snapshot_date ASC` as any[];
     } catch { /* table missing — return null and let the UI prompt to recompute */ }
-    res.json({ latest, trend });
+    res.json({ latest, trend, resolved_via: resolvedVia });
   } catch (err: any) { res.status(500).json({ error: err.message ?? 'Server error' }); }
 });
 
