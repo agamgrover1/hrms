@@ -879,6 +879,59 @@ async function runStartupMigrations() {
     )`;
   await sql`CREATE INDEX IF NOT EXISTS idx_emp_resp_audit_emp ON employee_responsibilities_audit(employee_id, created_at DESC)`.catch(()=>{});
 
+  // ── Internal activities (non-project work) ────────────────────────────
+  // Employees, HR, coordinators, and admin all log hours daily. People
+  // without active projects (HR, recruiters, bench, admins doing ops work)
+  // use this. The list is admin-curated; logs are self-reported and don't
+  // need approval. Hours feed compliance + pulse "hours hygiene" but NOT
+  // billable utilization (utilization stays a billable measure on purpose).
+  await sql`
+    CREATE TABLE IF NOT EXISTS internal_activities (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL UNIQUE,
+      description TEXT,
+      active BOOLEAN DEFAULT TRUE,
+      sort_order INTEGER DEFAULT 100,
+      created_at TIMESTAMPTZ DEFAULT NOW(),
+      created_by TEXT
+    )`;
+  await sql`
+    CREATE TABLE IF NOT EXISTS internal_hour_logs (
+      id TEXT PRIMARY KEY,
+      employee_id TEXT NOT NULL,
+      activity_id TEXT NOT NULL,
+      log_date DATE NOT NULL,
+      hours NUMERIC NOT NULL,
+      notes TEXT,
+      created_at TIMESTAMPTZ DEFAULT NOW(),
+      updated_at TIMESTAMPTZ DEFAULT NOW(),
+      UNIQUE(employee_id, activity_id, log_date)
+    )`;
+  await sql`CREATE INDEX IF NOT EXISTS idx_internal_logs_emp_date ON internal_hour_logs(employee_id, log_date DESC)`.catch(()=>{});
+  await sql`CREATE INDEX IF NOT EXISTS idx_internal_logs_date ON internal_hour_logs(log_date DESC)`.catch(()=>{});
+  // Seed the default activity list once — admin can prune/extend on the
+  // Config page. Idempotent: only inserts if the table is empty.
+  try {
+    const cnt = (await sql`SELECT COUNT(*)::int AS c FROM internal_activities`)[0] as any;
+    if (Number(cnt?.c ?? 0) === 0) {
+      const seed = [
+        { name: 'Admin / Operations',   description: 'General admin & ops work',                      order: 10 },
+        { name: 'Recruitment / Hiring', description: 'Interviews, sourcing, offer rounds',            order: 20 },
+        { name: 'Training / Learning',  description: 'Onboarding, courses, self-study',               order: 30 },
+        { name: 'People Management',    description: '1:1s, performance reviews, team coordination',  order: 40 },
+        { name: 'HR / Compliance',      description: 'Policy, payroll, statutory work',               order: 50 },
+        { name: 'Internal Initiative',  description: 'Org-wide projects, R&D, tooling',               order: 60 },
+        { name: 'Bench / Unallocated',  description: 'Awaiting project allocation',                   order: 70 },
+      ];
+      for (const a of seed) {
+        await sql`INSERT INTO internal_activities (id, name, description, sort_order)
+          VALUES (${`act_${a.order}_${a.name.replace(/[^a-z0-9]+/gi, '_').toLowerCase()}`},
+                  ${a.name}, ${a.description}, ${a.order})
+          ON CONFLICT (name) DO NOTHING`;
+      }
+    }
+  } catch { /* non-fatal */ }
+
   // ── Performance Pulse: automated 30-day score, runs alongside the manual
   // monthly_performance reviews. snapshots = one row per employee per day,
   // pulse_ratings = weekly manager emoji input, weights = per-dept overrides
@@ -1728,6 +1781,13 @@ async function computePulseForDate(asOf: string) {
   const activeProjects = await sql`
     SELECT id, project_reporting_id, project_lead_id, created_by
     FROM projects WHERE status='active'` as any[];
+  // Internal (non-project) hour logs in the same window. Folded into the
+  // "Hours hygiene" pillar so people without projects (HR, recruiters,
+  // bench) aren't permanently penalised for missing hours.
+  const internalDays = await sql`
+    SELECT employee_id, log_date, hours, notes
+    FROM internal_hour_logs
+    WHERE log_date BETWEEN ${windowStartStr}::date AND ${asOf}::date` as any[];
 
   // index lookups
   const attByEmp = new Map<string, any[]>();
@@ -1744,6 +1804,8 @@ async function computePulseForDate(asOf: string) {
   upsells.forEach(r => { (upsellByEmp.get(r.employee_id) ?? upsellByEmp.set(r.employee_id, []).get(r.employee_id))!.push(r); });
   const pulseByEmp = new Map<string, any[]>();
   pulseRatings.forEach(r => { (pulseByEmp.get(r.employee_id) ?? pulseByEmp.set(r.employee_id, []).get(r.employee_id))!.push(r); });
+  const internalByEmp = new Map<string, any[]>();
+  internalDays.forEach(r => { (internalByEmp.get(r.employee_id) ?? internalByEmp.set(r.employee_id, []).get(r.employee_id))!.push(r); });
 
   // helpers
   const workingDays = (() => {
@@ -1791,9 +1853,20 @@ async function computePulseForDate(asOf: string) {
     const discipline = clamp(100 - lateCount * 5 - absences * 15 - lwn * 20, 0, 100);
 
     // ── Hours hygiene ─────────────────────────────────────────────────
+    // A day "counts as logged" if there's EITHER a project hour-day entry
+    // OR an internal-activity log for that date. Same for notes.
     const hd = hdByEmp.get(empId) ?? [];
-    const daysLogged = new Set(hd.map(r => String(r.log_date).slice(0, 10))).size;
-    const daysWithNotes = new Set(hd.filter(r => (r.notes ?? '').trim().length > 0).map(r => String(r.log_date).slice(0, 10))).size;
+    const id_ = internalByEmp.get(empId) ?? [];
+    const daysLoggedSet = new Set([
+      ...hd.map(r => String(r.log_date).slice(0, 10)),
+      ...id_.map(r => String(r.log_date).slice(0, 10)),
+    ]);
+    const daysWithNotesSet = new Set([
+      ...hd.filter(r => (r.notes ?? '').trim().length > 0).map(r => String(r.log_date).slice(0, 10)),
+      ...id_.filter(r => (r.notes ?? '').trim().length > 0).map(r => String(r.log_date).slice(0, 10)),
+    ]);
+    const daysLogged = daysLoggedSet.size;
+    const daysWithNotes = daysWithNotesSet.size;
     const hh = clamp((daysLogged / workingDays) * 70 + (daysLogged ? (daysWithNotes / daysLogged) * 30 : 0), 0, 100);
 
     // ── Output ────────────────────────────────────────────────────────
@@ -2233,6 +2306,139 @@ app.put('/api/performance/pulse/weights/:dept', requireAdmin, async (req, res) =
         updated_at=NOW(), updated_by=${req.header('x-user-id') ?? null}
       RETURNING *`)[0];
     res.json(row);
+  } catch (err: any) { res.status(500).json({ error: err.message ?? 'Server error' }); }
+});
+
+// ─────────────────────────────────────────────────────────────────────────
+// Internal activities + non-project hour logging.
+// Activities are admin-managed. Hour logs are self-reported (no approval).
+// ─────────────────────────────────────────────────────────────────────────
+app.get('/api/internal-activities', async (req, res) => {
+  try {
+    await runStartupMigrations();
+    // Hide inactive entries unless the caller is admin (admin needs them to
+    // re-activate / clean up).
+    const u = (await sql`SELECT role FROM app_users WHERE id=${req.header('x-user-id') ?? ''}`)[0] as any;
+    const includeInactive = u?.role === 'admin' || u?.role === 'hr_manager';
+    const rows = includeInactive
+      ? await sql`SELECT * FROM internal_activities ORDER BY sort_order, name`
+      : await sql`SELECT * FROM internal_activities WHERE active=TRUE ORDER BY sort_order, name`;
+    res.json(rows);
+  } catch (err: any) { res.status(500).json({ error: err.message ?? 'Server error' }); }
+});
+app.post('/api/internal-activities', async (req, res) => {
+  try {
+    await runStartupMigrations();
+    if (!(await requireAdmin(req, res))) return;
+    const { name, description, sort_order } = req.body ?? {};
+    if (!name?.trim()) return res.status(400).json({ error: 'Name is required' });
+    const id = `act_${Date.now()}`;
+    const row = (await sql`
+      INSERT INTO internal_activities (id, name, description, sort_order, created_by)
+      VALUES (${id}, ${name.trim()}, ${description?.trim() || null}, ${Number(sort_order) || 100}, ${req.header('x-user-id') ?? null})
+      RETURNING *`)[0];
+    res.status(201).json(row);
+  } catch (err: any) {
+    if (err.message?.includes('unique')) return res.status(409).json({ error: 'An activity with that name already exists' });
+    res.status(500).json({ error: err.message ?? 'Server error' });
+  }
+});
+app.put('/api/internal-activities/:id', async (req, res) => {
+  try {
+    if (!(await requireAdmin(req, res))) return;
+    const { name, description, active, sort_order } = req.body ?? {};
+    const row = (await sql`
+      UPDATE internal_activities SET
+        name=COALESCE(${name?.trim() || null}, name),
+        description=${description ?? null},
+        active=COALESCE(${active ?? null}, active),
+        sort_order=COALESCE(${sort_order ?? null}, sort_order)
+      WHERE id=${req.params.id}
+      RETURNING *`)[0];
+    if (!row) return res.status(404).json({ error: 'Activity not found' });
+    res.json(row);
+  } catch (err: any) { res.status(500).json({ error: err.message ?? 'Server error' }); }
+});
+app.delete('/api/internal-activities/:id', async (req, res) => {
+  try {
+    if (!(await requireAdmin(req, res))) return;
+    // Soft-delete: mark inactive so historical logs still resolve their
+    // activity name. Hard delete would orphan the logs.
+    await sql`UPDATE internal_activities SET active=FALSE WHERE id=${req.params.id}`;
+    res.json({ ok: true });
+  } catch (err: any) { res.status(500).json({ error: err.message ?? 'Server error' }); }
+});
+
+// ── Internal hour logs (self-reported, no approval) ────────────────────
+app.get('/api/internal-hour-logs', async (req, res) => {
+  try {
+    await runStartupMigrations();
+    const uid = req.header('x-user-id');
+    if (!uid) return res.status(401).json({ error: 'Sign in required' });
+    const u = (await sql`SELECT id, role, employee_id_ref FROM app_users WHERE id=${uid}`)[0] as any;
+    if (!u) return res.status(401).json({ error: 'Unknown user' });
+    const { employee_id, from, to } = req.query as any;
+    const isAdminish = u.role === 'admin' || u.role === 'hr_manager';
+    // Scoping: self by default. Admin/HR can see anyone. Reporting managers
+    // can see their direct reports (cheap chain check inline).
+    let targetEmpId = employee_id || u.employee_id_ref;
+    if (!targetEmpId) return res.json([]);
+    if (targetEmpId !== u.employee_id_ref && !isAdminish) {
+      const tgt = (await sql`SELECT reporting_manager_id FROM employees WHERE id=${targetEmpId}`)[0] as any;
+      if (!tgt || tgt.reporting_manager_id !== u.employee_id_ref) {
+        return res.status(403).json({ error: 'Not permitted' });
+      }
+    }
+    const fromD = from || new Date(Date.now() - 30 * 86400000).toISOString().slice(0, 10);
+    const toD = to || new Date().toISOString().slice(0, 10);
+    const rows = await sql`
+      SELECT l.*, a.name AS activity_name
+      FROM internal_hour_logs l
+      LEFT JOIN internal_activities a ON a.id = l.activity_id
+      WHERE l.employee_id=${targetEmpId}
+        AND l.log_date BETWEEN ${fromD}::date AND ${toD}::date
+      ORDER BY l.log_date DESC, a.sort_order`;
+    res.json(rows);
+  } catch (err: any) { res.status(500).json({ error: err.message ?? 'Server error' }); }
+});
+app.post('/api/internal-hour-logs', async (req, res) => {
+  try {
+    await runStartupMigrations();
+    const uid = req.header('x-user-id');
+    if (!uid) return res.status(401).json({ error: 'Sign in required' });
+    const u = (await sql`SELECT id, employee_id_ref FROM app_users WHERE id=${uid}`)[0] as any;
+    if (!u?.employee_id_ref) return res.status(400).json({ error: 'No employee profile linked to this user' });
+    const { activity_id, log_date, hours, notes } = req.body ?? {};
+    if (!activity_id || !log_date) return res.status(400).json({ error: 'activity_id and log_date are required' });
+    const h = Number(hours);
+    if (!h || h <= 0 || h > 24) return res.status(400).json({ error: 'hours must be between 0 and 24' });
+    if (!(notes ?? '').trim()) return res.status(400).json({ error: 'Notes are required (what did you do?)' });
+    const id = `inlog_${Date.now()}`;
+    // Upsert by (employee, activity, date) so re-saving the same day updates
+    // instead of erroring with the unique constraint.
+    const row = (await sql`
+      INSERT INTO internal_hour_logs (id, employee_id, activity_id, log_date, hours, notes)
+      VALUES (${id}, ${u.employee_id_ref}, ${activity_id}, ${log_date}::date, ${h}, ${notes.trim()})
+      ON CONFLICT (employee_id, activity_id, log_date) DO UPDATE
+        SET hours=EXCLUDED.hours, notes=EXCLUDED.notes, updated_at=NOW()
+      RETURNING *`)[0];
+    res.status(201).json(row);
+  } catch (err: any) { res.status(500).json({ error: err.message ?? 'Server error' }); }
+});
+app.delete('/api/internal-hour-logs/:id', async (req, res) => {
+  try {
+    const uid = req.header('x-user-id');
+    if (!uid) return res.status(401).json({ error: 'Sign in required' });
+    const u = (await sql`SELECT id, role, employee_id_ref FROM app_users WHERE id=${uid}`)[0] as any;
+    if (!u) return res.status(401).json({ error: 'Unknown user' });
+    const isAdminish = u.role === 'admin' || u.role === 'hr_manager';
+    const row = (await sql`SELECT employee_id FROM internal_hour_logs WHERE id=${req.params.id}`)[0] as any;
+    if (!row) return res.status(404).json({ error: 'Log not found' });
+    if (!isAdminish && row.employee_id !== u.employee_id_ref) {
+      return res.status(403).json({ error: 'You can only delete your own logs' });
+    }
+    await sql`DELETE FROM internal_hour_logs WHERE id=${req.params.id}`;
+    res.json({ ok: true });
   } catch (err: any) { res.status(500).json({ error: err.message ?? 'Server error' }); }
 });
 
@@ -5383,8 +5589,9 @@ app.get('/api/hours-compliance', async (req, res) => {
       if (scopeIds.length === 0) scopeIds = ['__none__']; // ensure IN clause is non-empty
     }
 
-    // Eligible = anyone with at least one assignment this month. Sub-tree
-    // filter applied via array overlap when scopeIds is set.
+    // Eligible = ALL active employees. We now expect everyone to log daily
+    // — people without project allocations log against internal activities.
+    // Sub-tree filter applied when scopeIds is set.
     const eligible = await sql`
       SELECT DISTINCT e.id, e.name, e.designation, e.department,
              e.reporting_manager_id, m.name AS reporting_manager_name,
@@ -5393,21 +5600,26 @@ app.get('/api/hours-compliance', async (req, res) => {
       FROM employees e
       LEFT JOIN employees m ON m.id = e.reporting_manager_id
       WHERE e.status='active'
-        AND EXISTS (
-          SELECT 1 FROM project_assignments pa
-          WHERE pa.employee_id = e.id AND pa.month=${month} AND pa.year=${year}
-        )
         AND (${scopeIds}::text[] IS NULL OR e.id = ANY(${scopeIds}::text[]))
       ORDER BY e.name`;
 
-    // Who DID log on the given date — sum hours from hour_log_days.
-    const logged = await sql`
+    // Who DID log on the given date — sum hours from hour_log_days AND
+    // internal_hour_logs. Either source counts toward "logged today".
+    const projectLogged = await sql`
       SELECT employee_id, SUM(COALESCE(hours, 0))::numeric AS hours_today
       FROM hour_log_days
       WHERE log_date = ${dateStr}
       GROUP BY employee_id`;
+    const internalLogged = await sql`
+      SELECT employee_id, SUM(COALESCE(hours, 0))::numeric AS hours_today
+      FROM internal_hour_logs
+      WHERE log_date = ${dateStr}
+      GROUP BY employee_id`;
     const loggedMap = new Map<string, number>();
-    for (const r of logged as any[]) loggedMap.set(r.employee_id, Number(r.hours_today));
+    for (const r of projectLogged as any[]) loggedMap.set(r.employee_id, Number(r.hours_today));
+    for (const r of internalLogged as any[]) {
+      loggedMap.set(r.employee_id, (loggedMap.get(r.employee_id) ?? 0) + Number(r.hours_today));
+    }
 
     const notLogged = (eligible as any[]).filter(e => !((loggedMap.get(e.id) ?? 0) > 0));
 

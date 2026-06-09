@@ -135,9 +135,9 @@ export default function Sidebar() {
     groups.push(coordFinanceGroup);
   }
 
-  // Personal nav — every non-admin role gets a "You" section, including HR.
-  // (Admin is the only role that's purely org-facing.)
-  const showPersonal = isEmployee || isCoord || role === 'hr_manager';
+  // Personal nav — everyone with an employee profile (including admin) gets
+  // a "You" section, so they can log internal hours and see their own pulse.
+  const showPersonal = isEmployee || isCoord || role === 'hr_manager' || role === 'admin';
   const personalGroup: NavGroup | null = showPersonal ? {
     id: 'personal',
     label: 'You',

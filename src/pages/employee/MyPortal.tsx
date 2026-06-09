@@ -2367,7 +2367,10 @@ export default function MyPortal() {
       {/* ── My Hours (project hours allocation + logs) ── */}
       {tab === 'my-hours' && empDbId && (
         <TabErrorBoundary>
-          <MyHoursTab employeeId={empDbId} employeeName={user?.name ?? ''} />
+          <div className="space-y-6">
+            <MyHoursTab employeeId={empDbId} employeeName={user?.name ?? ''} />
+            <InternalHoursPanel />
+          </div>
         </TabErrorBoundary>
       )}
 
@@ -2892,6 +2895,159 @@ interface MHLog {
   status: string;
   rejection_reason: string | null;
   reviewed_by_name: string | null;
+}
+
+// Non-project hours — for HR, recruiters, coordinators, bench, admin doing
+// ops work. Anyone with an employee profile can log here. No approval flow.
+function InternalHoursPanel() {
+  const [activities, setActivities] = useState<Array<{ id: string; name: string; description: string | null; active: boolean }>>([]);
+  const [logs, setLogs] = useState<Array<{ id: string; activity_id: string; activity_name: string; log_date: string; hours: number; notes: string | null }>>([]);
+  const [draft, setDraft] = useState({ activity_id: '', log_date: new Date().toISOString().slice(0, 10), hours: '', notes: '' });
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState('');
+  const [loading, setLoading] = useState(true);
+
+  const load = () => {
+    Promise.all([
+      api.getInternalActivities(),
+      api.getInternalHourLogs({ from: new Date(Date.now() - 14 * 86400000).toISOString().slice(0, 10) }),
+    ])
+      .then(([acts, lgs]) => {
+        setActivities(Array.isArray(acts) ? acts.filter(a => a.active) : []);
+        setLogs(Array.isArray(lgs) ? lgs : []);
+      })
+      .catch(() => {})
+      .finally(() => setLoading(false));
+  };
+  useEffect(load, []);
+
+  const save = async () => {
+    setError('');
+    if (!draft.activity_id) { setError('Pick an activity'); return; }
+    const h = Number(draft.hours);
+    if (!h || h <= 0 || h > 24) { setError('Hours must be between 0 and 24'); return; }
+    if (draft.notes.trim().length < 5) { setError('Notes are required — what did you do?'); return; }
+    setSaving(true);
+    try {
+      await api.saveInternalHourLog({
+        activity_id: draft.activity_id,
+        log_date: draft.log_date,
+        hours: h,
+        notes: draft.notes.trim(),
+      });
+      setDraft({ activity_id: '', log_date: draft.log_date, hours: '', notes: '' });
+      load();
+    } catch (e: any) { setError(e.message ?? 'Failed to save'); }
+    finally { setSaving(false); }
+  };
+
+  const removeLog = async (id: string) => {
+    if (!confirm('Delete this entry?')) return;
+    try { await api.deleteInternalHourLog(id); load(); } catch {}
+  };
+
+  // Group logs by date for display
+  const byDate = new Map<string, typeof logs>();
+  for (const l of logs) {
+    const d = String(l.log_date).slice(0, 10);
+    const arr = byDate.get(d) ?? [];
+    arr.push(l); byDate.set(d, arr);
+  }
+  const sortedDates = [...byDate.keys()].sort().reverse();
+
+  return (
+    <div className="bg-surface rounded-2xl border border-outline shadow-sm overflow-hidden">
+      <div className="px-5 py-4 border-b border-outline">
+        <h3 className="font-display text-base font-bold tracking-tight text-on-surface flex items-center gap-2">
+          <Briefcase size={15} className="text-accent" /> Internal hours · non-project work
+        </h3>
+        <p className="text-xs text-on-surface-subtle mt-0.5">
+          Log time spent on admin, training, hiring, internal initiatives — anything not tied to a billable project. Self-reported, counts toward your daily logging.
+        </p>
+      </div>
+
+      {/* New entry */}
+      <div className="px-5 py-4 border-b border-outline space-y-3 bg-surface-2/30">
+        <div className="grid grid-cols-1 sm:grid-cols-12 gap-3">
+          <div className="sm:col-span-5">
+            <label className="block text-[10px] uppercase tracking-wide font-semibold text-on-surface-subtle mb-1">Activity *</label>
+            <select value={draft.activity_id} onChange={e => setDraft({ ...draft, activity_id: e.target.value })}
+              className="w-full rounded-lg border border-outline bg-surface px-2.5 py-2 text-sm focus:border-accent outline-none">
+              <option value="">— Pick an activity —</option>
+              {activities.map(a => <option key={a.id} value={a.id}>{a.name}</option>)}
+            </select>
+            {draft.activity_id && (
+              <p className="text-[10px] text-on-surface-subtle mt-0.5">
+                {activities.find(a => a.id === draft.activity_id)?.description ?? ''}
+              </p>
+            )}
+          </div>
+          <div className="sm:col-span-3">
+            <label className="block text-[10px] uppercase tracking-wide font-semibold text-on-surface-subtle mb-1">Date *</label>
+            <input type="date" value={draft.log_date} max={new Date().toISOString().slice(0, 10)}
+              onChange={e => setDraft({ ...draft, log_date: e.target.value })}
+              className="w-full rounded-lg border border-outline bg-surface px-2.5 py-2 text-sm focus:border-accent outline-none" />
+          </div>
+          <div className="sm:col-span-2">
+            <label className="block text-[10px] uppercase tracking-wide font-semibold text-on-surface-subtle mb-1">Hours *</label>
+            <input type="number" min="0" max="24" step="0.5" value={draft.hours}
+              onChange={e => setDraft({ ...draft, hours: e.target.value })} placeholder="e.g. 2"
+              className="w-full rounded-lg border border-outline bg-surface px-2.5 py-2 text-sm focus:border-accent outline-none num-mono" />
+          </div>
+          <div className="sm:col-span-2 flex items-end">
+            <button onClick={save} disabled={saving || !draft.activity_id || !draft.hours}
+              className="w-full rounded-lg bg-accent text-on-accent text-sm font-semibold py-2 hover:opacity-90 disabled:opacity-40">
+              {saving ? '…' : 'Add'}
+            </button>
+          </div>
+        </div>
+        <div>
+          <label className="block text-[10px] uppercase tracking-wide font-semibold text-on-surface-subtle mb-1">Notes *</label>
+          <input value={draft.notes} onChange={e => setDraft({ ...draft, notes: e.target.value })}
+            placeholder="What did you do? e.g. Reviewed 4 candidate profiles, scheduled 2 interviews"
+            className="w-full rounded-lg border border-outline bg-surface px-2.5 py-2 text-sm focus:border-accent outline-none" />
+        </div>
+        {error && <p className="text-xs text-danger bg-danger-container/40 border border-danger/20 rounded-lg px-3 py-2">{error}</p>}
+      </div>
+
+      {/* Last 14 days of logs */}
+      <div className="px-5 py-3">
+        <p className="text-[10px] uppercase tracking-[0.18em] font-bold text-on-surface-subtle mb-2">Last 14 days</p>
+        {loading ? (
+          <p className="text-sm text-on-surface-subtle py-6 text-center">Loading…</p>
+        ) : logs.length === 0 ? (
+          <p className="text-sm text-on-surface-subtle py-6 text-center">No internal hours logged yet. Use the form above to add one.</p>
+        ) : (
+          <div className="divide-y divide-outline">
+            {sortedDates.map(d => (
+              <div key={d} className="py-3">
+                <p className="text-xs font-semibold text-on-surface-muted mb-1.5">
+                  {new Date(d + 'T12:00:00Z').toLocaleDateString('en-IN', { weekday: 'short', day: 'numeric', month: 'short' })}
+                  <span className="ml-2 num-mono text-on-surface-subtle">
+                    · {byDate.get(d)!.reduce((s, l) => s + Number(l.hours), 0)}h total
+                  </span>
+                </p>
+                <div className="space-y-1.5">
+                  {byDate.get(d)!.map(l => (
+                    <div key={l.id} className="flex items-start gap-3 py-1.5 px-3 rounded-lg bg-surface-2/40 border border-outline">
+                      <div className="flex-1 min-w-0">
+                        <p className="text-sm font-medium text-on-surface truncate">{l.activity_name}</p>
+                        {l.notes && <p className="text-xs text-on-surface-muted leading-snug">{l.notes}</p>}
+                      </div>
+                      <span className="text-xs num-mono font-bold text-on-surface whitespace-nowrap">{Number(l.hours).toFixed(1)}h</span>
+                      <button onClick={() => removeLog(l.id)} className="text-on-surface-subtle hover:text-danger p-0.5">
+                        <X size={14} />
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
 }
 
 function MyHoursTab({ employeeId, employeeName }: { employeeId: string; employeeName: string }) {

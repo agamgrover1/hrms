@@ -567,4 +567,25 @@ export const api = {
       }>;
     }>(`/hours-compliance?${qs}`);
   },
+
+  // ── Internal activities + non-project hour logs ─────────────────────
+  getInternalActivities: () =>
+    request<Array<{ id: string; name: string; description: string | null; active: boolean; sort_order: number }>>(`/internal-activities`),
+  addInternalActivity: (data: { name: string; description?: string; sort_order?: number }) =>
+    request(`/internal-activities`, { method: 'POST', body: JSON.stringify(data) }),
+  updateInternalActivity: (id: string, data: { name?: string; description?: string; active?: boolean; sort_order?: number }) =>
+    request(`/internal-activities/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
+  deleteInternalActivity: (id: string) =>
+    request(`/internal-activities/${id}`, { method: 'DELETE' }),
+  getInternalHourLogs: (params: { employee_id?: string; from?: string; to?: string } = {}) => {
+    const qs = new URLSearchParams();
+    if (params.employee_id) qs.set('employee_id', params.employee_id);
+    if (params.from) qs.set('from', params.from);
+    if (params.to) qs.set('to', params.to);
+    return request<Array<{ id: string; employee_id: string; activity_id: string; activity_name: string; log_date: string; hours: number; notes: string | null }>>(`/internal-hour-logs?${qs}`);
+  },
+  saveInternalHourLog: (data: { activity_id: string; log_date: string; hours: number; notes: string }) =>
+    request(`/internal-hour-logs`, { method: 'POST', body: JSON.stringify(data) }),
+  deleteInternalHourLog: (id: string) =>
+    request(`/internal-hour-logs/${id}`, { method: 'DELETE' }),
 };
