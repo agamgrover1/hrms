@@ -2351,16 +2351,39 @@ app.get('/api/performance/pulse/recompute-targets', async (req, res) => {
 //   admin/hr_manager  → any employee
 //   the employee     → their own
 //   reporting manager (direct OR through chain) → their report's
+// Resolve an app_user row to a current employee.id. Same three-tier
+// resolution as /me — explicit linkage (if it still points to an existing
+// employee) → email match → name match. Returns null if none of the three
+// resolve. Used by /me, /team, /pulse/:employeeId access check.
+async function resolveUserToEmployee(u: any): Promise<string | null> {
+  let empId: string | null = u?.employee_id_ref ?? null;
+  if (empId) {
+    const exists = (await sql`SELECT 1 FROM employees WHERE id=${empId} LIMIT 1`)[0] as any;
+    if (!exists) empId = null;
+  }
+  if (!empId && u?.email) {
+    const m = (await sql`SELECT id FROM employees WHERE LOWER(email)=LOWER(${u.email}) LIMIT 1`)[0] as any;
+    if (m?.id) empId = m.id;
+  }
+  if (!empId && u?.name) {
+    const m = (await sql`SELECT id FROM employees WHERE LOWER(name)=LOWER(${u.name}) LIMIT 1`)[0] as any;
+    if (m?.id) empId = m.id;
+  }
+  return empId;
+}
+
 async function canViewPulse(viewer: any, targetEmpId: string): Promise<boolean> {
   if (!viewer) return false;
   if (viewer.role === 'admin' || viewer.role === 'hr_manager' || viewer.role === 'project_coordinator') return true;
-  if (viewer.employee_id_ref === targetEmpId) return true;
+  const viewerEmpId = await resolveUserToEmployee(viewer);
+  if (!viewerEmpId) return false;
+  if (viewerEmpId === targetEmpId) return true;
   // walk up reporting chain
   let cur = targetEmpId;
   for (let i = 0; i < 10; i++) {
     const row = (await sql`SELECT reporting_manager_id FROM employees WHERE id=${cur}`)[0] as any;
     if (!row?.reporting_manager_id) return false;
-    if (row.reporting_manager_id === viewer.employee_id_ref) return true;
+    if (row.reporting_manager_id === viewerEmpId) return true;
     cur = row.reporting_manager_id;
   }
   return false;
@@ -2374,25 +2397,15 @@ app.get('/api/performance/pulse/me', async (req, res) => {
     const u = (await sql`SELECT id, name, email, employee_id_ref, role FROM app_users WHERE id=${uid}`)[0] as any;
     if (!u) return res.status(401).json({ error: 'Unknown user' });
 
-    // Resolve the user's employee record. Prefer the explicit employee_id_ref
-    // linkage. If that's missing OR points to an employee that no longer
-    // exists (dangling reference — happens after an employee is
-    // deleted/recreated), fall through to email match, then name match.
-    let empId: string | null = u.employee_id_ref ?? null;
-    let resolvedVia: 'linkage' | 'email' | 'name' | 'none' = 'none';
-    if (empId) {
-      const exists = (await sql`SELECT 1 FROM employees WHERE id=${empId} LIMIT 1`)[0] as any;
-      if (exists) resolvedVia = 'linkage';
-      else empId = null;          // dangling — drop and try fallbacks
-    }
-    if (!empId && u.email) {
-      const m = (await sql`SELECT id FROM employees WHERE LOWER(email)=LOWER(${u.email}) LIMIT 1`)[0] as any;
-      if (m?.id) { empId = m.id; resolvedVia = 'email'; }
-    }
-    if (!empId && u.name) {
-      const m = (await sql`SELECT id FROM employees WHERE LOWER(name)=LOWER(${u.name}) LIMIT 1`)[0] as any;
-      if (m?.id) { empId = m.id; resolvedVia = 'name'; }
-    }
+    const empId = await resolveUserToEmployee(u);
+    // Compute resolved_via after the fact so the response still surfaces it
+    // for DevTools-side debugging. Matches whichever of the three paths the
+    // shared helper actually used.
+    const resolvedVia: 'linkage' | 'email' | 'name' | 'none' =
+      empId == null ? 'none'
+      : (u.employee_id_ref && empId === u.employee_id_ref) ? 'linkage'
+      : (u.email) ? 'email'
+      : 'name';
     if (!empId) {
       // Still no match — return null gracefully so the Hub shows the
       // placeholder rather than a silent 404. Include a diagnostic field
@@ -2424,9 +2437,9 @@ app.get('/api/performance/pulse/team', async (req, res) => {
   try {
     const uid = req.header('x-user-id');
     if (!uid) return res.status(401).json({ error: 'Sign in required' });
-    const u = (await sql`SELECT id, employee_id_ref, role FROM app_users WHERE id=${uid}`)[0] as any;
+    const u = (await sql`SELECT id, name, email, employee_id_ref, role FROM app_users WHERE id=${uid}`)[0] as any;
     if (!u) return res.status(401).json({ error: 'Unknown user' });
-    const mgrEmpId = u.employee_id_ref;
+    const mgrEmpId = await resolveUserToEmployee(u);
     if (!mgrEmpId) return res.json({ team: [], week_start: null });
     // Cheap existence check; avoid running 60 CREATE statements on every team load.
     await ensurePulseReady();
