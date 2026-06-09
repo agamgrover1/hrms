@@ -107,28 +107,22 @@ export default function PerformancePulse() {
         setRecomputeMsg({ tone: 'error', text: 'No employees to compute.' });
         return;
       }
-      const CHUNK = 5;
-      const CONCURRENCY = 2;
+      const CHUNK = 3;
+      // Strictly sequential. Concurrent requests cause Vercel to scale out to
+      // new Lambda instances, each paying a 5-8s cold-start tax on this
+      // 6500-line api bundle. Serial keeps one Lambda warm across all chunks.
       const chunks: string[][] = [];
       for (let i = 0; i < all.length; i += CHUNK) chunks.push(all.slice(i, i + CHUNK));
       setRecomputeProgress({ done: 0, total: all.length });
 
       let computed = 0;
       let failed = 0;
-      // Run chunks in pairs to keep Vercel function concurrency reasonable.
-      for (let i = 0; i < chunks.length; i += CONCURRENCY) {
-        const batch = chunks.slice(i, i + CONCURRENCY);
-        const results = await Promise.all(batch.map(async (ids) => {
-          try {
-            const r = await api.recomputePulse(undefined, ids);
-            return { ok: true, count: r.computed };
-          } catch (e: any) {
-            return { ok: false, count: 0, error: e?.message };
-          }
-        }));
-        for (const r of results) {
-          if (r.ok) computed += r.count;
-          else failed += 1;
+      for (const ids of chunks) {
+        try {
+          const r = await api.recomputePulse(undefined, ids);
+          computed += r.computed;
+        } catch (e: any) {
+          failed += 1;
         }
         setRecomputeProgress({ done: Math.min(computed + failed * CHUNK, all.length), total: all.length });
       }
