@@ -1757,6 +1757,8 @@ async function computePulseForDate(asOf: string) {
   pulseStart.setUTCDate(pulseStart.getUTCDate() - 28);
   const pulseStartStr = pulseStart.toISOString().slice(0, 10);
 
+  const _phase: Record<string, number> = {};
+  let _t = Date.now();
   // All upfront SELECTs in parallel — 11 sequential HTTP round-trips on the
   // Neon serverless driver was ~2s of latency that pushed past the 10s
   // function timeout. Promise.all collapses them to one wall-clock RTT.
@@ -1787,6 +1789,7 @@ async function computePulseForDate(asOf: string) {
     sql`SELECT employee_id, log_date, hours, notes FROM internal_hour_logs
         WHERE log_date BETWEEN ${windowStartStr}::date AND ${asOf}::date`,
   ]) as any[][];
+  _phase.reads = Date.now() - _t; _t = Date.now();
 
   // index lookups
   const attByEmp = new Map<string, any[]>();
@@ -1824,6 +1827,8 @@ async function computePulseForDate(asOf: string) {
       arr.push(e); reportsByMgr.set(e.reporting_manager_id, arr);
     }
   });
+
+  _phase.indexes = Date.now() - _t; _t = Date.now();
 
   const snapshots: Array<{ employee_id: string; pillars: any; total: number; band: string; baseline: boolean; breakdown: any }> = [];
 
@@ -1995,6 +2000,7 @@ async function computePulseForDate(asOf: string) {
     });
   }
 
+  _phase.loop = Date.now() - _t; _t = Date.now();
   // Batched upsert — one round-trip for all snapshots. Previously 35 sequential
   // INSERTs over HTTP took ~7s and pushed past the 10s function timeout.
   if (snapshots.length > 0) {
@@ -2034,6 +2040,7 @@ async function computePulseForDate(asOf: string) {
         project_hygiene=EXCLUDED.project_hygiene, total_score=EXCLUDED.total_score,
         band=EXCLUDED.band, is_baseline=EXCLUDED.is_baseline, breakdown=EXCLUDED.breakdown`;
   }
+  _phase.writeSnaps = Date.now() - _t; _t = Date.now();
 
   // ── Notification side-effects ─────────────────────────────────────────
   // Day of week in UTC. Friday = 5, Monday = 1. We fire the manager-prompt on
@@ -2116,7 +2123,9 @@ async function computePulseForDate(asOf: string) {
     } catch { /* non-fatal */ }
   }
 
-  return { computed: snapshots.length, as_of: asOf };
+  _phase.notify = Date.now() - _t;
+
+  return { computed: snapshots.length, as_of: asOf, phases: _phase };
 }
 
 // Cron entry point — Vercel hits this nightly. Reuses CRON_SECRET / x-vercel-cron auth.
@@ -2141,15 +2150,20 @@ app.all('/api/performance/pulse/cron', async (req, res) => {
 // the pulse tables haven't been created yet — saves a "why is it empty?"
 // debugging round-trip.
 app.post('/api/performance/pulse/recompute', requireAdmin, async (req, res) => {
+  const t0 = Date.now();
+  const timings: Record<string, number> = {};
   try {
-    // Fast existence check instead of ~60 sequential CREATE/ALTER statements.
-    // Only falls through to the full migration if the pulse table is missing.
     await ensurePulseReady();
+    timings.ensureReadyMs = Date.now() - t0;
     const asOf = (req.body?.as_of as string) || new Date().toISOString().slice(0, 10);
+    const tCompute = Date.now();
     const result = await computePulseForDate(asOf);
-    res.json(result);
+    timings.computeMs = Date.now() - tCompute;
+    timings.totalMs = Date.now() - t0;
+    res.json({ ...result, timings });
   } catch (err: any) {
-    res.status(500).json({ error: err.message ?? 'Recompute failed' });
+    timings.totalMs = Date.now() - t0;
+    res.status(500).json({ error: err.message ?? 'Recompute failed', timings });
   }
 });
 
