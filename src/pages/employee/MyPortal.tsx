@@ -154,14 +154,15 @@ function PulseBreakdownDrawer({
           {/* Headline */}
           <div className="flex items-center gap-4 p-4 rounded-xl-2 border border-outline" style={{ background: 'linear-gradient(135deg, #f9fafb 0%, #f3f4f6 100%)' }}>
             <div className="w-20 h-20 rounded-2xl flex items-center justify-center font-display font-bold text-3xl num-mono" style={pulseTileTone(snapshot.band)}>
-              {snapshot.is_baseline ? '…' : snapshot.total_score}
+              {snapshot.total_score}
             </div>
             <div>
-              <p className="text-sm font-bold text-on-surface">{snapshot.is_baseline ? 'Building baseline' : bandLabel(snapshot.band)}</p>
-              <p className="text-xs text-on-surface-muted mt-0.5">
-                {snapshot.is_baseline ? 'Your score will appear after 30 days at the company.' : 'Score is the equal-weighted average of the pillars below.'}
+              <p className="text-sm font-bold text-on-surface">
+                {bandLabel(snapshot.band)}
+                {snapshot.is_baseline && <span className="ml-1.5 text-[10px] font-normal opacity-70" title="Joined recently">new</span>}
               </p>
-              {trend.length > 1 && !snapshot.is_baseline && <PulseSparkline trend={trend} />}
+              <p className="text-xs text-on-surface-muted mt-0.5">Score is the equal-weighted average of the pillars below.</p>
+              {trend.length > 1 && <PulseSparkline trend={trend} />}
             </div>
           </div>
           {/* Pillars */}
@@ -912,21 +913,20 @@ export default function MyPortal() {
                     <div
                       className="w-16 h-16 rounded-2xl flex items-center justify-center font-display font-bold text-2xl tabular-nums"
                       style={pulseTileTone(pulse.band)}>
-                      {pulse.is_baseline ? '…' : pulse.total_score}
+                      {pulse.total_score}
                     </div>
                     <div>
                       <p className="text-[10px] uppercase tracking-[0.18em] font-bold text-on-surface-subtle">Performance pulse · 30-day</p>
                       <p className="font-display text-lg font-bold text-on-surface mt-0.5">
-                        {pulse.is_baseline ? 'Building baseline' : bandLabel(pulse.band)}
+                        {bandLabel(pulse.band)}
+                        {pulse.is_baseline && <span className="ml-1.5 text-[10px] font-normal opacity-70" title="Joined recently">new</span>}
                       </p>
                       <p className="text-xs text-on-surface-muted mt-0.5">
-                        {pulse.is_baseline
-                          ? 'New joiner — score appears after 30 days'
-                          : `Updated ${new Date(pulse.snapshot_date).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' })} · tap to see breakdown`}
+                        Updated {new Date(pulse.snapshot_date).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' })} · tap to see breakdown
                       </p>
                     </div>
                   </div>
-                  {pulseTrend.length > 1 && !pulse.is_baseline && (
+                  {pulseTrend.length > 1 && (
                     <PulseSparkline trend={pulseTrend} />
                   )}
                 </div>

@@ -112,7 +112,7 @@ function PulsePillarList({ snapshot }: { snapshot: any }) {
             background: snapshot.band === 'excellent' ? '#dcfce7' : snapshot.band === 'strong' ? '#e0e7ff' : snapshot.band === 'building' ? '#fef3c7' : snapshot.band === 'needs_support' ? '#fee2e2' : '#f1f5f9',
             color: snapshot.band === 'excellent' ? '#15803d' : snapshot.band === 'strong' ? '#3730a3' : snapshot.band === 'building' ? '#92400e' : snapshot.band === 'needs_support' ? '#b91c1c' : '#475569',
           }}>
-          {snapshot.is_baseline ? '…' : snapshot.total_score}
+          {snapshot.total_score}
         </div>
         <div>
           <p className="text-sm font-bold text-on-surface capitalize">{(snapshot.band ?? '').replace('_', ' ')}</p>
@@ -1248,7 +1248,7 @@ export default function MyTeam() {
                         ))}
                       </div>
                       <div className={`px-3 py-1.5 rounded-lg text-xs font-bold num-mono ${tone}`}>
-                        {t.is_baseline ? '…' : total != null ? total : '—'}
+                        {total != null ? total : '—'}
                       </div>
                     </button>
                   );

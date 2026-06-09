@@ -265,7 +265,8 @@ export default function PerformancePulse() {
                     })}
                     <td className="px-4 py-3 text-right">
                       <span className="inline-block px-3 py-1 rounded-lg text-xs font-bold num-mono" style={bandTone(r.is_baseline ? 'baseline' : r.band)}>
-                        {r.is_baseline ? '…' : r.total_score ?? '—'}
+                        {r.total_score ?? '—'}
+                        {r.is_baseline && <span className="ml-1 text-[10px] font-normal opacity-70" title="Joined recently — score is still settling">new</span>}
                       </span>
                     </td>
                   </tr>
@@ -294,7 +295,7 @@ export default function PerformancePulse() {
                 <>
                   <div className="flex items-center gap-4 p-4 rounded-xl-2 border border-outline bg-surface-2/40">
                     <div className="w-20 h-20 rounded-2xl flex items-center justify-center font-display font-bold text-3xl num-mono" style={bandTone(drawer.data.band)}>
-                      {drawer.data.is_baseline ? '…' : drawer.data.total_score}
+                      {drawer.data.total_score}
                     </div>
                     <div>
                       <p className="text-sm font-bold text-on-surface capitalize">{(drawer.data.band ?? '').replace('_', ' ')}</p>
