@@ -1738,56 +1738,36 @@ async function computePulseForDate(asOf: string) {
   pulseStart.setUTCDate(pulseStart.getUTCDate() - 28);
   const pulseStartStr = pulseStart.toISOString().slice(0, 10);
 
-  const employees = await sql`
-    SELECT e.id, e.name, e.department, e.reporting_manager_id, e.join_date, e.shift, e.status,
-           u.role
-    FROM employees e
-    LEFT JOIN app_users u ON u.employee_id_ref = e.id
-    WHERE e.status = 'active' OR e.status IS NULL` as any[];
-
-  // Pre-fetch all aggregates in window once. Cheaper than per-employee.
-  const attendance = await sql`
-    SELECT employee_id, date, status, check_in, total_hours
-    FROM attendance_records
-    WHERE date BETWEEN ${windowStartStr}::date AND ${asOf}::date` as any[];
-  const leaves = await sql`
-    SELECT employee_id, from_date, to_date, status, applied_on
-    FROM leave_requests
-    WHERE NOT (to_date < ${windowStartStr}::date OR from_date > ${asOf}::date)` as any[];
-  const hourDays = await sql`
-    SELECT employee_id, project_id, log_date, hours, notes, created_at
-    FROM hour_log_days
-    WHERE log_date BETWEEN ${windowStartStr}::date AND ${asOf}::date` as any[];
-  const hourLogs = await sql`
-    SELECT employee_id, status, reviewed_at, submitted_at, hours_logged, reviewed_by_id
-    FROM hour_logs
-    WHERE submitted_at >= ${windowStartStr}::date` as any[];
-  const goals = await sql`
-    SELECT employee_id, status, progress, target_date
-    FROM performance_goals
-    WHERE created_at >= ${windowStartStr}::date OR (target_date IS NULL OR target_date >= ${windowStartStr}::date)` as any[];
-  const upsells = await sql`
-    SELECT employee_id, status, created_at
-    FROM upsell_requests
-    WHERE created_at >= ${windowStartStr}::date` as any[];
-  const pulseRatings = await sql`
-    SELECT employee_id, rating, week_start
-    FROM performance_manager_pulse
-    WHERE week_start >= ${pulseStartStr}::date` as any[];
-  const assignments = await sql`
-    SELECT project_id, employee_id, month, year, monthly_hours
-    FROM project_assignments
-    WHERE monthly_hours > 0` as any[];
-  const activeProjects = await sql`
-    SELECT id, project_reporting_id, project_lead_id, created_by
-    FROM projects WHERE status='active'` as any[];
-  // Internal (non-project) hour logs in the same window. Folded into the
-  // "Hours hygiene" pillar so people without projects (HR, recruiters,
-  // bench) aren't permanently penalised for missing hours.
-  const internalDays = await sql`
-    SELECT employee_id, log_date, hours, notes
-    FROM internal_hour_logs
-    WHERE log_date BETWEEN ${windowStartStr}::date AND ${asOf}::date` as any[];
+  // All upfront SELECTs in parallel — 11 sequential HTTP round-trips on the
+  // Neon serverless driver was ~2s of latency that pushed past the 10s
+  // function timeout. Promise.all collapses them to one wall-clock RTT.
+  const [
+    employees, attendance, leaves, hourDays, hourLogs,
+    goals, upsells, pulseRatings, assignments, activeProjects, internalDays,
+  ] = await Promise.all([
+    sql`SELECT e.id, e.name, e.department, e.reporting_manager_id, e.join_date, e.shift, e.status, u.role
+        FROM employees e LEFT JOIN app_users u ON u.employee_id_ref = e.id
+        WHERE e.status = 'active' OR e.status IS NULL`,
+    sql`SELECT employee_id, date, status, check_in, total_hours FROM attendance_records
+        WHERE date BETWEEN ${windowStartStr}::date AND ${asOf}::date`,
+    sql`SELECT employee_id, from_date, to_date, status, applied_on FROM leave_requests
+        WHERE NOT (to_date < ${windowStartStr}::date OR from_date > ${asOf}::date)`,
+    sql`SELECT employee_id, project_id, log_date, hours, notes, created_at FROM hour_log_days
+        WHERE log_date BETWEEN ${windowStartStr}::date AND ${asOf}::date`,
+    sql`SELECT employee_id, status, reviewed_at, submitted_at, hours_logged, reviewed_by_id FROM hour_logs
+        WHERE submitted_at >= ${windowStartStr}::date`,
+    sql`SELECT employee_id, status, progress, target_date FROM performance_goals
+        WHERE created_at >= ${windowStartStr}::date OR (target_date IS NULL OR target_date >= ${windowStartStr}::date)`,
+    sql`SELECT employee_id, status, created_at FROM upsell_requests
+        WHERE created_at >= ${windowStartStr}::date`,
+    sql`SELECT employee_id, rating, week_start FROM performance_manager_pulse
+        WHERE week_start >= ${pulseStartStr}::date`,
+    sql`SELECT project_id, employee_id, month, year, monthly_hours FROM project_assignments
+        WHERE monthly_hours > 0`,
+    sql`SELECT id, project_reporting_id, project_lead_id, created_by FROM projects WHERE status='active'`,
+    sql`SELECT employee_id, log_date, hours, notes FROM internal_hour_logs
+        WHERE log_date BETWEEN ${windowStartStr}::date AND ${asOf}::date`,
+  ]) as any[][];
 
   // index lookups
   const attByEmp = new Map<string, any[]>();
@@ -1996,16 +1976,38 @@ async function computePulseForDate(asOf: string) {
     });
   }
 
-  // upsert snapshots
-  for (const s of snapshots) {
+  // Batched upsert — one round-trip for all snapshots. Previously 35 sequential
+  // INSERTs over HTTP took ~7s and pushed past the 10s function timeout.
+  if (snapshots.length > 0) {
+    const payload = snapshots.map(s => ({
+      employee_id: s.employee_id,
+      discipline: s.pillars.discipline,
+      hours_hygiene: s.pillars.hours_hygiene,
+      output: s.pillars.output,
+      contribution: s.pillars.contribution,
+      manager_pulse: s.pillars.manager_pulse,
+      team_stewardship: s.pillars.team_stewardship,
+      project_hygiene: s.pillars.project_hygiene,
+      total_score: s.total,
+      band: s.band,
+      is_baseline: s.baseline,
+      breakdown: s.breakdown,
+    }));
     await sql`
       INSERT INTO performance_score_snapshots
         (employee_id, snapshot_date, discipline, hours_hygiene, output, contribution,
          manager_pulse, team_stewardship, project_hygiene, total_score, band, is_baseline, breakdown)
-      VALUES (${s.employee_id}, ${asOf}::date,
-              ${s.pillars.discipline}, ${s.pillars.hours_hygiene}, ${s.pillars.output}, ${s.pillars.contribution},
-              ${s.pillars.manager_pulse}, ${s.pillars.team_stewardship}, ${s.pillars.project_hygiene},
-              ${s.total}, ${s.band}, ${s.baseline}, ${JSON.stringify(s.breakdown)}::jsonb)
+      SELECT
+        employee_id, ${asOf}::date,
+        discipline, hours_hygiene, output, contribution,
+        manager_pulse, team_stewardship, project_hygiene,
+        total_score, band, is_baseline, breakdown
+      FROM jsonb_to_recordset(${JSON.stringify(payload)}::jsonb) AS x(
+        employee_id text,
+        discipline numeric, hours_hygiene numeric, output numeric, contribution numeric,
+        manager_pulse numeric, team_stewardship numeric, project_hygiene numeric,
+        total_score numeric, band text, is_baseline boolean, breakdown jsonb
+      )
       ON CONFLICT (employee_id, snapshot_date) DO UPDATE SET
         discipline=EXCLUDED.discipline, hours_hygiene=EXCLUDED.hours_hygiene,
         output=EXCLUDED.output, contribution=EXCLUDED.contribution,
