@@ -201,6 +201,35 @@ async function ensurePulseReady() {
     await runStartupMigrations();
   }
 }
+
+// Auto-heal app_users.employee_id_ref by best-effort email/name match. Run
+// before every recompute so any newly-created user (any role: HR, project
+// coordinator, future roles, etc.) becomes visible on the Pulse without an
+// admin having to manually open Users → edit → save. Only patches rows where
+// employee_id_ref is NULL — never overwrites an explicit existing link.
+async function healUserEmployeeLinks(): Promise<{ linkedByEmail: number; linkedByName: number }> {
+  let linkedByEmail = 0, linkedByName = 0;
+  try {
+    // Email match first (more reliable than name).
+    const emailRows = await sql`
+      UPDATE app_users u SET employee_id_ref = e.id
+      FROM employees e
+      WHERE u.employee_id_ref IS NULL
+        AND LOWER(u.email) = LOWER(e.email)
+        AND e.email IS NOT NULL
+      RETURNING u.id` as any[];
+    linkedByEmail = emailRows.length;
+    // Name match for whatever's still unlinked.
+    const nameRows = await sql`
+      UPDATE app_users u SET employee_id_ref = e.id
+      FROM employees e
+      WHERE u.employee_id_ref IS NULL
+        AND LOWER(u.name) = LOWER(e.name)
+      RETURNING u.id` as any[];
+    linkedByName = nameRows.length;
+  } catch { /* non-fatal — don't block compute on this */ }
+  return { linkedByEmail, linkedByName };
+}
 // Seed the project_coordinator playbook. Idempotent — only inserts when the
 // role has zero rows, so admins can freely edit / delete items without them
 // reappearing on every cold start.
@@ -2272,6 +2301,14 @@ app.post('/api/performance/pulse/recompute', async (req, res) => {
   const timings: Record<string, number> = {};
   try {
     await ensurePulseReady();
+    // Best-effort link any unlinked user accounts to employee records by
+    // email/name. Runs once per recompute call. Cheap (idempotent UPDATEs)
+    // and means newly-onboarded users see their pulse without an extra
+    // admin step.
+    const healed = await healUserEmployeeLinks();
+    if ((healed.linkedByEmail + healed.linkedByName) > 0) {
+      timings.healedLinks = healed.linkedByEmail + healed.linkedByName;
+    }
     timings.ensureReadyMs = Date.now() - t0;
     const asOf = (req.body?.as_of as string) || new Date().toISOString().slice(0, 10);
     // Shard: when employee_ids is provided, only those employees are computed.
