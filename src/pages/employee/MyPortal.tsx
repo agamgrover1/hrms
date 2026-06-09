@@ -441,6 +441,7 @@ export default function MyPortal() {
   // Performance Pulse — automated score
   const [pulse, setPulse] = useState<any | null>(null);
   const [pulseTrend, setPulseTrend] = useState<Array<{ snapshot_date: string; total_score: number; band: string }>>([]);
+  const [pulseResolvedVia, setPulseResolvedVia] = useState<'linkage' | 'email' | 'name' | 'none' | null>(null);
   const [showPulseDrawer, setShowPulseDrawer] = useState(false);
 
   // Appraisal goals state
@@ -503,7 +504,11 @@ export default function MyPortal() {
         api.getAssets(emp.id).then(setMyAssets).catch(() => {});
         api.getRepairTickets(emp.id).then(setMyRepairTickets).catch(() => {});
         api.getMyPulse()
-          .then(p => { setPulse(p.latest ?? null); setPulseTrend(p.trend ?? []); })
+          .then(p => {
+            setPulse(p.latest ?? null);
+            setPulseTrend(p.trend ?? []);
+            setPulseResolvedVia(p.resolved_via ?? null);
+          })
           .catch(() => {});
         // Optional leave pool for current year
         api.getOptionalLeaveAvailable(emp.id, new Date().getFullYear())
@@ -915,8 +920,11 @@ export default function MyPortal() {
                 </div>
               </button>
             ) : (
-              // No snapshot yet — show a friendly placeholder so the feature is
-              // discoverable even before the nightly cron has run for the first time.
+              // No snapshot. The placeholder branches on why so the user (and
+              // admin) can see the actual diagnosis instead of a generic
+              // "waiting" message. resolved_via:'none' means the user account
+              // isn't linkable to any employee record — admin needs to fix
+              // the link. Otherwise the snapshot just hasn't been computed.
               <div className="w-full bg-surface rounded-xl-2 border border-dashed border-outline p-5">
                 <div className="flex items-center gap-4">
                   <div className="w-16 h-16 rounded-2xl flex items-center justify-center bg-surface-2 text-on-surface-subtle">
@@ -924,10 +932,24 @@ export default function MyPortal() {
                   </div>
                   <div>
                     <p className="text-[10px] uppercase tracking-[0.18em] font-bold text-on-surface-subtle">Performance pulse · 30-day</p>
-                    <p className="font-display text-base font-bold text-on-surface mt-0.5">Waiting for first snapshot</p>
-                    <p className="text-xs text-on-surface-muted mt-0.5">
-                      Your automated score appears here after the nightly run. Admin can also trigger an immediate recompute on the Pulse page.
-                    </p>
+                    {pulseResolvedVia === 'none' ? (
+                      <>
+                        <p className="font-display text-base font-bold text-warning mt-0.5">Your user account isn't linked to an employee record</p>
+                        <p className="text-xs text-on-surface-muted mt-0.5">
+                          Ask admin to open <strong>Users</strong>, find your account, and link it to your employee profile. Once linked, your score appears here automatically.
+                        </p>
+                      </>
+                    ) : (
+                      <>
+                        <p className="font-display text-base font-bold text-on-surface mt-0.5">Waiting for first snapshot</p>
+                        <p className="text-xs text-on-surface-muted mt-0.5">
+                          Your automated score appears here after the nightly run. Admin can also trigger an immediate recompute on the Pulse page.
+                          {pulseResolvedVia && pulseResolvedVia !== 'linkage' && (
+                            <span className="block mt-1 text-[10px] text-on-surface-subtle">Linked via {pulseResolvedVia} — admin should set the explicit employee link for reliability.</span>
+                          )}
+                        </p>
+                      </>
+                    )}
                   </div>
                 </div>
               </div>

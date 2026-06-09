@@ -528,7 +528,7 @@ export const api = {
 
   // ── Performance Pulse ────────────────────────────────────────────────
   getMyPulse: () =>
-    request<{ latest: PulseSnapshot | null; trend: Array<{ snapshot_date: string; total_score: number; band: string }> }>(`/performance/pulse/me`),
+    request<{ latest: PulseSnapshot | null; trend: Array<{ snapshot_date: string; total_score: number; band: string }>; resolved_via?: 'linkage' | 'email' | 'name' | 'none'; user_name?: string }>(`/performance/pulse/me`),
   getTeamPulse: () =>
     request<{ team: PulseTeamRow[]; week_start: string }>(`/performance/pulse/team`),
   getOrgPulse: () =>
