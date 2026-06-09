@@ -1785,6 +1785,7 @@ async function computePulseForDate(asOf: string, employeeIdsFilter?: string[] | 
   const [
     employees, attendance, leaves, hourDays, hourLogs,
     goals, upsells, pulseRatings, assignments, activeProjects, internalDays,
+    reportingGraphRows,
   ] = await Promise.all([
     fIds
       ? sql`SELECT e.id, e.name, e.department, e.reporting_manager_id, e.join_date, e.shift, e.status, u.role
@@ -1841,6 +1842,13 @@ async function computePulseForDate(asOf: string, employeeIdsFilter?: string[] | 
               AND log_date BETWEEN ${windowStartStr}::date AND ${asOf}::date`
       : sql`SELECT employee_id, log_date, hours, notes FROM internal_hour_logs
             WHERE log_date BETWEEN ${windowStartStr}::date AND ${asOf}::date`,
+    // Full reporting graph (id, manager) for every active employee. Needed
+    // for Team Stewardship: a manager in the chunk needs to know who reports
+    // to them even if those reports aren't in this chunk. Cheap query, two
+    // columns, hundreds of rows max — keeps the chunked path correct.
+    sql`SELECT id, reporting_manager_id FROM employees
+        WHERE reporting_manager_id IS NOT NULL
+          AND COALESCE(status, 'active') = 'active'`,
   ]) as any[][];
   _phase.reads = Date.now() - _t; _t = Date.now();
 
@@ -1872,13 +1880,15 @@ async function computePulseForDate(asOf: string, employeeIdsFilter?: string[] | 
   })();
 
   const empById = new Map(employees.map(e => [e.id, e]));
-  // direct reports lookup
+  // Org-wide direct-reports lookup. Built from the full reporting graph so a
+  // manager in this chunk sees ALL their reports, not just those that
+  // happen to also be in the chunk. Without this, stewardship was always
+  // 0 for managers whose reports landed in other chunks.
   const reportsByMgr = new Map<string, any[]>();
-  employees.forEach(e => {
-    if (e.reporting_manager_id) {
-      const arr = reportsByMgr.get(e.reporting_manager_id) ?? [];
-      arr.push(e); reportsByMgr.set(e.reporting_manager_id, arr);
-    }
+  (reportingGraphRows as any[]).forEach(e => {
+    const arr = reportsByMgr.get(e.reporting_manager_id) ?? [];
+    arr.push({ id: e.id });
+    reportsByMgr.set(e.reporting_manager_id, arr);
   });
 
   _phase.indexes = Date.now() - _t; _t = Date.now();
