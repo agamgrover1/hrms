@@ -2400,7 +2400,14 @@ app.get('/api/performance/pulse/me', async (req, res) => {
         WHERE employee_id=${empId} AND snapshot_date >= (CURRENT_DATE - INTERVAL '56 days')
         ORDER BY snapshot_date ASC` as any[];
     } catch { /* table missing — return null and let the UI prompt to recompute */ }
-    res.json({ latest, trend, resolved_via: resolvedVia });
+    // Surface the resolved linkage so admin can spot bad/missing links from
+    // DevTools without spelunking the DB.
+    let linkedEmployee: any = null;
+    if (empId) {
+      const row = (await sql`SELECT id, name, email, status FROM employees WHERE id=${empId}`)[0] as any;
+      if (row) linkedEmployee = { id: row.id, name: row.name, email: row.email, status: row.status };
+    }
+    res.json({ latest, trend, resolved_via: resolvedVia, linked_employee: linkedEmployee });
   } catch (err: any) { res.status(500).json({ error: err.message ?? 'Server error' }); }
 });
 
