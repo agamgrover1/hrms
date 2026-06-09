@@ -119,8 +119,12 @@ export const api = {
   managerApproveLeave: (id: string, data: { status: 'approved' | 'rejected'; manager_id: string; manager_name?: string; rejection_reason?: string }) =>
     request<any>(`/leave/requests/${id}/manager-approve`, { method: 'PATCH', body: JSON.stringify(data) }),
   getLeaveBalance: (employee_id: string) => request<any>(`/leave/balances/${employee_id}`),
-  updateLeaveBalance: (employee_id: string, data: { full_day?: number; short_leave?: number; optional_extra?: number }) =>
+  updateLeaveBalance: (employee_id: string, data: { full_day?: number; short_leave?: number }) =>
     request<any>(`/leave/balances/${employee_id}`, { method: 'PATCH', body: JSON.stringify(data) }),
+  backfillOptionalLeave: (data: { employee_id: string; date: string; reason?: string }) =>
+    request<{ ok: boolean; id: string }>(`/leave/backfill-optional`, { method: 'POST', body: JSON.stringify(data) }),
+  deleteLeaveRequest: (id: string) =>
+    request<any>(`/leave/requests/${id}`, { method: 'DELETE' }),
   adjustLeaveBalance: (employee_id: string, data: { full_day: number; short_leave: number }) =>
     request<any>(`/leave/balances/${employee_id}`, { method: 'PATCH', body: JSON.stringify(data) }),
 

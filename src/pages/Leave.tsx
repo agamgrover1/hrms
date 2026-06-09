@@ -306,31 +306,63 @@ function EmployeeLeaveBalance({ balance, employeeId, canEdit, onUpdated }: { bal
 function BalanceEditModal({ balance, employeeId, onClose, onSaved }: { balance: any; employeeId: string; onClose: () => void; onSaved: () => void }) {
   const [fullDay, setFullDay] = useState(String(balance.full_day ?? 0));
   const [shortLeave, setShortLeave] = useState(String(balance.short_leave ?? 0));
-  const [optExtra, setOptExtra] = useState(String(balance.optional_extra ?? 0));
+  const [taken, setTaken] = useState<Array<{ id: string; date: string; reason?: string }>>(balance.optional_taken ?? []);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
 
-  const save = async () => {
+  // Backfill form state
+  const [adding, setAdding] = useState(false);
+  const [backfillDate, setBackfillDate] = useState('');
+  const [backfillReason, setBackfillReason] = useState('');
+  const [backfillBusy, setBackfillBusy] = useState(false);
+
+  const addBackfill = async () => {
+    if (!backfillDate) { setError('Pick a date'); return; }
+    setError(''); setBackfillBusy(true);
+    try {
+      const r = await api.backfillOptionalLeave({
+        employee_id: employeeId,
+        date: backfillDate,
+        reason: backfillReason.trim() || undefined,
+      });
+      setTaken(prev => [...prev, { id: r.id, date: backfillDate, reason: backfillReason.trim() || 'Backfilled historical optional leave' }]
+        .sort((a, b) => a.date.localeCompare(b.date)));
+      setBackfillDate(''); setBackfillReason(''); setAdding(false);
+    } catch (e: any) { setError(e?.message ?? 'Failed to record'); }
+    finally { setBackfillBusy(false); }
+  };
+
+  const removeTaken = async (id: string) => {
+    if (!confirm('Remove this optional leave from the record?')) return;
+    try {
+      await api.deleteLeaveRequest(id);
+      setTaken(prev => prev.filter(t => t.id !== id));
+    } catch (e: any) { setError(e?.message ?? 'Failed to remove'); }
+  };
+
+  const saveBalances = async () => {
     setError(''); setSaving(true);
     try {
       await api.updateLeaveBalance(employeeId, {
         full_day: Math.max(0, Number(fullDay) || 0),
         short_leave: Math.max(0, Number(shortLeave) || 0),
-        optional_extra: Math.max(0, Number(optExtra) || 0),
       });
       onSaved();
     } catch (e: any) { setError(e?.message ?? 'Failed to save'); }
     finally { setSaving(false); }
   };
 
+  const cap = balance.optional_cap ?? 2;
+  const remaining = Math.max(0, cap - taken.length);
+
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm p-4" onClick={onClose}>
-      <div className="bg-surface rounded-2xl shadow-2xl w-full max-w-md overflow-hidden" onClick={e => e.stopPropagation()}>
+      <div className="bg-surface rounded-2xl shadow-2xl w-full max-w-lg max-h-[90vh] overflow-hidden flex flex-col" onClick={e => e.stopPropagation()}>
         <div className="flex items-center justify-between px-6 py-4 border-b border-outline">
           <h2 className="font-bold text-base text-on-surface">Edit leave balances</h2>
           <button onClick={onClose}><X size={16} className="text-on-surface-subtle" /></button>
         </div>
-        <div className="p-6 space-y-4">
+        <div className="overflow-y-auto p-6 space-y-5">
           <div>
             <label className="text-xs font-medium text-on-surface-muted mb-1 block">Full day (carry forward)</label>
             <input type="number" min="0" value={fullDay} onChange={e => setFullDay(e.target.value)}
@@ -341,24 +373,84 @@ function BalanceEditModal({ balance, employeeId, onClose, onSaved }: { balance: 
             <input type="number" min="0" value={shortLeave} onChange={e => setShortLeave(e.target.value)}
               className="w-full text-sm border border-outline rounded-lg px-3 py-2.5 num-mono focus:outline-none focus:ring-2 focus:ring-primary-200" />
           </div>
-          <div>
-            <label className="text-xs font-medium text-on-surface-muted mb-1 block">
-              Extra optional leaves <span className="text-on-surface-subtle font-normal">(on top of the default 2 / year)</span>
-            </label>
-            <input type="number" min="0" value={optExtra} onChange={e => setOptExtra(e.target.value)}
-              className="w-full text-sm border border-outline rounded-lg px-3 py-2.5 num-mono focus:outline-none focus:ring-2 focus:ring-primary-200" />
-            <p className="text-xs text-on-surface-subtle mt-1">
-              Effective cap: <strong className="num-mono">{2 + (Math.max(0, Number(optExtra) || 0))}</strong> optional leaves this year.
-            </p>
+
+          {/* Optional leave backfill section */}
+          <div className="rounded-xl-2 border border-outline bg-surface-2/40 p-4 space-y-3">
+            <div className="flex items-center justify-between gap-2">
+              <div>
+                <p className="text-xs font-semibold text-on-surface uppercase tracking-wide">Optional leaves · this year</p>
+                <p className="text-xs text-on-surface-muted mt-0.5">
+                  Used <strong className="num-mono">{taken.length}</strong> of <strong className="num-mono">{cap}</strong> · <strong className="num-mono">{remaining}</strong> left
+                </p>
+              </div>
+              {!adding && (
+                <button onClick={() => setAdding(true)}
+                  className="text-xs font-semibold text-accent hover:underline inline-flex items-center gap-1">
+                  <Plus size={12} /> Record past
+                </button>
+              )}
+            </div>
+
+            {taken.length > 0 && (
+              <ul className="space-y-1.5">
+                {taken.map(t => (
+                  <li key={t.id} className="flex items-start gap-2 text-xs bg-surface border border-outline rounded-lg px-3 py-2">
+                    <div className="flex-1 min-w-0">
+                      <p className="font-medium text-on-surface">
+                        {new Date(t.date + 'T12:00:00Z').toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' })}
+                      </p>
+                      {t.reason && <p className="text-on-surface-subtle mt-0.5 line-clamp-2">{t.reason}</p>}
+                    </div>
+                    <button onClick={() => removeTaken(t.id)} className="text-on-surface-subtle hover:text-danger flex-shrink-0">
+                      <X size={12} />
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            )}
+
+            {adding && (
+              <div className="rounded-lg border border-accent/30 bg-accent-container/20 p-3 space-y-2">
+                <p className="text-xs font-semibold text-on-surface">Record a past optional leave</p>
+                <p className="text-[11px] text-on-surface-muted">
+                  Use this for employees who took an optional leave before this HRMS existed. Bypasses the optional-pool check.
+                </p>
+                <div className="grid grid-cols-1 gap-2">
+                  <input type="date" value={backfillDate} max={new Date().toISOString().slice(0, 10)}
+                    onChange={e => setBackfillDate(e.target.value)}
+                    className="w-full text-sm border border-outline rounded-lg px-2.5 py-2 bg-surface focus:outline-none focus:ring-2 focus:ring-accent/20" />
+                  <input value={backfillReason} onChange={e => setBackfillReason(e.target.value)}
+                    placeholder="Reason (optional)"
+                    className="w-full text-sm border border-outline rounded-lg px-2.5 py-2 bg-surface focus:outline-none focus:ring-2 focus:ring-accent/20" />
+                </div>
+                <div className="flex gap-2">
+                  <button onClick={addBackfill} disabled={backfillBusy || !backfillDate}
+                    className="flex-1 py-1.5 bg-accent text-on-accent rounded-md text-xs font-semibold disabled:opacity-50">
+                    {backfillBusy ? 'Recording…' : 'Record'}
+                  </button>
+                  <button onClick={() => { setAdding(false); setBackfillDate(''); setBackfillReason(''); }}
+                    className="flex-1 py-1.5 border border-outline rounded-md text-xs font-medium text-on-surface-muted hover:bg-surface-2">
+                    Cancel
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {taken.length === 0 && !adding && (
+              <p className="text-xs text-on-surface-subtle italic">No optional leaves recorded for this year.</p>
+            )}
           </div>
+
           {error && <p className="text-xs text-danger bg-danger-container/40 border border-danger/20 rounded-lg px-3 py-2">{error}</p>}
-          <div className="flex gap-3 pt-1">
-            <button onClick={onClose} className="flex-1 py-2.5 border border-outline rounded-lg text-sm font-medium text-on-surface-muted hover:bg-surface-2">Cancel</button>
-            <button onClick={save} disabled={saving}
-              className="flex-1 py-2.5 bg-accent text-on-accent rounded-lg text-sm font-semibold disabled:opacity-50">
-              {saving ? 'Saving…' : 'Save balances'}
-            </button>
-          </div>
+        </div>
+        <div className="px-6 py-3 border-t border-outline flex gap-3">
+          <button onClick={onClose} className="flex-1 py-2.5 border border-outline rounded-lg text-sm font-medium text-on-surface-muted hover:bg-surface-2">
+            Done
+          </button>
+          <button onClick={saveBalances} disabled={saving}
+            className="flex-1 py-2.5 bg-accent text-on-accent rounded-lg text-sm font-semibold disabled:opacity-50">
+            {saving ? 'Saving…' : 'Save full / short'}
+          </button>
         </div>
       </div>
     </div>
