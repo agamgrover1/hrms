@@ -202,15 +202,24 @@ async function ensurePulseReady() {
   }
 }
 
-// Auto-heal app_users.employee_id_ref by best-effort email/name match. Run
-// before every recompute so any newly-created user (any role: HR, project
-// coordinator, future roles, etc.) becomes visible on the Pulse without an
-// admin having to manually open Users → edit → save. Only patches rows where
-// employee_id_ref is NULL — never overwrites an explicit existing link.
-async function healUserEmployeeLinks(): Promise<{ linkedByEmail: number; linkedByName: number }> {
-  let linkedByEmail = 0, linkedByName = 0;
+// Auto-heal app_users.employee_id_ref. Three idempotent steps:
+//   1. NULL out dangling references — employee_id_ref pointing to a row that
+//      no longer exists in employees. Common when an employee is
+//      deleted/recreated; the user account keeps the stale pointer and /me
+//      can never find the snapshot.
+//   2. Fill remaining NULLs by email match (more reliable).
+//   3. Fill anything still NULL by name match.
+// Result: any user account that *could* be linked, IS linked, on every
+// recompute. Admin doesn't have to babysit individual rows.
+async function healUserEmployeeLinks(): Promise<{ dangling: number; linkedByEmail: number; linkedByName: number }> {
+  let dangling = 0, linkedByEmail = 0, linkedByName = 0;
   try {
-    // Email match first (more reliable than name).
+    const danglingRows = await sql`
+      UPDATE app_users SET employee_id_ref = NULL
+      WHERE employee_id_ref IS NOT NULL
+        AND NOT EXISTS (SELECT 1 FROM employees WHERE id = app_users.employee_id_ref)
+      RETURNING id` as any[];
+    dangling = danglingRows.length;
     const emailRows = await sql`
       UPDATE app_users u SET employee_id_ref = e.id
       FROM employees e
@@ -219,7 +228,6 @@ async function healUserEmployeeLinks(): Promise<{ linkedByEmail: number; linkedB
         AND e.email IS NOT NULL
       RETURNING u.id` as any[];
     linkedByEmail = emailRows.length;
-    // Name match for whatever's still unlinked.
     const nameRows = await sql`
       UPDATE app_users u SET employee_id_ref = e.id
       FROM employees e
@@ -228,7 +236,7 @@ async function healUserEmployeeLinks(): Promise<{ linkedByEmail: number; linkedB
       RETURNING u.id` as any[];
     linkedByName = nameRows.length;
   } catch { /* non-fatal — don't block compute on this */ }
-  return { linkedByEmail, linkedByName };
+  return { dangling, linkedByEmail, linkedByName };
 }
 // Seed the project_coordinator playbook. Idempotent — only inserts when the
 // role has zero rows, so admins can freely edit / delete items without them
@@ -2370,13 +2378,16 @@ app.get('/api/performance/pulse/me', async (req, res) => {
     if (!u) return res.status(401).json({ error: 'Unknown user' });
 
     // Resolve the user's employee record. Prefer the explicit employee_id_ref
-    // linkage. If that's missing (legacy users created before the linkage
-    // existed), fall back to matching by email first, then by name. This
-    // saves admins from having to hand-fix every old user row before scores
-    // become visible — most importantly, project coordinators who were set
-    // up without the linkage in early data.
+    // linkage. If that's missing OR points to an employee that no longer
+    // exists (dangling reference — happens after an employee is
+    // deleted/recreated), fall through to email match, then name match.
     let empId: string | null = u.employee_id_ref ?? null;
-    let resolvedVia: 'linkage' | 'email' | 'name' | 'none' = empId ? 'linkage' : 'none';
+    let resolvedVia: 'linkage' | 'email' | 'name' | 'none' = 'none';
+    if (empId) {
+      const exists = (await sql`SELECT 1 FROM employees WHERE id=${empId} LIMIT 1`)[0] as any;
+      if (exists) resolvedVia = 'linkage';
+      else empId = null;          // dangling — drop and try fallbacks
+    }
     if (!empId && u.email) {
       const m = (await sql`SELECT id FROM employees WHERE LOWER(email)=LOWER(${u.email}) LIMIT 1`)[0] as any;
       if (m?.id) { empId = m.id; resolvedVia = 'email'; }
