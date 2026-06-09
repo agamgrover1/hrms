@@ -185,6 +185,22 @@ async function requireAdminOrCoord(req: any, res: any): Promise<{ ok: boolean; u
 
 // ── Startup migrations (idempotent — safe to run on every cold start) ────
 let _migrated = false;
+
+// Fast path for the pulse endpoints: instead of running ~60 sequential
+// CREATE/ALTER statements on every cold Lambda (~6-12s, blew past Vercel's
+// 10s timeout), do a single existence check on the snapshot table. If it's
+// there, all pulse migrations have run before — flip the cached flag and
+// skip. Only on a truly fresh DB do we fall back to the full migration.
+async function ensurePulseReady() {
+  if (_migrated) return;
+  try {
+    await sql`SELECT 1 FROM performance_score_snapshots LIMIT 0`;
+    _migrated = true;
+    return;
+  } catch {
+    await runStartupMigrations();
+  }
+}
 // Seed the project_coordinator playbook. Idempotent — only inserts when the
 // role has zero rows, so admins can freely edit / delete items without them
 // reappearing on every cold start.
@@ -294,7 +310,9 @@ async function seedRoleResponsibilities() {
 
 async function runStartupMigrations() {
   if (_migrated) return;
-  _migrated = true;
+  // _migrated gets set at the END (after every statement succeeds), so a
+  // mid-migration failure / timeout doesn't lock subsequent calls into
+  // skipping the remaining statements.
 
   // ── Core tables (CREATE IF NOT EXISTS — works on a fresh database) ──────
   await sql`
@@ -1062,6 +1080,7 @@ async function runStartupMigrations() {
       `;
     }
   } catch { /* non-fatal */ }
+  _migrated = true;
 }
 
 // ── Health / diagnostics ──────────────────────────────────────────────────
@@ -2108,7 +2127,7 @@ app.all('/api/performance/pulse/cron', async (req, res) => {
     const secret = process.env.CRON_SECRET;
     const okToken = secret ? auth === `Bearer ${secret}` : false;
     if (!okToken && !platformCron) return res.status(401).json({ error: 'Unauthorized' });
-    await runStartupMigrations();
+    await ensurePulseReady();
     const today = new Date().toISOString().slice(0, 10);
     const result = await computePulseForDate(today);
     res.json(result);
@@ -2123,7 +2142,9 @@ app.all('/api/performance/pulse/cron', async (req, res) => {
 // debugging round-trip.
 app.post('/api/performance/pulse/recompute', requireAdmin, async (req, res) => {
   try {
-    await runStartupMigrations();
+    // Fast existence check instead of ~60 sequential CREATE/ALTER statements.
+    // Only falls through to the full migration if the pulse table is missing.
+    await ensurePulseReady();
     const asOf = (req.body?.as_of as string) || new Date().toISOString().slice(0, 10);
     const result = await computePulseForDate(asOf);
     res.json(result);
@@ -2182,9 +2203,8 @@ app.get('/api/performance/pulse/team', async (req, res) => {
     if (!u) return res.status(401).json({ error: 'Unknown user' });
     const mgrEmpId = u.employee_id_ref;
     if (!mgrEmpId) return res.json({ team: [], week_start: null });
-    // Run migrations defensively so a manager opening this tab for the first
-    // time after deploy doesn't get a 500.
-    await runStartupMigrations();
+    // Cheap existence check; avoid running 60 CREATE statements on every team load.
+    await ensurePulseReady();
     const team = await sql`
       SELECT e.id, e.name, e.avatar, e.department, e.designation,
              s.total_score, s.band, s.discipline, s.hours_hygiene, s.output, s.contribution,
@@ -2219,7 +2239,7 @@ app.get('/api/performance/pulse/org', async (req, res) => {
     if (!uid) return res.status(401).json({ error: 'Sign in required' });
     const u = (await sql`SELECT id, role FROM app_users WHERE id=${uid}`)[0] as any;
     if (!u || !['admin', 'hr_manager'].includes(u.role)) return res.status(403).json({ error: 'Admin/HR only' });
-    await runStartupMigrations();
+    await ensurePulseReady();
     const rows = await sql`
       SELECT e.id, e.name, e.avatar, e.department, e.designation, e.reporting_manager_id,
              m.name AS reporting_manager_name,
@@ -2288,7 +2308,7 @@ app.post('/api/performance/pulse-rating', async (req, res) => {
 // GET /api/performance/pulse/weights, PUT same — admin tune per department
 app.get('/api/performance/pulse/weights', requireAdmin, async (_req, res) => {
   try {
-    await runStartupMigrations();
+    await ensurePulseReady();
     const rows = await sql`SELECT * FROM performance_score_weights ORDER BY department`;
     res.json({ weights: rows });
   } catch (err: any) { res.status(500).json({ error: err.message ?? 'Server error' }); }
