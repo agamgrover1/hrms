@@ -86,6 +86,92 @@ function ScoreSlider({ label, value, onChange }: { label: string; value: number;
 // ── Main component ────────────────────────────────────────────────────────────
 type SubTab = 'overview' | 'leaves' | 'performance' | 'pulse';
 
+const MONTH_NAMES_SHORT = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+
+// Monthly history grid scoped to the manager's reports. Backend role-scopes
+// /performance/pulse/monthly already so we just hit it as the logged-in user.
+function TeamMonthlyTrends() {
+  const [rows, setRows] = useState<any[]>([]);
+  const [loading, setLoading] = useState(true);
+  useEffect(() => {
+    setLoading(true);
+    api.getPulseMonthly({ months: 6 })
+      .then(r => setRows(Array.isArray(r?.rows) ? r.rows : []))
+      .catch(() => setRows([]))
+      .finally(() => setLoading(false));
+  }, []);
+
+  const today = new Date();
+  const monthKeys: Array<{ y: number; m: number; label: string }> = [];
+  for (let i = 5; i >= 0; i--) {
+    const d = new Date(today); d.setUTCDate(1); d.setUTCMonth(d.getUTCMonth() - i);
+    monthKeys.push({ y: d.getUTCFullYear(), m: d.getUTCMonth() + 1, label: `${MONTH_NAMES_SHORT[d.getUTCMonth()]} ${String(d.getUTCFullYear()).slice(-2)}` });
+  }
+  const byEmp = new Map<string, { name: string; designation: string | null; scores: Map<string, number> }>();
+  for (const r of rows) {
+    const key = r.employee_id;
+    if (!byEmp.has(key)) byEmp.set(key, { name: r.name, designation: r.designation, scores: new Map() });
+    byEmp.get(key)!.scores.set(`${r.year}-${r.month}`, Number(r.total_score));
+  }
+  const emps = [...byEmp.entries()].map(([id, v]) => ({ id, ...v })).sort((a, b) => a.name.localeCompare(b.name));
+
+  return (
+    <div className="bg-surface rounded-xl-3 border border-outline shadow-elev-1 overflow-hidden">
+      <div className="px-5 py-3 border-b border-outline flex items-center justify-between">
+        <p className="font-display text-base font-bold text-on-surface">Monthly trends · last 6 months</p>
+        <p className="text-[11px] text-on-surface-subtle">Closed at month-end</p>
+      </div>
+      {loading ? (
+        <div className="px-5 py-10 text-center text-on-surface-subtle text-sm">Loading…</div>
+      ) : emps.length === 0 ? (
+        <div className="px-5 py-10 text-center text-on-surface-subtle text-sm">No closed months yet. Admin can close months from the Pulse page to seed history.</div>
+      ) : (
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="bg-surface-2 border-b border-outline">
+                <th className="text-left px-4 py-3 text-xs font-semibold text-on-surface-subtle uppercase tracking-wide">Employee</th>
+                {monthKeys.map(mk => (
+                  <th key={`${mk.y}-${mk.m}`} className="text-right px-3 py-3 text-xs font-semibold text-on-surface-subtle uppercase tracking-wide whitespace-nowrap">{mk.label}</th>
+                ))}
+                <th className="text-right px-4 py-3 text-xs font-semibold text-on-surface-subtle uppercase tracking-wide">Δ vs prev</th>
+              </tr>
+            </thead>
+            <tbody>
+              {emps.map(emp => {
+                const values = monthKeys.map(mk => emp.scores.get(`${mk.y}-${mk.m}`) ?? null);
+                const last = values[values.length - 1];
+                const prev = values[values.length - 2];
+                const delta = last != null && prev != null ? last - prev : null;
+                return (
+                  <tr key={emp.id} className="border-b border-outline hover:bg-surface-2/40">
+                    <td className="px-4 py-3">
+                      <p className="font-medium text-on-surface">{emp.name}</p>
+                      <p className="text-[11px] text-on-surface-subtle">{emp.designation ?? '—'}</p>
+                    </td>
+                    {values.map((v, i) => (
+                      <td key={i} className="px-3 py-3 text-right num-mono text-xs font-semibold"
+                        style={{ color: v == null ? '#94a3b8' : v >= 85 ? '#16a34a' : v >= 70 ? '#3730a3' : v >= 50 ? '#d97706' : '#dc2626' }}>
+                        {v == null ? '—' : Math.round(v)}
+                      </td>
+                    ))}
+                    <td className="px-4 py-3 text-right num-mono text-xs font-bold">
+                      {delta == null ? <span className="text-on-surface-subtle">—</span>
+                        : delta > 0 ? <span className="text-success">↑ {Math.round(delta)}</span>
+                        : delta < 0 ? <span className="text-danger">↓ {Math.round(Math.abs(delta))}</span>
+                        : <span className="text-on-surface-subtle">→ 0</span>}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function pillarColorMyTeam(score: number | null): string {
   if (score == null) return '#94a3b8';
   if (score >= 85) return '#16a34a';
@@ -1211,6 +1297,9 @@ export default function MyTeam() {
               </div>
             </div>
           )}
+
+          {/* Monthly trends — historical context for the team */}
+          <TeamMonthlyTrends />
 
           {/* Team grid */}
           <div className="bg-surface rounded-xl-3 border border-outline shadow-elev-1 overflow-hidden">

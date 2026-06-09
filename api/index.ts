@@ -1041,6 +1041,29 @@ async function runStartupMigrations() {
     )`;
   await sql`INSERT INTO performance_score_weights (department) VALUES ('_default') ON CONFLICT (department) DO NOTHING`;
 
+  // End-of-month closing book for Pulse. Stores ONE row per employee per
+  // month with whatever their latest daily snapshot was in that month. We
+  // derive month-over-month delta from this — daily snapshots are an
+  // implementation detail; the monthly table is the source of truth for
+  // historical reporting.
+  await sql`
+    CREATE TABLE IF NOT EXISTS performance_monthly_snapshots (
+      id SERIAL PRIMARY KEY,
+      employee_id TEXT NOT NULL,
+      month INTEGER NOT NULL,
+      year INTEGER NOT NULL,
+      total_score NUMERIC NOT NULL,
+      band TEXT NOT NULL,
+      discipline NUMERIC, hours_hygiene NUMERIC, output NUMERIC, contribution NUMERIC,
+      manager_pulse NUMERIC, team_stewardship NUMERIC, project_hygiene NUMERIC,
+      is_baseline BOOLEAN DEFAULT FALSE,
+      breakdown JSONB,
+      closed_at TIMESTAMPTZ DEFAULT NOW(),
+      UNIQUE(employee_id, month, year)
+    )`;
+  await sql`CREATE INDEX IF NOT EXISTS idx_perf_monthly_emp ON performance_monthly_snapshots(employee_id, year DESC, month DESC)`.catch(()=>{});
+  await sql`CREATE INDEX IF NOT EXISTS idx_perf_monthly_period ON performance_monthly_snapshots(year DESC, month DESC)`.catch(()=>{});
+
   await sql`
     CREATE TABLE IF NOT EXISTS attendance_sync_log (
       id SERIAL PRIMARY KEY, sync_id TEXT UNIQUE, triggered TEXT,
@@ -2283,6 +2306,62 @@ async function computePulseForDate(asOf: string, employeeIdsFilter?: string[] | 
   return { computed: snapshots.length, as_of: asOf, phases: _phase };
 }
 
+// ─────────────────────────────────────────────────────────────────────────
+// Monthly snapshot closing. Picks each employee's LATEST daily snapshot
+// in the given month and copies it to performance_monthly_snapshots.
+// Idempotent — ON CONFLICT updates so re-closing a month overwrites with
+// the freshest values (useful if the month closes mid-day and a final
+// recompute lands later).
+// ─────────────────────────────────────────────────────────────────────────
+async function closeMonthlyPulse(month: number, year: number): Promise<{ closed: number }> {
+  await ensurePulseReady();
+  const rows = await sql`
+    INSERT INTO performance_monthly_snapshots
+      (employee_id, month, year, total_score, band, discipline, hours_hygiene, output, contribution,
+       manager_pulse, team_stewardship, project_hygiene, is_baseline, breakdown)
+    SELECT DISTINCT ON (employee_id)
+      employee_id, ${month}, ${year}, total_score, band, discipline, hours_hygiene, output, contribution,
+      manager_pulse, team_stewardship, project_hygiene, is_baseline, breakdown
+    FROM performance_score_snapshots
+    WHERE EXTRACT(YEAR FROM snapshot_date) = ${year}
+      AND EXTRACT(MONTH FROM snapshot_date) = ${month}
+    ORDER BY employee_id, snapshot_date DESC
+    ON CONFLICT (employee_id, month, year) DO UPDATE SET
+      total_score      = EXCLUDED.total_score,
+      band             = EXCLUDED.band,
+      discipline       = EXCLUDED.discipline,
+      hours_hygiene    = EXCLUDED.hours_hygiene,
+      output           = EXCLUDED.output,
+      contribution     = EXCLUDED.contribution,
+      manager_pulse    = EXCLUDED.manager_pulse,
+      team_stewardship = EXCLUDED.team_stewardship,
+      project_hygiene  = EXCLUDED.project_hygiene,
+      is_baseline      = EXCLUDED.is_baseline,
+      breakdown        = EXCLUDED.breakdown,
+      closed_at        = NOW()
+    RETURNING employee_id` as any[];
+  return { closed: rows.length };
+}
+
+// Auto-close the previous month if today is day 1 and it isn't closed yet.
+// Runs at the start of the daily cron path so the just-finished month gets
+// booked before the new daily recompute starts overwriting today's row.
+async function autoCloseLastMonthIfDue(): Promise<{ closed?: number; month?: number; year?: number } | null> {
+  const today = new Date();
+  if (today.getUTCDate() !== 1) return null;
+  const prev = new Date(today);
+  prev.setUTCMonth(prev.getUTCMonth() - 1);
+  const m = prev.getUTCMonth() + 1;
+  const y = prev.getUTCFullYear();
+  // Skip if already closed (someone could have called the manual endpoint).
+  const exists = (await sql`
+    SELECT 1 FROM performance_monthly_snapshots
+    WHERE month=${m} AND year=${y} LIMIT 1`)[0] as any;
+  if (exists) return null;
+  const r = await closeMonthlyPulse(m, y);
+  return { ...r, month: m, year: y };
+}
+
 // Cron entry point — Vercel hits this nightly. Reuses CRON_SECRET / x-vercel-cron auth.
 app.all('/api/performance/pulse/cron', async (req, res) => {
   try {
@@ -2292,9 +2371,13 @@ app.all('/api/performance/pulse/cron', async (req, res) => {
     const okToken = secret ? auth === `Bearer ${secret}` : false;
     if (!okToken && !platformCron) return res.status(401).json({ error: 'Unauthorized' });
     await ensurePulseReady();
+    // Close the previous month FIRST (if today is day 1 and it hasn't been
+    // closed yet). The previous month should be booked using its own latest
+    // snapshot, not contaminated by the new day's compute that's about to run.
+    const closed = await autoCloseLastMonthIfDue().catch(() => null);
     const today = new Date().toISOString().slice(0, 10);
     const result = await computePulseForDate(today);
-    res.json(result);
+    res.json({ ...result, monthly_close: closed });
   } catch (err: any) {
     res.status(500).json({ error: err.message ?? 'Pulse compute failed' });
   }
@@ -2349,6 +2432,83 @@ app.get('/api/performance/pulse/recompute-targets', async (req, res) => {
   } catch (err: any) {
     res.status(500).json({ error: err.message ?? 'Server error' });
   }
+});
+
+// ── Monthly snapshots ───────────────────────────────────────────────────
+// Manual close — admin can book a given month's pulse closing on demand.
+// Useful for backfill: run once per past month to seed history from the
+// daily snapshots that already exist.
+app.post('/api/performance/pulse/monthly/close', async (req, res) => {
+  if (!(await requireAdmin(req, res))) return;
+  try {
+    await ensurePulseReady();
+    const { month, year } = req.body ?? {};
+    const m = Number(month), y = Number(year);
+    if (!m || !y || m < 1 || m > 12) return res.status(400).json({ error: 'month (1-12) and year are required' });
+    const r = await closeMonthlyPulse(m, y);
+    res.json({ ...r, month: m, year: y });
+  } catch (err: any) { res.status(500).json({ error: err.message ?? 'Close failed' }); }
+});
+
+// Role-scoped monthly history.
+//   admin / hr_manager / project_coordinator → any employee_id (or org-wide)
+//   reporting manager → their direct reports + their own
+//   anyone else → their own only
+app.get('/api/performance/pulse/monthly', async (req, res) => {
+  try {
+    const uid = req.header('x-user-id');
+    if (!uid) return res.status(401).json({ error: 'Sign in required' });
+    await ensurePulseReady();
+    const u = (await sql`SELECT id, name, email, employee_id_ref, role FROM app_users WHERE id=${uid}`)[0] as any;
+    if (!u) return res.status(401).json({ error: 'Unknown user' });
+    const isOrgViewer = u.role === 'admin' || u.role === 'hr_manager' || u.role === 'project_coordinator';
+    const viewerEmpId = await resolveUserToEmployee(u);
+    // Period filter — default last 6 months ending this month.
+    const today = new Date();
+    const months = Number(req.query.months) > 0 ? Math.min(24, Number(req.query.months)) : 6;
+    const filterEmpId = (req.query.employee_id as string) || null;
+
+    // Allowed employee ids
+    let allowedIds: string[] | null = null; // null = all (org viewer)
+    if (!isOrgViewer) {
+      const ids: string[] = [];
+      if (viewerEmpId) {
+        ids.push(viewerEmpId);
+        const reports = await sql`SELECT id FROM employees WHERE reporting_manager_id=${viewerEmpId}`;
+        for (const r of reports as any[]) ids.push(r.id);
+      }
+      allowedIds = ids;
+    }
+    if (filterEmpId) {
+      if (allowedIds && !allowedIds.includes(filterEmpId)) return res.status(403).json({ error: 'Not permitted' });
+      allowedIds = [filterEmpId];
+    }
+
+    // Period start = months ago, day 1
+    const startDate = new Date(today);
+    startDate.setUTCDate(1);
+    startDate.setUTCMonth(startDate.getUTCMonth() - (months - 1));
+    const startM = startDate.getUTCMonth() + 1;
+    const startY = startDate.getUTCFullYear();
+    const endM = today.getUTCMonth() + 1;
+    const endY = today.getUTCFullYear();
+
+    const rows = await (allowedIds
+      ? sql`SELECT s.*, e.name, e.department, e.designation
+            FROM performance_monthly_snapshots s
+            JOIN employees e ON e.id = s.employee_id
+            WHERE s.employee_id = ANY(${allowedIds}::text[])
+              AND (s.year > ${startY} OR (s.year = ${startY} AND s.month >= ${startM}))
+              AND (s.year < ${endY} OR (s.year = ${endY} AND s.month <= ${endM}))
+            ORDER BY e.name, s.year DESC, s.month DESC`
+      : sql`SELECT s.*, e.name, e.department, e.designation
+            FROM performance_monthly_snapshots s
+            JOIN employees e ON e.id = s.employee_id
+            WHERE (s.year > ${startY} OR (s.year = ${startY} AND s.month >= ${startM}))
+              AND (s.year < ${endY} OR (s.year = ${endY} AND s.month <= ${endM}))
+            ORDER BY e.name, s.year DESC, s.month DESC`) as any[];
+    res.json({ months, rows });
+  } catch (err: any) { res.status(500).json({ error: err.message ?? 'Server error' }); }
 });
 
 // Pulse access helper:

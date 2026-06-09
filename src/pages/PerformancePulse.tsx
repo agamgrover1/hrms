@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { Search, Sliders, X, RefreshCw, TrendingUp, ChevronDown, ChevronUp } from 'lucide-react';
+import { Search, Sliders, X, RefreshCw, TrendingUp, ChevronDown, ChevronUp, CalendarDays, ArrowUp, ArrowDown, Minus } from 'lucide-react';
 import { api } from '../services/api';
 import type { PulseTeamRow, PulseWeights } from '../services/api';
 
@@ -8,6 +8,8 @@ import type { PulseTeamRow, PulseWeights } from '../services/api';
 //  - open any employee's drawer (pillar breakdown)
 //  - trigger a manual recompute (e.g. after a backfill)
 //  - tune per-department weight multipliers
+
+const MONTH_NAMES = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
 
 const PILLARS: Array<{ key: keyof PulseTeamRow; label: string }> = [
   { key: 'discipline',       label: 'Disc.' },
@@ -44,6 +46,17 @@ export default function PerformancePulse() {
   const [bandFilter, setBandFilter] = useState<'all' | 'excellent' | 'strong' | 'building' | 'needs_support'>('all');
   const [drawer, setDrawer] = useState<{ row: PulseTeamRow; data: any | null } | null>(null);
   const [showWeights, setShowWeights] = useState(false);
+  // Monthly close + monthly trends section state.
+  const now = new Date();
+  const lastMonthDate = new Date(now); lastMonthDate.setUTCDate(0);
+  const [closeOpen, setCloseOpen] = useState(false);
+  const [closeMonth, setCloseMonth] = useState(lastMonthDate.getUTCMonth() + 1);
+  const [closeYear, setCloseYear] = useState(lastMonthDate.getUTCFullYear());
+  const [closeBusy, setCloseBusy] = useState(false);
+  const [closeMsg, setCloseMsg] = useState<{ tone: 'success' | 'error'; text: string } | null>(null);
+  const [showTrends, setShowTrends] = useState(false);
+  const [trendsRows, setTrendsRows] = useState<any[]>([]);
+  const [trendsLoading, setTrendsLoading] = useState(false);
   const [weights, setWeights] = useState<PulseWeights[]>([]);
   const [savingDept, setSavingDept] = useState<string | null>(null);
 
@@ -143,6 +156,33 @@ export default function PerformancePulse() {
       setTimeout(() => setRecomputeProgress(null), 2000);
     }
   }
+  function closeMonthOpen() {
+    setCloseMsg(null);
+    setCloseOpen(true);
+  }
+  async function confirmClose() {
+    setCloseBusy(true); setCloseMsg(null);
+    try {
+      const r = await api.closePulseMonth(closeMonth, closeYear);
+      setCloseMsg({ tone: 'success', text: `Closed ${r.closed} employee snapshot${r.closed === 1 ? '' : 's'} for ${MONTH_NAMES[closeMonth - 1]} ${closeYear}.` });
+      if (showTrends) loadTrends();
+    } catch (e: any) {
+      setCloseMsg({ tone: 'error', text: e?.message ?? 'Close failed' });
+    } finally { setCloseBusy(false); }
+  }
+  function loadTrends() {
+    setTrendsLoading(true);
+    api.getPulseMonthly({ months: 6 })
+      .then(r => setTrendsRows(Array.isArray(r?.rows) ? r.rows : []))
+      .catch(() => setTrendsRows([]))
+      .finally(() => setTrendsLoading(false));
+  }
+  function toggleTrends() {
+    const next = !showTrends;
+    setShowTrends(next);
+    if (next && trendsRows.length === 0) loadTrends();
+  }
+
   async function openWeights() {
     setShowWeights(true);
     try {
@@ -167,6 +207,9 @@ export default function PerformancePulse() {
         <div className="flex gap-2">
           <button onClick={openWeights} className="inline-flex items-center gap-2 text-sm px-3 py-2 rounded-lg font-medium border border-outline hover:bg-surface-2">
             <Sliders size={14} /> Weights
+          </button>
+          <button onClick={closeMonthOpen} className="inline-flex items-center gap-2 text-sm px-3 py-2 rounded-lg font-medium border border-outline hover:bg-surface-2">
+            <CalendarDays size={14} /> Close month
           </button>
           <button onClick={recompute} disabled={recomputing}
             className="inline-flex items-center gap-2 text-sm px-3 py-2 rounded-lg font-medium border border-outline hover:bg-surface-2 disabled:opacity-50">
@@ -199,6 +242,28 @@ export default function PerformancePulse() {
           </div>
         </div>
       )}
+
+      {/* Close-month feedback */}
+      {closeMsg && (
+        <div className={`rounded-xl-2 border p-3 text-sm ${
+          closeMsg.tone === 'success'
+            ? 'border-success/30 bg-success-container/40 text-success'
+            : 'border-danger/30 bg-danger-container/40 text-danger'
+        }`}>{closeMsg.text}</div>
+      )}
+
+      {/* Monthly trends toggle */}
+      <div className="flex items-center justify-between gap-3">
+        <p className="text-[10px] uppercase tracking-[0.18em] font-bold text-on-surface-subtle">Current pulse · rolling 30 days</p>
+        <button onClick={toggleTrends}
+          className="inline-flex items-center gap-1 text-xs font-semibold text-accent hover:underline">
+          {showTrends ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
+          {showTrends ? 'Hide monthly trends' : 'Show monthly trends'}
+        </button>
+      </div>
+
+      {/* Monthly trends panel */}
+      {showTrends && <MonthlyTrendsGrid rows={trendsRows} loading={trendsLoading} />}
 
       {/* KPI strip */}
       <div className="grid grid-cols-2 sm:grid-cols-6 gap-3">
@@ -329,6 +394,48 @@ export default function PerformancePulse() {
         </div>
       )}
 
+      {/* Close-month modal */}
+      {closeOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm p-4" onClick={() => setCloseOpen(false)}>
+          <div className="bg-surface rounded-2xl shadow-2xl w-full max-w-md overflow-hidden" onClick={e => e.stopPropagation()}>
+            <div className="flex items-center justify-between px-6 py-4 border-b border-outline">
+              <div>
+                <h2 className="font-bold text-base text-on-surface">Close a month</h2>
+                <p className="text-xs text-on-surface-subtle mt-0.5">Books the month's pulse for everyone using whatever their latest daily snapshot was.</p>
+              </div>
+              <button onClick={() => setCloseOpen(false)}><X size={16} className="text-on-surface-subtle" /></button>
+            </div>
+            <div className="p-6 space-y-4">
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="text-xs font-medium text-on-surface-muted mb-1 block">Month</label>
+                  <select value={closeMonth} onChange={e => setCloseMonth(Number(e.target.value))}
+                    className="w-full text-sm border border-outline rounded-lg px-3 py-2.5 focus:outline-none focus:ring-2 focus:ring-primary-200">
+                    {MONTH_NAMES.map((m, i) => <option key={m} value={i + 1}>{m}</option>)}
+                  </select>
+                </div>
+                <div>
+                  <label className="text-xs font-medium text-on-surface-muted mb-1 block">Year</label>
+                  <input type="number" value={closeYear} onChange={e => setCloseYear(Number(e.target.value))}
+                    className="w-full text-sm border border-outline rounded-lg px-3 py-2.5 num-mono focus:outline-none focus:ring-2 focus:ring-primary-200" />
+                </div>
+              </div>
+              <p className="text-xs text-on-surface-subtle">
+                Re-running the close on a month that's already booked overwrites it with fresher data. Safe to repeat.
+              </p>
+              <div className="flex gap-3 pt-1">
+                <button onClick={() => setCloseOpen(false)}
+                  className="flex-1 py-2.5 border border-outline rounded-lg text-sm font-medium text-on-surface-muted hover:bg-surface-2">Cancel</button>
+                <button onClick={confirmClose} disabled={closeBusy}
+                  className="flex-1 py-2.5 bg-accent text-on-accent rounded-lg text-sm font-semibold disabled:opacity-50">
+                  {closeBusy ? 'Closing…' : `Close ${MONTH_NAMES[closeMonth - 1]} ${closeYear}`}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Weights modal */}
       {showWeights && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm p-4" onClick={() => setShowWeights(false)}>
@@ -364,6 +471,74 @@ export default function PerformancePulse() {
           </div>
         </div>
       )}
+    </div>
+  );
+}
+
+function MonthlyTrendsGrid({ rows, loading }: { rows: any[]; loading: boolean }) {
+  // Roll rows up: one row per employee, with month→score map.
+  const today = new Date();
+  const monthKeys: Array<{ y: number; m: number; label: string }> = [];
+  for (let i = 5; i >= 0; i--) {
+    const d = new Date(today); d.setUTCDate(1); d.setUTCMonth(d.getUTCMonth() - i);
+    monthKeys.push({ y: d.getUTCFullYear(), m: d.getUTCMonth() + 1, label: `${MONTH_NAMES[d.getUTCMonth()]} ${String(d.getUTCFullYear()).slice(-2)}` });
+  }
+  const byEmp = new Map<string, { name: string; designation: string | null; scores: Map<string, number> }>();
+  for (const r of rows) {
+    const key = r.employee_id;
+    if (!byEmp.has(key)) byEmp.set(key, { name: r.name, designation: r.designation, scores: new Map() });
+    byEmp.get(key)!.scores.set(`${r.year}-${r.month}`, Number(r.total_score));
+  }
+  const employees = [...byEmp.entries()].map(([id, v]) => ({ id, ...v })).sort((a, b) => a.name.localeCompare(b.name));
+
+  if (loading) return <div className="rounded-xl-3 border border-outline bg-surface p-8 text-center text-sm text-on-surface-subtle">Loading monthly history…</div>;
+  if (employees.length === 0) return (
+    <div className="rounded-xl-3 border border-dashed border-outline bg-surface p-8 text-center text-sm text-on-surface-muted">
+      No monthly snapshots yet. Use <b>Close month</b> above to seed a month from existing daily data.
+    </div>
+  );
+
+  return (
+    <div className="rounded-xl-3 border border-outline bg-surface shadow-elev-1 overflow-x-auto">
+      <table className="w-full text-sm">
+        <thead>
+          <tr className="bg-surface-2 border-b border-outline">
+            <th className="text-left px-4 py-3 text-xs font-semibold text-on-surface-subtle uppercase tracking-wide">Employee</th>
+            {monthKeys.map(mk => (
+              <th key={`${mk.y}-${mk.m}`} className="text-right px-3 py-3 text-xs font-semibold text-on-surface-subtle uppercase tracking-wide whitespace-nowrap">{mk.label}</th>
+            ))}
+            <th className="text-right px-4 py-3 text-xs font-semibold text-on-surface-subtle uppercase tracking-wide">Δ vs prev</th>
+          </tr>
+        </thead>
+        <tbody>
+          {employees.map(emp => {
+            const values = monthKeys.map(mk => emp.scores.get(`${mk.y}-${mk.m}`) ?? null);
+            const last = values[values.length - 1];
+            const prev = values[values.length - 2];
+            const delta = last != null && prev != null ? last - prev : null;
+            return (
+              <tr key={emp.id} className="border-b border-outline hover:bg-surface-2/40">
+                <td className="px-4 py-3">
+                  <p className="font-medium text-on-surface">{emp.name}</p>
+                  <p className="text-[11px] text-on-surface-subtle">{emp.designation ?? '—'}</p>
+                </td>
+                {values.map((v, i) => (
+                  <td key={i} className="px-3 py-3 text-right num-mono text-xs font-semibold"
+                    style={{ color: v == null ? '#94a3b8' : v >= 85 ? '#16a34a' : v >= 70 ? '#3730a3' : v >= 50 ? '#d97706' : '#dc2626' }}>
+                    {v == null ? '—' : Math.round(v)}
+                  </td>
+                ))}
+                <td className="px-4 py-3 text-right num-mono text-xs font-bold">
+                  {delta == null ? <span className="text-on-surface-subtle">—</span>
+                    : delta > 0 ? <span className="text-success inline-flex items-center gap-0.5"><ArrowUp size={11} />{Math.round(delta)}</span>
+                    : delta < 0 ? <span className="text-danger inline-flex items-center gap-0.5"><ArrowDown size={11} />{Math.round(Math.abs(delta))}</span>
+                    : <span className="text-on-surface-subtle inline-flex items-center gap-0.5"><Minus size={11} />0</span>}
+                </td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
     </div>
   );
 }

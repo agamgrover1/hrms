@@ -549,6 +549,24 @@ export const api = {
     }),
   getPulseRecomputeTargets: () =>
     request<{ employee_ids: string[] }>(`/performance/pulse/recompute-targets`),
+  // Monthly closing books — admin manual close (also auto-fires from the
+  // daily cron on day 1 of each month).
+  closePulseMonth: (month: number, year: number) =>
+    request<{ closed: number; month: number; year: number }>(`/performance/pulse/monthly/close`, {
+      method: 'POST', body: JSON.stringify({ month, year }),
+    }),
+  getPulseMonthly: (params: { employee_id?: string; months?: number } = {}) => {
+    const qs = new URLSearchParams();
+    if (params.employee_id) qs.set('employee_id', params.employee_id);
+    if (params.months) qs.set('months', String(params.months));
+    return request<{ months: number; rows: Array<{
+      employee_id: string; name: string; department: string | null; designation: string | null;
+      month: number; year: number; total_score: number; band: string;
+      discipline: number | null; hours_hygiene: number | null; output: number | null; contribution: number | null;
+      manager_pulse: number | null; team_stewardship: number | null; project_hygiene: number | null;
+      is_baseline: boolean;
+    }> }>(`/performance/pulse/monthly?${qs}`);
+  },
   getPulseWeights: () =>
     request<{ weights: PulseWeights[] }>(`/performance/pulse/weights`),
   updatePulseWeights: (dept: string, weights: Partial<PulseWeights>) =>
