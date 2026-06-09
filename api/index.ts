@@ -2210,7 +2210,8 @@ app.all('/api/performance/pulse/cron', async (req, res) => {
 // Runs migrations defensively in case this is the first hit since deploy and
 // the pulse tables haven't been created yet — saves a "why is it empty?"
 // debugging round-trip.
-app.post('/api/performance/pulse/recompute', requireAdmin, async (req, res) => {
+app.post('/api/performance/pulse/recompute', async (req, res) => {
+  if (!(await requireAdmin(req, res))) return;
   const t0 = Date.now();
   const timings: Record<string, number> = {};
   try {
@@ -2234,7 +2235,8 @@ app.post('/api/performance/pulse/recompute', requireAdmin, async (req, res) => {
 
 // Returns the ordered list of employee IDs the frontend should chunk over.
 // Cheap query; admins call this once before starting the chunked recompute.
-app.get('/api/performance/pulse/recompute-targets', requireAdmin, async (_req, res) => {
+app.get('/api/performance/pulse/recompute-targets', async (req, res) => {
+  if (!(await requireAdmin(req, res))) return;
   try {
     await ensurePulseReady();
     const rows = await sql`
@@ -2400,14 +2402,16 @@ app.post('/api/performance/pulse-rating', async (req, res) => {
 });
 
 // GET /api/performance/pulse/weights, PUT same — admin tune per department
-app.get('/api/performance/pulse/weights', requireAdmin, async (_req, res) => {
+app.get('/api/performance/pulse/weights', async (req, res) => {
+  if (!(await requireAdmin(req, res))) return;
   try {
     await ensurePulseReady();
     const rows = await sql`SELECT * FROM performance_score_weights ORDER BY department`;
     res.json({ weights: rows });
   } catch (err: any) { res.status(500).json({ error: err.message ?? 'Server error' }); }
 });
-app.put('/api/performance/pulse/weights/:dept', requireAdmin, async (req, res) => {
+app.put('/api/performance/pulse/weights/:dept', async (req, res) => {
+  if (!(await requireAdmin(req, res))) return;
   try {
     const { discipline, hours_hygiene, output, contribution, manager_pulse, team_stewardship, project_hygiene } = req.body ?? {};
     const row = (await sql`
