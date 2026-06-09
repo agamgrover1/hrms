@@ -304,7 +304,7 @@ const leaveStatusConfig = {
   cancelled: { color: 'bg-surface-2 text-on-surface-subtle border-outline',    icon: XCircle },
 };
 
-function ApplyLeaveModal({ onClose, onSubmit, balance }: { onClose: () => void; onSubmit: (d: any) => void; balance: any }) {
+function ApplyLeaveModal({ onClose, onSubmit, balance, reportingManager }: { onClose: () => void; onSubmit: (d: any) => void; balance: any; reportingManager?: { id: string; name: string; designation?: string | null } | null }) {
   const onProbation = balance?.on_probation ?? false;
   const availableTypes = onProbation
     ? [{ key: 'half_day', label: 'Half Day' }, { key: 'short_leave', label: 'Short Leave' }, { key: 'unpaid', label: 'Unpaid Leave' }]
@@ -376,6 +376,18 @@ function ApplyLeaveModal({ onClose, onSubmit, balance }: { onClose: () => void; 
               rows={3} placeholder="Briefly describe the reason..."
               className="w-full border border-outline rounded-lg px-3 py-2.5 text-sm focus:outline-none resize-none" />
           </div>
+          {/* Reviewer hint — tells the employee exactly who actions this request. */}
+          {reportingManager ? (
+            <div className="rounded-lg bg-surface-2/60 border border-outline px-3 py-2 text-xs text-on-surface-muted">
+              Reviewed by <strong className="text-on-surface">{reportingManager.name}</strong>
+              {reportingManager.designation && <span className="text-on-surface-subtle"> · {reportingManager.designation}</span>}
+              <span className="text-on-surface-subtle"> · then HR</span>
+            </div>
+          ) : (
+            <div className="rounded-lg bg-warning-container/40 border border-warning/20 px-3 py-2 text-xs text-warning">
+              No reporting manager on your profile — HR will review this directly.
+            </div>
+          )}
           <div className="flex gap-3 pt-1">
             <button onClick={onClose} className="flex-1 py-2.5 border border-outline rounded-lg text-sm font-medium text-on-surface-muted hover:bg-surface-2">Cancel</button>
             <button onClick={handleSubmit} className="flex-1 py-2.5 text-white rounded-lg text-sm font-medium" style={{ background: '#192250' }}>Submit</button>
@@ -452,6 +464,11 @@ export default function MyPortal() {
   const [submittingGoals, setSubmittingGoals] = useState(false);
   const [goalsError, setGoalsError] = useState('');
   const [empRecord, setEmpRecord] = useState<any | null>(null);
+  // Reporting manager record — surfaced to the employee so they know who
+  // reviews their leave / WFH. Resolved at the same time as empRecord so we
+  // can show it on the Overview tab and inside the Apply Leave modal without
+  // an extra fetch.
+  const [reportingManager, setReportingManager] = useState<{ id: string; name: string; designation?: string | null } | null>(null);
 
   // Self-status edits: key = "year-month", value = array of employee_status strings
   const [selfStatusEdits, setSelfStatusEdits] = useState<Record<string, string[]>>({});
@@ -505,6 +522,8 @@ export default function MyPortal() {
       if (!emp) return;
       setEmpDbId(emp.id);
       setEmpRecord(emp);
+      const mgr = emp.reporting_manager_id ? emps.find(e => e.id === emp.reporting_manager_id) : null;
+      setReportingManager(mgr ? { id: mgr.id, name: mgr.name, designation: mgr.designation } : null);
       Promise.all([
         api.getAttendance({ employee_id: emp.id, month: currentMonth, year: currentYear }),
         api.getLeaveRequests({ employee_id: emp.id }),
@@ -1012,6 +1031,7 @@ export default function MyPortal() {
               { label: 'Department',  value: user?.department },
               { label: 'Designation', value: user?.designation },
               { label: 'Employee ID', value: user?.employee_id_ref },
+              { label: 'Reporting Manager', value: reportingManager ? reportingManager.name : '—' },
             ].map(({ label, value }) => (
               <div key={label} className="flex justify-between py-2 border-b border-gray-50 last:border-0">
                 <span className="text-sm text-on-surface-subtle">{label}</span>
@@ -1234,7 +1254,7 @@ export default function MyPortal() {
               </div>
             )}
           </div>
-          {applyLeave && <ApplyLeaveModal onClose={() => setApplyLeave(false)} onSubmit={handleApplyLeave} balance={balance} />}
+          {applyLeave && <ApplyLeaveModal onClose={() => setApplyLeave(false)} onSubmit={handleApplyLeave} balance={balance} reportingManager={reportingManager} />}
 
           {/* ── Optional Leaves ── */}
           {optionalLeaveLoaded && optionalLeaveData && (
@@ -1488,6 +1508,17 @@ export default function MyPortal() {
                       rows={3} placeholder="Briefly describe the reason for WFH..."
                       className="w-full border border-outline rounded-lg px-3 py-2.5 text-sm focus:outline-none resize-none" />
                   </div>
+                  {reportingManager ? (
+                    <div className="rounded-lg bg-surface-2/60 border border-outline px-3 py-2 text-xs text-on-surface-muted">
+                      Reviewed by <strong className="text-on-surface">{reportingManager.name}</strong>
+                      {reportingManager.designation && <span className="text-on-surface-subtle"> · {reportingManager.designation}</span>}
+                      <span className="text-on-surface-subtle"> · then HR</span>
+                    </div>
+                  ) : (
+                    <div className="rounded-lg bg-warning-container/40 border border-warning/20 px-3 py-2 text-xs text-warning">
+                      No reporting manager on your profile — HR will review this directly.
+                    </div>
+                  )}
                   <div className="flex gap-3 pt-1">
                     <button onClick={() => setApplyWfh(false)}
                       className="flex-1 py-2.5 border border-outline rounded-lg text-sm font-medium text-on-surface-muted hover:bg-surface-2">
