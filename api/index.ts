@@ -1746,7 +1746,7 @@ function bandFor(score: number): string {
 }
 function clamp(n: number, lo: number, hi: number) { return Math.max(lo, Math.min(hi, n)); }
 
-async function computePulseForDate(asOf: string) {
+async function computePulseForDate(asOf: string, employeeIdsFilter?: string[] | null) {
   // 30-day window ending at asOf (inclusive)
   const windowStart = new Date(asOf);
   windowStart.setUTCDate(windowStart.getUTCDate() - 29);
@@ -1759,35 +1759,88 @@ async function computePulseForDate(asOf: string) {
 
   const _phase: Record<string, number> = {};
   let _t = Date.now();
-  // All upfront SELECTs in parallel — 11 sequential HTTP round-trips on the
-  // Neon serverless driver was ~2s of latency that pushed past the 10s
-  // function timeout. Promise.all collapses them to one wall-clock RTT.
+
+  // Sharded compute: when employeeIdsFilter is provided, every WHERE clause
+  // narrows to those IDs (plus the reporting-manager chain for stewardship).
+  // This is how the frontend stays under Vercel's 10s function timeout —
+  // each request handles ~5 employees, finishing in well under a second.
+  const filter = employeeIdsFilter && employeeIdsFilter.length > 0 ? employeeIdsFilter : null;
+  // For team-stewardship we also need the direct reports of any manager in
+  // the chunk — even if they're not in the chunk themselves — so the
+  // approval timeliness math has the data it needs.
+  let extendedIds = filter;
+  if (filter) {
+    const repsOfManagers = (await sql`
+      SELECT id FROM employees WHERE reporting_manager_id = ANY(${filter}::text[])`) as any[];
+    const extras = repsOfManagers.map(r => r.id);
+    if (extras.length) extendedIds = [...new Set([...filter, ...extras])];
+  }
+  const fIds = filter;
+  const eIds = extendedIds;
+
+  // All upfront SELECTs in parallel. Each is narrowed by the employee filter
+  // when set — so a chunk of 5 fetches ~5 employees' worth of data instead
+  // of the whole org. Round-trip count is unchanged (1 wall-clock); payload
+  // size and Lambda CPU drop drastically.
   const [
     employees, attendance, leaves, hourDays, hourLogs,
     goals, upsells, pulseRatings, assignments, activeProjects, internalDays,
   ] = await Promise.all([
-    sql`SELECT e.id, e.name, e.department, e.reporting_manager_id, e.join_date, e.shift, e.status, u.role
-        FROM employees e LEFT JOIN app_users u ON u.employee_id_ref = e.id
-        WHERE e.status = 'active' OR e.status IS NULL`,
-    sql`SELECT employee_id, date, status, check_in, total_hours FROM attendance_records
-        WHERE date BETWEEN ${windowStartStr}::date AND ${asOf}::date`,
-    sql`SELECT employee_id, from_date, to_date, status, applied_on FROM leave_requests
-        WHERE NOT (to_date < ${windowStartStr}::date OR from_date > ${asOf}::date)`,
-    sql`SELECT employee_id, project_id, log_date, hours, notes, created_at FROM hour_log_days
-        WHERE log_date BETWEEN ${windowStartStr}::date AND ${asOf}::date`,
+    fIds
+      ? sql`SELECT e.id, e.name, e.department, e.reporting_manager_id, e.join_date, e.shift, e.status, u.role
+            FROM employees e LEFT JOIN app_users u ON u.employee_id_ref = e.id
+            WHERE e.id = ANY(${fIds}::text[]) AND (e.status = 'active' OR e.status IS NULL)`
+      : sql`SELECT e.id, e.name, e.department, e.reporting_manager_id, e.join_date, e.shift, e.status, u.role
+            FROM employees e LEFT JOIN app_users u ON u.employee_id_ref = e.id
+            WHERE e.status = 'active' OR e.status IS NULL`,
+    eIds
+      ? sql`SELECT employee_id, date, status, check_in, total_hours FROM attendance_records
+            WHERE employee_id = ANY(${eIds}::text[])
+              AND date BETWEEN ${windowStartStr}::date AND ${asOf}::date`
+      : sql`SELECT employee_id, date, status, check_in, total_hours FROM attendance_records
+            WHERE date BETWEEN ${windowStartStr}::date AND ${asOf}::date`,
+    eIds
+      ? sql`SELECT employee_id, from_date, to_date, status, applied_on FROM leave_requests
+            WHERE employee_id = ANY(${eIds}::text[])
+              AND NOT (to_date < ${windowStartStr}::date OR from_date > ${asOf}::date)`
+      : sql`SELECT employee_id, from_date, to_date, status, applied_on FROM leave_requests
+            WHERE NOT (to_date < ${windowStartStr}::date OR from_date > ${asOf}::date)`,
+    eIds
+      ? sql`SELECT employee_id, project_id, log_date, hours, notes, created_at FROM hour_log_days
+            WHERE employee_id = ANY(${eIds}::text[])
+              AND log_date BETWEEN ${windowStartStr}::date AND ${asOf}::date`
+      : sql`SELECT employee_id, project_id, log_date, hours, notes, created_at FROM hour_log_days
+            WHERE log_date BETWEEN ${windowStartStr}::date AND ${asOf}::date`,
+    // hourLogs powers approval-rate math AND stewardship; we need all logs
+    // approved by anyone in the chunk, regardless of whose log it was. Cheap
+    // table; no filter saves complexity.
     sql`SELECT employee_id, status, reviewed_at, submitted_at, hours_logged, reviewed_by_id FROM hour_logs
         WHERE submitted_at >= ${windowStartStr}::date`,
-    sql`SELECT employee_id, status, progress, target_date FROM performance_goals
-        WHERE created_at >= ${windowStartStr}::date OR (target_date IS NULL OR target_date >= ${windowStartStr}::date)`,
-    sql`SELECT employee_id, status, created_at FROM upsell_requests
-        WHERE created_at >= ${windowStartStr}::date`,
-    sql`SELECT employee_id, rating, week_start FROM performance_manager_pulse
-        WHERE week_start >= ${pulseStartStr}::date`,
+    eIds
+      ? sql`SELECT employee_id, status, progress, target_date FROM performance_goals
+            WHERE employee_id = ANY(${eIds}::text[])
+              AND (created_at >= ${windowStartStr}::date OR (target_date IS NULL OR target_date >= ${windowStartStr}::date))`
+      : sql`SELECT employee_id, status, progress, target_date FROM performance_goals
+            WHERE created_at >= ${windowStartStr}::date OR (target_date IS NULL OR target_date >= ${windowStartStr}::date)`,
+    eIds
+      ? sql`SELECT employee_id, status, created_at FROM upsell_requests
+            WHERE employee_id = ANY(${eIds}::text[]) AND created_at >= ${windowStartStr}::date`
+      : sql`SELECT employee_id, status, created_at FROM upsell_requests
+            WHERE created_at >= ${windowStartStr}::date`,
+    eIds
+      ? sql`SELECT employee_id, rating, week_start FROM performance_manager_pulse
+            WHERE employee_id = ANY(${eIds}::text[]) AND week_start >= ${pulseStartStr}::date`
+      : sql`SELECT employee_id, rating, week_start FROM performance_manager_pulse
+            WHERE week_start >= ${pulseStartStr}::date`,
     sql`SELECT project_id, employee_id, month, year, monthly_hours FROM project_assignments
         WHERE monthly_hours > 0`,
     sql`SELECT id, project_reporting_id, project_lead_id, created_by FROM projects WHERE status='active'`,
-    sql`SELECT employee_id, log_date, hours, notes FROM internal_hour_logs
-        WHERE log_date BETWEEN ${windowStartStr}::date AND ${asOf}::date`,
+    eIds
+      ? sql`SELECT employee_id, log_date, hours, notes FROM internal_hour_logs
+            WHERE employee_id = ANY(${eIds}::text[])
+              AND log_date BETWEEN ${windowStartStr}::date AND ${asOf}::date`
+      : sql`SELECT employee_id, log_date, hours, notes FROM internal_hour_logs
+            WHERE log_date BETWEEN ${windowStartStr}::date AND ${asOf}::date`,
   ]) as any[][];
   _phase.reads = Date.now() - _t; _t = Date.now();
 
@@ -2042,6 +2095,14 @@ async function computePulseForDate(asOf: string) {
   }
   _phase.writeSnaps = Date.now() - _t; _t = Date.now();
 
+  // Skip notification side-effects on chunked recomputes — each chunk would
+  // otherwise re-fire drop nudges and weekly digests. Notifications belong
+  // to the nightly cron path (single full pass per day).
+  if (filter) {
+    _phase.notify = 0;
+    return { computed: snapshots.length, as_of: asOf, phases: _phase };
+  }
+
   // ── Notification side-effects ─────────────────────────────────────────
   // Day of week in UTC. Friday = 5, Monday = 1. We fire the manager-prompt on
   // Monday and the weekly self-digest on Friday so they don't pile up daily.
@@ -2156,14 +2217,33 @@ app.post('/api/performance/pulse/recompute', requireAdmin, async (req, res) => {
     await ensurePulseReady();
     timings.ensureReadyMs = Date.now() - t0;
     const asOf = (req.body?.as_of as string) || new Date().toISOString().slice(0, 10);
+    // Shard: when employee_ids is provided, only those employees are computed.
+    // Frontend chunks the work to stay under Vercel's 10s function timeout.
+    const employeeIds: string[] | null = Array.isArray(req.body?.employee_ids) && req.body.employee_ids.length
+      ? req.body.employee_ids : null;
     const tCompute = Date.now();
-    const result = await computePulseForDate(asOf);
+    const result = await computePulseForDate(asOf, employeeIds);
     timings.computeMs = Date.now() - tCompute;
     timings.totalMs = Date.now() - t0;
     res.json({ ...result, timings });
   } catch (err: any) {
     timings.totalMs = Date.now() - t0;
     res.status(500).json({ error: err.message ?? 'Recompute failed', timings });
+  }
+});
+
+// Returns the ordered list of employee IDs the frontend should chunk over.
+// Cheap query; admins call this once before starting the chunked recompute.
+app.get('/api/performance/pulse/recompute-targets', requireAdmin, async (_req, res) => {
+  try {
+    await ensurePulseReady();
+    const rows = await sql`
+      SELECT id FROM employees
+      WHERE COALESCE(status, 'active') = 'active'
+      ORDER BY id` as any[];
+    res.json({ employee_ids: rows.map(r => r.id) });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message ?? 'Server error' });
   }
 });
 

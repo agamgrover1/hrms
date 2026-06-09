@@ -537,8 +537,12 @@ export const api = {
     request<{ latest: PulseSnapshot | null; trend: Array<{ snapshot_date: string; total_score: number; band: string }> }>(`/performance/pulse/${employeeId}`),
   submitPulseRating: (data: { employee_id: string; rating: 'good' | 'ok' | 'concern'; note?: string; week_start?: string }) =>
     request(`/performance/pulse-rating`, { method: 'POST', body: JSON.stringify(data) }),
-  recomputePulse: (asOf?: string) =>
-    request<{ computed: number; as_of: string }>(`/performance/pulse/recompute`, { method: 'POST', body: JSON.stringify({ as_of: asOf }) }),
+  recomputePulse: (asOf?: string, employeeIds?: string[]) =>
+    request<{ computed: number; as_of: string; timings?: any; phases?: any }>(`/performance/pulse/recompute`, {
+      method: 'POST', body: JSON.stringify({ as_of: asOf, employee_ids: employeeIds }),
+    }),
+  getPulseRecomputeTargets: () =>
+    request<{ employee_ids: string[] }>(`/performance/pulse/recompute-targets`),
   getPulseWeights: () =>
     request<{ weights: PulseWeights[] }>(`/performance/pulse/weights`),
   updatePulseWeights: (dept: string, weights: Partial<PulseWeights>) =>

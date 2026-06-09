@@ -91,17 +91,62 @@ export default function PerformancePulse() {
     }
   }
   const [recomputeMsg, setRecomputeMsg] = useState<{ tone: 'success' | 'error'; text: string } | null>(null);
+  const [recomputeProgress, setRecomputeProgress] = useState<{ done: number; total: number } | null>(null);
+  // Chunked recompute. Vercel function timeout is 10s — a full-org compute
+  // genuinely doesn't fit on this codebase. We chunk client-side into small
+  // batches of employees, each call finishing in well under a second, then
+  // present aggregate progress to the user.
   async function recompute() {
     setRecomputing(true);
     setRecomputeMsg(null);
+    setRecomputeProgress(null);
     try {
-      const r = await api.recomputePulse();
-      setRecomputeMsg({ tone: 'success', text: `Computed ${r.computed} snapshot${r.computed === 1 ? '' : 's'} for ${r.as_of}.` });
+      const { employee_ids } = await api.getPulseRecomputeTargets();
+      const all = Array.isArray(employee_ids) ? employee_ids : [];
+      if (all.length === 0) {
+        setRecomputeMsg({ tone: 'error', text: 'No employees to compute.' });
+        return;
+      }
+      const CHUNK = 5;
+      const CONCURRENCY = 2;
+      const chunks: string[][] = [];
+      for (let i = 0; i < all.length; i += CHUNK) chunks.push(all.slice(i, i + CHUNK));
+      setRecomputeProgress({ done: 0, total: all.length });
+
+      let computed = 0;
+      let failed = 0;
+      // Run chunks in pairs to keep Vercel function concurrency reasonable.
+      for (let i = 0; i < chunks.length; i += CONCURRENCY) {
+        const batch = chunks.slice(i, i + CONCURRENCY);
+        const results = await Promise.all(batch.map(async (ids) => {
+          try {
+            const r = await api.recomputePulse(undefined, ids);
+            return { ok: true, count: r.computed };
+          } catch (e: any) {
+            return { ok: false, count: 0, error: e?.message };
+          }
+        }));
+        for (const r of results) {
+          if (r.ok) computed += r.count;
+          else failed += 1;
+        }
+        setRecomputeProgress({ done: Math.min(computed + failed * CHUNK, all.length), total: all.length });
+      }
+
+      if (failed > 0) {
+        setRecomputeMsg({
+          tone: 'error',
+          text: `Computed ${computed}/${all.length}. ${failed} batch${failed === 1 ? '' : 'es'} failed — try Recompute again to retry the missing ones.`,
+        });
+      } else {
+        setRecomputeMsg({ tone: 'success', text: `Computed ${computed} snapshot${computed === 1 ? '' : 's'} across ${chunks.length} batches.` });
+      }
       load();
     } catch (e: any) {
       setRecomputeMsg({ tone: 'error', text: e.message ?? 'Recompute failed' });
     } finally {
       setRecomputing(false);
+      setTimeout(() => setRecomputeProgress(null), 2000);
     }
   }
   async function openWeights() {
@@ -132,7 +177,11 @@ export default function PerformancePulse() {
           <button onClick={recompute} disabled={recomputing}
             className="inline-flex items-center gap-2 text-sm px-3 py-2 rounded-lg font-medium border border-outline hover:bg-surface-2 disabled:opacity-50">
             <RefreshCw size={14} className={recomputing ? 'animate-spin' : ''} />
-            {recomputing ? 'Recomputing…' : 'Recompute now'}
+            {recomputing
+              ? (recomputeProgress
+                  ? `Recomputing… ${recomputeProgress.done}/${recomputeProgress.total}`
+                  : 'Recomputing…')
+              : 'Recompute now'}
           </button>
         </div>
       </div>
