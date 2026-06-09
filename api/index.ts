@@ -1077,6 +1077,10 @@ async function runStartupMigrations() {
     await sql`ALTER TABLE leave_balances ADD COLUMN IF NOT EXISTS prev_month_carry_full_day INTEGER DEFAULT 0`;
     await sql`ALTER TABLE leave_balances ADD COLUMN IF NOT EXISTS current_month_credit_full_day INTEGER DEFAULT 0`;
     await sql`ALTER TABLE leave_balances ADD COLUMN IF NOT EXISTS probation_short_used INTEGER NOT NULL DEFAULT 0`;
+    // Per-employee optional-leave allowance. Default is 2/year (the system
+    // constant); admin/HR can grant extra via the leave page so the effective
+    // cap becomes 2 + optional_extra.
+    await sql`ALTER TABLE leave_balances ADD COLUMN IF NOT EXISTS optional_extra INTEGER NOT NULL DEFAULT 0`;
     await sql`ALTER TABLE leave_requests ADD COLUMN IF NOT EXISTS manager_name VARCHAR(200)`;
     await sql`ALTER TABLE leave_requests ADD COLUMN IF NOT EXISTS manager_rejection_reason TEXT`;
     await sql`ALTER TABLE leave_requests ADD COLUMN IF NOT EXISTS hr_actioner_name VARCHAR(200)`;
@@ -2929,8 +2933,11 @@ app.post('/api/leave/requests', async (req, res) => {
       if (onProbation) return res.status(400).json({ error: 'Optional leave is not available during the probation period.' });
       const year = new Date(from_date).getFullYear();
       const countRows = await sql`SELECT COUNT(*) FROM leave_requests WHERE employee_id=${employee_id} AND type='optional' AND status NOT IN ('rejected','cancelled') AND EXTRACT(YEAR FROM from_date)=${year}`;
-      if (Number((countRows[0] as any).count) >= 2)
-        return res.status(400).json({ error: 'You have already used or applied for your 2 optional leaves this year.' });
+      // Per-employee cap: 2 (default) + optional_extra (HR/Admin grant).
+      const balRow = (await sql`SELECT optional_extra FROM leave_balances WHERE employee_id=${employee_id}`)[0] as any;
+      const optCap = 2 + Math.max(0, Number(balRow?.optional_extra ?? 0));
+      if (Number((countRows[0] as any).count) >= optCap)
+        return res.status(400).json({ error: `You have already used or applied for your ${optCap} optional leaves this year.` });
       const norm = (v: any) => { const s = typeof v==='string'?v:(v instanceof Date?v.toISOString():String(v)); if(s.includes('T')){const d=new Date(s);d.setMinutes(d.getMinutes()+330);return d.toISOString().slice(0,10);} return s.slice(0,10); };
       const pool = await sql`SELECT date FROM optional_leave_dates WHERE year=${year}`;
       const poolSet = new Set((pool as any[]).map(r => norm(r.date)));
@@ -3093,12 +3100,20 @@ app.delete('/api/leave/requests/:id', async (req, res) => {
 
 app.patch('/api/leave/balances/:employee_id', async (req, res) => {
   try {
-    const { full_day, short_leave } = req.body;
+    // Admin/HR only — set explicit balances. optional_extra adds to the
+    // 2/year default (so optional_extra=2 → 4 optional leaves this year).
+    if (!(await isAdminOrHR(req))) return res.status(403).json({ error: 'Admin / HR only' });
+    const { full_day, short_leave, optional_extra } = req.body;
+    const fd = full_day != null ? Number(full_day) : null;
+    const sl = short_leave != null ? Number(short_leave) : null;
+    const oe = optional_extra != null ? Math.max(0, Number(optional_extra)) : null;
     const rows = await sql`
-      INSERT INTO leave_balances (employee_id, full_day, short_leave)
-      VALUES (${req.params.employee_id}, ${Number(full_day)}, ${Number(short_leave)})
-      ON CONFLICT (employee_id) DO UPDATE
-        SET full_day = ${Number(full_day)}, short_leave = ${Number(short_leave)}
+      INSERT INTO leave_balances (employee_id, full_day, short_leave, optional_extra)
+      VALUES (${req.params.employee_id}, ${fd ?? 0}, ${sl ?? 0}, ${oe ?? 0})
+      ON CONFLICT (employee_id) DO UPDATE SET
+        full_day        = COALESCE(${fd}, leave_balances.full_day),
+        short_leave     = COALESCE(${sl}, leave_balances.short_leave),
+        optional_extra  = COALESCE(${oe}, leave_balances.optional_extra)
       RETURNING *`;
     res.json(rows[0]);
   } catch (err: any) { res.status(500).json({ error: err.message || 'Server error' }); }
@@ -3116,6 +3131,20 @@ app.get('/api/leave/balances/:employee_id', async (req, res) => {
     bal.on_probation = isOnProbation(joinDate, probationEndDate);
     bal.probation_end_date = probationEndDate ? neonDateToStrV(probationEndDate instanceof Date ? probationEndDate.toISOString() : String(probationEndDate)) : null;
     bal.probation_short_remaining = Math.max(0, 2 - (bal.probation_short_used ?? 0));
+    // Optional leave usage for the current calendar year — surfaces the
+    // "X / Y used" view the UI shows and what apply-leave's cap math uses.
+    const yearNow = new Date().getFullYear();
+    const optCount = (await sql`
+      SELECT COUNT(*)::int AS c FROM leave_requests
+      WHERE employee_id=${req.params.employee_id} AND type='optional'
+        AND status NOT IN ('rejected','cancelled')
+        AND EXTRACT(YEAR FROM from_date)=${yearNow}`)[0] as any;
+    const used = Number(optCount?.c ?? 0);
+    const extra = Math.max(0, Number(bal.optional_extra ?? 0));
+    bal.optional_used = used;
+    bal.optional_extra = extra;
+    bal.optional_cap = 2 + extra;
+    bal.optional_remaining = Math.max(0, bal.optional_cap - used);
     // Add a friendly label for the previous month so the UI can show "carried from April" instead of just a number
     const MONTH_NAMES = ['January','February','March','April','May','June','July','August','September','October','November','December'];
     if (bal.last_credited_month) {

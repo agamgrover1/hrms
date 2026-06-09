@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { Plus, Check, X, Clock, Calendar, User, ChevronDown } from 'lucide-react';
+import { Plus, Check, X, Clock, Calendar, User, ChevronDown, Edit3 } from 'lucide-react';
 import { api } from '../services/api';
 import { useAuth } from '../context/AuthContext';
 
@@ -229,51 +229,138 @@ function ApplyModal({ onClose, onSubmit }: { onClose: () => void; onSubmit: (dat
   );
 }
 
-function EmployeeLeaveBalance({ balance }: { balance: any }) {
+function EmployeeLeaveBalance({ balance, employeeId, canEdit, onUpdated }: { balance: any; employeeId?: string; canEdit?: boolean; onUpdated?: () => void }) {
+  const [editing, setEditing] = useState(false);
   if (!balance) return null;
   return (
-    <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-4">
-      {balance.on_probation ? (
-        <>
-          <div className="bg-warning-container border border-warning/20 rounded-xl-2 p-4">
-            <p className="text-xs font-semibold text-warning uppercase tracking-wide">Status</p>
-            <p className="font-display text-lg font-bold text-warning tracking-tight mt-1">On Probation</p>
-            {balance.probation_end_date && (
-              <p className="text-xs text-warning/80 mt-0.5">
-                Ends {new Date(balance.probation_end_date).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' })}
-              </p>
-            )}
-          </div>
-          <div className="bg-warning-container border border-warning/20 rounded-xl-2 p-4">
-            <p className="text-xs font-semibold text-warning uppercase tracking-wide">Probation Credits</p>
-            <p className="num-mono text-2xl font-bold text-warning mt-1">{balance.probation_short_remaining ?? 0}</p>
-            <p className="text-xs text-warning/80 mt-0.5">remaining</p>
-          </div>
-          <div className="bg-surface-2 border border-outline rounded-xl-2 p-4 opacity-50">
-            <p className="text-xs font-semibold text-on-surface-muted uppercase tracking-wide">Full Day</p>
-            <p className="num-mono text-2xl font-bold text-on-surface-subtle mt-1">—</p>
-            <p className="text-xs text-on-surface-subtle mt-0.5">post-probation</p>
-          </div>
-        </>
-      ) : (
-        <>
-          <div className="bg-brand-container border border-brand/20 rounded-xl-2 p-4">
-            <p className="text-xs font-semibold text-on-brand-container uppercase tracking-wide">Full Day</p>
-            <p className="num-mono text-2xl font-bold text-on-brand-container mt-1">{balance.full_day ?? 0}</p>
-            <p className="text-xs text-on-brand-container/80 mt-0.5">days available</p>
-          </div>
-          <div className="bg-purple-50 border border-purple-200 rounded-xl-2 p-4">
-            <p className="text-xs font-semibold text-purple-600 uppercase tracking-wide">Short / Half Day</p>
-            <p className="num-mono text-2xl font-bold text-purple-700 mt-1">{balance.short_leave ?? 0}</p>
-            <p className="text-xs text-purple-500 mt-0.5">credits this month</p>
-          </div>
-          <div className="bg-success-container border border-success/20 rounded-xl-2 p-4">
-            <p className="text-xs font-semibold text-success uppercase tracking-wide">Status</p>
-            <p className="font-display text-lg font-bold text-success tracking-tight mt-1">Confirmed</p>
-            <p className="text-xs text-success/80 mt-0.5">probation complete</p>
-          </div>
-        </>
+    <div className="relative mb-4">
+      {canEdit && employeeId && (
+        <button onClick={() => setEditing(true)}
+          className="absolute -top-1 right-0 text-xs font-semibold text-accent hover:underline inline-flex items-center gap-1">
+          <Edit3 size={11} /> Edit balances
+        </button>
       )}
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+        {balance.on_probation ? (
+          <>
+            <div className="bg-warning-container border border-warning/20 rounded-xl-2 p-4">
+              <p className="text-xs font-semibold text-warning uppercase tracking-wide">Status</p>
+              <p className="font-display text-lg font-bold text-warning tracking-tight mt-1">On Probation</p>
+              {balance.probation_end_date && (
+                <p className="text-xs text-warning/80 mt-0.5">
+                  Ends {new Date(balance.probation_end_date).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' })}
+                </p>
+              )}
+            </div>
+            <div className="bg-warning-container border border-warning/20 rounded-xl-2 p-4">
+              <p className="text-xs font-semibold text-warning uppercase tracking-wide">Probation Credits</p>
+              <p className="num-mono text-2xl font-bold text-warning mt-1">{balance.probation_short_remaining ?? 0}</p>
+              <p className="text-xs text-warning/80 mt-0.5">remaining</p>
+            </div>
+            <div className="bg-surface-2 border border-outline rounded-xl-2 p-4 opacity-50">
+              <p className="text-xs font-semibold text-on-surface-muted uppercase tracking-wide">Full Day</p>
+              <p className="num-mono text-2xl font-bold text-on-surface-subtle mt-1">—</p>
+              <p className="text-xs text-on-surface-subtle mt-0.5">post-probation</p>
+            </div>
+            <div className="bg-teal-50 border border-teal-200 rounded-xl-2 p-4">
+              <p className="text-xs font-semibold text-teal-700 uppercase tracking-wide">Optional</p>
+              <p className="num-mono text-2xl font-bold text-teal-800 mt-1">{balance.optional_remaining ?? 0} / {balance.optional_cap ?? 2}</p>
+              <p className="text-xs text-teal-600 mt-0.5">post-probation</p>
+            </div>
+          </>
+        ) : (
+          <>
+            <div className="bg-brand-container border border-brand/20 rounded-xl-2 p-4">
+              <p className="text-xs font-semibold text-on-brand-container uppercase tracking-wide">Full Day</p>
+              <p className="num-mono text-2xl font-bold text-on-brand-container mt-1">{balance.full_day ?? 0}</p>
+              <p className="text-xs text-on-brand-container/80 mt-0.5">days available</p>
+            </div>
+            <div className="bg-purple-50 border border-purple-200 rounded-xl-2 p-4">
+              <p className="text-xs font-semibold text-purple-600 uppercase tracking-wide">Short / Half Day</p>
+              <p className="num-mono text-2xl font-bold text-purple-700 mt-1">{balance.short_leave ?? 0}</p>
+              <p className="text-xs text-purple-500 mt-0.5">credits this month</p>
+            </div>
+            <div className="bg-teal-50 border border-teal-200 rounded-xl-2 p-4">
+              <p className="text-xs font-semibold text-teal-700 uppercase tracking-wide">Optional</p>
+              <p className="num-mono text-2xl font-bold text-teal-800 mt-1">{balance.optional_remaining ?? 0} / {balance.optional_cap ?? 2}</p>
+              <p className="text-xs text-teal-600 mt-0.5">used {balance.optional_used ?? 0} this year</p>
+            </div>
+            <div className="bg-success-container border border-success/20 rounded-xl-2 p-4">
+              <p className="text-xs font-semibold text-success uppercase tracking-wide">Status</p>
+              <p className="font-display text-lg font-bold text-success tracking-tight mt-1">Confirmed</p>
+              <p className="text-xs text-success/80 mt-0.5">probation complete</p>
+            </div>
+          </>
+        )}
+      </div>
+
+      {editing && employeeId && (
+        <BalanceEditModal balance={balance} employeeId={employeeId}
+          onClose={() => setEditing(false)}
+          onSaved={() => { setEditing(false); onUpdated?.(); }} />
+      )}
+    </div>
+  );
+}
+
+function BalanceEditModal({ balance, employeeId, onClose, onSaved }: { balance: any; employeeId: string; onClose: () => void; onSaved: () => void }) {
+  const [fullDay, setFullDay] = useState(String(balance.full_day ?? 0));
+  const [shortLeave, setShortLeave] = useState(String(balance.short_leave ?? 0));
+  const [optExtra, setOptExtra] = useState(String(balance.optional_extra ?? 0));
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState('');
+
+  const save = async () => {
+    setError(''); setSaving(true);
+    try {
+      await api.updateLeaveBalance(employeeId, {
+        full_day: Math.max(0, Number(fullDay) || 0),
+        short_leave: Math.max(0, Number(shortLeave) || 0),
+        optional_extra: Math.max(0, Number(optExtra) || 0),
+      });
+      onSaved();
+    } catch (e: any) { setError(e?.message ?? 'Failed to save'); }
+    finally { setSaving(false); }
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm p-4" onClick={onClose}>
+      <div className="bg-surface rounded-2xl shadow-2xl w-full max-w-md overflow-hidden" onClick={e => e.stopPropagation()}>
+        <div className="flex items-center justify-between px-6 py-4 border-b border-outline">
+          <h2 className="font-bold text-base text-on-surface">Edit leave balances</h2>
+          <button onClick={onClose}><X size={16} className="text-on-surface-subtle" /></button>
+        </div>
+        <div className="p-6 space-y-4">
+          <div>
+            <label className="text-xs font-medium text-on-surface-muted mb-1 block">Full day (carry forward)</label>
+            <input type="number" min="0" value={fullDay} onChange={e => setFullDay(e.target.value)}
+              className="w-full text-sm border border-outline rounded-lg px-3 py-2.5 num-mono focus:outline-none focus:ring-2 focus:ring-primary-200" />
+          </div>
+          <div>
+            <label className="text-xs font-medium text-on-surface-muted mb-1 block">Short / half-day credits this month</label>
+            <input type="number" min="0" value={shortLeave} onChange={e => setShortLeave(e.target.value)}
+              className="w-full text-sm border border-outline rounded-lg px-3 py-2.5 num-mono focus:outline-none focus:ring-2 focus:ring-primary-200" />
+          </div>
+          <div>
+            <label className="text-xs font-medium text-on-surface-muted mb-1 block">
+              Extra optional leaves <span className="text-on-surface-subtle font-normal">(on top of the default 2 / year)</span>
+            </label>
+            <input type="number" min="0" value={optExtra} onChange={e => setOptExtra(e.target.value)}
+              className="w-full text-sm border border-outline rounded-lg px-3 py-2.5 num-mono focus:outline-none focus:ring-2 focus:ring-primary-200" />
+            <p className="text-xs text-on-surface-subtle mt-1">
+              Effective cap: <strong className="num-mono">{2 + (Math.max(0, Number(optExtra) || 0))}</strong> optional leaves this year.
+            </p>
+          </div>
+          {error && <p className="text-xs text-danger bg-danger-container/40 border border-danger/20 rounded-lg px-3 py-2">{error}</p>}
+          <div className="flex gap-3 pt-1">
+            <button onClick={onClose} className="flex-1 py-2.5 border border-outline rounded-lg text-sm font-medium text-on-surface-muted hover:bg-surface-2">Cancel</button>
+            <button onClick={save} disabled={saving}
+              className="flex-1 py-2.5 bg-accent text-on-accent rounded-lg text-sm font-semibold disabled:opacity-50">
+              {saving ? 'Saving…' : 'Save balances'}
+            </button>
+          </div>
+        </div>
+      </div>
     </div>
   );
 }
@@ -444,7 +531,9 @@ export default function Leave() {
                             {w.type === 'half_day' ? 'Half Day' : 'Full Day'}
                           </span>
                         </td>
-                        <td className="px-4 py-3 text-on-surface-muted max-w-[140px] truncate">{w.reason}</td>
+                        <td className="px-4 py-3 text-on-surface-muted max-w-[260px]" title={w.reason ?? ''}>
+                          <div className="line-clamp-3 break-words whitespace-normal">{w.reason}</div>
+                        </td>
                         <td className="px-4 py-3 text-xs text-on-surface-subtle whitespace-nowrap">
                           {new Date(w.created_at).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' })}
                         </td>
@@ -611,7 +700,10 @@ export default function Leave() {
               Loading balance…
             </div>
           ) : (
-            <EmployeeLeaveBalance balance={empBalance} />
+            <EmployeeLeaveBalance balance={empBalance} employeeId={selectedEmpId}
+              canEdit={user?.role === 'admin' || user?.role === 'hr_manager'}
+              onUpdated={() => api.getLeaveBalance(selectedEmpId).then(setEmpBalance).catch(() => {})}
+            />
           )}
         </div>
       )}
@@ -658,7 +750,9 @@ export default function Leave() {
                         </div>
                       </td>
                       <td className="px-4 py-3 text-sm font-medium text-on-surface-muted"><span className="num-mono">{req.days}</span>d</td>
-                      <td className="px-4 py-3 text-sm text-on-surface-muted max-w-[160px] truncate">{req.reason}</td>
+                      <td className="px-4 py-3 text-sm text-on-surface-muted max-w-[260px]" title={req.reason ?? ''}>
+                        <div className="line-clamp-3 break-words whitespace-normal">{req.reason}</div>
+                      </td>
                       <td className="px-4 py-3 text-xs text-on-surface-muted whitespace-nowrap">
                         <div className="flex items-center gap-1 text-on-surface-subtle mb-0.5">
                           <User size={10} />
