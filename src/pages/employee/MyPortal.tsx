@@ -476,6 +476,23 @@ export default function MyPortal() {
   const [savingTeamReview, setSavingTeamReview] = useState(false);
 
   const empRef = user?.employee_id_ref;
+
+  // Performance Pulse fetch — must NOT depend on empRef. The /me endpoint
+  // uses x-user-id to resolve the user → employee link via email/name
+  // fallback, so it works for accounts where admin hasn't set the explicit
+  // employee_id_ref yet. Bundling this with the rest of the data load
+  // (which bails on missing empRef) meant Nidhi / coordinators / any
+  // un-linked user never saw a Pulse fetch at all.
+  useEffect(() => {
+    if (!user?.id) return;
+    api.getMyPulse()
+      .then(p => {
+        setPulse(p.latest ?? null);
+        setPulseTrend(p.trend ?? []);
+        setPulseResolvedVia(p.resolved_via ?? null);
+      })
+      .catch(() => {});
+  }, [user?.id]);
   const now = new Date();
   const currentYear = now.getFullYear();
   const currentMonth = now.getMonth() + 1;
@@ -503,13 +520,8 @@ export default function MyPortal() {
         // My laptop/asset + active repair tickets
         api.getAssets(emp.id).then(setMyAssets).catch(() => {});
         api.getRepairTickets(emp.id).then(setMyRepairTickets).catch(() => {});
-        api.getMyPulse()
-          .then(p => {
-            setPulse(p.latest ?? null);
-            setPulseTrend(p.trend ?? []);
-            setPulseResolvedVia(p.resolved_via ?? null);
-          })
-          .catch(() => {});
+        // (Pulse fetch moved to its own effect below — it doesn't depend on
+        // emp lookup, which bails when user.employee_id_ref is null.)
         // Optional leave pool for current year
         api.getOptionalLeaveAvailable(emp.id, new Date().getFullYear())
           .then(d => { setOptionalLeaveData(d); setOptionalLeaveLoaded(true); })
