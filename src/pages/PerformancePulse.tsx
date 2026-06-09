@@ -395,7 +395,7 @@ function RecentSignals({ breakdown }: { breakdown: any }) {
     <div className="space-y-2">
       <p className="text-[10px] uppercase tracking-[0.18em] font-bold text-on-surface-subtle">Recent signals (30d)</p>
       <ul className="text-xs text-on-surface-muted space-y-1">
-        {breakdown.discipline_misses && <li>Discipline: <strong>{breakdown.discipline_misses.late}</strong> late · <strong>{breakdown.discipline_misses.absences}</strong> absent · <strong>{breakdown.discipline_misses.leave_without_notice}</strong> last-minute</li>}
+        {breakdown.discipline_misses && <li>Discipline: <strong>{breakdown.discipline_misses.absences}</strong> absent · <strong>{breakdown.discipline_misses.leave_without_notice}</strong> last-minute</li>}
         {breakdown.hygiene && <li>Hours: <strong>{breakdown.hygiene.days_logged}/{breakdown.hygiene.working_days}</strong> days logged · <strong>{breakdown.hygiene.days_with_notes}</strong> with notes</li>}
         {breakdown.output_detail && <li>Output: <strong>{breakdown.output_detail.utilization_pct}%</strong> utilization · <strong>{breakdown.output_detail.approval_rate_pct}%</strong> approval rate</li>}
         {breakdown.contribution_detail && <li>Contribution: <strong>{breakdown.contribution_detail.goals_on_track}/{breakdown.contribution_detail.goals_total}</strong> goals · <strong>{breakdown.contribution_detail.upsells}</strong> upsells</li>}

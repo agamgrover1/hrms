@@ -192,7 +192,7 @@ function PulseBreakdownDrawer({
             <p className="text-[10px] uppercase tracking-[0.18em] font-bold text-on-surface-subtle">Recent signals (last 30 days)</p>
             <ul className="text-xs text-on-surface-muted space-y-1">
               {bd.discipline_misses && (
-                <li>Discipline: <strong>{bd.discipline_misses.late}</strong> late, <strong>{bd.discipline_misses.absences}</strong> absent, <strong>{bd.discipline_misses.leave_without_notice}</strong> last-minute leave</li>
+                <li>Discipline: <strong>{bd.discipline_misses.absences}</strong> absent, <strong>{bd.discipline_misses.leave_without_notice}</strong> last-minute leave</li>
               )}
               {bd.hygiene && (
                 <li>Hours hygiene: <strong>{bd.hygiene.days_logged}/{bd.hygiene.working_days}</strong> days logged · <strong>{bd.hygiene.days_with_notes}</strong> with notes</li>

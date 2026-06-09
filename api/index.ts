@@ -1890,24 +1890,21 @@ async function computePulseForDate(asOf: string, employeeIdsFilter?: string[] | 
     const isNewJoiner = emp.join_date && (new Date(asOf).getTime() - new Date(emp.join_date).getTime()) / 86400000 < 30;
 
     // ── Discipline ────────────────────────────────────────────────────
+    // Late arrivals deliberately don't penalise — the org calls these out
+    // separately, and traffic / shift slack made the 5-point/late hit feel
+    // punitive. Absences (15 pts each) + leave-without-notice (20 pts each)
+    // still count.
     const att = attByEmp.get(empId) ?? [];
-    let lateCount = 0, absences = 0;
-    const shiftStart = emp.shift === 'night' ? '22:00' : '09:30';
-    const [shH, shM] = shiftStart.split(':').map(Number);
-    const shiftMin = shH * 60 + shM;
+    let absences = 0;
     for (const a of att) {
       if (a.status === 'absent') absences++;
-      else if (a.check_in) {
-        const [h, m] = String(a.check_in).split(':').map(Number);
-        if (!Number.isNaN(h) && (h * 60 + m) > shiftMin + 15) lateCount++; // 15-min grace
-      }
     }
     // Leave-without-notice: leave applied <= day of from_date
     const lwn = (leaveByEmp.get(empId) ?? []).filter(l => {
       if (!l.applied_on || !l.from_date) return false;
       return new Date(l.applied_on).toISOString().slice(0, 10) >= String(l.from_date).slice(0, 10);
     }).length;
-    const discipline = clamp(100 - lateCount * 5 - absences * 15 - lwn * 20, 0, 100);
+    const discipline = clamp(100 - absences * 15 - lwn * 20, 0, 100);
 
     // ── Hours hygiene ─────────────────────────────────────────────────
     // A day "counts as logged" if there's EITHER a project hour-day entry
@@ -2026,7 +2023,7 @@ async function computePulseForDate(asOf: string, employeeIdsFilter?: string[] | 
     const rounded = Math.round(total);
 
     const breakdown: any = {
-      discipline_misses: { late: lateCount, absences, leave_without_notice: lwn },
+      discipline_misses: { absences, leave_without_notice: lwn },
       hygiene: { working_days: workingDays, days_logged: daysLogged, days_with_notes: daysWithNotes },
       output_detail: { utilization_pct: Math.round(utilPct), approval_rate_pct: Math.round(approvalRate), hours_logged: Math.round(totalHrsLogged), capacity_hours: capacityHrs },
       contribution_detail: { goals_total: gs.length, goals_on_track: goalsOnTrack, upsells: upsellCount },
