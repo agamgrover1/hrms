@@ -19,6 +19,7 @@ const PILLARS: Array<{ key: keyof PulseTeamRow; label: string }> = [
   { key: 'manager_pulse',    label: 'M.Pulse' },
   { key: 'team_stewardship', label: 'Stew.' },
   { key: 'project_hygiene',  label: 'Proj.' },
+  { key: 'client_handling',  label: 'Client' },
 ];
 
 function pillarColor(s: number | null) {
@@ -580,8 +581,20 @@ function RecentSignals({ breakdown }: { breakdown: any }) {
         )}
         {breakdown.contribution_detail && <li>Contribution: <strong>{breakdown.contribution_detail.upsells}</strong> upsell{breakdown.contribution_detail.upsells === 1 ? '' : 's'} raised</li>}
         {breakdown.manager_pulse_detail?.ratings_in_window > 0 && <li>Manager pulse: <strong>{breakdown.manager_pulse_detail.ratings_in_window}</strong> ratings · avg <strong>{breakdown.manager_pulse_detail.avg}</strong></li>}
-        {breakdown.team_stewardship_detail && <li>Team stewardship: <strong>{breakdown.team_stewardship_detail.team_logging_hygiene}%</strong> logging · <strong>{breakdown.team_stewardship_detail.approval_timeliness}%</strong> approvals on time</li>}
+        {breakdown.team_stewardship_detail && (
+          <li>Team stewardship: <strong>{breakdown.team_stewardship_detail.team_logging_hygiene}%</strong> logging · <strong>{breakdown.team_stewardship_detail.approval_timeliness}%</strong> approvals on time
+            {breakdown.team_stewardship_detail.review_check_active && breakdown.team_stewardship_detail.review_timeliness != null && <>
+              {' '}· <strong>{breakdown.team_stewardship_detail.review_timeliness}%</strong> prior-month reviews submitted
+              {breakdown.team_stewardship_detail.reviews_missing_count > 0 && <span className="text-danger"> ({breakdown.team_stewardship_detail.reviews_missing_count} missing)</span>}
+            </>}
+          </li>
+        )}
         {breakdown.project_hygiene_detail && <li>Project hygiene: <strong>{breakdown.project_hygiene_detail.logging_coverage}%</strong> coverage · <strong>{breakdown.project_hygiene_detail.approval_flow_through}%</strong> flow-through</li>}
+        {breakdown.client_handling_detail && (
+          breakdown.client_handling_detail.no_rating_yet
+            ? <li>Client handling: <em className="text-on-surface-subtle">no rating yet</em> · pillar redistributed</li>
+            : <li>Client handling: <strong>{breakdown.client_handling_detail.latest_score}/100</strong> from {breakdown.client_handling_detail.rated_month} review</li>
+        )}
       </ul>
     </div>
   );

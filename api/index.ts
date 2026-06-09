@@ -1012,6 +1012,12 @@ async function runStartupMigrations() {
     )`;
   await sql`CREATE INDEX IF NOT EXISTS idx_perf_snap_emp_date ON performance_score_snapshots(employee_id, snapshot_date DESC)`.catch(()=>{});
   await sql`CREATE INDEX IF NOT EXISTS idx_perf_snap_date ON performance_score_snapshots(snapshot_date DESC)`.catch(()=>{});
+  // Client Handling pillar — sourced from monthly_performance.client_satisfaction.
+  // Role-conditional like team_stewardship/project_hygiene (only people who
+  // actually handle clients carry it). Adding the column to all three pulse
+  // tables here; idempotent.
+  await sql`ALTER TABLE performance_score_snapshots ADD COLUMN IF NOT EXISTS client_handling NUMERIC`.catch(()=>{});
+  await sql`ALTER TABLE performance_monthly_snapshots ADD COLUMN IF NOT EXISTS client_handling NUMERIC`.catch(()=>{});
 
   await sql`
     CREATE TABLE IF NOT EXISTS performance_manager_pulse (
@@ -1036,10 +1042,13 @@ async function runStartupMigrations() {
       manager_pulse NUMERIC NOT NULL DEFAULT 1,
       team_stewardship NUMERIC NOT NULL DEFAULT 1,
       project_hygiene NUMERIC NOT NULL DEFAULT 1,
+      client_handling NUMERIC NOT NULL DEFAULT 1,
       updated_at TIMESTAMPTZ DEFAULT NOW(),
       updated_by TEXT
     )`;
   await sql`INSERT INTO performance_score_weights (department) VALUES ('_default') ON CONFLICT (department) DO NOTHING`;
+  // For existing weights rows from before client_handling existed.
+  await sql`ALTER TABLE performance_score_weights ADD COLUMN IF NOT EXISTS client_handling NUMERIC NOT NULL DEFAULT 1`.catch(()=>{});
 
   // End-of-month closing book for Pulse. Stores ONE row per employee per
   // month with whatever their latest daily snapshot was in that month. We
@@ -1849,7 +1858,7 @@ async function computePulseForDate(asOf: string, employeeIdsFilter?: string[] | 
   const [
     employees, attendance, leaves, hourDays, hourLogs,
     goals, upsells, pulseRatings, assignments, activeProjects, internalDays,
-    reportingGraphRows,
+    reportingGraphRows, monthlyPerfRows,
   ] = await Promise.all([
     fIds
       ? sql`SELECT e.id, e.name, e.department, e.reporting_manager_id, e.join_date, e.shift, e.status, u.role
@@ -1913,6 +1922,17 @@ async function computePulseForDate(asOf: string, employeeIdsFilter?: string[] | 
     sql`SELECT id, reporting_manager_id FROM employees
         WHERE reporting_manager_id IS NOT NULL
           AND COALESCE(status, 'active') = 'active'`,
+    // Monthly performance for the last 3 months — feeds two new things:
+    //   1. Team Stewardship's review_timeliness: did manager submit
+    //      prior-month reviews for their reports by day 5?
+    //   2. Client Handling pillar: latest client_satisfaction score.
+    // 3-month window is enough to catch missing prior-month reviews and to
+    // smooth a stale most-recent rating.
+    sql`SELECT employee_id, reviewer_id, month, year, client_satisfaction, overall_score, created_at
+        FROM monthly_performance
+        WHERE (year * 12 + month) >= (
+          (EXTRACT(YEAR FROM ${asOf}::date)::int * 12 + EXTRACT(MONTH FROM ${asOf}::date)::int) - 3
+        )`,
   ]) as any[][];
   _phase.reads = Date.now() - _t; _t = Date.now();
 
@@ -1933,6 +1953,15 @@ async function computePulseForDate(asOf: string, employeeIdsFilter?: string[] | 
   pulseRatings.forEach(r => { (pulseByEmp.get(r.employee_id) ?? pulseByEmp.set(r.employee_id, []).get(r.employee_id))!.push(r); });
   const internalByEmp = new Map<string, any[]>();
   internalDays.forEach(r => { (internalByEmp.get(r.employee_id) ?? internalByEmp.set(r.employee_id, []).get(r.employee_id))!.push(r); });
+  // Monthly performance: by (employee_id, year, month) — for the review
+  // timeliness check; and by employee_id (most recent) — for client_handling.
+  const perfByEmpMonth = new Map<string, any>();
+  const perfByEmp = new Map<string, any[]>();
+  (monthlyPerfRows as any[]).forEach(r => {
+    perfByEmpMonth.set(`${r.employee_id}|${r.year}|${r.month}`, r);
+    const arr = perfByEmp.get(r.employee_id) ?? [];
+    arr.push(r); perfByEmp.set(r.employee_id, arr);
+  });
 
   // helpers
   const workingDays = (() => {
@@ -2071,11 +2100,17 @@ async function computePulseForDate(asOf: string, employeeIdsFilter?: string[] | 
       : null;
 
     // ── Team stewardship (managers only) ──────────────────────────────
+    // Three components:
+    //   35% — approval timeliness (own log approvals < 48h)
+    //   35% — team logging hygiene (avg of reports' days-logged %)
+    //   30% — review timeliness (% of reports with prior-month review
+    //         submitted by day 5 of current month)
+    // Review timeliness is skipped before day 5 of the current month —
+    // it's not due yet. When skipped, the other two redistribute (50/50).
     const directReports = reportsByMgr.get(empId) ?? [];
     let teamStewardship: number | null = null;
     let stewardshipDetail: any = null;
     if (directReports.length > 0) {
-      // approval timeliness on logs where this person is the approver
       const myApprovals = hourLogs.filter(r => r.reviewed_by_id === empId && r.status === 'approved');
       let timely = 0;
       for (const a of myApprovals) {
@@ -2085,7 +2120,6 @@ async function computePulseForDate(asOf: string, employeeIdsFilter?: string[] | 
         }
       }
       const approvalTimely = myApprovals.length ? (timely / myApprovals.length) * 100 : 100;
-      // team logging hygiene = avg of each report's hours-hygiene
       const teamHh: number[] = [];
       for (const r of directReports) {
         const rhd = hdByEmp.get(r.id) ?? [];
@@ -2093,8 +2127,69 @@ async function computePulseForDate(asOf: string, employeeIdsFilter?: string[] | 
         teamHh.push((dl / workingDays) * 100);
       }
       const teamHygiene = teamHh.length ? teamHh.reduce((s, n) => s + n, 0) / teamHh.length : 0;
-      teamStewardship = clamp(approvalTimely * 0.5 + teamHygiene * 0.5, 0, 100);
-      stewardshipDetail = { approval_timeliness: Math.round(approvalTimely), team_logging_hygiene: Math.round(teamHygiene), team_size: directReports.length, approvals_made: myApprovals.length };
+
+      // Review timeliness — only active after day 5 of the current month.
+      // We check whether each direct report has a monthly_performance row
+      // for the PREVIOUS calendar month (regardless of reviewer — usually
+      // it'll be this manager).
+      const asOfDate = new Date(asOf);
+      const dayOfMonth = asOfDate.getUTCDate();
+      let reviewTimely: number | null = null;
+      let reviewedCount = 0;
+      let missingReports: string[] = [];
+      if (dayOfMonth >= 5) {
+        const prevMonth = asOfDate.getUTCMonth() === 0 ? 12 : asOfDate.getUTCMonth();
+        const prevYear  = asOfDate.getUTCMonth() === 0 ? asOfDate.getUTCFullYear() - 1 : asOfDate.getUTCFullYear();
+        for (const r of directReports) {
+          const has = perfByEmpMonth.has(`${r.id}|${prevYear}|${prevMonth}`);
+          if (has) reviewedCount++;
+          else missingReports.push(r.id);
+        }
+        reviewTimely = directReports.length ? (reviewedCount / directReports.length) * 100 : 100;
+      }
+
+      teamStewardship = reviewTimely == null
+        ? clamp(approvalTimely * 0.5 + teamHygiene * 0.5, 0, 100)
+        : clamp(approvalTimely * 0.35 + teamHygiene * 0.35 + reviewTimely * 0.30, 0, 100);
+
+      stewardshipDetail = {
+        approval_timeliness: Math.round(approvalTimely),
+        team_logging_hygiene: Math.round(teamHygiene),
+        team_size: directReports.length,
+        approvals_made: myApprovals.length,
+        review_timeliness: reviewTimely != null ? Math.round(reviewTimely) : null,
+        reviews_done: reviewTimely != null ? reviewedCount : null,
+        reviews_missing_count: reviewTimely != null ? missingReports.length : null,
+        review_check_active: reviewTimely != null,
+      };
+    }
+
+    // ── Client Handling (managers + coordinators + admins) ────────────
+    // Sourced from monthly_performance.client_satisfaction — the rating
+    // their reviewer gives them each month on messaging, handling tough
+    // clients, interaction quality, retention. Latest row wins.
+    // For ICs and anyone without client-facing role: pillar redistributes.
+    let clientHandling: number | null = null;
+    let clientHandlingDetail: any = null;
+    const handlesClients = directReports.length > 0
+      || emp.role === 'project_coordinator'
+      || emp.role === 'admin';
+    if (handlesClients) {
+      const perfList = (perfByEmp.get(empId) ?? []).slice().sort((a: any, b: any) =>
+        (b.year * 12 + b.month) - (a.year * 12 + a.month)
+      );
+      const latest = perfList[0];
+      if (latest && latest.client_satisfaction != null) {
+        clientHandling = clamp(Number(latest.client_satisfaction), 0, 100);
+        clientHandlingDetail = {
+          latest_score: Math.round(clientHandling),
+          rated_month: `${latest.year}-${String(latest.month).padStart(2, '0')}`,
+          source: 'monthly_performance.client_satisfaction',
+        };
+      } else {
+        // Eligible but never rated — pillar redistributes; UI hints why.
+        clientHandlingDetail = { no_rating_yet: true };
+      }
     }
 
     // ── Project hygiene (coordinators only) ───────────────────────────
@@ -2137,6 +2232,7 @@ async function computePulseForDate(asOf: string, employeeIdsFilter?: string[] | 
       manager_pulse: managerPulse,
       team_stewardship: teamStewardship,
       project_hygiene: projectHygiene,
+      client_handling: clientHandling,
     };
     const present = Object.entries(pillars).filter(([, v]) => v != null) as [string, number][];
     const total = present.length ? present.reduce((s, [, v]) => s + v, 0) / present.length : 0;
@@ -2150,6 +2246,7 @@ async function computePulseForDate(asOf: string, employeeIdsFilter?: string[] | 
       manager_pulse_detail: { ratings_in_window: pulses.length, avg: managerPulse != null ? Math.round(managerPulse) : null },
       team_stewardship_detail: stewardshipDetail,
       project_hygiene_detail: projHygieneDetail,
+      client_handling_detail: clientHandlingDetail,
     };
 
     snapshots.push({
@@ -2162,6 +2259,7 @@ async function computePulseForDate(asOf: string, employeeIdsFilter?: string[] | 
         manager_pulse: managerPulse != null ? Math.round(managerPulse) : null,
         team_stewardship: teamStewardship != null ? Math.round(teamStewardship) : null,
         project_hygiene: projectHygiene != null ? Math.round(projectHygiene) : null,
+        client_handling: clientHandling != null ? Math.round(clientHandling) : null,
       },
       total: rounded,
       band: isNewJoiner ? 'baseline' : bandFor(rounded),
@@ -2183,6 +2281,7 @@ async function computePulseForDate(asOf: string, employeeIdsFilter?: string[] | 
       manager_pulse: s.pillars.manager_pulse,
       team_stewardship: s.pillars.team_stewardship,
       project_hygiene: s.pillars.project_hygiene,
+      client_handling: s.pillars.client_handling,
       total_score: s.total,
       band: s.band,
       is_baseline: s.baseline,
@@ -2191,23 +2290,25 @@ async function computePulseForDate(asOf: string, employeeIdsFilter?: string[] | 
     await sql`
       INSERT INTO performance_score_snapshots
         (employee_id, snapshot_date, discipline, hours_hygiene, output, contribution,
-         manager_pulse, team_stewardship, project_hygiene, total_score, band, is_baseline, breakdown)
+         manager_pulse, team_stewardship, project_hygiene, client_handling,
+         total_score, band, is_baseline, breakdown)
       SELECT
         employee_id, ${asOf}::date,
         discipline, hours_hygiene, output, contribution,
-        manager_pulse, team_stewardship, project_hygiene,
+        manager_pulse, team_stewardship, project_hygiene, client_handling,
         total_score, band, is_baseline, breakdown
       FROM jsonb_to_recordset(${JSON.stringify(payload)}::jsonb) AS x(
         employee_id text,
         discipline numeric, hours_hygiene numeric, output numeric, contribution numeric,
-        manager_pulse numeric, team_stewardship numeric, project_hygiene numeric,
+        manager_pulse numeric, team_stewardship numeric, project_hygiene numeric, client_handling numeric,
         total_score numeric, band text, is_baseline boolean, breakdown jsonb
       )
       ON CONFLICT (employee_id, snapshot_date) DO UPDATE SET
         discipline=EXCLUDED.discipline, hours_hygiene=EXCLUDED.hours_hygiene,
         output=EXCLUDED.output, contribution=EXCLUDED.contribution,
         manager_pulse=EXCLUDED.manager_pulse, team_stewardship=EXCLUDED.team_stewardship,
-        project_hygiene=EXCLUDED.project_hygiene, total_score=EXCLUDED.total_score,
+        project_hygiene=EXCLUDED.project_hygiene, client_handling=EXCLUDED.client_handling,
+        total_score=EXCLUDED.total_score,
         band=EXCLUDED.band, is_baseline=EXCLUDED.is_baseline, breakdown=EXCLUDED.breakdown`;
   }
   _phase.writeSnaps = Date.now() - _t; _t = Date.now();
@@ -2318,10 +2419,10 @@ async function closeMonthlyPulse(month: number, year: number): Promise<{ closed:
   const rows = await sql`
     INSERT INTO performance_monthly_snapshots
       (employee_id, month, year, total_score, band, discipline, hours_hygiene, output, contribution,
-       manager_pulse, team_stewardship, project_hygiene, is_baseline, breakdown)
+       manager_pulse, team_stewardship, project_hygiene, client_handling, is_baseline, breakdown)
     SELECT DISTINCT ON (employee_id)
       employee_id, ${month}, ${year}, total_score, band, discipline, hours_hygiene, output, contribution,
-      manager_pulse, team_stewardship, project_hygiene, is_baseline, breakdown
+      manager_pulse, team_stewardship, project_hygiene, client_handling, is_baseline, breakdown
     FROM performance_score_snapshots
     WHERE EXTRACT(YEAR FROM snapshot_date) = ${year}
       AND EXTRACT(MONTH FROM snapshot_date) = ${month}
@@ -2336,6 +2437,7 @@ async function closeMonthlyPulse(month: number, year: number): Promise<{ closed:
       manager_pulse    = EXCLUDED.manager_pulse,
       team_stewardship = EXCLUDED.team_stewardship,
       project_hygiene  = EXCLUDED.project_hygiene,
+      client_handling  = EXCLUDED.client_handling,
       is_baseline      = EXCLUDED.is_baseline,
       breakdown        = EXCLUDED.breakdown,
       closed_at        = NOW()

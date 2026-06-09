@@ -12,6 +12,7 @@ export interface PulseSnapshot {
   manager_pulse: number | null;
   team_stewardship: number | null;
   project_hygiene: number | null;
+  client_handling: number | null;
   total_score: number;
   band: 'excellent' | 'strong' | 'building' | 'needs_support' | 'baseline';
   is_baseline: boolean;
@@ -24,7 +25,7 @@ export interface PulseTeamRow {
   total_score: number | null; band: string | null;
   discipline: number | null; hours_hygiene: number | null;
   output: number | null; contribution: number | null;
-  manager_pulse: number | null; team_stewardship: number | null; project_hygiene: number | null;
+  manager_pulse: number | null; team_stewardship: number | null; project_hygiene: number | null; client_handling: number | null;
   is_baseline: boolean | null; snapshot_date: string | null;
   pulse_rated_this_week?: boolean; week_start?: string;
 }
@@ -563,7 +564,7 @@ export const api = {
       employee_id: string; name: string; department: string | null; designation: string | null;
       month: number; year: number; total_score: number; band: string;
       discipline: number | null; hours_hygiene: number | null; output: number | null; contribution: number | null;
-      manager_pulse: number | null; team_stewardship: number | null; project_hygiene: number | null;
+      manager_pulse: number | null; team_stewardship: number | null; project_hygiene: number | null; client_handling: number | null;
       is_baseline: boolean;
     }> }>(`/performance/pulse/monthly?${qs}`);
   },

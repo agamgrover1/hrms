@@ -130,6 +130,7 @@ const PULSE_PILLARS = [
   { key: 'manager_pulse',     label: 'Manager pulse',     hint: 'Weekly 1-tap rating from your manager' },
   { key: 'team_stewardship',  label: 'Team stewardship',  hint: 'Your team\'s logging + your approval speed' },
   { key: 'project_hygiene',   label: 'Project hygiene',   hint: 'Logging coverage + approval flow across projects' },
+  { key: 'client_handling',   label: 'Client handling',   hint: 'Messaging, handling tough clients, retention' },
 ] as const;
 function PulseBreakdownDrawer({
   open, onClose, snapshot, trend,
@@ -210,10 +211,20 @@ function PulseBreakdownDrawer({
                 <li>Manager pulse: <strong>{bd.manager_pulse_detail.ratings_in_window}</strong> ratings · avg <strong>{bd.manager_pulse_detail.avg}</strong></li>
               )}
               {bd.team_stewardship_detail && (
-                <li>Team: <strong>{bd.team_stewardship_detail.team_logging_hygiene}%</strong> team logging · <strong>{bd.team_stewardship_detail.approval_timeliness}%</strong> approvals within 48h</li>
+                <li>Team: <strong>{bd.team_stewardship_detail.team_logging_hygiene}%</strong> team logging · <strong>{bd.team_stewardship_detail.approval_timeliness}%</strong> approvals within 48h
+                  {bd.team_stewardship_detail.review_check_active && bd.team_stewardship_detail.review_timeliness != null && <>
+                    {' '}· <strong>{bd.team_stewardship_detail.review_timeliness}%</strong> reviews submitted
+                    {bd.team_stewardship_detail.reviews_missing_count > 0 && <span className="text-danger"> ({bd.team_stewardship_detail.reviews_missing_count} missing)</span>}
+                  </>}
+                </li>
               )}
               {bd.project_hygiene_detail && (
                 <li>Projects: <strong>{bd.project_hygiene_detail.logging_coverage}%</strong> coverage · <strong>{bd.project_hygiene_detail.approval_flow_through}%</strong> flow-through</li>
+              )}
+              {bd.client_handling_detail && (
+                bd.client_handling_detail.no_rating_yet
+                  ? <li>Client handling: <em className="text-on-surface-subtle">no rating yet</em> · pillar redistributed</li>
+                  : <li>Client handling: <strong>{bd.client_handling_detail.latest_score}/100</strong> from {bd.client_handling_detail.rated_month} review</li>
               )}
             </ul>
           </div>

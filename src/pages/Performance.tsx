@@ -17,7 +17,7 @@ const CATEGORIES = [
   { key: 'teamwork',            label: 'Teamwork' },
   { key: 'attendance_score',    label: 'Attendance' },
   { key: 'initiative',          label: 'Initiative' },
-  { key: 'client_satisfaction', label: 'Client Satisfaction' },
+  { key: 'client_satisfaction', label: 'Client Handling', hint: 'Messaging quality · handling tough clients · interaction · retention. Feeds the Client Handling pillar on Pulse.' },
   { key: 'ai_usage',            label: 'AI Usage' },
 ] as const;
 
@@ -253,15 +253,17 @@ function AddReviewModal({
             <p className="text-xs text-on-surface-subtle mt-1">Average of <span className="num-mono">{CATEGORIES.length}</span> parameters</p>
           </div>
 
-          {CATEGORIES.map(({ key, label }) => (
-            <ScoreInput
-              key={key}
-              label={label}
-              value={scores[key]}
-              onChange={v => setScores(s => ({ ...s, [key]: v }))}
-              note={paramNotes[key] ?? ''}
-              onNoteChange={v => setParamNotes(n => ({ ...n, [key]: v }))}
-            />
+          {CATEGORIES.map(({ key, label, hint }: any) => (
+            <div key={key}>
+              <ScoreInput
+                label={label}
+                value={scores[key]}
+                onChange={v => setScores(s => ({ ...s, [key]: v }))}
+                note={paramNotes[key] ?? ''}
+                onNoteChange={v => setParamNotes(n => ({ ...n, [key]: v }))}
+              />
+              {hint && <p className="text-[10px] text-on-surface-subtle leading-snug mt-1 ml-1">{hint}</p>}
+            </div>
           ))}
 
           <div>

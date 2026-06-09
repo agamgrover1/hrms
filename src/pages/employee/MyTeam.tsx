@@ -18,7 +18,7 @@ const SCORE_CATEGORIES = [
   { key: 'teamwork',            label: 'Teamwork' },
   { key: 'attendance_score',    label: 'Attendance' },
   { key: 'initiative',          label: 'Initiative' },
-  { key: 'client_satisfaction', label: 'Client Satisfaction' },
+  { key: 'client_satisfaction', label: 'Client Handling', hint: 'Messaging · handling tough clients · interaction · retention. Feeds the Client Handling pillar on Pulse.' },
   { key: 'ai_usage',            label: 'AI Usage' },
 ] as const;
 
@@ -187,6 +187,7 @@ const PULSE_PILLAR_DEFS = [
   { key: 'manager_pulse',     label: 'Manager pulse' },
   { key: 'team_stewardship',  label: 'Team stewardship' },
   { key: 'project_hygiene',   label: 'Project hygiene' },
+  { key: 'client_handling',   label: 'Client handling' },
 ] as const;
 function PulsePillarList({ snapshot }: { snapshot: any }) {
   const bd = snapshot.breakdown ?? {};
@@ -236,8 +237,20 @@ function PulsePillarList({ snapshot }: { snapshot: any }) {
               : <li>Output: <strong>{bd.output_detail.project_logged}h</strong> of <strong>{bd.output_detail.allocated_hours}h</strong> ({bd.output_detail.allocation_pct}%) · <strong>{bd.output_detail.approval_rate_pct}%</strong> approvals{bd.output_detail.extra_effort_bonus > 0 && <> · <strong>+{bd.output_detail.extra_effort_bonus}</strong> extra</>}</li>
           )}
           {bd.contribution_detail && <li>Contribution: <strong>{bd.contribution_detail.upsells}</strong> upsell{bd.contribution_detail.upsells === 1 ? '' : 's'} raised</li>}
-          {bd.team_stewardship_detail && <li>Team stewardship: <strong>{bd.team_stewardship_detail.team_logging_hygiene}%</strong> logging · <strong>{bd.team_stewardship_detail.approval_timeliness}%</strong> approvals on time</li>}
+          {bd.team_stewardship_detail && (
+            <li>Team stewardship: <strong>{bd.team_stewardship_detail.team_logging_hygiene}%</strong> logging · <strong>{bd.team_stewardship_detail.approval_timeliness}%</strong> approvals on time
+              {bd.team_stewardship_detail.review_check_active && bd.team_stewardship_detail.review_timeliness != null && <>
+                {' '}· <strong>{bd.team_stewardship_detail.review_timeliness}%</strong> reviews
+                {bd.team_stewardship_detail.reviews_missing_count > 0 && <span className="text-danger"> ({bd.team_stewardship_detail.reviews_missing_count} missing)</span>}
+              </>}
+            </li>
+          )}
           {bd.project_hygiene_detail && <li>Project hygiene: <strong>{bd.project_hygiene_detail.logging_coverage}%</strong> coverage · <strong>{bd.project_hygiene_detail.approval_flow_through}%</strong> flow-through</li>}
+          {bd.client_handling_detail && (
+            bd.client_handling_detail.no_rating_yet
+              ? <li>Client handling: <em className="text-on-surface-subtle">no rating yet</em></li>
+              : <li>Client handling: <strong>{bd.client_handling_detail.latest_score}/100</strong> from {bd.client_handling_detail.rated_month}</li>
+          )}
         </ul>
       </div>
     </div>
@@ -1135,10 +1148,11 @@ export default function MyTeam() {
                   return <p className="num-mono text-3xl font-semibold" style={{ color: perfColor(overall) }}>{overall}</p>;
                 })()}
               </div>
-              {SCORE_CATEGORIES.map(({ key, label }) => (
+              {SCORE_CATEGORIES.map(({ key, label, hint }: any) => (
                 <div key={key} className="space-y-1.5">
                   <ScoreSlider label={label} value={scores[key] ?? 75}
                     onChange={v => setScores(p => ({ ...p, [key]: v }))} />
+                  {hint && <p className="text-[10px] text-on-surface-subtle leading-snug -mt-1">{hint}</p>}
                   <textarea
                     value={paramNotes[key] ?? ''}
                     onChange={e => setParamNotes(p => ({ ...p, [key]: e.target.value }))}
