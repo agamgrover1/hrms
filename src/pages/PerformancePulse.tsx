@@ -90,10 +90,19 @@ export default function PerformancePulse() {
       setDrawer({ row, data: null });
     }
   }
+  const [recomputeMsg, setRecomputeMsg] = useState<{ tone: 'success' | 'error'; text: string } | null>(null);
   async function recompute() {
     setRecomputing(true);
-    try { await api.recomputePulse(); load(); }
-    finally { setRecomputing(false); }
+    setRecomputeMsg(null);
+    try {
+      const r = await api.recomputePulse();
+      setRecomputeMsg({ tone: 'success', text: `Computed ${r.computed} snapshot${r.computed === 1 ? '' : 's'} for ${r.as_of}.` });
+      load();
+    } catch (e: any) {
+      setRecomputeMsg({ tone: 'error', text: e.message ?? 'Recompute failed' });
+    } finally {
+      setRecomputing(false);
+    }
   }
   async function openWeights() {
     setShowWeights(true);
@@ -127,6 +136,26 @@ export default function PerformancePulse() {
           </button>
         </div>
       </div>
+
+      {/* Recompute feedback */}
+      {recomputeMsg && (
+        <div className={`rounded-xl-2 border p-3 text-sm ${
+          recomputeMsg.tone === 'success'
+            ? 'border-success/30 bg-success-container/40 text-success'
+            : 'border-danger/30 bg-danger-container/40 text-danger'
+        }`}>{recomputeMsg.text}</div>
+      )}
+
+      {/* Empty-state banner — common confusion: "the page shows people but no numbers".
+          Triggers when no employee has a snapshot yet. Tells admin exactly what to click. */}
+      {!loading && rows.length > 0 && counts.missing === rows.length && (
+        <div className="rounded-xl-2 border border-warning/40 bg-warning-container/30 p-4 flex items-center justify-between gap-4">
+          <div className="text-xs text-on-surface-muted">
+            <p className="text-on-surface font-semibold text-sm mb-0.5">No snapshots yet</p>
+            <p>The nightly cron hasn't run since the Pulse tables were created. Click <b className="text-on-surface">Recompute now</b> above to populate scores for everyone. After that, snapshots refresh automatically every night.</p>
+          </div>
+        </div>
+      )}
 
       {/* KPI strip */}
       <div className="grid grid-cols-2 sm:grid-cols-6 gap-3">
