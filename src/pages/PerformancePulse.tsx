@@ -397,7 +397,11 @@ function RecentSignals({ breakdown }: { breakdown: any }) {
       <ul className="text-xs text-on-surface-muted space-y-1">
         {breakdown.discipline_misses && <li>Discipline: <strong>{breakdown.discipline_misses.absences}</strong> absent · <strong>{breakdown.discipline_misses.leave_without_notice}</strong> last-minute</li>}
         {breakdown.hygiene && <li>Hours: <strong>{breakdown.hygiene.days_logged}/{breakdown.hygiene.working_days}</strong> days logged · <strong>{breakdown.hygiene.days_with_notes}</strong> with notes</li>}
-        {breakdown.output_detail && <li>Output: <strong>{breakdown.output_detail.utilization_pct}%</strong> utilization · <strong>{breakdown.output_detail.approval_rate_pct}%</strong> approval rate</li>}
+        {breakdown.output_detail && (
+          breakdown.output_detail.no_allocation
+            ? <li>Output: <em className="text-on-surface-subtle">no project allocation</em> · pillar redistributed</li>
+            : <li>Output: logged <strong>{breakdown.output_detail.project_logged}h</strong> of <strong>{breakdown.output_detail.allocated_hours}h</strong> allocated ({breakdown.output_detail.allocation_pct}%) · <strong>{breakdown.output_detail.approval_rate_pct}%</strong> approval rate{breakdown.output_detail.extra_effort_bonus > 0 && <> · <strong>+{breakdown.output_detail.extra_effort_bonus}</strong> extra effort</>}</li>
+        )}
         {breakdown.contribution_detail && <li>Contribution: <strong>{breakdown.contribution_detail.goals_on_track}/{breakdown.contribution_detail.goals_total}</strong> goals · <strong>{breakdown.contribution_detail.upsells}</strong> upsells</li>}
         {breakdown.manager_pulse_detail?.ratings_in_window > 0 && <li>Manager pulse: <strong>{breakdown.manager_pulse_detail.ratings_in_window}</strong> ratings · avg <strong>{breakdown.manager_pulse_detail.avg}</strong></li>}
         {breakdown.team_stewardship_detail && <li>Team stewardship: <strong>{breakdown.team_stewardship_detail.team_logging_hygiene}%</strong> logging · <strong>{breakdown.team_stewardship_detail.approval_timeliness}%</strong> approvals on time</li>}

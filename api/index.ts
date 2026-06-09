@@ -1934,14 +1934,63 @@ async function computePulseForDate(asOf: string, employeeIdsFilter?: string[] | 
     const hh = clamp((daysLogged / workingDays) * 70 + (daysLogged ? (daysWithNotes / daysLogged) * 30 : 0), 0, 100);
 
     // ── Output ────────────────────────────────────────────────────────
+    // Measures what the employee actually controls: did they log against
+    // their allocation, and did managers approve those logs. Unallocated
+    // employees (HR, recruiters, between-projects) get null — pillar
+    // weight redistributes. Penalising someone for not having work
+    // assigned is the company's failure, not the employee's.
     const hl = hlByEmp.get(empId) ?? [];
-    const totalHrsLogged = hd.reduce((s, r) => s + Number(r.hours ?? 0), 0);
-    const capacityHrs = workingDays * 8;
-    const utilPct = capacityHrs ? clamp((totalHrsLogged / capacityHrs) * 100, 0, 100) : 0;
+    const projectHrsLogged = hd.reduce((s, r) => s + Number(r.hours ?? 0), 0);
+    const internalHrsLogged = id_.reduce((s, r) => s + Number(r.hours ?? 0), 0);
+    // Allocation for the window's months. Most cases collapse to current
+    // month; mid-month-spanning windows pick up both.
+    const winMonths = new Set<string>();
+    {
+      const d = new Date(windowStartStr);
+      const end = new Date(asOf);
+      while (d <= end) {
+        winMonths.add(`${d.getUTCFullYear()}-${d.getUTCMonth() + 1}`);
+        d.setUTCDate(d.getUTCDate() + 7);
+      }
+    }
+    const allocatedHours = assignments
+      .filter(a => a.employee_id === empId && winMonths.has(`${a.year}-${a.month}`))
+      .reduce((s, a) => s + Number(a.monthly_hours ?? 0), 0);
+
+    let output: number | null = null;
+    let outputDetail: any;
     const approved = hl.filter(r => r.status === 'approved').length;
     const submitted = hl.filter(r => r.status !== 'pending').length;
     const approvalRate = submitted ? (approved / submitted) * 100 : 100;
-    const output = clamp(utilPct * 0.7 + approvalRate * 0.3, 0, 100);
+    if (allocatedHours > 0) {
+      // Did they log their allocation? Capped at 100 so over-logging doesn't
+      // dominate; the surplus instead feeds the extra-effort bonus.
+      const allocPct = clamp((projectHrsLogged / allocatedHours) * 100, 0, 100);
+      // Extra effort = project hours beyond allocation + internal hours.
+      // Bonus capped at 20 pts — pushes a strong contributor from 80 → 100
+      // but can't paper over a missed allocation.
+      const overAllocHrs = Math.max(0, projectHrsLogged - allocatedHours);
+      const bonusHrs = overAllocHrs + internalHrsLogged;
+      const bonusPts = clamp((bonusHrs / Math.max(allocatedHours * 0.25, 1)) * 20, 0, 20);
+      output = clamp(allocPct * 0.7 + approvalRate * 0.3 + bonusPts, 0, 100);
+      outputDetail = {
+        allocated_hours: Math.round(allocatedHours),
+        project_logged: Math.round(projectHrsLogged),
+        internal_logged: Math.round(internalHrsLogged),
+        allocation_pct: Math.round(allocPct),
+        approval_rate_pct: Math.round(approvalRate),
+        extra_effort_bonus: Math.round(bonusPts),
+      };
+    } else {
+      // Not allocated this window — Output pillar skipped, weight redistributes.
+      output = null;
+      outputDetail = {
+        allocated_hours: 0,
+        project_logged: Math.round(projectHrsLogged),
+        internal_logged: Math.round(internalHrsLogged),
+        no_allocation: true,
+      };
+    }
 
     // ── Contribution ──────────────────────────────────────────────────
     const gs = goalsByEmp.get(empId) ?? [];
@@ -2035,7 +2084,7 @@ async function computePulseForDate(asOf: string, employeeIdsFilter?: string[] | 
     const breakdown: any = {
       discipline_misses: { absences, leave_without_notice: lwn },
       hygiene: { working_days: workingDays, days_logged: daysLogged, days_with_notes: daysWithNotes },
-      output_detail: { utilization_pct: Math.round(utilPct), approval_rate_pct: Math.round(approvalRate), hours_logged: Math.round(totalHrsLogged), capacity_hours: capacityHrs },
+      output_detail: outputDetail,
       contribution_detail: { goals_total: gs.length, goals_on_track: goalsOnTrack, upsells: upsellCount },
       manager_pulse_detail: { ratings_in_window: pulses.length, avg: managerPulse != null ? Math.round(managerPulse) : null },
       team_stewardship_detail: stewardshipDetail,

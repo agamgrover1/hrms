@@ -198,7 +198,9 @@ function PulseBreakdownDrawer({
                 <li>Hours hygiene: <strong>{bd.hygiene.days_logged}/{bd.hygiene.working_days}</strong> days logged · <strong>{bd.hygiene.days_with_notes}</strong> with notes</li>
               )}
               {bd.output_detail && (
-                <li>Output: <strong>{bd.output_detail.utilization_pct}%</strong> utilization · <strong>{bd.output_detail.approval_rate_pct}%</strong> approval rate</li>
+                bd.output_detail.no_allocation
+                  ? <li>Output: <em className="text-on-surface-subtle">no project allocation</em> · pillar redistributed across other pillars</li>
+                  : <li>Output: logged <strong>{bd.output_detail.project_logged}h</strong> of <strong>{bd.output_detail.allocated_hours}h</strong> allocated ({bd.output_detail.allocation_pct}%) · <strong>{bd.output_detail.approval_rate_pct}%</strong> approval rate{bd.output_detail.extra_effort_bonus > 0 && <> · <strong>+{bd.output_detail.extra_effort_bonus}</strong> extra effort</>}</li>
               )}
               {bd.contribution_detail && (
                 <li>Contribution: <strong>{bd.contribution_detail.goals_on_track}/{bd.contribution_detail.goals_total}</strong> goals on track · <strong>{bd.contribution_detail.upsells}</strong> upsells</li>

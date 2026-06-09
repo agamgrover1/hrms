@@ -144,7 +144,11 @@ function PulsePillarList({ snapshot }: { snapshot: any }) {
         <ul className="text-xs text-on-surface-muted space-y-1">
           {bd.discipline_misses && <li>Discipline: <strong>{bd.discipline_misses.absences}</strong> absent · <strong>{bd.discipline_misses.leave_without_notice}</strong> last-minute</li>}
           {bd.hygiene && <li>Hours: <strong>{bd.hygiene.days_logged}/{bd.hygiene.working_days}</strong> days logged · <strong>{bd.hygiene.days_with_notes}</strong> with notes</li>}
-          {bd.output_detail && <li>Output: <strong>{bd.output_detail.utilization_pct}%</strong> utilization · <strong>{bd.output_detail.approval_rate_pct}%</strong> approvals</li>}
+          {bd.output_detail && (
+            bd.output_detail.no_allocation
+              ? <li>Output: <em className="text-on-surface-subtle">no project allocation</em> · pillar redistributed</li>
+              : <li>Output: <strong>{bd.output_detail.project_logged}h</strong> of <strong>{bd.output_detail.allocated_hours}h</strong> ({bd.output_detail.allocation_pct}%) · <strong>{bd.output_detail.approval_rate_pct}%</strong> approvals{bd.output_detail.extra_effort_bonus > 0 && <> · <strong>+{bd.output_detail.extra_effort_bonus}</strong> extra</>}</li>
+          )}
           {bd.contribution_detail && <li>Contribution: <strong>{bd.contribution_detail.goals_on_track}/{bd.contribution_detail.goals_total}</strong> goals on track · <strong>{bd.contribution_detail.upsells}</strong> upsells</li>}
           {bd.team_stewardship_detail && <li>Team stewardship: <strong>{bd.team_stewardship_detail.team_logging_hygiene}%</strong> logging · <strong>{bd.team_stewardship_detail.approval_timeliness}%</strong> approvals on time</li>}
           {bd.project_hygiene_detail && <li>Project hygiene: <strong>{bd.project_hygiene_detail.logging_coverage}%</strong> coverage · <strong>{bd.project_hygiene_detail.approval_flow_through}%</strong> flow-through</li>}
