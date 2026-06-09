@@ -133,6 +133,13 @@ export default function Sidebar() {
     // Coord sees Project Mgmt + Invoices + their own personal nav (rendered below)
     groups.push(projectGroup);
     groups.push(coordFinanceGroup);
+    // Coord also gets the org Pulse page (read-only). Same surface admin sees,
+    // backend role check widened to include them.
+    groups.push({
+      id: 'people-coord',
+      label: 'People',
+      items: [{ to: '/performance/pulse', icon: Activity, label: 'Pulse (org)' }],
+    });
   }
 
   // Personal nav — everyone with an employee profile (including admin) gets

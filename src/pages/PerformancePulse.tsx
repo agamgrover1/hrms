@@ -11,7 +11,7 @@ import type { PulseTeamRow, PulseWeights } from '../services/api';
 
 const PILLARS: Array<{ key: keyof PulseTeamRow; label: string }> = [
   { key: 'discipline',       label: 'Disc.' },
-  { key: 'hours_hygiene',    label: 'Hyg.' },
+  { key: 'hours_hygiene',    label: 'Hours' },
   { key: 'output',           label: 'Out.' },
   { key: 'contribution',     label: 'Contr.' },
   { key: 'manager_pulse',    label: 'M.Pulse' },
@@ -347,7 +347,7 @@ export default function PerformancePulse() {
                 <thead>
                   <tr className="bg-surface-2 border-b border-outline">
                     <th className="text-left px-3 py-2 font-semibold text-on-surface-subtle uppercase tracking-wide">Dept.</th>
-                    {['Disc.', 'Hyg.', 'Out.', 'Contr.', 'M.Pulse', 'Stew.', 'Proj.'].map(h => (
+                    {['Disc.', 'Hours', 'Out.', 'Contr.', 'M.Pulse', 'Stew.', 'Proj.'].map(h => (
                       <th key={h} className="text-center px-2 py-2 font-semibold text-on-surface-subtle uppercase tracking-wide">{h}</th>
                     ))}
                     <th className="px-2 py-2"></th>
@@ -402,7 +402,7 @@ function RecentSignals({ breakdown }: { breakdown: any }) {
             ? <li>Output: <em className="text-on-surface-subtle">no project allocation</em> · pillar redistributed</li>
             : <li>Output: logged <strong>{breakdown.output_detail.project_logged}h</strong> of <strong>{breakdown.output_detail.allocated_hours}h</strong> allocated ({breakdown.output_detail.allocation_pct}%) · <strong>{breakdown.output_detail.approval_rate_pct}%</strong> approval rate{breakdown.output_detail.extra_effort_bonus > 0 && <> · <strong>+{breakdown.output_detail.extra_effort_bonus}</strong> extra effort</>}</li>
         )}
-        {breakdown.contribution_detail && <li>Contribution: <strong>{breakdown.contribution_detail.goals_on_track}/{breakdown.contribution_detail.goals_total}</strong> goals · <strong>{breakdown.contribution_detail.upsells}</strong> upsells</li>}
+        {breakdown.contribution_detail && <li>Contribution: <strong>{breakdown.contribution_detail.upsells}</strong> upsell{breakdown.contribution_detail.upsells === 1 ? '' : 's'} raised</li>}
         {breakdown.manager_pulse_detail?.ratings_in_window > 0 && <li>Manager pulse: <strong>{breakdown.manager_pulse_detail.ratings_in_window}</strong> ratings · avg <strong>{breakdown.manager_pulse_detail.avg}</strong></li>}
         {breakdown.team_stewardship_detail && <li>Team stewardship: <strong>{breakdown.team_stewardship_detail.team_logging_hygiene}%</strong> logging · <strong>{breakdown.team_stewardship_detail.approval_timeliness}%</strong> approvals on time</li>}
         {breakdown.project_hygiene_detail && <li>Project hygiene: <strong>{breakdown.project_hygiene_detail.logging_coverage}%</strong> coverage · <strong>{breakdown.project_hygiene_detail.approval_flow_through}%</strong> flow-through</li>}

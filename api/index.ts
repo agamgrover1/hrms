@@ -2030,14 +2030,11 @@ async function computePulseForDate(asOf: string, employeeIdsFilter?: string[] | 
     }
 
     // ── Contribution ──────────────────────────────────────────────────
-    const gs = goalsByEmp.get(empId) ?? [];
-    const goalsOnTrack = gs.filter(g => g.status === 'completed' || (Number(g.progress) >= 50 && g.status !== 'at_risk')).length;
-    const goalsPct = gs.length ? (goalsOnTrack / gs.length) * 100 : null;
+    // Upsells only. Goals were dropped — goal progress is too admin-
+    // dependent and uneven across roles to score against. Baseline 60
+    // for everyone, each non-rejected upsell adds 10 pts, capped at 100.
     const upsellCount = (upsellByEmp.get(empId) ?? []).filter(u => u.status !== 'rejected').length;
-    const contribBonus = Math.min(40, upsellCount * 10);
-    const contribution = goalsPct == null
-      ? clamp(60 + contribBonus, 0, 100)              // no goals → baseline 60 + bonus
-      : clamp(goalsPct * 0.6 + contribBonus, 0, 100);
+    const contribution = clamp(60 + upsellCount * 10, 0, 100);
 
     // ── Manager pulse ─────────────────────────────────────────────────
     const pulses = pulseByEmp.get(empId) ?? [];
@@ -2122,7 +2119,7 @@ async function computePulseForDate(asOf: string, employeeIdsFilter?: string[] | 
       discipline_misses: { absences, leave_without_notice: lwn },
       hygiene: { working_days: workingDays, days_logged: daysLogged, days_with_notes: daysWithNotes },
       output_detail: outputDetail,
-      contribution_detail: { goals_total: gs.length, goals_on_track: goalsOnTrack, upsells: upsellCount },
+      contribution_detail: { upsells: upsellCount },
       manager_pulse_detail: { ratings_in_window: pulses.length, avg: managerPulse != null ? Math.round(managerPulse) : null },
       team_stewardship_detail: stewardshipDetail,
       project_hygiene_detail: projHygieneDetail,
@@ -2356,7 +2353,7 @@ app.get('/api/performance/pulse/recompute-targets', async (req, res) => {
 //   reporting manager (direct OR through chain) → their report's
 async function canViewPulse(viewer: any, targetEmpId: string): Promise<boolean> {
   if (!viewer) return false;
-  if (viewer.role === 'admin' || viewer.role === 'hr_manager') return true;
+  if (viewer.role === 'admin' || viewer.role === 'hr_manager' || viewer.role === 'project_coordinator') return true;
   if (viewer.employee_id_ref === targetEmpId) return true;
   // walk up reporting chain
   let cur = targetEmpId;
@@ -2466,7 +2463,7 @@ app.get('/api/performance/pulse/org', async (req, res) => {
     const uid = req.header('x-user-id');
     if (!uid) return res.status(401).json({ error: 'Sign in required' });
     const u = (await sql`SELECT id, role FROM app_users WHERE id=${uid}`)[0] as any;
-    if (!u || !['admin', 'hr_manager'].includes(u.role)) return res.status(403).json({ error: 'Admin/HR only' });
+    if (!u || !['admin', 'hr_manager', 'project_coordinator'].includes(u.role)) return res.status(403).json({ error: 'Admin / HR / Coordinator only' });
     await ensurePulseReady();
     const rows = await sql`
       SELECT e.id, e.name, e.avatar, e.department, e.designation, e.reporting_manager_id,

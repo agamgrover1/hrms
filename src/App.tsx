@@ -53,7 +53,7 @@ function AppRoutes() {
         <Route path="leave" element={<ProtectedRoute roles={['admin', 'hr_manager']}><Leave /></ProtectedRoute>} />
         <Route path="payroll" element={<ProtectedRoute roles={['admin', 'hr_manager']}><Payroll /></ProtectedRoute>} />
         <Route path="performance" element={<ProtectedRoute roles={['admin', 'hr_manager']}><Performance /></ProtectedRoute>} />
-        <Route path="performance/pulse" element={<ProtectedRoute roles={['admin', 'hr_manager']}><PerformancePulse /></ProtectedRoute>} />
+        <Route path="performance/pulse" element={<ProtectedRoute roles={['admin', 'hr_manager', 'project_coordinator']}><PerformancePulse /></ProtectedRoute>} />
         <Route path="users" element={<ProtectedRoute roles={['admin', 'hr_manager']}><UserManagement /></ProtectedRoute>} />
         <Route path="config" element={<ProtectedRoute roles={['admin', 'hr_manager']}><Config /></ProtectedRoute>} />
         <Route path="incentives" element={<ProtectedRoute roles={['admin', 'hr_manager']}><Incentives /></ProtectedRoute>} />

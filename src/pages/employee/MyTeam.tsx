@@ -95,7 +95,7 @@ function pillarColorMyTeam(score: number | null): string {
 }
 const PULSE_PILLAR_DEFS = [
   { key: 'discipline',        label: 'Discipline' },
-  { key: 'hours_hygiene',     label: 'Hours hygiene' },
+  { key: 'hours_hygiene',     label: 'Hours' },
   { key: 'output',            label: 'Output' },
   { key: 'contribution',      label: 'Contribution' },
   { key: 'manager_pulse',     label: 'Manager pulse' },
@@ -149,7 +149,7 @@ function PulsePillarList({ snapshot }: { snapshot: any }) {
               ? <li>Output: <em className="text-on-surface-subtle">no project allocation</em> · pillar redistributed</li>
               : <li>Output: <strong>{bd.output_detail.project_logged}h</strong> of <strong>{bd.output_detail.allocated_hours}h</strong> ({bd.output_detail.allocation_pct}%) · <strong>{bd.output_detail.approval_rate_pct}%</strong> approvals{bd.output_detail.extra_effort_bonus > 0 && <> · <strong>+{bd.output_detail.extra_effort_bonus}</strong> extra</>}</li>
           )}
-          {bd.contribution_detail && <li>Contribution: <strong>{bd.contribution_detail.goals_on_track}/{bd.contribution_detail.goals_total}</strong> goals on track · <strong>{bd.contribution_detail.upsells}</strong> upsells</li>}
+          {bd.contribution_detail && <li>Contribution: <strong>{bd.contribution_detail.upsells}</strong> upsell{bd.contribution_detail.upsells === 1 ? '' : 's'} raised</li>}
           {bd.team_stewardship_detail && <li>Team stewardship: <strong>{bd.team_stewardship_detail.team_logging_hygiene}%</strong> logging · <strong>{bd.team_stewardship_detail.approval_timeliness}%</strong> approvals on time</li>}
           {bd.project_hygiene_detail && <li>Project hygiene: <strong>{bd.project_hygiene_detail.logging_coverage}%</strong> coverage · <strong>{bd.project_hygiene_detail.approval_flow_through}%</strong> flow-through</li>}
         </ul>

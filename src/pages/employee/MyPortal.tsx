@@ -124,9 +124,9 @@ function PulseSparkline({ trend }: { trend: Array<{ snapshot_date: string; total
 }
 const PULSE_PILLARS = [
   { key: 'discipline',        label: 'Discipline',        hint: 'Punctuality, attendance, leave notice' },
-  { key: 'hours_hygiene',     label: 'Hours hygiene',     hint: 'Daily hours logged + notes filled' },
+  { key: 'hours_hygiene',     label: 'Hours',             hint: 'Daily hours logged + notes filled' },
   { key: 'output',            label: 'Output',            hint: 'Utilization + manager approval rate' },
-  { key: 'contribution',      label: 'Contribution',      hint: 'Goals on track + upsells raised' },
+  { key: 'contribution',      label: 'Contribution',      hint: 'Upsells raised' },
   { key: 'manager_pulse',     label: 'Manager pulse',     hint: 'Weekly 1-tap rating from your manager' },
   { key: 'team_stewardship',  label: 'Team stewardship',  hint: 'Your team\'s logging + your approval speed' },
   { key: 'project_hygiene',   label: 'Project hygiene',   hint: 'Logging coverage + approval flow across projects' },
@@ -203,7 +203,7 @@ function PulseBreakdownDrawer({
                   : <li>Output: logged <strong>{bd.output_detail.project_logged}h</strong> of <strong>{bd.output_detail.allocated_hours}h</strong> allocated ({bd.output_detail.allocation_pct}%) · <strong>{bd.output_detail.approval_rate_pct}%</strong> approval rate{bd.output_detail.extra_effort_bonus > 0 && <> · <strong>+{bd.output_detail.extra_effort_bonus}</strong> extra effort</>}</li>
               )}
               {bd.contribution_detail && (
-                <li>Contribution: <strong>{bd.contribution_detail.goals_on_track}/{bd.contribution_detail.goals_total}</strong> goals on track · <strong>{bd.contribution_detail.upsells}</strong> upsells</li>
+                <li>Contribution: <strong>{bd.contribution_detail.upsells}</strong> upsell{bd.contribution_detail.upsells === 1 ? '' : 's'} raised</li>
               )}
               {bd.manager_pulse_detail?.ratings_in_window > 0 && (
                 <li>Manager pulse: <strong>{bd.manager_pulse_detail.ratings_in_window}</strong> ratings · avg <strong>{bd.manager_pulse_detail.avg}</strong></li>
