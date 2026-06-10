@@ -214,25 +214,36 @@ async function ensurePulseReady() {
 async function healUserEmployeeLinks(): Promise<{ dangling: number; linkedByEmail: number; linkedByName: number }> {
   let dangling = 0, linkedByEmail = 0, linkedByName = 0;
   try {
+    // Dangling = points to nothing — neither matches employees.employee_id
+    // (the human-readable code we store) nor employees.id (legacy data
+    // from before this comment).
     const danglingRows = await sql`
       UPDATE app_users SET employee_id_ref = NULL
       WHERE employee_id_ref IS NOT NULL
-        AND NOT EXISTS (SELECT 1 FROM employees WHERE id = app_users.employee_id_ref)
+        AND NOT EXISTS (
+          SELECT 1 FROM employees
+          WHERE employee_id = app_users.employee_id_ref
+             OR id = app_users.employee_id_ref
+        )
       RETURNING id` as any[];
     dangling = danglingRows.length;
+    // Link to the HUMAN-READABLE code, not the internal id — matches what
+    // the rest of the app expects.
     const emailRows = await sql`
-      UPDATE app_users u SET employee_id_ref = e.id
+      UPDATE app_users u SET employee_id_ref = e.employee_id
       FROM employees e
       WHERE u.employee_id_ref IS NULL
         AND LOWER(u.email) = LOWER(e.email)
         AND e.email IS NOT NULL
+        AND e.employee_id IS NOT NULL
       RETURNING u.id` as any[];
     linkedByEmail = emailRows.length;
     const nameRows = await sql`
-      UPDATE app_users u SET employee_id_ref = e.id
+      UPDATE app_users u SET employee_id_ref = e.employee_id
       FROM employees e
       WHERE u.employee_id_ref IS NULL
         AND LOWER(u.name) = LOWER(e.name)
+        AND e.employee_id IS NOT NULL
       RETURNING u.id` as any[];
     linkedByName = nameRows.length;
   } catch { /* non-fatal — don't block compute on this */ }
@@ -1153,6 +1164,22 @@ async function runStartupMigrations() {
       `;
     }
   } catch { /* non-fatal */ }
+
+  // One-shot data fix. A previous heal commit overwrote app_users.employee_id_ref
+  // with employees.id (the internal hash). The rest of the app (Sidebar profile,
+  // ShiftEndReminder, HoursCompliance, ProjectHours, MyPortal) was originally
+  // built to store the HUMAN-READABLE code there (employees.employee_id like
+  // DL0067). This UPDATE walks each "id-shaped" reference back to its
+  // human-readable code so every surface displays consistently again.
+  // Idempotent — once corrected, the WHERE clause matches no rows.
+  try {
+    await sql`
+      UPDATE app_users u SET employee_id_ref = e.employee_id
+      FROM employees e
+      WHERE u.employee_id_ref = e.id
+        AND e.employee_id IS NOT NULL`;
+  } catch { /* non-fatal */ }
+
   _migrated = true;
 }
 
@@ -1185,6 +1212,20 @@ app.post('/api/auth/login', async (req, res) => {
     // Auto-upgrade plain-text to bcrypt
     if (!isHashed) { const h = await bcrypt.hash(password, 10); await sql`UPDATE app_users SET password=${h} WHERE id=${user.id}`.catch(()=>{}); }
     const { password: _pw, ...safeUser } = user;
+    // Surface the human-readable employee code (employees.employee_id) so
+    // the UI can show e.g. DL0067 anywhere it currently shows the internal
+    // employee_id_ref.
+    if (safeUser.employee_id_ref) {
+      // employee_id_ref usually holds the human code already; defensively
+      // match on either column for legacy rows.
+      const e = (await sql`
+        SELECT employee_id FROM employees
+        WHERE employee_id = ${safeUser.employee_id_ref} OR id = ${safeUser.employee_id_ref}
+        LIMIT 1`)[0] as any;
+      safeUser.employee_code = e?.employee_id ?? null;
+    } else {
+      safeUser.employee_code = null;
+    }
     res.json({ user: safeUser });
   } catch (err) {
     console.error(err);
@@ -2622,20 +2663,28 @@ app.get('/api/performance/pulse/monthly', async (req, res) => {
 // employee) → email match → name match. Returns null if none of the three
 // resolve. Used by /me, /team, /pulse/:employeeId access check.
 async function resolveUserToEmployee(u: any): Promise<string | null> {
-  let empId: string | null = u?.employee_id_ref ?? null;
-  if (empId) {
-    const exists = (await sql`SELECT 1 FROM employees WHERE id=${empId} LIMIT 1`)[0] as any;
-    if (!exists) empId = null;
+  // Returns employees.id (internal), which is what snapshots are keyed by.
+  // employee_id_ref stores the HUMAN code (DL0067 etc); we look up by it
+  // first, then fall back to email/name match.
+  const ref = u?.employee_id_ref ?? null;
+  if (ref) {
+    // Match either column — defensive for legacy rows where ref might still
+    // be an internal id from before the migration ran.
+    const row = (await sql`
+      SELECT id FROM employees
+      WHERE employee_id = ${ref} OR id = ${ref}
+      LIMIT 1`)[0] as any;
+    if (row?.id) return row.id;
   }
-  if (!empId && u?.email) {
+  if (u?.email) {
     const m = (await sql`SELECT id FROM employees WHERE LOWER(email)=LOWER(${u.email}) LIMIT 1`)[0] as any;
-    if (m?.id) empId = m.id;
+    if (m?.id) return m.id;
   }
-  if (!empId && u?.name) {
+  if (u?.name) {
     const m = (await sql`SELECT id FROM employees WHERE LOWER(name)=LOWER(${u.name}) LIMIT 1`)[0] as any;
-    if (m?.id) empId = m.id;
+    if (m?.id) return m.id;
   }
-  return empId;
+  return null;
 }
 
 async function canViewPulse(viewer: any, targetEmpId: string): Promise<boolean> {
@@ -5040,15 +5089,18 @@ app.patch('/api/wfh/requests/:id/cancel', async (req, res) => {
 // ── Users ─────────────────────────────────────────────────────────────────
 app.get('/api/users', async (_req, res) => {
   try {
-    // employee_code = the human-readable employees.employee_id (e.g. DL0067),
-    // not the internal employees.id that employee_id_ref points to. Users
-    // page shows employee_code in the "Employee ID" column.
+    // employee_code = human-readable employees.employee_id (DL0067 etc).
+    // app_users.employee_id_ref stores that same human code, so we JOIN on
+    // both columns to be defensive against legacy rows still holding the
+    // internal id from before the migration ran.
     res.json(await sql`
       SELECT u.id, u.employee_id_ref, u.name, u.email, u.role, u.department, u.designation,
              u.avatar, u.active, u.created_at,
              e.employee_id AS employee_code
       FROM app_users u
-      LEFT JOIN employees e ON e.id = u.employee_id_ref
+      LEFT JOIN employees e
+        ON e.employee_id = u.employee_id_ref
+        OR e.id = u.employee_id_ref
       ORDER BY u.name`);
   } catch (err) { res.status(500).json({ error: 'Server error' }); }
 });

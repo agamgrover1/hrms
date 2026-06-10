@@ -14,6 +14,10 @@ export type Role = 'admin' | 'hr_manager' | 'project_coordinator' | 'employee';
 export interface AppUser {
   id: string;
   employee_id_ref: string | null;
+  // Human-readable employee code from employees.employee_id (e.g. DL0067).
+  // Populated by /auth/login and /users responses via LEFT JOIN. Should be
+  // used everywhere the UI shows "Employee ID" to a human.
+  employee_code?: string | null;
   name: string;
   email: string;
   role: Role;

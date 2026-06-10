@@ -851,7 +851,7 @@ export default function MyPortal() {
           <div>
             <h2 className="text-xl font-bold">{user?.name}</h2>
             <p className="text-sm mt-0.5" style={{ color: 'rgba(255,255,255,0.65)' }}>{user?.designation} · {user?.department}</p>
-            <p className="text-xs mt-1 font-semibold" style={{ color: '#EE2770' }}>{user?.employee_id_ref}</p>
+            <p className="text-xs mt-1 font-semibold" style={{ color: '#EE2770' }}>{(user as any)?.employee_code ?? user?.employee_id_ref}</p>
           </div>
         </div>
       </div>
@@ -1041,7 +1041,7 @@ export default function MyPortal() {
               { label: 'Email',       value: user?.email },
               { label: 'Department',  value: user?.department },
               { label: 'Designation', value: user?.designation },
-              { label: 'Employee ID', value: user?.employee_id_ref },
+              { label: 'Employee ID', value: (user as any)?.employee_code ?? user?.employee_id_ref },
               { label: 'Reporting Manager', value: reportingManager ? reportingManager.name : '—' },
             ].map(({ label, value }) => (
               <div key={label} className="flex justify-between py-2 border-b border-gray-50 last:border-0">
@@ -2122,7 +2122,7 @@ export default function MyPortal() {
               <div className="px-6 py-5 text-white" style={{ background: 'linear-gradient(135deg, #192250 0%, #141c43 100%)' }}>
                 <h3 className="font-bold text-lg">Salary Slip</h3>
                 <p className="text-sm mt-0.5" style={{ color: 'rgba(255,255,255,0.65)' }}>{payroll.month} {payroll.year}</p>
-                <p className="text-xs mt-1" style={{ color: '#EE2770' }}>{user?.employee_id_ref} · {user?.designation}</p>
+                <p className="text-xs mt-1" style={{ color: '#EE2770' }}>{(user as any)?.employee_code ?? user?.employee_id_ref} · {user?.designation}</p>
               </div>
               <div className="p-6 space-y-2.5">
                 <p className="text-xs font-semibold text-on-surface-subtle uppercase tracking-wide mb-2">Earnings</p>

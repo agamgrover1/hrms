@@ -202,7 +202,7 @@ export default function Sidebar() {
             </div>
             <div className="min-w-0 flex-1">
               <p className="text-sm font-semibold text-white truncate font-display tracking-tight leading-tight">{user.name?.split(' ')[0]}</p>
-              <p className="text-[10px] uppercase tracking-[0.14em] text-white/45 truncate mt-0.5">{user.employee_id_ref || 'no id'}</p>
+              <p className="text-[10px] uppercase tracking-[0.14em] text-white/45 truncate mt-0.5">{(user as any).employee_code || user.employee_id_ref || 'no id'}</p>
             </div>
           </div>
           <span className="inline-flex items-center mt-2 px-2 py-0.5 rounded-full text-[10px] font-semibold tracking-wide"
