@@ -238,7 +238,11 @@ function PulsePillarList({ snapshot }: { snapshot: any }) {
           )}
           {bd.contribution_detail && <li>Contribution: <strong>{bd.contribution_detail.upsells}</strong> upsell{bd.contribution_detail.upsells === 1 ? '' : 's'} raised</li>}
           {bd.team_stewardship_detail && (
-            <li>Team stewardship: <strong>{bd.team_stewardship_detail.team_logging_hygiene}%</strong> logging · <strong>{bd.team_stewardship_detail.approval_timeliness}%</strong> approvals on time
+            <li>Team stewardship:
+              {' '}<strong>{bd.team_stewardship_detail.approval_timeliness}%</strong> approvals on time
+              {bd.team_stewardship_detail.team_logging_hygiene != null && <>
+                {' '}· <strong>{bd.team_stewardship_detail.team_logging_hygiene}%</strong> team logging
+              </>}
               {bd.team_stewardship_detail.review_check_active && bd.team_stewardship_detail.review_timeliness != null && <>
                 {' '}· <strong>{bd.team_stewardship_detail.review_timeliness}%</strong> reviews
                 {bd.team_stewardship_detail.reviews_missing_count > 0 && <span className="text-danger"> ({bd.team_stewardship_detail.reviews_missing_count} missing)</span>}

@@ -585,9 +585,14 @@ function RecentSignals({ breakdown }: { breakdown: any }) {
         {breakdown.contribution_detail && <li>Contribution: <strong>{breakdown.contribution_detail.upsells}</strong> upsell{breakdown.contribution_detail.upsells === 1 ? '' : 's'} raised</li>}
         {breakdown.manager_pulse_detail?.ratings_in_window > 0 && <li>Manager pulse: <strong>{breakdown.manager_pulse_detail.ratings_in_window}</strong> ratings · avg <strong>{breakdown.manager_pulse_detail.avg}</strong></li>}
         {breakdown.team_stewardship_detail && (
-          <li>Team stewardship: <strong>{breakdown.team_stewardship_detail.team_logging_hygiene}%</strong> logging · <strong>{breakdown.team_stewardship_detail.approval_timeliness}%</strong> approvals on time
+          <li>Team stewardship:
+            {' '}<strong>{breakdown.team_stewardship_detail.approval_timeliness}%</strong> approvals on time
+            {breakdown.team_stewardship_detail.approvals_made > 0 && <span className="text-on-surface-subtle"> ({breakdown.team_stewardship_detail.approvals_made} actions)</span>}
+            {breakdown.team_stewardship_detail.team_logging_hygiene != null && <>
+              {' '}· <strong>{breakdown.team_stewardship_detail.team_logging_hygiene}%</strong> team logging
+            </>}
             {breakdown.team_stewardship_detail.review_check_active && breakdown.team_stewardship_detail.review_timeliness != null && <>
-              {' '}· <strong>{breakdown.team_stewardship_detail.review_timeliness}%</strong> prior-month reviews submitted
+              {' '}· <strong>{breakdown.team_stewardship_detail.review_timeliness}%</strong> prior-month reviews
               {breakdown.team_stewardship_detail.reviews_missing_count > 0 && <span className="text-danger"> ({breakdown.team_stewardship_detail.reviews_missing_count} missing)</span>}
             </>}
           </li>

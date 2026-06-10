@@ -110,17 +110,19 @@ Each pillar is scored 0–100. **Pillars that don't apply to your role are skipp
 
 ---
 
-### 6. Team Stewardship *(reporting managers only)*
+### 6. Team Stewardship *(reporting managers AND HR)*
 
-**Measures:** How well you steward your team.
+**Measures:** How well you steward approvals + your team.
 
 **Formula:**
-- 35% approval timeliness (your team's hour-log approvals within 48h)
-- 35% team logging hygiene (avg of your reports' days-logged %)
-- 30% review timeliness (prior-month manual reviews submitted by day 5 of new month)
-- Day 1–4 of a month: review check is skipped, the other two redistribute to 50/50.
+- **Approval timeliness** — combined across hour-log approvals (≤ 48h), leave approvals (≤ 24h same-day), and WFH approvals (≤ 24h). Both the manager step AND the HR step count.
+- **Team logging hygiene** *(managers with reports only)* — avg of your reports' days-logged %.
+- **Review timeliness** *(managers with reports only)* — prior-month reviews submitted by day 5 of new month.
+- For **HR without a team**, approvals are the whole pillar.
+- For managers, day 1–4 of a month: review check is skipped, other two redistribute.
 
 **How to improve:**
+- Action leaves and WFH the same day they land.
 - Clear hour-log approvals daily — don't let them sit > 48h.
 - Nudge reports who fall behind on daily logging.
 - **File last month's reviews by the 5th of every new month.** After day 5 you start losing points.

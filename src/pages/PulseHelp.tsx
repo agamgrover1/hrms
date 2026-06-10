@@ -71,14 +71,16 @@ const PILLARS = [
   {
     icon: Users, key: 'team_stewardship',
     label: 'Team Stewardship',
-    measures: 'For reporting managers only — how well you steward your team.',
+    measures: 'For reporting managers AND HR — how well you steward approvals + your team.',
     formula: [
-      '35% approval timeliness (your team’s hour-log approvals within 48h)',
-      '35% team logging hygiene (avg of your reports’ days-logged %)',
-      '30% review timeliness (prior-month manual reviews submitted by day 5 of new month)',
-      'Day 1–4 of a month: review check skipped, the other two redistribute to 50/50.',
+      'Approval timeliness (combined: hour-log approvals ≤ 48h, leave + WFH approvals ≤ 24h same-day) — both the manager step AND the HR step count.',
+      'Team logging hygiene — only for managers with direct reports (avg of reports’ days-logged %).',
+      'Review timeliness — only for managers (prior-month reviews submitted by day 5 of new month).',
+      'For HR without a team: approvals are the whole pillar.',
+      'For managers Day 1–4 of a month: review check skipped, other two redistribute.',
     ],
     improve: [
+      'Action leaves and WFH the same day they land.',
       'Clear hour-log approvals daily — don’t let them sit > 48h.',
       'Nudge reports who fall behind on daily logging.',
       'File last month’s reviews by the 5th of every new month. After day 5 you start losing points.',

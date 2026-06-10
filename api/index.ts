@@ -1899,7 +1899,7 @@ async function computePulseForDate(asOf: string, employeeIdsFilter?: string[] | 
   const [
     employees, attendance, leaves, hourDays, hourLogs,
     goals, upsells, pulseRatings, assignments, activeProjects, internalDays,
-    reportingGraphRows, monthlyPerfRows,
+    reportingGraphRows, wfhRows, monthlyPerfRows,
   ] = await Promise.all([
     fIds
       ? sql`SELECT e.id, e.name, e.department, e.reporting_manager_id, e.join_date, e.shift, e.status, u.role
@@ -1914,12 +1914,18 @@ async function computePulseForDate(asOf: string, employeeIdsFilter?: string[] | 
               AND date BETWEEN ${windowStartStr}::date AND ${asOf}::date`
       : sql`SELECT employee_id, date, status, check_in, total_hours FROM attendance_records
             WHERE date BETWEEN ${windowStartStr}::date AND ${asOf}::date`,
-    eIds
-      ? sql`SELECT employee_id, from_date, to_date, status, applied_on FROM leave_requests
-            WHERE employee_id = ANY(${eIds}::text[])
-              AND NOT (to_date < ${windowStartStr}::date OR from_date > ${asOf}::date)`
-      : sql`SELECT employee_id, from_date, to_date, status, applied_on FROM leave_requests
-            WHERE NOT (to_date < ${windowStartStr}::date OR from_date > ${asOf}::date)`,
+    // Leaves: pulled for the WHOLE org (not chunk-filtered). Needs to cover
+    //   discipline check  → leaves whose period overlaps the window, and
+    //   stewardship check → leaves the manager/HR ACTIONED in the window
+    //                        (manager_approved_at or hr_actioned_at recent).
+    sql`SELECT employee_id, employee_name, from_date, to_date, status, applied_on,
+               manager_id, manager_status, manager_approved_at,
+               hr_actioner_name, hr_actioned_at
+        FROM leave_requests
+        WHERE NOT (to_date < ${windowStartStr}::date OR from_date > ${asOf}::date)
+           OR applied_on             >= ${windowStartStr}::date
+           OR manager_approved_at    >= ${windowStartStr}::date
+           OR hr_actioned_at         >= ${windowStartStr}::date`,
     eIds
       ? sql`SELECT employee_id, project_id, log_date, hours, notes, created_at FROM hour_log_days
             WHERE employee_id = ANY(${eIds}::text[])
@@ -1963,6 +1969,15 @@ async function computePulseForDate(asOf: string, employeeIdsFilter?: string[] | 
     sql`SELECT id, reporting_manager_id FROM employees
         WHERE reporting_manager_id IS NOT NULL
           AND COALESCE(status, 'active') = 'active'`,
+    // WFH requests — for the approval timing factor in Team Stewardship
+    // (both manager step and HR step). Cheap table, no chunk filter needed.
+    sql`SELECT id, employee_id, employee_name, status, applied_on,
+               manager_id, manager_status, manager_approved_at,
+               hr_actioner_name, hr_actioned_at
+        FROM wfh_requests
+        WHERE applied_on             >= ${windowStartStr}::date
+           OR manager_approved_at    >= ${windowStartStr}::date
+           OR hr_actioned_at         >= ${windowStartStr}::date`,
     // Monthly performance for the last 3 months — feeds two new things:
     //   1. Team Stewardship's review_timeliness: did manager submit
     //      prior-month reviews for their reports by day 5?
@@ -2142,43 +2157,89 @@ async function computePulseForDate(asOf: string, employeeIdsFilter?: string[] | 
 
     // ── Team stewardship (managers only) ──────────────────────────────
     // Three components:
-    //   35% — approval timeliness (own log approvals < 48h)
-    //   35% — team logging hygiene (avg of reports' days-logged %)
-    //   30% — review timeliness (% of reports with prior-month review
-    //         submitted by day 5 of current month)
-    // Review timeliness is skipped before day 5 of the current month —
-    // it's not due yet. When skipped, the other two redistribute (50/50).
+    //   approval timeliness — unified across hour-log + leave (manager step)
+    //                         + leave (HR step) + WFH manager + WFH HR.
+    //                         hour-logs: 48h target. Leaves / WFH: 24h
+    //                         target (same-day). Used for both reporting
+    //                         managers AND HR (who do the HR-step actions).
+    //   team logging hygiene — avg of reports' days-logged %
+    //   review timeliness   — % of reports with prior-month review by day 5
+    //
+    // Gating expands to include HR/admin even without direct reports:
+    //   directReports.length > 0  OR  role in (hr_manager, admin)
+    // For HR with no team, team_logging_hygiene + review_timeliness skip,
+    // pillar effectively becomes 100% approval timeliness.
     const directReports = reportsByMgr.get(empId) ?? [];
+    const isApprover = directReports.length > 0
+      || emp.role === 'hr_manager'
+      || emp.role === 'admin';
     let teamStewardship: number | null = null;
     let stewardshipDetail: any = null;
-    if (directReports.length > 0) {
-      const myApprovals = hourLogs.filter(r => r.reviewed_by_id === empId && r.status === 'approved');
-      let timely = 0;
-      for (const a of myApprovals) {
-        if (a.reviewed_at && a.submitted_at) {
-          const dh = (new Date(a.reviewed_at).getTime() - new Date(a.submitted_at).getTime()) / 3600000;
-          if (dh <= 48) timely++;
-        }
+    if (isApprover) {
+      // ── 1. Unified approval timeliness ─────────────────────────────
+      let timelyCount = 0, totalCount = 0;
+      let detailHL = { total: 0, timely: 0 };
+      let detailLM = { total: 0, timely: 0 };
+      let detailLH = { total: 0, timely: 0 };
+      let detailWM = { total: 0, timely: 0 };
+      let detailWH = { total: 0, timely: 0 };
+      // Hour-log approvals (48h target)
+      const myHourApprovals = hourLogs.filter(r => r.reviewed_by_id === empId && r.status === 'approved');
+      for (const a of myHourApprovals) {
+        if (!a.reviewed_at || !a.submitted_at) continue;
+        detailHL.total++; totalCount++;
+        const dh = (new Date(a.reviewed_at).getTime() - new Date(a.submitted_at).getTime()) / 3600000;
+        if (dh <= 48) { detailHL.timely++; timelyCount++; }
       }
-      const approvalTimely = myApprovals.length ? (timely / myApprovals.length) * 100 : 100;
-      const teamHh: number[] = [];
-      for (const r of directReports) {
-        const rhd = hdByEmp.get(r.id) ?? [];
-        const dl = new Set(rhd.map(x => String(x.log_date).slice(0, 10))).size;
-        teamHh.push((dl / workingDays) * 100);
+      // Leave manager step (24h)
+      for (const l of leaves) {
+        if (l.manager_id !== empId || !l.manager_approved_at) continue;
+        detailLM.total++; totalCount++;
+        const dh = (new Date(l.manager_approved_at).getTime() - new Date(l.applied_on).getTime()) / 3600000;
+        if (dh <= 24) { detailLM.timely++; timelyCount++; }
       }
-      const teamHygiene = teamHh.length ? teamHh.reduce((s, n) => s + n, 0) / teamHh.length : 0;
+      // Leave HR step (24h from when it reached HR = manager_approved_at)
+      for (const l of leaves) {
+        if (l.hr_actioner_name !== emp.name || !l.hr_actioned_at || !l.manager_approved_at) continue;
+        detailLH.total++; totalCount++;
+        const dh = (new Date(l.hr_actioned_at).getTime() - new Date(l.manager_approved_at).getTime()) / 3600000;
+        if (dh <= 24) { detailLH.timely++; timelyCount++; }
+      }
+      // WFH manager step (24h)
+      for (const w of wfhRows) {
+        if (w.manager_id !== empId || !w.manager_approved_at) continue;
+        detailWM.total++; totalCount++;
+        const dh = (new Date(w.manager_approved_at).getTime() - new Date(w.applied_on).getTime()) / 3600000;
+        if (dh <= 24) { detailWM.timely++; timelyCount++; }
+      }
+      // WFH HR step (24h)
+      for (const w of wfhRows) {
+        if (w.hr_actioner_name !== emp.name || !w.hr_actioned_at || !w.manager_approved_at) continue;
+        detailWH.total++; totalCount++;
+        const dh = (new Date(w.hr_actioned_at).getTime() - new Date(w.manager_approved_at).getTime()) / 3600000;
+        if (dh <= 24) { detailWH.timely++; timelyCount++; }
+      }
+      const approvalTimely = totalCount ? (timelyCount / totalCount) * 100 : 100;
 
-      // Review timeliness — only active after day 5 of the current month.
-      // We check whether each direct report has a monthly_performance row
-      // for the PREVIOUS calendar month (regardless of reviewer — usually
-      // it'll be this manager).
+      // ── 2. Team logging hygiene (manager-only sub-factor) ──────────
+      let teamHygiene: number | null = null;
+      if (directReports.length > 0) {
+        const teamHh: number[] = [];
+        for (const r of directReports) {
+          const rhd = hdByEmp.get(r.id) ?? [];
+          const dl = new Set(rhd.map(x => String(x.log_date).slice(0, 10))).size;
+          teamHh.push((dl / workingDays) * 100);
+        }
+        teamHygiene = teamHh.length ? teamHh.reduce((s, n) => s + n, 0) / teamHh.length : 0;
+      }
+
+      // ── 3. Review timeliness (manager-only, active day 5+ of month) ──
       const asOfDate = new Date(asOf);
       const dayOfMonth = asOfDate.getUTCDate();
       let reviewTimely: number | null = null;
       let reviewedCount = 0;
       let missingReports: string[] = [];
-      if (dayOfMonth >= 5) {
+      if (directReports.length > 0 && dayOfMonth >= 5) {
         const prevMonth = asOfDate.getUTCMonth() === 0 ? 12 : asOfDate.getUTCMonth();
         const prevYear  = asOfDate.getUTCMonth() === 0 ? asOfDate.getUTCFullYear() - 1 : asOfDate.getUTCFullYear();
         for (const r of directReports) {
@@ -2189,19 +2250,31 @@ async function computePulseForDate(asOf: string, employeeIdsFilter?: string[] | 
         reviewTimely = directReports.length ? (reviewedCount / directReports.length) * 100 : 100;
       }
 
-      teamStewardship = reviewTimely == null
-        ? clamp(approvalTimely * 0.5 + teamHygiene * 0.5, 0, 100)
-        : clamp(approvalTimely * 0.35 + teamHygiene * 0.35 + reviewTimely * 0.30, 0, 100);
+      // ── Aggregate — only the components that apply ─────────────────
+      const components: Array<{ value: number; weight: number }> = [];
+      components.push({ value: approvalTimely,   weight: reviewTimely != null ? 35 : (teamHygiene != null ? 50 : 100) });
+      if (teamHygiene != null)   components.push({ value: teamHygiene,    weight: reviewTimely != null ? 35 : 50 });
+      if (reviewTimely != null)  components.push({ value: reviewTimely,   weight: 30 });
+      const totalWeight = components.reduce((s, c) => s + c.weight, 0);
+      teamStewardship = clamp(components.reduce((s, c) => s + c.value * c.weight, 0) / totalWeight, 0, 100);
 
       stewardshipDetail = {
         approval_timeliness: Math.round(approvalTimely),
-        team_logging_hygiene: Math.round(teamHygiene),
+        approvals_made: totalCount,
+        approvals_breakdown: {
+          hour_logs: detailHL,
+          leave_manager: detailLM,
+          leave_hr: detailLH,
+          wfh_manager: detailWM,
+          wfh_hr: detailWH,
+        },
+        team_logging_hygiene: teamHygiene != null ? Math.round(teamHygiene) : null,
         team_size: directReports.length,
-        approvals_made: myApprovals.length,
         review_timeliness: reviewTimely != null ? Math.round(reviewTimely) : null,
         reviews_done: reviewTimely != null ? reviewedCount : null,
         reviews_missing_count: reviewTimely != null ? missingReports.length : null,
         review_check_active: reviewTimely != null,
+        role_scope: directReports.length > 0 ? 'manager' : (emp.role === 'hr_manager' ? 'hr' : 'admin'),
       };
     }
 
