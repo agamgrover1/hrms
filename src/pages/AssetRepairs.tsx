@@ -11,7 +11,7 @@ type Tab = 'tickets' | 'assets' | 'vendor';
 const APPROVAL_THRESHOLD = 10000;
 
 const STATUS_CFG: Record<string, { label: string; bg: string; color: string; icon: any }> = {
-  reported:           { label: 'Reported',          bg: 'rgb(var(--warning-container))', color: 'rgb(var(--warning))',            icon: AlertTriangle },
+  reported:           { label: 'Needs action',       bg: 'rgb(var(--warning-container))', color: 'rgb(var(--warning))',            icon: AlertTriangle },
   picked_up:          { label: 'Picked Up',         bg: 'rgb(var(--brand-container))',   color: 'rgb(var(--on-brand-container))', icon: Wrench },
   returned:           { label: 'Returned',          bg: 'rgb(var(--success-container))', color: 'rgb(var(--success))',            icon: CheckCircle },
   awaiting_approval:  { label: 'Awaiting Approval', bg: 'rgb(var(--danger-container))',  color: 'rgb(var(--danger))',             icon: AlertTriangle },
@@ -26,6 +26,25 @@ const fmtDate = (d: any) => {
   const date = new Date(s);
   if (isNaN(date.getTime())) return '—';
   return date.toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' });
+};
+// Relative time for fresh tickets ("2h ago", "3d ago") — gives HR a sense
+// of urgency at a glance without forcing them to compute the gap.
+const fmtRelative = (d: any) => {
+  if (!d) return null;
+  const date = new Date(typeof d === 'string' ? d : String(d));
+  if (isNaN(date.getTime())) return null;
+  const seconds = (Date.now() - date.getTime()) / 1000;
+  if (seconds < 60) return 'just now';
+  if (seconds < 3600) return `${Math.floor(seconds / 60)}m ago`;
+  if (seconds < 86400) return `${Math.floor(seconds / 3600)}h ago`;
+  if (seconds < 604800) return `${Math.floor(seconds / 86400)}d ago`;
+  return null; // older than a week — fall back to the absolute date
+};
+const fmtDateTime = (d: any) => {
+  if (!d) return '—';
+  const date = new Date(typeof d === 'string' ? d : String(d));
+  if (isNaN(date.getTime())) return '—';
+  return date.toLocaleString('en-IN', { day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' });
 };
 
 export default function AssetRepairs() {
@@ -333,10 +352,18 @@ function TicketsTab({ tickets, vendors, assets, employees, vendorById, assetById
                   const vendor = t.vendor_id ? vendorById(t.vendor_id) : null;
                   const cost = t.final_cost ?? t.quoted_cost;
                   return (
-                    <tr key={t.id} className="border-t border-outline hover:bg-surface-2/60">
+                    <tr key={t.id} className="border-t border-outline hover:bg-surface-2/60 align-top">
                       <td className="px-4 py-3">
                         <p className="text-sm font-medium text-on-surface">{t.employee_name ?? '—'}</p>
-                        <p className="text-[10px] text-on-surface-subtle">{fmtDate(t.reported_at)}</p>
+                        {(() => {
+                          const rel = fmtRelative(t.reported_at);
+                          return (
+                            <p className="text-[10px] text-on-surface-subtle" title={fmtDateTime(t.reported_at)}>
+                              {rel ?? fmtDate(t.reported_at)}
+                              {rel && t.status === 'reported' && <span className="ml-1 text-warning font-bold">·new</span>}
+                            </p>
+                          );
+                        })()}
                       </td>
                       <td className="px-4 py-3 text-xs">
                         {asset ? (
@@ -348,7 +375,12 @@ function TicketsTab({ tickets, vendors, assets, employees, vendorById, assetById
                           <p className="text-on-surface-subtle max-w-[160px] truncate">{t.laptop_info || '—'}</p>
                         )}
                       </td>
-                      <td className="px-4 py-3 text-on-surface-subtle max-w-[180px] truncate text-xs">{t.issue}</td>
+                      <td className="px-4 py-3 text-xs max-w-[280px]">
+                        <p className="font-medium text-on-surface" title={t.issue}>{t.issue}</p>
+                        {t.notes && (
+                          <p className="text-on-surface-subtle mt-0.5 leading-snug line-clamp-3 whitespace-pre-line" title={t.notes}>{t.notes}</p>
+                        )}
+                      </td>
                       <td className="px-4 py-3 text-xs text-on-surface-muted">{vendor?.name ?? '—'}</td>
                       <td className="px-4 py-3 font-semibold text-on-surface text-sm">
                         <span className="num-mono">{fmtINR(cost)}</span>

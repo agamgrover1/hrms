@@ -4523,6 +4523,10 @@ async function ensureRepairTables() {
   await sql`CREATE TABLE IF NOT EXISTS asset_categories (id TEXT PRIMARY KEY, name TEXT NOT NULL UNIQUE, created_at TIMESTAMPTZ DEFAULT NOW())`.catch(()=>{});
   await sql`ALTER TABLE assets ADD COLUMN IF NOT EXISTS category_id TEXT`.catch(()=>{});
   await sql`CREATE TABLE IF NOT EXISTS repair_tickets (id TEXT PRIMARY KEY, asset_id TEXT, laptop_info TEXT, employee_id TEXT, employee_name TEXT, vendor_id TEXT, issue TEXT NOT NULL, status TEXT DEFAULT 'reported', quoted_cost NUMERIC, final_cost NUMERIC, requires_approval BOOLEAN DEFAULT FALSE, approved_by TEXT, approved_at TIMESTAMPTZ, rejected_by TEXT, rejected_at TIMESTAMPTZ, rejection_reason TEXT, payment_status TEXT DEFAULT 'unpaid', payment_mode TEXT, payment_date DATE, notes TEXT, reported_at TIMESTAMPTZ DEFAULT NOW(), picked_up_at TIMESTAMPTZ, returned_at TIMESTAMPTZ, paid_at TIMESTAMPTZ, cancelled_at TIMESTAMPTZ, created_by TEXT, updated_at TIMESTAMPTZ DEFAULT NOW())`.catch(()=>{});
+  // Backfill: NULL reported_at on legacy tickets (POST used to insert literal
+  // NULL which overrode the DEFAULT). Use updated_at as the best proxy we
+  // have — slightly later than the actual report time but better than NULL.
+  await sql`UPDATE repair_tickets SET reported_at = updated_at WHERE reported_at IS NULL AND updated_at IS NOT NULL`.catch(()=>{});
   // Seed default categories the first time (idempotent — ON CONFLICT skips).
   for (const c of [
     { id: 'laptop',   name: 'Laptop' },
@@ -4799,7 +4803,7 @@ app.post('/api/repair-tickets', async (req, res) => {
         ${id}, ${asset_id ?? null}, ${laptop_info ?? null}, ${employee_id}, ${employee_name ?? null}, ${vendor_id ?? null}, ${issue.trim()},
         ${quoted_cost ?? null}, ${final_cost ?? null}, ${notes ?? null}, ${created_by ?? null},
         ${incomingStatus}, ${payment_status ?? (isHistoric ? 'paid' : 'unpaid')}, ${payment_date ?? null},
-        ${reported_at ?? null}, ${isHistoric && payment_date ? payment_date : null}
+        COALESCE(${reported_at}::timestamptz, NOW()), ${isHistoric && payment_date ? payment_date : null}
       )
       RETURNING *`;
     // Mark asset as in_repair only for active (non-historic) tickets
