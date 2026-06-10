@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { Search, Sliders, X, RefreshCw, TrendingUp, ChevronDown, ChevronUp, CalendarDays, ArrowUp, ArrowDown, Minus } from 'lucide-react';
 import { api } from '../services/api';
 import type { PulseTeamRow, PulseWeights } from '../services/api';
+import MonthSelector, { monthLabel, isCurrentMonth } from '../components/MonthSelector';
 
 // Admin/HR org-wide pulse view. Lets you:
 //  - browse the grid sorted/filtered by score, dept, manager
@@ -61,16 +62,20 @@ export default function PerformancePulse() {
   const [weights, setWeights] = useState<PulseWeights[]>([]);
   const [savingDept, setSavingDept] = useState<string | null>(null);
 
+  // Month selector for the org Pulse view. Defaults to current month.
+  const _nowPP = new Date();
+  const [orgMonth, setOrgMonth] = useState(_nowPP.getUTCMonth() + 1);
+  const [orgYear,  setOrgYear]  = useState(_nowPP.getUTCFullYear());
   const load = () => {
     setLoading(true);
-    api.getOrgPulse()
+    api.getOrgPulse({ month: orgMonth, year: orgYear })
       // Defend against {employees: undefined} from older deploys — array methods
       // would otherwise blow up the page on render.
       .then(d => setRows(Array.isArray(d?.employees) ? d.employees : []))
       .catch(() => setRows([]))
       .finally(() => setLoading(false));
   };
-  useEffect(() => { load(); }, []);
+  useEffect(() => { load(); }, [orgMonth, orgYear]);
 
   // KPI counts
   const counts = useMemo(() => {
@@ -204,9 +209,12 @@ export default function PerformancePulse() {
         <div>
           <h1 className="font-display text-2xl font-bold tracking-tight text-on-surface">Performance Pulse</h1>
           <p className="text-sm text-on-surface-muted mt-0.5">
-            Automated 30-day score, recomputed nightly. Manual reviews continue on the Performance page. ·{' '}
+            Calendar-month score, recomputed nightly. Manual reviews continue on the Performance page. ·{' '}
             <a href="/help/pulse" className="text-accent hover:underline font-semibold">How is this calculated?</a>
           </p>
+          <div className="mt-2">
+            <MonthSelector month={orgMonth} year={orgYear} onChange={(m, y) => { setOrgMonth(m); setOrgYear(y); }} />
+          </div>
         </div>
         <div className="flex gap-2">
           <button onClick={openWeights} className="inline-flex items-center gap-2 text-sm px-3 py-2 rounded-lg font-medium border border-outline hover:bg-surface-2">
@@ -258,7 +266,7 @@ export default function PerformancePulse() {
 
       {/* Monthly trends toggle */}
       <div className="flex items-center justify-between gap-3">
-        <p className="text-[10px] uppercase tracking-[0.18em] font-bold text-on-surface-subtle">Current pulse · rolling 30 days</p>
+        <p className="text-[10px] uppercase tracking-[0.18em] font-bold text-on-surface-subtle">Pulse · {monthLabel(orgMonth, orgYear)}{isCurrentMonth(orgMonth, orgYear) ? ' (live)' : ''}</p>
         <button onClick={toggleTrends}
           className="inline-flex items-center gap-1 text-xs font-semibold text-accent hover:underline">
           {showTrends ? <ChevronUp size={12} /> : <ChevronDown size={12} />}

@@ -534,14 +534,34 @@ export const api = {
   },
 
   // ── Performance Pulse ────────────────────────────────────────────────
-  getMyPulse: () =>
-    request<{ latest: PulseSnapshot | null; trend: Array<{ snapshot_date: string; total_score: number; band: string }>; resolved_via?: 'linkage' | 'email' | 'name' | 'none'; user_name?: string }>(`/performance/pulse/me`),
-  getTeamPulse: () =>
-    request<{ team: PulseTeamRow[]; week_start: string }>(`/performance/pulse/team`),
-  getOrgPulse: () =>
-    request<{ employees: PulseTeamRow[] }>(`/performance/pulse/org`),
-  getEmployeePulse: (employeeId: string) =>
-    request<{ latest: PulseSnapshot | null; trend: Array<{ snapshot_date: string; total_score: number; band: string }> }>(`/performance/pulse/${employeeId}`),
+  getMyPulse: (params?: { month?: number; year?: number }) => {
+    const qs = new URLSearchParams();
+    if (params?.month) qs.set('month', String(params.month));
+    if (params?.year)  qs.set('year',  String(params.year));
+    const tail = qs.toString() ? `?${qs}` : '';
+    return request<{ latest: PulseSnapshot | null; trend: Array<{ snapshot_date: string; total_score: number; band: string }>; resolved_via?: 'linkage' | 'email' | 'name' | 'none'; user_name?: string }>(`/performance/pulse/me${tail}`);
+  },
+  getTeamPulse: (params?: { month?: number; year?: number }) => {
+    const qs = new URLSearchParams();
+    if (params?.month) qs.set('month', String(params.month));
+    if (params?.year)  qs.set('year',  String(params.year));
+    const tail = qs.toString() ? `?${qs}` : '';
+    return request<{ team: PulseTeamRow[]; week_start: string }>(`/performance/pulse/team${tail}`);
+  },
+  getOrgPulse: (params?: { month?: number; year?: number }) => {
+    const qs = new URLSearchParams();
+    if (params?.month) qs.set('month', String(params.month));
+    if (params?.year)  qs.set('year',  String(params.year));
+    const tail = qs.toString() ? `?${qs}` : '';
+    return request<{ employees: PulseTeamRow[] }>(`/performance/pulse/org${tail}`);
+  },
+  getEmployeePulse: (employeeId: string, params?: { month?: number; year?: number }) => {
+    const qs = new URLSearchParams();
+    if (params?.month) qs.set('month', String(params.month));
+    if (params?.year)  qs.set('year',  String(params.year));
+    const tail = qs.toString() ? `?${qs}` : '';
+    return request<{ latest: PulseSnapshot | null; trend: Array<{ snapshot_date: string; total_score: number; band: string }> }>(`/performance/pulse/${employeeId}${tail}`);
+  },
   submitPulseRating: (data: { employee_id: string; rating: 'good' | 'ok' | 'concern'; note?: string; week_start?: string }) =>
     request(`/performance/pulse-rating`, { method: 'POST', body: JSON.stringify(data) }),
   recomputePulse: (asOf?: string, employeeIds?: string[]) =>

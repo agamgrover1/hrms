@@ -68,7 +68,7 @@ export default function PulseContextPanel({ employeeId }: { employeeId: string |
       <div className="px-4 py-3 border-b border-accent/20 bg-accent-container/30 flex items-start justify-between gap-3">
         <div>
           <p className="text-[10px] uppercase tracking-[0.18em] font-bold text-accent flex items-center gap-1.5">
-            <TrendingUp size={11} /> Pulse context · last 30 days
+            <TrendingUp size={11} /> Pulse context · this month
           </p>
           <p className="text-xs text-on-surface-muted mt-1">
             The automated data view. Use this as a reference while you fill the qualitative ratings below.

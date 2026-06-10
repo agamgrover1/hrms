@@ -2,6 +2,7 @@ import { useState, useEffect, useMemo, Component, type ReactNode } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { Clock, Calendar, DollarSign, User, CheckCircle, XCircle, AlertCircle, Plus, X, Target, FileText, Lock, Trash2, Save, Users, Monitor, Briefcase, Edit2, BookOpen, Wrench } from 'lucide-react';
 import MyRoleTab from '../../components/MyRoleTab';
+import MonthSelector, { monthLabel } from '../../components/MonthSelector';
 import { useAuth } from '../../context/AuthContext';
 import { api } from '../../services/api';
 import { financeApi } from '../../services/financeApi';
@@ -146,7 +147,7 @@ function PulseBreakdownDrawer({
       <div className="bg-surface rounded-2xl shadow-2xl w-full max-w-2xl max-h-[90vh] overflow-hidden flex flex-col">
         <div className="flex items-center justify-between px-6 py-4 border-b border-outline">
           <div>
-            <h2 className="font-display font-bold text-lg" style={{ color: '#192250' }}>Performance Pulse — 30 day</h2>
+            <h2 className="font-display font-bold text-lg" style={{ color: '#192250' }}>Performance Pulse</h2>
             <p className="text-xs text-on-surface-subtle mt-0.5">Automated score, computed nightly. Manual reviews continue alongside.</p>
           </div>
           <button onClick={onClose}><X size={18} className="text-on-surface-subtle" /></button>
@@ -191,7 +192,7 @@ function PulseBreakdownDrawer({
           </div>
           {/* Specifics — what dragged the score */}
           <div className="space-y-2">
-            <p className="text-[10px] uppercase tracking-[0.18em] font-bold text-on-surface-subtle">Recent signals (last 30 days)</p>
+            <p className="text-[10px] uppercase tracking-[0.18em] font-bold text-on-surface-subtle">Recent signals</p>
             <ul className="text-xs text-on-surface-muted space-y-1">
               {bd.discipline_misses && (
                 <li>Discipline: <strong>{bd.discipline_misses.absences}</strong> absent, <strong>{bd.discipline_misses.leave_without_notice}</strong> last-minute leave</li>
@@ -517,16 +518,20 @@ export default function MyPortal() {
   // employee_id_ref yet. Bundling this with the rest of the data load
   // (which bails on missing empRef) meant Nidhi / coordinators / any
   // un-linked user never saw a Pulse fetch at all.
+  // Month selector for the Hub Pulse tile. Defaults to current month.
+  const _now0 = new Date();
+  const [pulseMonth, setPulseMonth] = useState(_now0.getUTCMonth() + 1);
+  const [pulseYear,  setPulseYear]  = useState(_now0.getUTCFullYear());
   useEffect(() => {
     if (!user?.id) return;
-    api.getMyPulse()
+    api.getMyPulse({ month: pulseMonth, year: pulseYear })
       .then(p => {
         setPulse(p.latest ?? null);
         setPulseTrend(p.trend ?? []);
         setPulseResolvedVia(p.resolved_via ?? null);
       })
       .catch(() => {});
-  }, [user?.id]);
+  }, [user?.id, pulseMonth, pulseYear]);
   const now = new Date();
   const currentYear = now.getFullYear();
   const currentMonth = now.getMonth() + 1;
@@ -938,7 +943,13 @@ export default function MyPortal() {
               <HubStat label="WFH days" value={approvedWfh} tone="text-on-surface" />
             </div>
 
-            {/* Performance Pulse tile — automated 30-day score */}
+            {/* Performance Pulse — month selector + tile.
+                Selector defaults to current calendar month (live), arrows go back to past closed months. */}
+            <div className="flex items-center justify-between gap-3 -mb-2">
+              <p className="text-[10px] uppercase tracking-[0.18em] font-bold text-on-surface-subtle">Performance pulse</p>
+              <MonthSelector month={pulseMonth} year={pulseYear} onChange={(m, y) => { setPulseMonth(m); setPulseYear(y); }} />
+            </div>
+            {/* Performance Pulse tile */}
             {pulse ? (
               <button
                 onClick={() => setShowPulseDrawer(true)}
@@ -951,7 +962,7 @@ export default function MyPortal() {
                       {pulse.total_score}
                     </div>
                     <div>
-                      <p className="text-[10px] uppercase tracking-[0.18em] font-bold text-on-surface-subtle">Performance pulse · 30-day</p>
+                      <p className="text-[10px] uppercase tracking-[0.18em] font-bold text-on-surface-subtle">Performance pulse · {monthLabel(pulseMonth, pulseYear)}</p>
                       <p className="font-display text-lg font-bold text-on-surface mt-0.5">
                         {bandLabel(pulse.band)}
                         {pulse.is_baseline && <span className="ml-1.5 text-[10px] font-normal opacity-70" title="Joined recently">new</span>}
@@ -980,7 +991,7 @@ export default function MyPortal() {
                     <Target size={22} />
                   </div>
                   <div>
-                    <p className="text-[10px] uppercase tracking-[0.18em] font-bold text-on-surface-subtle">Performance pulse · 30-day</p>
+                    <p className="text-[10px] uppercase tracking-[0.18em] font-bold text-on-surface-subtle">Performance pulse · {monthLabel(pulseMonth, pulseYear)}</p>
                     {pulseResolvedVia === 'none' ? (
                       <>
                         <p className="font-display text-base font-bold text-warning mt-0.5">Your user account isn't linked to an employee record</p>

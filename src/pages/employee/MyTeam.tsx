@@ -6,6 +6,7 @@ import { useAuth } from '../../context/AuthContext';
 import { api } from '../../services/api';
 import MemberCalendarModal from '../../components/MemberCalendarModal';
 import PulseContextPanel from '../../components/PulseContextPanel';
+import MonthSelector, { monthLabel } from '../../components/MonthSelector';
 import { GOAL_STATUSES, GOAL_STATUS_CONFIG } from '../Performance';
 import type { GoalStatus } from '../Performance';
 import {
@@ -331,13 +332,17 @@ export default function MyTeam() {
   const [pulseDrawerFor, setPulseDrawerFor] = useState<any | null>(null);
   const [pulseDrawerData, setPulseDrawerData] = useState<{ latest: any; trend: any[] } | null>(null);
 
-  // Load team pulse whenever we land on that tab
+  // Month selector for the Team Pulse view. Defaults to current month.
+  const _now1 = new Date();
+  const [teamPulseMonth, setTeamPulseMonth] = useState(_now1.getUTCMonth() + 1);
+  const [teamPulseYear,  setTeamPulseYear]  = useState(_now1.getUTCFullYear());
+  // Load team pulse whenever we land on the tab or the month changes
   useEffect(() => {
     if (subTab !== 'pulse') return;
-    api.getTeamPulse()
+    api.getTeamPulse({ month: teamPulseMonth, year: teamPulseYear })
       .then(d => { setTeamPulse(d.team); setPulseWeekStart(d.week_start); })
       .catch(() => {});
-  }, [subTab]);
+  }, [subTab, teamPulseMonth, teamPulseYear]);
 
   async function ratePulse(employeeId: string, rating: 'good' | 'ok' | 'concern') {
     setSubmittingPulse(s => ({ ...s, [employeeId]: true }));
@@ -1325,7 +1330,10 @@ export default function MyTeam() {
           {/* Team grid */}
           <div className="bg-surface rounded-xl-3 border border-outline shadow-elev-1 overflow-hidden">
             <div className="px-5 py-3 border-b border-outline flex items-center justify-between">
-              <p className="font-display text-base font-bold text-on-surface">Team pulse — 30 day</p>
+              <div className="flex items-center gap-3">
+                <p className="font-display text-base font-bold text-on-surface">Team pulse — {monthLabel(teamPulseMonth, teamPulseYear)}</p>
+                <MonthSelector month={teamPulseMonth} year={teamPulseYear} onChange={(m, y) => { setTeamPulseMonth(m); setTeamPulseYear(y); }} />
+              </div>
               <p className="text-[11px] text-on-surface-subtle">Sorted by score</p>
             </div>
             {teamPulse.length === 0 ? (
@@ -1382,7 +1390,7 @@ export default function MyTeam() {
             <div className="flex items-center justify-between px-6 py-4 border-b border-outline">
               <div>
                 <h2 className="font-display font-bold text-lg" style={{ color: '#192250' }}>{pulseDrawerFor.name}</h2>
-                <p className="text-xs text-on-surface-subtle mt-0.5">Performance Pulse breakdown — 30 day</p>
+                <p className="text-xs text-on-surface-subtle mt-0.5">Performance Pulse breakdown — {monthLabel(teamPulseMonth, teamPulseYear)}</p>
               </div>
               <button onClick={() => setPulseDrawerFor(null)}><X size={18} className="text-on-surface-subtle" /></button>
             </div>

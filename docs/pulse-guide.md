@@ -1,6 +1,6 @@
 # Performance Pulse — Employee Guide
 
-Pulse is an **automated 30-day score**, recomputed every night. It runs alongside the manual monthly review your reporting manager does — the two complement each other. Pulse covers the *data* side; the manual review covers the *human* side.
+Pulse is an **automated calendar-month score**, recomputed every night. The current month is *live* (month-to-date); past months are locked at the closing snapshot — you can flip between them using the month selector. It runs alongside the manual monthly review your reporting manager does — the two complement each other. Pulse covers the *data* side; the manual review covers the *human* side.
 
 This guide explains what Pulse measures, how to read your score, and how to improve it.
 
@@ -38,7 +38,7 @@ Each pillar is scored 0–100. **Pillars that don't apply to your role are skipp
 
 ### 1. Discipline
 
-**Measures:** Attendance + leave behaviour over the last 30 days.
+**Measures:** Attendance + leave behaviour for the current month so far.
 
 **Formula:**
 - Start at 100
@@ -163,11 +163,11 @@ Each pillar is scored 0–100. **Pillars that don't apply to your role are skipp
 
 ### Why did my score drop overnight?
 
-Pulse recalculates every night using the last 30 days. If you missed a day of logging yesterday, or a leave you applied last-minute got recorded, you'll see a small drop today. Open the breakdown drawer — *"Recent signals"* tells you what changed.
+Pulse recalculates every night using everything from the 1st of the current month up to today. If you missed a day of logging yesterday, or a leave you applied last-minute got recorded, you'll see a small drop today. Open the breakdown drawer — *"Recent signals"* tells you what changed.
 
 ### I just joined. Why is my score showing "new"?
 
-For your first 30 days, the system marks you as a new joiner. Your score is computed honestly from whatever data exists, but the "new" badge signals that the 30-day window doesn't represent a full picture yet. It clears automatically after a month.
+For your first 30 days, the system marks you as a new joiner. Your score is computed honestly from whatever data exists this month, but the "new" badge signals you haven't been around for a full picture yet. It clears automatically after a month.
 
 ### Some pillars show "—" for me. Am I being penalised?
 
@@ -183,7 +183,7 @@ Pulse is a **coaching tool, not a salary decision**. HR and your manager use it 
 
 ### My Hours pillar dropped after one missed day. Can I recover?
 
-Yes — the window is rolling 30 days. One missed day will keep affecting your score for 30 days, then drop off. Log every day going forward and the score climbs back. Backfilling the missed day with a real entry also works (the date you log it for is what counts, not when you logged it).
+Yes — the window is the current calendar month. The missed day affects your score until month-end, then the new month resets. Log every day going forward and the score climbs back. Backfilling the missed day with a real entry also works (the date you log it for is what counts, not when you logged it).
 
 ### My manager hasn't given pulse ratings. Does that hurt me?
 

@@ -1861,9 +1861,12 @@ function bandFor(score: number): string {
 function clamp(n: number, lo: number, hi: number) { return Math.max(lo, Math.min(hi, n)); }
 
 async function computePulseForDate(asOf: string, employeeIdsFilter?: string[] | null) {
-  // 30-day window ending at asOf (inclusive)
-  const windowStart = new Date(asOf);
-  windowStart.setUTCDate(windowStart.getUTCDate() - 29);
+  // Calendar-month window: first day of asOf's month → asOf (inclusive).
+  // Early in the month this means little data; that's OK — it represents
+  // the month-to-date honestly. The Manager Pulse rolling-4-weeks window
+  // (below) stays cross-boundary, since weekly ratings don't reset at month-start.
+  const asOfDate = new Date(asOf);
+  const windowStart = new Date(Date.UTC(asOfDate.getUTCFullYear(), asOfDate.getUTCMonth(), 1));
   const windowStartStr = windowStart.toISOString().slice(0, 10);
 
   // Pulse rating cutoff (last 4 weeks)
@@ -2777,6 +2780,31 @@ async function canViewPulse(viewer: any, targetEmpId: string): Promise<boolean> 
   return false;
 }
 
+// Single source of truth for "the score for this employee in this period".
+//   no month/year, OR current month → latest daily snapshot (live month-to-date)
+//   past month → the closed monthly_snapshots row
+// Returns the snapshot in the same shape regardless of source, so callers
+// don't need to branch on it.
+async function getPulseSnapshotForPeriod(employeeId: string, month?: number | null, year?: number | null) {
+  const now = new Date();
+  const currentM = now.getUTCMonth() + 1;
+  const currentY = now.getUTCFullYear();
+  if (!month || !year || (month === currentM && year === currentY)) {
+    return (await sql`
+      SELECT * FROM performance_score_snapshots
+      WHERE employee_id=${employeeId}
+      ORDER BY snapshot_date DESC LIMIT 1`)[0] ?? null;
+  }
+  const row = (await sql`
+    SELECT * FROM performance_monthly_snapshots
+    WHERE employee_id=${employeeId} AND month=${month} AND year=${year}`)[0] as any;
+  if (!row) return null;
+  // Synthesise a snapshot_date so the UI can format "Updated MMM YYYY".
+  // Use month-end (or asOf if it's mid-current-month).
+  const monthEnd = new Date(Date.UTC(year, month, 0));
+  return { ...row, snapshot_date: monthEnd.toISOString().slice(0, 10) };
+}
+
 // GET /api/performance/pulse/me — last snapshot + 8-week trend for current user
 app.get('/api/performance/pulse/me', async (req, res) => {
   try {
@@ -2802,8 +2830,12 @@ app.get('/api/performance/pulse/me', async (req, res) => {
     }
 
     let latest: any = null; let trend: any[] = [];
+    const month = req.query.month ? Number(req.query.month) : null;
+    const year  = req.query.year  ? Number(req.query.year)  : null;
     try {
-      latest = (await sql`SELECT * FROM performance_score_snapshots WHERE employee_id=${empId} ORDER BY snapshot_date DESC LIMIT 1`)[0] ?? null;
+      latest = await getPulseSnapshotForPeriod(empId, month, year);
+      // Trend stays as the 8-week daily trace — it's a visualisation of
+      // recent progress, independent of which month the headline number is for.
       trend = await sql`
         SELECT snapshot_date, total_score, band FROM performance_score_snapshots
         WHERE employee_id=${empId} AND snapshot_date >= (CURRENT_DATE - INTERVAL '56 days')
@@ -2831,15 +2863,32 @@ app.get('/api/performance/pulse/team', async (req, res) => {
     if (!mgrEmpId) return res.json({ team: [], week_start: null });
     // Cheap existence check; avoid running 60 CREATE statements on every team load.
     await ensurePulseReady();
-    const team = await sql`
+    // Period filter: ?month=&year= picks a past month from monthly snapshots.
+    // Current/no period defaults to the latest daily snapshot (month-to-date).
+    const reqMonth = req.query.month ? Number(req.query.month) : null;
+    const reqYear  = req.query.year  ? Number(req.query.year)  : null;
+    const now = new Date();
+    const isCurrent = !reqMonth || !reqYear ||
+      (reqMonth === now.getUTCMonth() + 1 && reqYear === now.getUTCFullYear());
+    const team = isCurrent ? await sql`
       SELECT e.id, e.name, e.avatar, e.department, e.designation,
              s.total_score, s.band, s.discipline, s.hours_hygiene, s.output, s.contribution,
-             s.manager_pulse, s.team_stewardship, s.project_hygiene, s.is_baseline, s.snapshot_date
+             s.manager_pulse, s.team_stewardship, s.project_hygiene, s.client_handling, s.is_baseline, s.snapshot_date
       FROM employees e
       LEFT JOIN LATERAL (
         SELECT * FROM performance_score_snapshots
         WHERE employee_id=e.id ORDER BY snapshot_date DESC LIMIT 1
       ) s ON TRUE
+      WHERE e.reporting_manager_id=${mgrEmpId} AND COALESCE(e.status,'active')='active'
+      ORDER BY s.total_score DESC NULLS LAST, e.name` as any[]
+      : await sql`
+      SELECT e.id, e.name, e.avatar, e.department, e.designation,
+             s.total_score, s.band, s.discipline, s.hours_hygiene, s.output, s.contribution,
+             s.manager_pulse, s.team_stewardship, s.project_hygiene, s.client_handling, s.is_baseline,
+             (s.year || '-' || LPAD(s.month::text, 2, '0') || '-01')::date AS snapshot_date
+      FROM employees e
+      LEFT JOIN performance_monthly_snapshots s
+        ON s.employee_id = e.id AND s.month=${reqMonth} AND s.year=${reqYear}
       WHERE e.reporting_manager_id=${mgrEmpId} AND COALESCE(e.status,'active')='active'
       ORDER BY s.total_score DESC NULLS LAST, e.name` as any[];
     // also surface which reports are missing a pulse rating this week
@@ -2866,17 +2915,34 @@ app.get('/api/performance/pulse/org', async (req, res) => {
     const u = (await sql`SELECT id, role FROM app_users WHERE id=${uid}`)[0] as any;
     if (!u || !['admin', 'hr_manager', 'project_coordinator'].includes(u.role)) return res.status(403).json({ error: 'Admin / HR / Coordinator only' });
     await ensurePulseReady();
-    const rows = await sql`
+    const reqMonth = req.query.month ? Number(req.query.month) : null;
+    const reqYear  = req.query.year  ? Number(req.query.year)  : null;
+    const now = new Date();
+    const isCurrent = !reqMonth || !reqYear ||
+      (reqMonth === now.getUTCMonth() + 1 && reqYear === now.getUTCFullYear());
+    const rows = isCurrent ? await sql`
       SELECT e.id, e.name, e.avatar, e.department, e.designation, e.reporting_manager_id,
              m.name AS reporting_manager_name,
              s.total_score, s.band, s.discipline, s.hours_hygiene, s.output, s.contribution,
-             s.manager_pulse, s.team_stewardship, s.project_hygiene, s.is_baseline, s.snapshot_date
+             s.manager_pulse, s.team_stewardship, s.project_hygiene, s.client_handling, s.is_baseline, s.snapshot_date
       FROM employees e
       LEFT JOIN employees m ON m.id = e.reporting_manager_id
       LEFT JOIN LATERAL (
         SELECT * FROM performance_score_snapshots
         WHERE employee_id=e.id ORDER BY snapshot_date DESC LIMIT 1
       ) s ON TRUE
+      WHERE COALESCE(e.status,'active')='active'
+      ORDER BY s.total_score DESC NULLS LAST, e.name` as any[]
+      : await sql`
+      SELECT e.id, e.name, e.avatar, e.department, e.designation, e.reporting_manager_id,
+             m.name AS reporting_manager_name,
+             s.total_score, s.band, s.discipline, s.hours_hygiene, s.output, s.contribution,
+             s.manager_pulse, s.team_stewardship, s.project_hygiene, s.client_handling, s.is_baseline,
+             (s.year || '-' || LPAD(s.month::text, 2, '0') || '-01')::date AS snapshot_date
+      FROM employees e
+      LEFT JOIN employees m ON m.id = e.reporting_manager_id
+      LEFT JOIN performance_monthly_snapshots s
+        ON s.employee_id = e.id AND s.month=${reqMonth} AND s.year=${reqYear}
       WHERE COALESCE(e.status,'active')='active'
       ORDER BY s.total_score DESC NULLS LAST, e.name` as any[];
     res.json({ employees: rows });
@@ -2891,7 +2957,9 @@ app.get('/api/performance/pulse/:employeeId', async (req, res) => {
     const viewer = (await sql`SELECT id, employee_id_ref, role FROM app_users WHERE id=${uid}`)[0] as any;
     const ok = await canViewPulse(viewer, req.params.employeeId);
     if (!ok) return res.status(403).json({ error: 'Not permitted' });
-    const latest = (await sql`SELECT * FROM performance_score_snapshots WHERE employee_id=${req.params.employeeId} ORDER BY snapshot_date DESC LIMIT 1`)[0] as any;
+    const month = req.query.month ? Number(req.query.month) : null;
+    const year  = req.query.year  ? Number(req.query.year)  : null;
+    const latest = await getPulseSnapshotForPeriod(req.params.employeeId, month, year);
     const trend = await sql`
       SELECT snapshot_date, total_score, band FROM performance_score_snapshots
       WHERE employee_id=${req.params.employeeId} AND snapshot_date >= (CURRENT_DATE - INTERVAL '56 days')

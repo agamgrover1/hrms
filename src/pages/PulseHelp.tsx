@@ -16,7 +16,7 @@ const PILLARS = [
   {
     icon: Award, key: 'discipline',
     label: 'Discipline',
-    measures: 'Attendance + leave behaviour over the last 30 days.',
+    measures: 'Attendance + leave behaviour for the current month so far.',
     formula: ['Start at 100', 'Each unplanned absence subtracts 15', 'Each leave-without-notice subtracts 20'],
     improve: [
       'Apply for leave in advance — even half-day, even a hour ahead helps.',
@@ -123,7 +123,7 @@ export default function PulseHelp() {
         </button>
         <h1 className="font-display text-3xl font-bold tracking-tight text-on-surface">Performance Pulse — how it works</h1>
         <p className="text-sm text-on-surface-muted mt-2 leading-relaxed">
-          Pulse is an <strong>automated 30-day score</strong> recomputed every night. It runs alongside the manual monthly reviews your reporting manager does — the two complement each other; Pulse covers the data side, the manual review covers the human side. This page explains what each pillar measures, how to read your score, and how to improve.
+          Pulse is an <strong>automated calendar-month score</strong> recomputed every night. The current month is live (month-to-date); past months are locked at the closing snapshot you can review using the month selector. It runs alongside the manual monthly reviews your reporting manager does — the two complement each other; Pulse covers the data side, the manual review covers the human side. This page explains what each pillar measures, how to read your score, and how to improve.
         </p>
       </div>
 
@@ -206,14 +206,14 @@ export default function PulseHelp() {
         <div className="bg-surface rounded-2xl border border-outline p-5">
           <p className="text-sm font-semibold text-on-surface">Why did my score drop overnight?</p>
           <p className="text-xs text-on-surface-muted mt-1 leading-relaxed">
-            Pulse recalculates every night using the last 30 days. If you missed a day of logging yesterday, or a leave you applied last-minute got recorded, you’ll see a small drop today. Open the breakdown drawer — "Recent signals" tells you what changed.
+            Pulse recalculates every night using all data from the start of the current calendar month up to today. If you missed a day of logging yesterday, or a leave you applied last-minute got recorded, you’ll see a small drop today. Open the breakdown drawer — "Recent signals" tells you what changed.
           </p>
         </div>
 
         <div className="bg-surface rounded-2xl border border-outline p-5">
           <p className="text-sm font-semibold text-on-surface">I just joined. Why is my score showing "new"?</p>
           <p className="text-xs text-on-surface-muted mt-1 leading-relaxed">
-            For your first 30 days, the system marks you as a new joiner. Your score is computed honestly from whatever data exists, but the "new" badge signals that the 30-day window doesn’t represent a full picture yet. It clears automatically after a month.
+            For your first 30 days, the system marks you as a new joiner. Your score is computed honestly from whatever data exists this month, but the "new" badge signals you haven’t been around for a full picture yet. It clears automatically after a month.
           </p>
         </div>
 
@@ -241,7 +241,7 @@ export default function PulseHelp() {
         <div className="bg-surface rounded-2xl border border-outline p-5">
           <p className="text-sm font-semibold text-on-surface">My Hours pillar dropped after one missed day. Can I recover?</p>
           <p className="text-xs text-on-surface-muted mt-1 leading-relaxed">
-            Yes — the window is rolling 30 days. One missed day will keep affecting your score for 30 days, then drop off. Log every day going forward and the score climbs back. Backfilling the missed day with a real entry also works (the date you log it for is what counts, not when you logged it).
+            Yes — the window is the current calendar month. The missed day affects your score until month-end, then the new month resets. Log every day going forward and the score climbs back. Backfilling the missed day with a real entry also works (the date you log it for is what counts, not when you logged it).
           </p>
         </div>
 
