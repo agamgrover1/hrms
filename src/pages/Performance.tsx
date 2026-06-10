@@ -9,6 +9,7 @@ import {
 } from 'lucide-react';
 import { api } from '../services/api';
 import { useAuth } from '../context/AuthContext';
+import PulseContextPanel from '../components/PulseContextPanel';
 
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 const CATEGORIES = [
@@ -252,6 +253,9 @@ function AddReviewModal({
             <p className={`text-xs font-semibold mt-1 ${scoreColorClass(overall)}`}>{scoreBadge(overall).label}</p>
             <p className="text-xs text-on-surface-subtle mt-1">Average of <span className="num-mono">{CATEGORIES.length}</span> parameters</p>
           </div>
+
+          {/* Pulse context — automated data view to reference while rating */}
+          <PulseContextPanel employeeId={employee?.id ?? null} />
 
           {CATEGORIES.map(({ key, label, hint }: any) => (
             <div key={key}>

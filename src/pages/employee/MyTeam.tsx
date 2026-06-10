@@ -5,6 +5,7 @@ import { Users, Calendar, TrendingUp, CheckCircle, XCircle, AlertCircle,
 import { useAuth } from '../../context/AuthContext';
 import { api } from '../../services/api';
 import MemberCalendarModal from '../../components/MemberCalendarModal';
+import PulseContextPanel from '../../components/PulseContextPanel';
 import { GOAL_STATUSES, GOAL_STATUS_CONFIG } from '../Performance';
 import type { GoalStatus } from '../Performance';
 import {
@@ -1152,6 +1153,8 @@ export default function MyTeam() {
                   return <p className="num-mono text-3xl font-semibold" style={{ color: perfColor(overall) }}>{overall}</p>;
                 })()}
               </div>
+              {/* Pulse context — data view for the reviewer to reference */}
+              <PulseContextPanel employeeId={showReview?.id ?? null} />
               {SCORE_CATEGORIES.map(({ key, label, hint }: any) => (
                 <div key={key} className="space-y-1.5">
                   <ScoreSlider label={label} value={scores[key] ?? 75}
