@@ -167,9 +167,11 @@ export default function UserManagement() {
   };
 
   const filtered = users.filter(u => {
-    const matchSearch = u.name.toLowerCase().includes(search.toLowerCase()) ||
-      u.email.toLowerCase().includes(search.toLowerCase()) ||
-      (u.employee_id_ref ?? '').toLowerCase().includes(search.toLowerCase());
+    const term = search.toLowerCase();
+    const matchSearch = u.name.toLowerCase().includes(term) ||
+      u.email.toLowerCase().includes(term) ||
+      ((u as any).employee_code ?? '').toLowerCase().includes(term) ||
+      (u.employee_id_ref ?? '').toLowerCase().includes(term);
     const matchRole = roleFilter === 'all' || u.role === roleFilter;
     return matchSearch && matchRole;
   });
@@ -299,7 +301,7 @@ export default function UserManagement() {
                       </div>
                     </div>
                   </td>
-                  <td className="px-4 py-3 text-sm text-on-surface-muted num-mono">{u.employee_id_ref ?? u.employeeId ?? '—'}</td>
+                  <td className="px-4 py-3 text-sm text-on-surface-muted num-mono">{(u as any).employee_code ?? u.employeeId ?? '—'}</td>
                   <td className="px-4 py-3">
                     <span className={`inline-flex items-center gap-1.5 text-xs px-2.5 py-1 rounded-full border font-medium ${cfg.color}`}>
                       <RoleIcon size={11} /> {cfg.label}

@@ -5040,7 +5040,16 @@ app.patch('/api/wfh/requests/:id/cancel', async (req, res) => {
 // ── Users ─────────────────────────────────────────────────────────────────
 app.get('/api/users', async (_req, res) => {
   try {
-    res.json(await sql`SELECT id, employee_id_ref, name, email, role, department, designation, avatar, active, created_at FROM app_users ORDER BY name`);
+    // employee_code = the human-readable employees.employee_id (e.g. DL0067),
+    // not the internal employees.id that employee_id_ref points to. Users
+    // page shows employee_code in the "Employee ID" column.
+    res.json(await sql`
+      SELECT u.id, u.employee_id_ref, u.name, u.email, u.role, u.department, u.designation,
+             u.avatar, u.active, u.created_at,
+             e.employee_id AS employee_code
+      FROM app_users u
+      LEFT JOIN employees e ON e.id = u.employee_id_ref
+      ORDER BY u.name`);
   } catch (err) { res.status(500).json({ error: 'Server error' }); }
 });
 
