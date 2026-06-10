@@ -203,7 +203,10 @@ export default function PerformancePulse() {
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
           <h1 className="font-display text-2xl font-bold tracking-tight text-on-surface">Performance Pulse</h1>
-          <p className="text-sm text-on-surface-muted mt-0.5">Automated 30-day score, recomputed nightly. Manual reviews continue on the Performance page.</p>
+          <p className="text-sm text-on-surface-muted mt-0.5">
+            Automated 30-day score, recomputed nightly. Manual reviews continue on the Performance page. ·{' '}
+            <a href="/help/pulse" className="text-accent hover:underline font-semibold">How is this calculated?</a>
+          </p>
         </div>
         <div className="flex gap-2">
           <button onClick={openWeights} className="inline-flex items-center gap-2 text-sm px-3 py-2 rounded-lg font-medium border border-outline hover:bg-surface-2">

@@ -1360,7 +1360,8 @@ export default function MyTeam() {
             )}
             <div className="px-5 py-3 bg-surface-2/40 border-t border-outline">
               <p className="text-[11px] text-on-surface-subtle">
-                Coaching tool, not a punishment. Tap any row for the breakdown.
+                Coaching tool, not a punishment. Tap any row for the breakdown. ·{' '}
+                <a href="/help/pulse" className="text-accent hover:underline font-semibold">How is this calculated?</a>
               </p>
             </div>
           </div>

@@ -952,7 +952,9 @@ export default function MyPortal() {
                         {pulse.is_baseline && <span className="ml-1.5 text-[10px] font-normal opacity-70" title="Joined recently">new</span>}
                       </p>
                       <p className="text-xs text-on-surface-muted mt-0.5">
-                        Updated {new Date(pulse.snapshot_date).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' })} · tap to see breakdown
+                        Updated {new Date(pulse.snapshot_date).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' })} · tap to see breakdown ·{' '}
+                        <a href="/help/pulse" onClick={e => e.stopPropagation()}
+                          className="text-accent hover:underline font-semibold">How is this calculated?</a>
                       </p>
                     </div>
                   </div>
@@ -985,7 +987,8 @@ export default function MyPortal() {
                       <>
                         <p className="font-display text-base font-bold text-on-surface mt-0.5">Waiting for first snapshot</p>
                         <p className="text-xs text-on-surface-muted mt-0.5">
-                          Your automated score appears here after the nightly run. Admin can also trigger an immediate recompute on the Pulse page.
+                          Your automated score appears here after the nightly run. Admin can also trigger an immediate recompute on the Pulse page.{' '}
+                          <a href="/help/pulse" className="text-accent hover:underline font-semibold">How does it work?</a>
                           {pulseResolvedVia && pulseResolvedVia !== 'linkage' && (
                             <span className="block mt-1 text-[10px] text-on-surface-subtle">Linked via {pulseResolvedVia} — admin should set the explicit employee link for reliability.</span>
                           )}
