@@ -472,6 +472,7 @@ export default function Leave() {
   const [wfhRequests, setWfhRequests] = useState<any[]>([]);
   const [wfhTab, setWfhTab] = useState<'all' | 'pending' | 'approved' | 'rejected'>('all');
   const [rejectWfhTarget, setRejectWfhTarget] = useState<string | null>(null);
+  const [cancelWfhTarget, setCancelWfhTarget] = useState<string | null>(null);
 
   // Employee filter
   const [employees, setEmployees] = useState<any[]>([]);
@@ -644,16 +645,22 @@ export default function Leave() {
                           </span>
                         </td>
                         <td className="px-4 py-3">
-                          {w.status === 'pending' && w.manager_status === 'approved' && (
-                            <div className="flex gap-1.5">
-                              <button onClick={async () => {
-                                await api.hrApproveWfh(w.id, { status: 'approved', actioner_name: user?.name });
-                                setWfhRequests(prev => prev.map(x => x.id === w.id ? { ...x, status: 'approved', hr_actioner_name: user?.name } : x));
-                              }} className="text-xs px-2.5 py-1 bg-success-container text-success hover:opacity-80 transition-opacity rounded-md font-semibold">Approve</button>
-                              <button onClick={() => setRejectWfhTarget(w.id)}
-                                className="text-xs px-2.5 py-1 bg-danger-container text-danger hover:opacity-80 transition-opacity rounded-md font-semibold">Reject</button>
-                            </div>
-                          )}
+                          <div className="flex gap-1.5 flex-wrap">
+                            {w.status === 'pending' && w.manager_status === 'approved' && (
+                              <>
+                                <button onClick={async () => {
+                                  await api.hrApproveWfh(w.id, { status: 'approved', actioner_name: user?.name });
+                                  setWfhRequests(prev => prev.map(x => x.id === w.id ? { ...x, status: 'approved', hr_actioner_name: user?.name } : x));
+                                }} className="text-xs px-2.5 py-1 bg-success-container text-success hover:opacity-80 transition-opacity rounded-md font-semibold">Approve</button>
+                                <button onClick={() => setRejectWfhTarget(w.id)}
+                                  className="text-xs px-2.5 py-1 bg-danger-container text-danger hover:opacity-80 transition-opacity rounded-md font-semibold">Reject</button>
+                              </>
+                            )}
+                            {(w.status === 'pending' || w.status === 'approved') && (
+                              <button onClick={() => setCancelWfhTarget(w.id)}
+                                className="text-xs px-2.5 py-1 bg-surface-2 text-on-surface-muted hover:opacity-80 transition-opacity rounded-md font-semibold border border-outline">Cancel</button>
+                            )}
+                          </div>
                         </td>
                       </tr>
                     ))}
@@ -913,6 +920,24 @@ export default function Leave() {
           confirmClass="bg-on-surface hover:opacity-90"
           onClose={() => setCancelTarget(null)}
           onConfirm={reason => handleCancel(cancelTarget, reason)}
+        />
+      )}
+      {cancelWfhTarget && (
+        <RejectReasonModal
+          title="Cancel WFH"
+          placeholder="Reason for cancelling this WFH request..."
+          confirmLabel="Confirm Cancel"
+          confirmClass="bg-on-surface hover:opacity-90"
+          onClose={() => setCancelWfhTarget(null)}
+          onConfirm={async (reason) => {
+            try {
+              await api.cancelWfh(cancelWfhTarget, user?.name ?? 'Admin', reason);
+              setWfhRequests(prev => prev.map(x => x.id === cancelWfhTarget
+                ? { ...x, status: 'cancelled', cancelled_by: user?.name, cancellation_reason: reason }
+                : x));
+            } catch { /* ignore */ }
+            setCancelWfhTarget(null);
+          }}
         />
       )}
       </>}

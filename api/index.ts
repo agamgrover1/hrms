@@ -1238,21 +1238,25 @@ app.get('/api/employees', async (req, res) => {
   try {
     const { reporting_manager_id, descendants } = req.query as any;
     if (reporting_manager_id) {
-      // descendants=true walks the entire reporting tree under this manager,
-      // so a 2nd/3rd/Nth-level reporting manager sees the full sub-tree (their
-      // direct reports AND everyone reporting to those reports, recursively).
+      // Resolve the manager filter to BOTH columns (internal id + human code)
+      // so the WHERE matches whichever form employees.reporting_manager_id
+      // happens to store. Some legacy rows hold the human code; new ones hold
+      // the internal id. Without this widening, a manager whose reports were
+      // created with the "other" format saw zero team members.
+      const mgrRow = (await sql`SELECT id, employee_id FROM employees WHERE id=${reporting_manager_id} OR employee_id=${reporting_manager_id} LIMIT 1`)[0] as any;
+      const cands = mgrRow ? [mgrRow.id, mgrRow.employee_id].filter(Boolean) : [reporting_manager_id];
       if (descendants === 'true' || descendants === '1') {
         const rows = await sql`
           WITH RECURSIVE team AS (
-            SELECT * FROM employees WHERE reporting_manager_id = ${reporting_manager_id}
+            SELECT * FROM employees WHERE reporting_manager_id = ANY(${cands}::text[])
             UNION ALL
             SELECT e.* FROM employees e
-            JOIN team t ON e.reporting_manager_id = t.id
+            JOIN team t ON e.reporting_manager_id = t.id OR e.reporting_manager_id = t.employee_id
           )
-          SELECT * FROM team ORDER BY name`;
+          SELECT DISTINCT * FROM team ORDER BY name`;
         res.json(rows);
       } else {
-        res.json(await sql`SELECT * FROM employees WHERE reporting_manager_id = ${reporting_manager_id} ORDER BY name`);
+        res.json(await sql`SELECT * FROM employees WHERE reporting_manager_id = ANY(${cands}::text[]) ORDER BY name`);
       }
     } else {
       res.json(await sql`SELECT * FROM employees ORDER BY name`);
@@ -3356,10 +3360,13 @@ app.get('/api/leave/requests', async (req, res) => {
     const { employee_id, status, reporting_manager_id } = req.query as any;
     let rows;
     if (reporting_manager_id) {
+      // Widen match to internal id + human code — see /api/employees for why.
+      const mgrRow = (await sql`SELECT id, employee_id FROM employees WHERE id=${reporting_manager_id} OR employee_id=${reporting_manager_id} LIMIT 1`)[0] as any;
+      const cands = mgrRow ? [mgrRow.id, mgrRow.employee_id].filter(Boolean) : [reporting_manager_id];
       rows = await sql`
         SELECT lr.* FROM leave_requests lr
         JOIN employees e ON e.id = lr.employee_id
-        WHERE e.reporting_manager_id = ${reporting_manager_id}
+        WHERE e.reporting_manager_id = ANY(${cands}::text[])
           AND lr.manager_status = 'pending' AND lr.status = 'pending'
         ORDER BY lr.applied_on DESC`;
     } else if (employee_id) {
@@ -5148,7 +5155,10 @@ app.get('/api/wfh/requests', async (req, res) => {
     const { employee_id, status, reporting_manager_id } = req.query as any;
     let rows;
     if (reporting_manager_id) {
-      rows = await sql`SELECT wr.* FROM wfh_requests wr JOIN employees e ON e.id=wr.employee_id WHERE e.reporting_manager_id=${reporting_manager_id} AND wr.manager_status='pending' AND wr.status='pending' ORDER BY wr.applied_on DESC`;
+      // Widen match — see /api/employees for the why.
+      const mgrRow = (await sql`SELECT id, employee_id FROM employees WHERE id=${reporting_manager_id} OR employee_id=${reporting_manager_id} LIMIT 1`)[0] as any;
+      const cands = mgrRow ? [mgrRow.id, mgrRow.employee_id].filter(Boolean) : [reporting_manager_id];
+      rows = await sql`SELECT wr.* FROM wfh_requests wr JOIN employees e ON e.id=wr.employee_id WHERE e.reporting_manager_id = ANY(${cands}::text[]) AND wr.manager_status='pending' AND wr.status='pending' ORDER BY wr.applied_on DESC`;
     } else if (employee_id) {
       rows = await sql`SELECT * FROM wfh_requests WHERE employee_id=${employee_id} ORDER BY applied_on DESC`;
     } else if (status) {
