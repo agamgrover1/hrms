@@ -5158,6 +5158,20 @@ app.get('/api/wfh/requests', async (req, res) => {
       // Widen match — see /api/employees for the why.
       const mgrRow = (await sql`SELECT id, employee_id FROM employees WHERE id=${reporting_manager_id} OR employee_id=${reporting_manager_id} LIMIT 1`)[0] as any;
       const cands = mgrRow ? [mgrRow.id, mgrRow.employee_id].filter(Boolean) : [reporting_manager_id];
+      // Diagnostic mode — frontend can pass ?_debug=1 to get back what the
+      // backend actually matched on, so we can debug "manager doesn't see X"
+      // from DevTools without spelunking the DB.
+      if (req.query._debug === '1') {
+        const allPending = await sql`
+          SELECT wr.id, wr.employee_id, wr.employee_name, wr.status, wr.manager_status,
+                 e.reporting_manager_id AS report_rm
+          FROM wfh_requests wr
+          LEFT JOIN employees e ON e.id = wr.employee_id
+          WHERE wr.status='pending' AND wr.manager_status='pending'
+          ORDER BY wr.applied_on DESC LIMIT 20` as any[];
+        rows = await sql`SELECT wr.* FROM wfh_requests wr JOIN employees e ON e.id=wr.employee_id WHERE e.reporting_manager_id = ANY(${cands}::text[]) AND wr.manager_status='pending' AND wr.status='pending' ORDER BY wr.applied_on DESC`;
+        return res.json({ _debug: { input: reporting_manager_id, resolved_manager: mgrRow, candidates: cands, matched_count: (rows as any[]).length, all_pending_wfh_sample: allPending }, rows });
+      }
       rows = await sql`SELECT wr.* FROM wfh_requests wr JOIN employees e ON e.id=wr.employee_id WHERE e.reporting_manager_id = ANY(${cands}::text[]) AND wr.manager_status='pending' AND wr.status='pending' ORDER BY wr.applied_on DESC`;
     } else if (employee_id) {
       rows = await sql`SELECT * FROM wfh_requests WHERE employee_id=${employee_id} ORDER BY applied_on DESC`;
