@@ -79,7 +79,7 @@ function AppRoutes() {
 
         {/* Employee routes — project_coordinator is also an employee */}
         <Route path="my" element={<ProtectedRoute roles={['employee', 'project_coordinator', 'hr_manager', 'admin']}><MyPortal /></ProtectedRoute>} />
-        <Route path="my-team" element={<ProtectedRoute roles={['employee', 'project_coordinator']}><MyTeam /></ProtectedRoute>} />
+        <Route path="my-team" element={<ProtectedRoute roles={['employee', 'project_coordinator', 'hr_manager', 'admin']}><MyTeam /></ProtectedRoute>} />
       </Route>
 
       {/* Catch-all */}

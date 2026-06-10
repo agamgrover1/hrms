@@ -98,7 +98,11 @@ export default function Sidebar() {
   const [isProjectLead, setIsProjectLead] = useState(false);
 
   useEffect(() => {
-    const showPersonal = isEmployee || isCoord;
+    // Detect "has direct reports" for ANY role that gets a personal area
+    // (employee, coord, HR, admin). An admin who's also a reporting manager
+    // for some employees should see team links — My team / Team compliance /
+    // Team utilization — just like a regular manager.
+    const showPersonal = isEmployee || isCoord || role === 'hr_manager' || role === 'admin';
     if (!showPersonal || !user?.employee_id_ref) return;
     api.getEmployees()
       .then(emps => {
@@ -115,7 +119,7 @@ export default function Sidebar() {
           .catch(() => {});
       })
       .catch(() => {});
-  }, [user?.employee_id_ref, isEmployee, isCoord]);
+  }, [user?.employee_id_ref, isEmployee, isCoord, role]);
 
   const isTeamLead = isProjectReviewer || isProjectLead;
 
