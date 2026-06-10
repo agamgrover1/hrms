@@ -3382,7 +3382,22 @@ app.get('/api/leave/requests', async (req, res) => {
 
 app.post('/api/leave/requests', async (req, res) => {
   try {
-    const { employee_id, employee_name, type, from_date, to_date, days, reason } = req.body;
+    let { employee_id, employee_name, type, from_date, to_date, days, reason } = req.body;
+    // Same defensive resolution as WFH POST — prevents orphan rows with
+    // empty employee_id that no manager can ever see.
+    if (!employee_id || String(employee_id).trim() === '') {
+      const uid = req.header('x-user-id');
+      if (uid) {
+        const u = (await sql`SELECT name, email, employee_id_ref FROM app_users WHERE id=${uid}`)[0] as any;
+        const resolved = u ? await resolveUserToEmployee(u) : null;
+        if (resolved) employee_id = resolved;
+      }
+      if (!employee_id && employee_name) {
+        const e = (await sql`SELECT id FROM employees WHERE LOWER(TRIM(name)) = LOWER(TRIM(${employee_name})) LIMIT 1`)[0] as any;
+        if (e?.id) employee_id = e.id;
+      }
+      if (!employee_id) return res.status(400).json({ error: 'Could not resolve your employee record. Refresh and try again.' });
+    }
     const empRows = await sql`SELECT join_date, probation_end_date, reporting_manager_id, date_of_birth FROM employees WHERE id=${employee_id}`.catch(() => []);
     const emp = (empRows as any[])[0] ?? {};
     const onProbation = isOnProbation(emp.join_date ?? null, emp.probation_end_date ?? null);
@@ -5148,6 +5163,25 @@ async function ensureWfhTable() {
     rejection_reason TEXT, cancelled_by TEXT, cancelled_at TIMESTAMPTZ,
     cancellation_reason TEXT, applied_on TIMESTAMPTZ DEFAULT NOW(), created_at TIMESTAMPTZ DEFAULT NOW()
   )`;
+  // Backfill orphaned WFH / leave rows whose employee_id is empty or null
+  // (regression from MyPortal Apply firing before the emp lookup finished).
+  // Resolves by employee_name → employees.name match, only when exactly one
+  // employee has that name (no risk of cross-wiring people with shared names).
+  // Idempotent: subsequent runs see no empty employee_id rows.
+  try {
+    await sql`
+      UPDATE wfh_requests w SET employee_id = e.id
+      FROM employees e
+      WHERE (w.employee_id IS NULL OR w.employee_id = '')
+        AND LOWER(TRIM(e.name)) = LOWER(TRIM(w.employee_name))
+        AND (SELECT COUNT(*) FROM employees x WHERE LOWER(TRIM(x.name)) = LOWER(TRIM(w.employee_name))) = 1`;
+    await sql`
+      UPDATE leave_requests l SET employee_id = e.id
+      FROM employees e
+      WHERE (l.employee_id IS NULL OR l.employee_id = '')
+        AND LOWER(TRIM(e.name)) = LOWER(TRIM(l.employee_name))
+        AND (SELECT COUNT(*) FROM employees x WHERE LOWER(TRIM(x.name)) = LOWER(TRIM(l.employee_name))) = 1`;
+  } catch { /* non-fatal */ }
 }
 app.get('/api/wfh/requests', async (req, res) => {
   try {
@@ -5186,7 +5220,24 @@ app.get('/api/wfh/requests', async (req, res) => {
 app.post('/api/wfh/requests', async (req, res) => {
   try {
     await ensureWfhTable();
-    const { employee_id, employee_name, date, type, reason } = req.body;
+    let { employee_id, employee_name, date, type, reason } = req.body;
+    // Defensive resolution: if employee_id is empty (frontend submitted
+    // before the emp lookup finished), try to recover from x-user-id
+    // header → employee link, then from employee_name. Block the request
+    // outright if neither yields a real employee.
+    if (!employee_id || String(employee_id).trim() === '') {
+      const uid = req.header('x-user-id');
+      if (uid) {
+        const u = (await sql`SELECT name, email, employee_id_ref FROM app_users WHERE id=${uid}`)[0] as any;
+        const resolved = u ? await resolveUserToEmployee(u) : null;
+        if (resolved) employee_id = resolved;
+      }
+      if (!employee_id && employee_name) {
+        const e = (await sql`SELECT id FROM employees WHERE LOWER(TRIM(name)) = LOWER(TRIM(${employee_name})) LIMIT 1`)[0] as any;
+        if (e?.id) employee_id = e.id;
+      }
+      if (!employee_id) return res.status(400).json({ error: 'Could not resolve your employee record. Refresh and try again.' });
+    }
     // Block WFH during probation
     const empRows = await sql`SELECT join_date, probation_end_date FROM employees WHERE id=${employee_id}` as any[];
     if (empRows.length) {

@@ -1555,8 +1555,10 @@ export default function MyPortal() {
                       Cancel
                     </button>
                     <button
-                      disabled={savingWfh || !wfhForm.date || !wfhForm.reason?.trim()}
+                      disabled={savingWfh || !empDbId || !wfhForm.date || !wfhForm.reason?.trim()}
+                      title={!empDbId ? 'Profile still loading — wait a moment' : undefined}
                       onClick={async () => {
+                        if (!empDbId) return;
                         setSavingWfh(true);
                         try {
                           const created = await api.applyWfh({
