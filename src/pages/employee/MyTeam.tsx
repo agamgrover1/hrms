@@ -868,15 +868,25 @@ export default function MyTeam() {
             )}
           </div>
 
-          {/* Pending WFH requests */}
-          {pendingWfh.length > 0 && (
-            <div className="bg-surface rounded-xl-2 border border-outline shadow-elev-1 overflow-hidden">
-              <div className="px-5 py-4 border-b border-outline flex items-center justify-between">
-                <h3 className="font-display text-xl font-bold tracking-tight text-on-surface flex items-center gap-2">
-                  <span className="text-brand">⊡</span> Pending WFH Requests
-                </h3>
-                <span className="num-mono text-xs font-bold px-2 py-0.5 rounded-full bg-brand-container text-on-brand-container">{pendingWfh.length}</span>
+          {/* Pending WFH requests — always-visible container so an empty
+              list shows "no pending" instead of the whole section vanishing
+              (the latter looked like a visibility bug to reporting managers). */}
+          <div className="bg-surface rounded-xl-2 border border-outline shadow-elev-1 overflow-hidden">
+            <div className="px-5 py-4 border-b border-outline flex items-center justify-between">
+              <h3 className="font-display text-xl font-bold tracking-tight text-on-surface flex items-center gap-2">
+                <span className="text-brand">⊡</span> Pending WFH Requests
+              </h3>
+              {pendingWfh.length > 0 && (
+                <span className="num-mono text-xs font-bold px-2 py-0.5 rounded-full bg-brand-container text-on-brand-container">{pendingWfh.length} pending</span>
+              )}
+            </div>
+            {pendingWfh.length === 0 ? (
+              <div className="flex flex-col items-center gap-1.5 py-10 text-on-surface-muted">
+                <CheckCircle size={20} className="text-success/60" />
+                <p className="text-sm">No pending WFH requests</p>
+                <p className="text-[11px] text-on-surface-subtle">If a report applied recently and you don't see it here, ask them to confirm they weren't on probation when applying.</p>
               </div>
+            ) : (
               <div className="divide-y divide-outline">
                 {pendingWfh.map(w => (
                   <div key={w.id} className="flex items-start justify-between px-5 py-4 gap-3">
@@ -901,8 +911,8 @@ export default function MyTeam() {
                   </div>
                 ))}
               </div>
-            </div>
-          )}
+            )}
+          </div>
 
           {/* Per-member leave history */}
           <div className="bg-surface rounded-xl-2 border border-outline shadow-elev-1 overflow-hidden">

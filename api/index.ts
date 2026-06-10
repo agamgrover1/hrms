@@ -4709,7 +4709,7 @@ app.get('/api/assets/:id/repair-history', async (req, res) => {
       FROM repair_tickets r
       LEFT JOIN vendors v ON v.id = r.vendor_id
       WHERE r.asset_id=${req.params.id}
-      ORDER BY COALESCE(r.reported_at, r.created_by::timestamptz) DESC` as any[];
+      ORDER BY COALESCE(r.reported_at, r.updated_at) DESC` as any[];
     const totalSpend = (rows as any[]).reduce((s, r) =>
       s + Number(r.final_cost ?? r.quoted_cost ?? 0), 0);
     res.json({
