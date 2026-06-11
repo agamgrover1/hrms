@@ -279,6 +279,17 @@ export default function MyTeam() {
   const [empDbId, setEmpDbId] = useState('');
   const [teamMembers, setTeamMembers] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
+  // Per-member toggle for the Performance Score Trend lines. Clicking a
+  // name in the legend (or the quick-action chips) flips that member's
+  // line. Set tracks HIDDEN ids — empty set = all visible (default).
+  const [hiddenPerfLines, setHiddenPerfLines] = useState<Set<string>>(new Set());
+  const toggleHiddenLine = (id: string) => {
+    setHiddenPerfLines(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  };
 
   const now = new Date();
   const currentYear = now.getFullYear();
@@ -553,11 +564,14 @@ export default function MyTeam() {
     const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
     last6.push({ month: d.getMonth() + 1, year: d.getFullYear(), label: MONTHS_SHORT[d.getMonth()] });
   }
+  // Key each member's score by their id so two people with the same first
+  // name don't collide (e.g. two Vinays would have stomped each other when
+  // we used first name as the dataKey).
   const perfTrendData = last6.map(({ month, year, label }) => {
     const point: any = { label };
     teamMembers.forEach(m => {
       const rec = (teamPerf[m.id] ?? []).find((r: any) => r.month === month && r.year === year);
-      if (rec) point[m.name.split(' ')[0]] = rec.overall_score;
+      if (rec) point[m.id] = rec.overall_score;
     });
     return point;
   });
@@ -702,26 +716,70 @@ export default function MyTeam() {
           <div className="group relative bg-surface rounded-xl-2 border border-outline shadow-elev-1 hover:shadow-elev-2 transition-shadow overflow-hidden p-5">
             <div className="absolute -top-8 -right-8 w-28 h-28 rounded-full bg-brand/15 blur-2xl opacity-50" />
             <div className="relative">
-              <h3 className="font-display text-xl font-bold tracking-tight text-on-surface mb-1">Performance Score Trend</h3>
-              <p className="text-xs text-on-surface-muted mb-4">Overall monthly scores — last 6 months</p>
+              <div className="flex items-start justify-between gap-2 mb-1 flex-wrap">
+                <div>
+                  <h3 className="font-display text-xl font-bold tracking-tight text-on-surface">Performance Score Trend</h3>
+                  <p className="text-xs text-on-surface-muted">Overall monthly scores — last 6 months · click a name to toggle</p>
+                </div>
+                {hiddenPerfLines.size > 0 && (
+                  <button onClick={() => setHiddenPerfLines(new Set())}
+                    className="text-[11px] font-semibold text-accent hover:underline whitespace-nowrap">
+                    Show all
+                  </button>
+                )}
+              </div>
               {teamMembers.every(m => !(teamPerf[m.id] ?? []).length) ? (
                 <div className="flex items-center justify-center h-40 text-on-surface-subtle text-sm">No performance reviews yet</div>
               ) : (
-                <ResponsiveContainer width="100%" height={220}>
+                <>
+                <ResponsiveContainer width="100%" height={240}>
                   <LineChart data={perfTrendData} margin={{ left: 0, right: 16, top: 4, bottom: 4 }}>
                     <CartesianGrid strokeDasharray="3 3" stroke="rgba(148, 163, 184, 0.18)" vertical={false} />
                     <XAxis dataKey="label" tick={{ fontSize: 11, fill: '#94a3b8' }} axisLine={false} tickLine={false} />
                     <YAxis domain={[0, 100]} tick={{ fontSize: 11, fill: '#94a3b8' }} axisLine={false} tickLine={false} width={28} />
-                    <Tooltip contentStyle={{ background: 'rgb(var(--surface-3))', borderRadius: 12, border: '1px solid rgb(var(--outline))', boxShadow: 'var(--elev-3)', color: 'rgb(var(--on-surface))', fontSize: 12 }}
-                      formatter={(val: any) => [`${val}/100`, '']} />
-                    <Legend iconSize={10} wrapperStyle={{ fontSize: 11 }} />
+                    <Tooltip
+                      contentStyle={{ background: 'rgb(var(--surface-3))', borderRadius: 12, border: '1px solid rgb(var(--outline))', boxShadow: 'var(--elev-3)', color: 'rgb(var(--on-surface))', fontSize: 12 }}
+                      // Recharts passes the dataKey (member id) as the second
+                      // arg by default — map it back to the first name for the
+                      // tooltip label so it reads naturally.
+                      formatter={(val: any, key: any) => {
+                        const m = teamMembers.find(x => x.id === key);
+                        return [`${val}/100`, m?.name.split(' ')[0] ?? key];
+                      }}
+                    />
                     {teamMembers.map((m, i) => (
-                      <Line key={m.id} type="monotone" dataKey={m.name.split(' ')[0]}
+                      <Line key={m.id} type="monotone" dataKey={m.id} name={m.name.split(' ')[0]}
                         stroke={memberColors[i]} strokeWidth={2.5} dot={{ r: 4, fill: memberColors[i] }}
-                        activeDot={{ r: 6 }} connectNulls={false} />
+                        activeDot={{ r: 6 }} connectNulls={false}
+                        hide={hiddenPerfLines.has(m.id)} />
                     ))}
                   </LineChart>
                 </ResponsiveContainer>
+
+                {/* Custom clickable legend. The default Recharts Legend
+                    supports onClick but its hit area is tiny (just the icon)
+                    and accessibility is poor. A row of pill chips is much
+                    easier to tap, especially on mobile. */}
+                <div className="flex flex-wrap gap-1.5 mt-4 justify-center">
+                  {teamMembers.map((m, i) => {
+                    const hidden = hiddenPerfLines.has(m.id);
+                    const firstName = m.name?.split(' ')[0] ?? '—';
+                    return (
+                      <button key={m.id} onClick={() => toggleHiddenLine(m.id)}
+                        title={hidden ? `Show ${firstName}'s line` : `Hide ${firstName}'s line`}
+                        className={`inline-flex items-center gap-1.5 px-2 py-1 rounded-full text-[11px] font-semibold border transition-all ${
+                          hidden
+                            ? 'border-outline text-on-surface-subtle bg-surface line-through hover:bg-surface-2'
+                            : 'border-outline text-on-surface bg-surface hover:bg-surface-2'
+                        }`}>
+                        <span className="w-2 h-2 rounded-full flex-shrink-0"
+                          style={{ background: hidden ? 'rgba(148,163,184,0.35)' : memberColors[i] }} />
+                        {firstName}
+                      </button>
+                    );
+                  })}
+                </div>
+                </>
               )}
             </div>
           </div>
