@@ -1,5 +1,5 @@
 import { Fragment, useState, useEffect, useMemo, useCallback } from 'react';
-import { Plus, Trash2, X, Search, Copy, ExternalLink, Flag, ClipboardCheck, LayoutGrid, Pencil, Users as UsersIcon, ChevronRight, AlertTriangle, CalendarDays } from 'lucide-react';
+import { Plus, Trash2, X, Search, Copy, ExternalLink, Flag, ClipboardCheck, LayoutGrid, Pencil, Users as UsersIcon, ChevronRight, AlertTriangle, CalendarDays, ArrowUpDown, ChevronUp, ChevronDown } from 'lucide-react';
 import { Link } from 'react-router-dom';
 import { api } from '../services/api';
 import { useAuth } from '../context/AuthContext';
@@ -909,6 +909,31 @@ function CapacityView({ summary, employees, loading, search, month, year, openDe
 }
 
 // ── Mine view: my direct reports + projects I review ───────────────────────
+// Generic sortable column header for plain `<table>` markup. The chevron
+// rotates between up / down / neutral based on the parent's current sort
+// state. Click triggers the parent's cycle handler.
+function SortableTh({ label, sortKey, current, onSort, className = '', align = 'left' }: {
+  label: string;
+  sortKey: string;
+  current: { key: string; dir: 'asc' | 'desc' };
+  onSort: (k: any) => void;
+  className?: string;
+  align?: 'left' | 'center' | 'right';
+}) {
+  const active = current.key === sortKey;
+  const Icon = !active ? ArrowUpDown : current.dir === 'asc' ? ChevronUp : ChevronDown;
+  const justify = align === 'left' ? 'justify-start' : align === 'right' ? 'justify-end' : 'justify-center';
+  return (
+    <th className={`${className} ${align === 'left' ? 'text-left' : align === 'right' ? 'text-right' : 'text-center'} select-none`}>
+      <button onClick={() => onSort(sortKey)}
+        className={`inline-flex items-center gap-1 ${justify} w-full hover:text-on-surface transition-colors ${active ? 'text-accent' : ''}`}>
+        <span>{label}</span>
+        <Icon size={11} className={active ? 'opacity-100' : 'opacity-50'} />
+      </button>
+    </th>
+  );
+}
+
 function MineView({ summary, assignments, myProjects, reportsToIds, loading, month, year, search, openDetail }: {
   summary: any;
   assignments: any[];
@@ -926,14 +951,49 @@ function MineView({ summary, assignments, myProjects, reportsToIds, loading, mon
   // can see the daily breakdown without leaving /hours.
   const [dailyFor, setDailyFor] = useState<any | null>(null);
 
+  // Sort state for the "My team's capacity" table. Default: name ASC.
+  // Clicking a column header cycles ASC → DESC → ASC. Click a different
+  // column to switch to it (always starts in the natural-first direction:
+  // ASC for name, DESC for everything numeric since "biggest first" is the
+  // useful starting view for capacity / overtime).
+  type SortKey = 'name' | 'w1' | 'w2' | 'w3' | 'w4' | 'w5' | 'month' | 'over';
+  const [teamSort, setTeamSort] = useState<{ key: SortKey; dir: 'asc' | 'desc' }>({ key: 'name', dir: 'asc' });
+  const onSort = (key: SortKey) => {
+    setTeamSort(prev => {
+      if (prev.key === key) return { key, dir: prev.dir === 'asc' ? 'desc' : 'asc' };
+      return { key, dir: key === 'name' ? 'asc' : 'desc' };
+    });
+  };
+
   const teamRows = useMemo(() => {
     if (!summary) return [] as any[];
     if (reportsToIds.size === 0) return [] as any[];
     const rows = summary.employees.filter((e: any) => reportsToIds.has(e.employee_id));
     const term = (search ?? '').trim().toLowerCase();
-    if (!term) return rows;
-    return rows.filter((r: any) => (r.employee_name ?? '').toLowerCase().includes(term));
-  }, [summary, reportsToIds, search]);
+    const filtered = term ? rows.filter((r: any) => (r.employee_name ?? '').toLowerCase().includes(term)) : rows;
+    // Apply sort. For week cells, sort by plan + over (what the user sees
+    // in the cell) so the order matches what the eye picks up. Use a stable
+    // copy so the underlying array isn't mutated.
+    const numFor = (r: any, k: SortKey): number => {
+      switch (k) {
+        case 'w1': return Number(r.w1 ?? 0) + Number(r.w1_over ?? 0);
+        case 'w2': return Number(r.w2 ?? 0) + Number(r.w2_over ?? 0);
+        case 'w3': return Number(r.w3 ?? 0) + Number(r.w3_over ?? 0);
+        case 'w4': return Number(r.w4 ?? 0) + Number(r.w4_over ?? 0);
+        case 'w5': return Number(r.w5 ?? 0) + Number(r.w5_over ?? 0);
+        case 'month': return Number(r.monthly ?? 0) + Number(r.logged_over_plan ?? 0);
+        case 'over': return Number(r.logged_over_plan ?? 0);
+        default: return 0;
+      }
+    };
+    const sorted = [...filtered].sort((a: any, b: any) => {
+      if (teamSort.key === 'name') {
+        return (a.employee_name ?? '').localeCompare(b.employee_name ?? '');
+      }
+      return numFor(a, teamSort.key) - numFor(b, teamSort.key);
+    });
+    return teamSort.dir === 'desc' ? sorted.reverse() : sorted;
+  }, [summary, reportsToIds, search, teamSort]);
 
   // Aggregate per project: how many employees are assigned + their hours this month
   const projectStats = useMemo(() => {
@@ -980,10 +1040,16 @@ function MineView({ summary, assignments, myProjects, reportsToIds, loading, mon
             <table className="w-full text-sm">
               <thead className="bg-surface-2 border-b border-outline">
                 <tr className="text-left text-[10px] font-bold text-on-surface-muted uppercase tracking-[0.16em]">
-                  <th className="px-5 py-3">Employee</th>
-                  {['W1','W2','W3','W4','W5'].map(w => <th key={w} className="px-3 py-3 text-center min-w-[72px]">{w}</th>)}
-                  <th className="px-3 py-3 text-center bg-surface-3 min-w-[88px]">Month</th>
-                  <th className="px-3 py-3 text-center min-w-[80px]">Over plan</th>
+                  <SortableTh label="Employee" sortKey="name" current={teamSort} onSort={onSort}
+                    className="px-5 py-3" align="left" />
+                  {(['w1','w2','w3','w4','w5'] as const).map(k => (
+                    <SortableTh key={k} label={k.toUpperCase()} sortKey={k} current={teamSort} onSort={onSort}
+                      className="px-3 py-3 min-w-[72px]" align="center" />
+                  ))}
+                  <SortableTh label="Month" sortKey="month" current={teamSort} onSort={onSort}
+                    className="px-3 py-3 bg-surface-3 min-w-[88px]" align="center" />
+                  <SortableTh label="Over plan" sortKey="over" current={teamSort} onSort={onSort}
+                    className="px-3 py-3 min-w-[80px]" align="center" />
                 </tr>
               </thead>
               <tbody className="divide-y divide-outline">
