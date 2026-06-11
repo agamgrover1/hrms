@@ -259,13 +259,41 @@ export default function TopBar({ title }: Props) {
   const [notifications, setNotifications] = useState<any[]>([]);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const notifsRef = useRef<HTMLDivElement>(null);
+  // Live toast queue — anything new since the last poll surfaces as a
+  // dismissible card in the top-right. We track the highest notification id
+  // ever seen by THIS user (persisted to localStorage so a refresh doesn't
+  // re-toast the same items) and only push the delta to the queue.
+  const [toasts, setToasts] = useState<any[]>([]);
+  const lastSeenIdRef = useRef<number>(0);
+  const seededRef = useRef(false);
 
   const unread = notifications.filter(n => !n.is_read).length;
 
   const fetchNotifications = () => {
     if (!user?.id) return;
     api.getNotifications(user.id)
-      .then(setNotifications)
+      .then(rows => {
+        setNotifications(rows);
+        // First fetch after sign-in / refresh: just seed the high-water mark
+        // so we don't blast a history of unread items as toasts. Subsequent
+        // polls compare against this mark.
+        const maxId = Math.max(0, ...rows.map((n: any) => Number(n.id) || 0));
+        if (!seededRef.current) {
+          // Restore the last-seen id from localStorage if present so a tab
+          // refresh while signed in doesn't replay everything.
+          const stored = Number(localStorage.getItem(`notif_seen_${user.id}`) || 0);
+          lastSeenIdRef.current = Math.max(stored, maxId);
+          seededRef.current = true;
+          return;
+        }
+        const fresh = rows.filter((n: any) => Number(n.id) > lastSeenIdRef.current);
+        if (fresh.length) {
+          // Newest-first in the toast stack so the latest reads on top.
+          setToasts(prev => [...fresh.reverse(), ...prev].slice(0, 4));
+          lastSeenIdRef.current = maxId;
+          try { localStorage.setItem(`notif_seen_${user.id}`, String(maxId)); } catch { /* quota */ }
+        }
+      })
       .catch(() => {});
   };
 
@@ -274,6 +302,16 @@ export default function TopBar({ title }: Props) {
     pollRef.current = setInterval(fetchNotifications, 30000);
     return () => { if (pollRef.current) clearInterval(pollRef.current); };
   }, [user?.id]);
+
+  // Per-toast dismiss + auto-dismiss after 7s. Click-to-navigate uses the
+  // same link logic as the bell so it always opens the right place.
+  const dismissToast = (id: number) => setToasts(prev => prev.filter(t => t.id !== id));
+  useEffect(() => {
+    if (toasts.length === 0) return;
+    const id = toasts[0].id;
+    const timer = setTimeout(() => dismissToast(id), 7000);
+    return () => clearTimeout(timer);
+  }, [toasts]);
 
   // Close on outside click
   useEffect(() => {
@@ -594,6 +632,41 @@ export default function TopBar({ title }: Props) {
             )}
           </div>
         </div>
+      </div>
+    )}
+
+    {/* Live notification toasts. Stack in the top-right beneath the bell.
+        Click jumps to the same destination the bell would; auto-dismiss
+        after 7s, or × to close immediately. Limited to 4 visible so a
+        sudden burst doesn't fill the screen. */}
+    {toasts.length > 0 && (
+      <div className="fixed top-20 right-6 z-[70] flex flex-col gap-2 w-80 max-w-[calc(100vw-3rem)] pointer-events-none">
+        {toasts.map(n => {
+          const cfg = TYPE_CONFIG[n.type] ?? { icon: Bell, color: '#6b7280', bg: '#f3f4f6' };
+          const TIcon = cfg.icon;
+          const route = n.link || getNotifRoute(n.type, user?.role ?? '');
+          return (
+            <div key={n.id}
+              onClick={() => {
+                if (!n.is_read) handleMarkRead(n.id);
+                dismissToast(n.id);
+                navigate(route);
+              }}
+              className="pointer-events-auto bg-surface rounded-xl-2 border border-outline shadow-elev-3 p-3 flex items-start gap-3 cursor-pointer hover:shadow-elev-4 transition-shadow animate-fade-up">
+              <div className="w-9 h-9 rounded-full flex items-center justify-center flex-shrink-0" style={{ background: cfg.bg, color: cfg.color }}>
+                <TIcon size={16} />
+              </div>
+              <div className="flex-1 min-w-0">
+                <p className="text-sm font-semibold text-on-surface truncate">{n.title}</p>
+                {n.body && <p className="text-xs text-on-surface-muted mt-0.5 line-clamp-2">{n.body}</p>}
+              </div>
+              <button onClick={(e) => { e.stopPropagation(); dismissToast(n.id); }}
+                className="text-on-surface-subtle hover:text-on-surface p-0.5 flex-shrink-0" aria-label="Dismiss">
+                <X size={13} />
+              </button>
+            </div>
+          );
+        })}
       </div>
     )}
     </>
