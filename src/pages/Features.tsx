@@ -195,14 +195,14 @@ function FeatureCard({ item, isAdmin, onEdit, onPublish, onUnpublish, onDelete }
           </a>
         )}
         <div className="flex items-center gap-3 mt-2 flex-wrap text-[11px] text-on-surface-subtle">
-          {item.drafted_by_name && (
-            <span><Edit2 size={9} className="inline mr-1" />Drafted by {item.drafted_by_name}</span>
-          )}
+          {/* "Drafted by" / "Published by" deliberately hidden — these are
+              system features, not authored by a person on the team. The
+              backend still records the author for audit purposes, just
+              not surfaced in the UI. */}
           {item.published_at && (
             <span className="text-success-fg">
               <CheckCircle size={9} className="inline mr-1" />
               Published {new Date(item.published_at).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' })}
-              {item.approved_by_name ? ` by ${item.approved_by_name}` : ''}
             </span>
           )}
           {isDraft && !item.published_at && (
