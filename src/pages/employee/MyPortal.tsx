@@ -497,6 +497,8 @@ export default function MyPortal() {
   const [teamMembers, setTeamMembers] = useState<any[]>([]);
   // All employees — for the Todo assignment picker when admin/HR.
   const [allEmployeesForTodo, setAllEmployeesForTodo] = useState<any[]>([]);
+  // Quick-add To-Do popup driven from the FAB
+  const [showQuickTodo, setShowQuickTodo] = useState(false);
   const [teamPendingLeaves, setTeamPendingLeaves] = useState<any[]>([]);
   const [teamPerf, setTeamPerf] = useState<Record<string, any[]>>({});
   const [approvingLeave, setApprovingLeave] = useState<Record<string, boolean>>({});
@@ -2899,7 +2901,94 @@ export default function MyPortal() {
           setExpenseForm({ category: expCategories[0] ?? '', description: '', amount: '', receipt_note: '', expense_date: '' });
           setShowExpenseForm(true);
         }}
+        onTodo={() => setShowQuickTodo(true)}
       />
+
+      {/* Quick add to-do — popup over the page so user doesn't lose context */}
+      {showQuickTodo && (
+        <QuickTodoModal
+          onClose={() => setShowQuickTodo(false)}
+          onAdded={() => setShowQuickTodo(false)}
+        />
+      )}
+    </div>
+  );
+}
+
+// Lightweight modal for the FAB → "Add To-Do" action. Keeps the user where
+// they were and avoids the full Todo tab for a quick capture. Always
+// self-assigned; for assign-to-someone-else, the user opens the To-Do tab.
+function QuickTodoModal({ onClose, onAdded }: { onClose: () => void; onAdded: () => void }) {
+  const [title, setTitle] = useState('');
+  const [description, setDescription] = useState('');
+  const [dueDate, setDueDate] = useState('');
+  const [priority, setPriority] = useState<'low' | 'normal' | 'high'>('normal');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+  const submit = async () => {
+    if (!title.trim()) { setError('Title is required'); return; }
+    setBusy(true); setError('');
+    try {
+      await api.createTodo({
+        title: title.trim(),
+        description: description.trim() || undefined,
+        due_date: dueDate || undefined,
+        priority,
+      });
+      onAdded();
+    } catch (e: any) { setError(e?.message ?? 'Failed to add'); }
+    finally { setBusy(false); }
+  };
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm p-4" onClick={onClose}>
+      <div className="bg-surface rounded-2xl shadow-2xl w-full max-w-md overflow-hidden" onClick={e => e.stopPropagation()}>
+        <div className="flex items-center justify-between px-6 py-4 border-b border-outline">
+          <h2 className="font-bold text-base text-on-surface">Add a To-Do</h2>
+          <button onClick={onClose}><X size={16} className="text-on-surface-subtle" /></button>
+        </div>
+        <div className="p-6 space-y-3">
+          <div>
+            <label className="text-[10px] uppercase tracking-wide font-semibold text-on-surface-subtle mb-1 block">Title *</label>
+            <input value={title} onChange={e => setTitle(e.target.value)} autoFocus
+              placeholder="What needs to happen?"
+              className="w-full text-sm border border-outline rounded-lg px-3 py-2 bg-surface focus:outline-none focus:ring-2 focus:ring-accent/20" />
+          </div>
+          <div>
+            <label className="text-[10px] uppercase tracking-wide font-semibold text-on-surface-subtle mb-1 block">Notes</label>
+            <textarea value={description} onChange={e => setDescription(e.target.value)} rows={2}
+              placeholder="Optional context…"
+              className="w-full text-sm border border-outline rounded-lg px-3 py-2 bg-surface resize-none focus:outline-none focus:ring-2 focus:ring-accent/20" />
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="text-[10px] uppercase tracking-wide font-semibold text-on-surface-subtle mb-1 block">Due</label>
+              <input type="date" value={dueDate} onChange={e => setDueDate(e.target.value)}
+                className="w-full text-sm border border-outline rounded-lg px-3 py-2 bg-surface focus:outline-none focus:ring-2 focus:ring-accent/20" />
+            </div>
+            <div>
+              <label className="text-[10px] uppercase tracking-wide font-semibold text-on-surface-subtle mb-1 block">Priority</label>
+              <select value={priority} onChange={e => setPriority(e.target.value as any)}
+                className="w-full text-sm border border-outline rounded-lg px-3 py-2 bg-surface focus:outline-none focus:ring-2 focus:ring-accent/20">
+                <option value="low">Low</option>
+                <option value="normal">Normal</option>
+                <option value="high">High</option>
+              </select>
+            </div>
+          </div>
+          {error && <p className="text-xs text-danger bg-danger-container/40 border border-danger/20 rounded-lg px-3 py-2">{error}</p>}
+          <div className="flex gap-2 pt-1">
+            <button onClick={onClose}
+              className="flex-1 py-2.5 border border-outline rounded-lg text-sm font-medium text-on-surface-muted hover:bg-surface-2">Cancel</button>
+            <button onClick={submit} disabled={busy || !title.trim()}
+              className="flex-1 py-2.5 bg-accent text-on-accent rounded-lg text-sm font-semibold disabled:opacity-50">
+              {busy ? 'Adding…' : 'Add'}
+            </button>
+          </div>
+          <p className="text-[10px] text-on-surface-subtle text-center pt-1">
+            For assigning to someone else, open the To-Do tab.
+          </p>
+        </div>
+      </div>
     </div>
   );
 }
@@ -2907,15 +2996,16 @@ export default function MyPortal() {
 // Speed-dial FAB. Closed state shows a single accent-colored circle with a
 // "+". Tapping it rotates the icon to "×" and reveals labeled action buttons
 // stacked above with a stagger animation. Backdrop closes the menu.
-function QuickActionsFab({ leaveBalance, shortBalance, onLeave, onHours, onWfh, onExpense }: {
+function QuickActionsFab({ leaveBalance, shortBalance, onLeave, onHours, onWfh, onExpense, onTodo }: {
   leaveBalance: number; shortBalance: number;
-  onLeave: () => void; onHours: () => void; onWfh: () => void; onExpense: () => void;
+  onLeave: () => void; onHours: () => void; onWfh: () => void; onExpense: () => void; onTodo: () => void;
 }) {
   const [open, setOpen] = useState(false);
   const close = () => setOpen(false);
   const wrap = (fn: () => void) => () => { fn(); close(); };
 
   const actions = [
+    { key: 'todo',    label: 'Add To-Do',       sub: 'Quick task capture',                           icon: ListChecks,  color: 'bg-on-surface text-surface',      ringColor: 'rgba(15,23,42,0.30)',   onClick: onTodo },
     { key: 'leave',   label: 'Apply Leave',     sub: `${leaveBalance + shortBalance} days available`, icon: Calendar,    color: 'bg-brand text-on-brand',          ringColor: 'rgba(238,39,112,0.35)', onClick: onLeave },
     { key: 'hours',   label: 'Log Hours',       sub: 'Enter daily hours',                            icon: Briefcase,   color: 'bg-accent text-on-accent',        ringColor: 'rgba(124,92,255,0.35)', onClick: onHours },
     { key: 'wfh',     label: 'Apply WFH',       sub: 'Work from home',                                icon: Monitor,     color: 'bg-success text-on-accent',       ringColor: 'rgba(34,197,94,0.35)',  onClick: onWfh },

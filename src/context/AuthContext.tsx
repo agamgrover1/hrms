@@ -5,7 +5,7 @@ import { api } from '../services/api';
 // Inactivity policy. The session auto-logs-out after this many ms of no
 // keyboard/mouse/touch activity. Activity in any tab resets the clock for
 // every tab (via the `storage` event).
-const INACTIVITY_LIMIT_MS = 30 * 60 * 1000;   // 30 minutes
+const INACTIVITY_LIMIT_MS = 2 * 60 * 60 * 1000;   // 2 hours
 const ACTIVITY_KEY = 'digitalleap_hrms_last_activity';
 const CHECK_INTERVAL_MS = 30 * 1000;          // poll every 30s — fine granularity isn't needed
 
