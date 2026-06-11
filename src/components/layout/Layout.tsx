@@ -5,6 +5,7 @@ import TopBar from './TopBar';
 import CommandPalette from '../CommandPalette';
 import ShiftEndReminder from '../ShiftEndReminder';
 import FeaturePopup from '../FeaturePopup';
+import GlobalQuickActionsFab from '../GlobalQuickActionsFab';
 
 const pageTitles: Record<string, string> = {
   '/': 'Dashboard',
@@ -58,6 +59,7 @@ export default function Layout() {
       </div>
       <CommandPalette />
       <FeaturePopup />
+      <GlobalQuickActionsFab />
     </div>
   );
 }
