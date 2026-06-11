@@ -1,6 +1,19 @@
 const BASE = '/api';
 const SESSION_KEY = 'digitalleap_hrms_session';
 
+export interface TodoTask {
+  id: string;
+  assignee_id: string; assignee_name: string | null;
+  created_by_id: string | null; created_by_name: string | null; created_by_role: string | null;
+  title: string; description: string | null;
+  due_date: string | null;
+  priority: 'low' | 'normal' | 'high';
+  status: 'pending' | 'in_progress' | 'done' | 'cancelled';
+  completed_at: string | null;
+  completion_note: string | null;
+  created_at: string; updated_at: string;
+}
+
 // ── Performance Pulse types ─────────────────────────────────────────────
 export interface PulseSnapshot {
   employee_id: string;
@@ -637,4 +650,17 @@ export const api = {
     request(`/internal-hour-logs`, { method: 'POST', body: JSON.stringify(data) }),
   deleteInternalHourLog: (id: string) =>
     request(`/internal-hour-logs/${id}`, { method: 'DELETE' }),
+
+  // ── To-Do tasks ──────────────────────────────────────────────────────
+  getTodos: (params: { status?: string } = {}) => {
+    const qs = new URLSearchParams();
+    if (params.status) qs.set('status', params.status);
+    return request<{ mine: TodoTask[]; assigned_by_me: TodoTask[] }>(`/todos${qs.toString() ? `?${qs}` : ''}`);
+  },
+  createTodo: (data: { title: string; description?: string; due_date?: string; priority?: 'low' | 'normal' | 'high'; assignee_id?: string }) =>
+    request<TodoTask>(`/todos`, { method: 'POST', body: JSON.stringify(data) }),
+  updateTodo: (id: string, data: Partial<{ title: string; description: string; due_date: string | null; priority: 'low' | 'normal' | 'high'; status: 'pending' | 'in_progress' | 'done' | 'cancelled'; completion_note: string }>) =>
+    request<TodoTask>(`/todos/${id}`, { method: 'PATCH', body: JSON.stringify(data) }),
+  deleteTodo: (id: string) =>
+    request(`/todos/${id}`, { method: 'DELETE' }),
 };

@@ -1,7 +1,8 @@
 import { useState, useEffect, useMemo, Component, type ReactNode } from 'react';
 import { useSearchParams } from 'react-router-dom';
-import { Clock, Calendar, DollarSign, User, CheckCircle, XCircle, AlertCircle, Plus, X, Target, FileText, Lock, Trash2, Save, Users, Monitor, Briefcase, Edit2, BookOpen, Wrench } from 'lucide-react';
+import { Clock, Calendar, DollarSign, User, CheckCircle, XCircle, AlertCircle, Plus, X, Target, FileText, Lock, Trash2, Save, Users, Monitor, Briefcase, Edit2, BookOpen, Wrench, ListChecks, Circle, CheckSquare } from 'lucide-react';
 import MyRoleTab from '../../components/MyRoleTab';
+import TodoTab from '../../components/TodoTab';
 import MonthSelector, { monthLabel } from '../../components/MonthSelector';
 import { useAuth } from '../../context/AuthContext';
 import { api } from '../../services/api';
@@ -267,6 +268,7 @@ function hubHints(ctx: { key: string; pendingLeaves: number; pendingWfh: number;
 
 const baseTabs = [
   { key: 'overview',     label: 'Overview',     icon: User },
+  { key: 'todos',        label: 'To-Do',        icon: ListChecks },
   { key: 'role',         label: 'My Role',      icon: BookOpen },
   { key: 'attendance',   label: 'Attendance',   icon: Clock },
   { key: 'leave',        label: 'My Leaves',    icon: Calendar },
@@ -493,6 +495,8 @@ export default function MyPortal() {
 
   // My Team state (shown when this employee is a reporting manager for others)
   const [teamMembers, setTeamMembers] = useState<any[]>([]);
+  // All employees — for the Todo assignment picker when admin/HR.
+  const [allEmployeesForTodo, setAllEmployeesForTodo] = useState<any[]>([]);
   const [teamPendingLeaves, setTeamPendingLeaves] = useState<any[]>([]);
   const [teamPerf, setTeamPerf] = useState<Record<string, any[]>>({});
   const [approvingLeave, setApprovingLeave] = useState<Record<string, boolean>>({});
@@ -511,6 +515,15 @@ export default function MyPortal() {
   const [savingTeamReview, setSavingTeamReview] = useState(false);
 
   const empRef = user?.employee_id_ref;
+
+  // For admin / HR, the Todo assignment picker needs the full org. Fetch
+  // lazily when they hit the Todo tab to avoid eating bandwidth otherwise.
+  useEffect(() => {
+    if (tab !== 'todos') return;
+    if (allEmployeesForTodo.length) return;
+    if (user?.role !== 'admin' && user?.role !== 'hr_manager') return;
+    api.getEmployees().then(setAllEmployeesForTodo).catch(() => {});
+  }, [tab, user?.role, allEmployeesForTodo.length]);
 
   // Performance Pulse fetch — must NOT depend on empRef. The /me endpoint
   // uses x-user-id to resolve the user → employee link via email/name
@@ -1109,6 +1122,24 @@ export default function MyPortal() {
 
       {/* ── My Role (read-only playbook for the employee's role) ── */}
       {tab === 'role' && <MyRoleTab role={user?.role} employeeId={empDbId || null} />}
+
+      {/* ── To-Do ── */}
+      {tab === 'todos' && (
+        <TodoTab
+          // Manager, HR, admin, or anyone with at least one direct report (via
+          // teamMembers) can assign tasks to others. Backend checks the
+          // relationship server-side anyway.
+          canAssignToOthers={
+            user?.role === 'admin' || user?.role === 'hr_manager' || teamMembers.length > 0
+          }
+          // For assignment picker: managers see only their team, admin/HR see all employees.
+          employees={
+            user?.role === 'admin' || user?.role === 'hr_manager'
+              ? (allEmployeesForTodo as any[])
+              : (teamMembers as any[])
+          }
+        />
+      )}
 
       {/* ── Attendance ── */}
       {tab === 'attendance' && (

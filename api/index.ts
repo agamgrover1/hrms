@@ -998,6 +998,31 @@ async function runStartupMigrations() {
     }
   } catch { /* non-fatal */ }
 
+  // ── To-Do tasks ───────────────────────────────────────────────────────
+  // Each employee has their own list. Tasks can be self-created OR added by
+  // their reporting manager / HR / admin. The creator can always see what
+  // they've assigned alongside their own tasks, so they can follow up.
+  await sql`
+    CREATE TABLE IF NOT EXISTS todo_tasks (
+      id TEXT PRIMARY KEY,
+      assignee_id TEXT NOT NULL,
+      assignee_name TEXT,
+      created_by_id TEXT,
+      created_by_name TEXT,
+      created_by_role TEXT,
+      title TEXT NOT NULL,
+      description TEXT,
+      due_date DATE,
+      priority TEXT NOT NULL DEFAULT 'normal',
+      status TEXT NOT NULL DEFAULT 'pending',
+      completed_at TIMESTAMPTZ,
+      completion_note TEXT,
+      created_at TIMESTAMPTZ DEFAULT NOW(),
+      updated_at TIMESTAMPTZ DEFAULT NOW()
+    )`;
+  await sql`CREATE INDEX IF NOT EXISTS idx_todo_assignee_status ON todo_tasks(assignee_id, status, due_date)`.catch(()=>{});
+  await sql`CREATE INDEX IF NOT EXISTS idx_todo_created_by ON todo_tasks(created_by_id, status)`.catch(()=>{});
+
   // ── Performance Pulse: automated 30-day score, runs alongside the manual
   // monthly_performance reviews. snapshots = one row per employee per day,
   // pulse_ratings = weekly manager emoji input, weights = per-dept overrides
@@ -3087,6 +3112,175 @@ app.delete('/api/internal-activities/:id', async (req, res) => {
     // Soft-delete: mark inactive so historical logs still resolve their
     // activity name. Hard delete would orphan the logs.
     await sql`UPDATE internal_activities SET active=FALSE WHERE id=${req.params.id}`;
+    res.json({ ok: true });
+  } catch (err: any) { res.status(500).json({ error: err.message ?? 'Server error' }); }
+});
+
+// ─────────────────────────────────────────────────────────────────────────
+// To-Do tasks. Each employee owns a list. Tasks can be created by self OR
+// by their reporting manager / HR / admin. Creators always see what they've
+// assigned alongside their own tasks so they can follow up.
+// ─────────────────────────────────────────────────────────────────────────
+
+// Helper: who is allowed to assign tasks TO `targetEmpId`?
+// Self (always), the target's reporting manager (direct or sub-tree), HR, admin.
+async function canAssignToEmployee(actorUser: any, actorEmpId: string | null, targetEmpId: string): Promise<boolean> {
+  if (!actorUser) return false;
+  if (actorUser.role === 'admin' || actorUser.role === 'hr_manager') return true;
+  if (actorEmpId && actorEmpId === targetEmpId) return true; // self
+  if (!actorEmpId) return false;
+  // walk up the target's reporting chain — if actor appears, allow
+  let cur = targetEmpId;
+  for (let i = 0; i < 10; i++) {
+    const row = (await sql`SELECT reporting_manager_id FROM employees WHERE id=${cur}`)[0] as any;
+    if (!row?.reporting_manager_id) return false;
+    if (row.reporting_manager_id === actorEmpId) return true;
+    cur = row.reporting_manager_id;
+  }
+  return false;
+}
+
+// GET /api/todos — returns both my own tasks and tasks I created for others.
+// Optional ?status=&assignee_id=&view=mine|assigned-by-me|all
+app.get('/api/todos', async (req, res) => {
+  try {
+    await runStartupMigrations();
+    const uid = req.header('x-user-id');
+    if (!uid) return res.status(401).json({ error: 'Sign in required' });
+    const u = (await sql`SELECT id, name, email, employee_id_ref, role FROM app_users WHERE id=${uid}`)[0] as any;
+    if (!u) return res.status(401).json({ error: 'Unknown user' });
+    const empId = await resolveUserToEmployee(u);
+    if (!empId) return res.json({ mine: [], assigned_by_me: [] });
+    const status = (req.query.status as string) || null;
+    const mine = status
+      ? await sql`SELECT * FROM todo_tasks WHERE assignee_id=${empId} AND status=${status} ORDER BY
+                   CASE status WHEN 'in_progress' THEN 0 WHEN 'pending' THEN 1 WHEN 'done' THEN 2 ELSE 3 END,
+                   COALESCE(due_date, '9999-12-31'::date), created_at DESC`
+      : await sql`SELECT * FROM todo_tasks WHERE assignee_id=${empId} ORDER BY
+                   CASE status WHEN 'in_progress' THEN 0 WHEN 'pending' THEN 1 WHEN 'done' THEN 2 ELSE 3 END,
+                   COALESCE(due_date, '9999-12-31'::date), created_at DESC`;
+    const assignedByMe = status
+      ? await sql`SELECT * FROM todo_tasks WHERE created_by_id=${empId} AND assignee_id <> ${empId} AND status=${status}
+                  ORDER BY CASE status WHEN 'in_progress' THEN 0 WHEN 'pending' THEN 1 WHEN 'done' THEN 2 ELSE 3 END,
+                           COALESCE(due_date, '9999-12-31'::date), created_at DESC`
+      : await sql`SELECT * FROM todo_tasks WHERE created_by_id=${empId} AND assignee_id <> ${empId}
+                  ORDER BY CASE status WHEN 'in_progress' THEN 0 WHEN 'pending' THEN 1 WHEN 'done' THEN 2 ELSE 3 END,
+                           COALESCE(due_date, '9999-12-31'::date), created_at DESC`;
+    res.json({ mine, assigned_by_me: assignedByMe });
+  } catch (err: any) { res.status(500).json({ error: err.message ?? 'Server error' }); }
+});
+
+// POST /api/todos — create a task. If assignee_id is omitted or equals the
+// actor's employee id, it's a personal task. Otherwise it's assigned to
+// someone else and requires the right relationship.
+app.post('/api/todos', async (req, res) => {
+  try {
+    await runStartupMigrations();
+    const uid = req.header('x-user-id');
+    if (!uid) return res.status(401).json({ error: 'Sign in required' });
+    const u = (await sql`SELECT id, name, email, employee_id_ref, role FROM app_users WHERE id=${uid}`)[0] as any;
+    if (!u) return res.status(401).json({ error: 'Unknown user' });
+    const actorEmpId = await resolveUserToEmployee(u);
+    if (!actorEmpId) return res.status(400).json({ error: 'No employee profile linked to this user' });
+
+    const { assignee_id: rawAssignee, title, description, due_date, priority } = req.body ?? {};
+    if (!title?.trim()) return res.status(400).json({ error: 'Title is required' });
+    const assigneeId = rawAssignee?.trim() || actorEmpId;
+
+    if (assigneeId !== actorEmpId) {
+      const ok = await canAssignToEmployee(u, actorEmpId, assigneeId);
+      if (!ok) return res.status(403).json({ error: 'You can only assign tasks to yourself or to people you manage.' });
+    }
+    const assignee = (await sql`SELECT name FROM employees WHERE id=${assigneeId}`)[0] as any;
+    if (!assignee) return res.status(404).json({ error: 'Assignee not found' });
+
+    const role = assigneeId === actorEmpId ? 'self' : (u.role || 'manager');
+    const id = `todo_${Date.now()}`;
+    const row = (await sql`
+      INSERT INTO todo_tasks
+        (id, assignee_id, assignee_name, created_by_id, created_by_name, created_by_role,
+         title, description, due_date, priority)
+      VALUES (${id}, ${assigneeId}, ${assignee.name}, ${actorEmpId}, ${u.name}, ${role},
+              ${title.trim()}, ${description?.trim() || null}, ${due_date || null},
+              ${priority || 'normal'})
+      RETURNING *`)[0];
+
+    // Notify the assignee when someone else assigns them a task.
+    if (assigneeId !== actorEmpId) {
+      notifyEmployeeUser(assigneeId, 'todo_assigned', `New task: ${title.trim().slice(0, 60)}`,
+        `${u.name} added a task to your to-do list${due_date ? ` (due ${due_date})` : ''}.`).catch(()=>{});
+    }
+    res.status(201).json(row);
+  } catch (err: any) { res.status(500).json({ error: err.message ?? 'Server error' }); }
+});
+
+// PATCH /api/todos/:id — edit task or change status.
+// Assignee can update status / completion_note.
+// Creator + admin can edit title/description/due_date/priority/assignee.
+app.patch('/api/todos/:id', async (req, res) => {
+  try {
+    const uid = req.header('x-user-id');
+    if (!uid) return res.status(401).json({ error: 'Sign in required' });
+    const u = (await sql`SELECT id, name, email, employee_id_ref, role FROM app_users WHERE id=${uid}`)[0] as any;
+    if (!u) return res.status(401).json({ error: 'Unknown user' });
+    const actorEmpId = await resolveUserToEmployee(u);
+    const t = (await sql`SELECT * FROM todo_tasks WHERE id=${req.params.id}`)[0] as any;
+    if (!t) return res.status(404).json({ error: 'Task not found' });
+
+    const isAdmin = u.role === 'admin' || u.role === 'hr_manager';
+    const isAssignee = actorEmpId === t.assignee_id;
+    const isCreator  = actorEmpId === t.created_by_id;
+    if (!isAdmin && !isAssignee && !isCreator) return res.status(403).json({ error: 'Not permitted' });
+
+    const { title, description, due_date, priority, status, completion_note } = req.body ?? {};
+    // Only creator/admin can edit content fields; assignee can only touch
+    // status/note. Compute final values up-front so the SQL is straight COALESCEs.
+    const canEditContent = isAdmin || isCreator;
+    const finalTitle       = canEditContent && title != null ? title.trim() : t.title;
+    const finalDescription = canEditContent && description !== undefined ? (description?.trim() || null) : t.description;
+    const finalDueDate     = canEditContent && due_date !== undefined ? (due_date || null) : t.due_date;
+    const finalPriority    = canEditContent && priority ? priority : t.priority;
+    const finalStatus      = status ?? t.status;
+    const finalNote        = completion_note !== undefined ? (completion_note?.trim() || null) : t.completion_note;
+    // Completed_at follows status: set when transitioning to 'done', cleared
+    // when moving back to anything else.
+    const movedToDone = status === 'done' && t.status !== 'done';
+    const movedFromDone = status && status !== 'done' && t.status === 'done';
+    const row = (await sql`
+      UPDATE todo_tasks SET
+        title           = ${finalTitle},
+        description     = ${finalDescription},
+        due_date        = ${finalDueDate},
+        priority        = ${finalPriority},
+        status          = ${finalStatus},
+        completion_note = ${finalNote},
+        completed_at    = ${movedToDone ? new Date().toISOString() : movedFromDone ? null : t.completed_at},
+        updated_at      = NOW()
+      WHERE id=${req.params.id}
+      RETURNING *`)[0];
+
+    // Notify the creator when the assignee marks something done.
+    if (movedToDone && t.created_by_id && t.created_by_id !== t.assignee_id) {
+      notifyEmployeeUser(t.created_by_id, 'todo_completed', `Task done: ${t.title.slice(0, 60)}`,
+        `${t.assignee_name ?? 'The assignee'} marked your assigned task as done.`).catch(()=>{});
+    }
+    res.json(row);
+  } catch (err: any) { res.status(500).json({ error: err.message ?? 'Server error' }); }
+});
+
+// DELETE /api/todos/:id — creator or admin only.
+app.delete('/api/todos/:id', async (req, res) => {
+  try {
+    const uid = req.header('x-user-id');
+    if (!uid) return res.status(401).json({ error: 'Sign in required' });
+    const u = (await sql`SELECT id, role, employee_id_ref, name, email FROM app_users WHERE id=${uid}`)[0] as any;
+    if (!u) return res.status(401).json({ error: 'Unknown user' });
+    const actorEmpId = await resolveUserToEmployee(u);
+    const t = (await sql`SELECT created_by_id, assignee_id FROM todo_tasks WHERE id=${req.params.id}`)[0] as any;
+    if (!t) return res.status(404).json({ error: 'Task not found' });
+    const isAdmin = u.role === 'admin' || u.role === 'hr_manager';
+    if (!isAdmin && actorEmpId !== t.created_by_id) return res.status(403).json({ error: 'Only the creator or HR/admin can delete a task' });
+    await sql`DELETE FROM todo_tasks WHERE id=${req.params.id}`;
     res.json({ ok: true });
   } catch (err: any) { res.status(500).json({ error: err.message ?? 'Server error' }); }
 });
