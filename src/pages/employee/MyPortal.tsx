@@ -3735,6 +3735,7 @@ function HourLogModal({
   onClose: () => void;
   onSaved: () => void;
 }) {
+  const { user } = useAuth();
   const allocKey = `w${weekNum}_hours` as 'w1_hours' | 'w2_hours' | 'w3_hours' | 'w4_hours' | 'w5_hours';
   const alloc = Number(assignment[allocKey] ?? 0);
   const dates = useMemo(() => daysOfWeek(assignment.month, assignment.year, weekNum), [assignment.month, assignment.year, weekNum]);
@@ -3746,7 +3747,33 @@ function HourLogModal({
   });
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [deleting, setDeleting] = useState(false);
   const [error, setError] = useState('');
+
+  // Employee can wipe their OWN weekly log when it's NOT yet approved.
+  // The backend lets pending / on_hold / rejected go; approved is reserved
+  // for admin/coord with a reason (handled elsewhere). We show the button
+  // only when the right preconditions hold so it can't no-op or 4xx.
+  const canDelete = !!existing && existing.status !== 'approved';
+  const handleDelete = async () => {
+    if (!existing) return;
+    const ok = window.confirm(
+      `Delete this entire week's log for ${assignment.project_name} (W${weekNum})?\n\n` +
+      `This wipes ${Number(existing.hours_logged)}h across all the daily entries you logged for this week. ` +
+      `Use this if you logged the wrong hours — once it's gone you can start over.`
+    );
+    if (!ok) return;
+    setDeleting(true);
+    try {
+      await api.deleteHourLog(existing.id, {
+        actor_id: employeeId,
+        actor_name: employeeName,
+        actor_role: user?.role ?? 'employee',
+      });
+      onSaved();
+    } catch (e: any) { setError(e?.message ?? 'Failed to delete the log.'); }
+    finally { setDeleting(false); }
+  };
 
   // Load any existing day entries for this assignment+week
   useEffect(() => {
@@ -3900,12 +3927,24 @@ function HourLogModal({
           {error && <p className="text-sm text-danger bg-danger-container px-3 py-2 rounded-lg mt-3">{error}</p>}
         </div>
 
-        <div className="px-6 py-4 border-t border-outline flex justify-end gap-2 bg-surface">
-          <button onClick={onClose} className="px-4 py-2 text-sm font-medium text-on-surface-muted hover:bg-surface-2 rounded-lg transition-colors">Cancel</button>
-          <button onClick={save} disabled={saving || loading}
-            className="px-4 py-2 text-sm font-semibold bg-accent text-on-accent rounded-lg hover:opacity-90 disabled:opacity-50 transition-opacity">
-            {saving ? 'Saving…' : 'Save week'}
-          </button>
+        <div className="px-6 py-4 border-t border-outline flex justify-between gap-2 bg-surface">
+          {/* Delete is a destructive-but-recoverable action — left side, danger
+              tone, only visible when the log exists and isn't already approved.
+              An approved log requires admin/coord involvement (audit + reason);
+              that flow lives in EmployeeHoursDetailModal. */}
+          {canDelete ? (
+            <button onClick={handleDelete} disabled={deleting || saving}
+              className="px-3 py-2 text-sm font-semibold text-danger border border-danger/30 hover:bg-danger-container rounded-lg disabled:opacity-50 transition-colors inline-flex items-center gap-1.5">
+              <Trash2 size={14} /> {deleting ? 'Deleting…' : 'Delete week'}
+            </button>
+          ) : <span />}
+          <div className="flex gap-2">
+            <button onClick={onClose} className="px-4 py-2 text-sm font-medium text-on-surface-muted hover:bg-surface-2 rounded-lg transition-colors">Cancel</button>
+            <button onClick={save} disabled={saving || loading || deleting}
+              className="px-4 py-2 text-sm font-semibold bg-accent text-on-accent rounded-lg hover:opacity-90 disabled:opacity-50 transition-opacity">
+              {saving ? 'Saving…' : 'Save week'}
+            </button>
+          </div>
         </div>
       </div>
     </div>

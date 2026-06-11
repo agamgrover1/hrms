@@ -6886,6 +6886,12 @@ app.delete('/api/hour-logs/:id', async (req, res) => {
       after: null,
       reason: reason ?? null,
     });
+    // Wipe the per-day rows that fed this weekly log too. Without this,
+    // recomputeWeeklyFromDays would resurrect the parent on the next
+    // upsert/edit and the employee would see the deletion silently
+    // reverted. hour_log_days is keyed by (assignment_id, week_num) so we
+    // target the exact week being removed.
+    await sql`DELETE FROM hour_log_days WHERE assignment_id=${cur.assignment_id} AND week_num=${cur.week_num}`.catch(()=>{});
     await sql`DELETE FROM hour_logs WHERE id=${req.params.id}`;
     // Notify the employee if someone else deleted their (approved) log
     if (isPrivileged && cur.status === 'approved' && cur.employee_id !== actor_id) {
