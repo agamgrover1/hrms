@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { X, AlertTriangle, CheckCircle, XCircle, Clock as ClockIcon, Pencil, Save, History, ChevronDown, Trash2, SlidersHorizontal } from 'lucide-react';
 import { api } from '../services/api';
 import { useAuth } from '../context/AuthContext';
+import { toast } from './Toaster';
 
 interface Props {
   employeeId: string;
@@ -706,8 +707,12 @@ function EditAllocationModal({ assignment: a, employeeName, month, year, onClose
         proposed_monthly: effectiveMonthly,
         reason: reason.trim(),
       });
+      toast.success('Sent for coordinator approval', `${employeeName} · ${a.project_name}.`);
       onSubmitted();
-    } catch (e: any) { setError(e?.message ?? 'Failed to submit'); }
+    } catch (e: any) {
+      setError(e?.message ?? 'Failed to submit');
+      toast.error('Failed to send', e?.message);
+    }
     finally { setBusy(false); }
   };
 

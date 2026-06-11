@@ -3,6 +3,7 @@ import { CheckCircle, XCircle, AlertTriangle, X, Filter, ClipboardCheck, ArrowUp
 import { api } from '../services/api';
 import { useAuth } from '../context/AuthContext';
 import HourLogCommentsModal from '../components/HourLogCommentsModal';
+import { toast } from '../components/Toaster';
 
 type SortKey = 'oldest' | 'newest' | 'project' | 'hours_desc' | 'over_alloc';
 
@@ -127,30 +128,39 @@ export default function HoursApproval() {
   }, [logs, filterStatus]);
 
   const approve = async (log: HourLog) => {
-    await api.approveHourLog(log.id, {
-      reviewer_id: reviewerEmpId ?? user?.id,
-      reviewer_name: user?.name,
-    }).catch((err: any) => alert(err.message ?? 'Approve failed.'));
+    try {
+      await api.approveHourLog(log.id, {
+        reviewer_id: reviewerEmpId ?? user?.id,
+        reviewer_name: user?.name,
+      });
+      toast.success('Hours approved', `${log.employee_name} · ${log.hours_logged}h on ${log.project_name}.`);
+    } catch (err: any) { toast.error('Approve failed', err?.message); }
     load();
   };
 
   const reject = async (log: HourLog, reason: string) => {
-    await api.rejectHourLog(log.id, {
-      reviewer_id: reviewerEmpId ?? user?.id,
-      reviewer_name: user?.name,
-      rejection_reason: reason,
-    }).catch((err: any) => alert(err.message ?? 'Reject failed.'));
+    try {
+      await api.rejectHourLog(log.id, {
+        reviewer_id: reviewerEmpId ?? user?.id,
+        reviewer_name: user?.name,
+        rejection_reason: reason,
+      });
+      toast.success('Hours rejected', `${log.employee_name} has been notified with your reason.`);
+    } catch (err: any) { toast.error('Reject failed', err?.message); }
     setRejecting(null);
     load();
   };
 
   const hold = async (log: HourLog, note: string) => {
-    await api.holdHourLog(log.id, {
-      reviewer_id: reviewerEmpId ?? user?.id,
-      reviewer_name: user?.name,
-      reviewer_role: user?.role,
-      note,
-    }).catch((err: any) => alert(err.message ?? 'Hold failed.'));
+    try {
+      await api.holdHourLog(log.id, {
+        reviewer_id: reviewerEmpId ?? user?.id,
+        reviewer_name: user?.name,
+        reviewer_role: user?.role,
+        note,
+      });
+      toast.success('Log put on hold', `${log.employee_name} can reply on the thread.`);
+    } catch (err: any) { toast.error('Hold failed', err?.message); }
     setHolding(null);
     load();
   };
@@ -670,8 +680,13 @@ function AllocationReviewModal({ req: r, mode, onClose, onDone }: {
     if (mode === 'reject' && !note.trim()) { setError('A note is required when rejecting.'); return; }
     setBusy(true); setError('');
     try {
-      if (mode === 'approve') await api.approveAllocationRequest(r.id, { review_note: note.trim() || undefined });
-      else                    await api.rejectAllocationRequest(r.id, { review_note: note.trim() });
+      if (mode === 'approve') {
+        await api.approveAllocationRequest(r.id, { review_note: note.trim() || undefined });
+        toast.success('Allocation change applied', `${r.employee_name} · ${r.project_name}.`);
+      } else {
+        await api.rejectAllocationRequest(r.id, { review_note: note.trim() });
+        toast.success('Allocation change rejected', 'Requester has been notified.');
+      }
       onDone();
     } catch (e: any) { setError(e?.message ?? 'Failed'); }
     finally { setBusy(false); }

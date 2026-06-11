@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { Plus, X, Trash2, CheckCircle, Circle, Clock, AlertCircle, ChevronDown, ChevronRight } from 'lucide-react';
 import { api } from '../services/api';
 import type { TodoTask } from '../services/api';
+import { toast } from './Toaster';
 
 // To-Do tab for MyPortal. Two sections:
 //   - "My tasks" — anything assigned to me (self or assigned by a manager/HR/admin)
@@ -88,10 +89,14 @@ export default function TodoTab({ canAssignToOthers, employees }: {
         priority: formPriority,
         assignee_id: formAssignSelf ? undefined : formAssigneeId,
       });
+      toast.success(formAssignSelf ? 'To-do added' : 'Task assigned', formTitle.trim());
       resetForm();
       setShowForm(false);
       load();
-    } catch (e: any) { setFormError(e?.message ?? 'Failed to create task'); }
+    } catch (e: any) {
+      setFormError(e?.message ?? 'Failed to create task');
+      toast.error('Failed to create task', e?.message);
+    }
     finally { setFormBusy(false); }
   };
 
@@ -99,13 +104,18 @@ export default function TodoTab({ canAssignToOthers, employees }: {
     const next = t.status === 'done' ? 'pending' : t.status === 'pending' ? 'in_progress' : 'done';
     try {
       await api.updateTodo(t.id, { status: next });
+      if (next === 'done') toast.success('Task marked done', t.title);
       load();
-    } catch { /* ignore */ }
+    } catch (e: any) { toast.error('Could not update task', e?.message); }
   };
 
   const remove = async (t: TodoTask) => {
     if (!confirm('Delete this task?')) return;
-    try { await api.deleteTodo(t.id); load(); } catch { /* ignore */ }
+    try {
+      await api.deleteTodo(t.id);
+      toast.success('Task deleted', t.title);
+      load();
+    } catch (e: any) { toast.error('Could not delete task', e?.message); }
   };
 
   // Filter out completed by default to keep the view clean.

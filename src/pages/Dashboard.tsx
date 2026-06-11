@@ -4,6 +4,7 @@ import {
 } from 'recharts';
 import { Users, Calendar, DollarSign, TrendingUp, AlertCircle, CheckCircle2, UserCheck, Clock as ClockIcon, Wrench } from 'lucide-react';
 import { leaveTypeLabel } from '../utils/leaveLabel';
+import { toast } from '../components/Toaster';
 import { Link } from 'react-router-dom';
 import { api } from '../services/api';
 import { useAuth } from '../context/AuthContext';
@@ -163,8 +164,9 @@ export default function Dashboard() {
     try {
       await api.updateLeaveStatus(leaveId, action, { actioner_name: user?.name, rejection_reason });
       setLeaveRequests(prev => prev.map(l => l.id === leaveId ? { ...l, status: action } : l));
+      toast.success(action === 'approved' ? 'Leave approved' : 'Leave rejected', 'Employee has been notified.');
     } catch (e: any) {
-      alert(e?.message ?? 'Action failed.');
+      toast.error('Action failed', e?.message);
     }
     finally { setApprovingLeave(prev => ({ ...prev, [leaveId]: false })); }
   };

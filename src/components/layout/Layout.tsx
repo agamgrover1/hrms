@@ -6,6 +6,7 @@ import CommandPalette from '../CommandPalette';
 import ShiftEndReminder from '../ShiftEndReminder';
 import FeaturePopup from '../FeaturePopup';
 import GlobalQuickActionsFab from '../GlobalQuickActionsFab';
+import Toaster from '../Toaster';
 
 const pageTitles: Record<string, string> = {
   '/': 'Dashboard',
@@ -60,6 +61,7 @@ export default function Layout() {
       <CommandPalette />
       <FeaturePopup />
       <GlobalQuickActionsFab />
+      <Toaster />
     </div>
   );
 }

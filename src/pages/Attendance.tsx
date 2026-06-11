@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback } from 'react';
 import { Clock, CheckCircle, XCircle, AlertCircle, ChevronLeft, ChevronRight, CalendarDays, X,
   Fingerprint, RefreshCw, ChevronDown, ChevronUp, Activity, Calendar } from 'lucide-react';
 import { api } from '../services/api';
+import { toast } from '../components/Toaster';
 import { useAuth } from '../context/AuthContext';
 
 function fmtHours(h: number | string | null | undefined): string {
@@ -1168,8 +1169,12 @@ function AttendanceNoteEditor({ employeeId, date, existing, authorName, authorRo
     setBusy(true); setError('');
     try {
       await api.upsertAttendanceNote({ employee_id: employeeId, date, note: text.trim() });
+      toast.success(text.trim() ? 'Note saved' : 'Note deleted', friendlyDate);
       onSaved(text.trim());
-    } catch (e: any) { setError(e?.message ?? 'Failed to save'); }
+    } catch (e: any) {
+      setError(e?.message ?? 'Failed to save');
+      toast.error('Failed to save note', e?.message);
+    }
     finally { setBusy(false); }
   };
   return (

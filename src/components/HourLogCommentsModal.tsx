@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { MessageSquare, X, Send } from 'lucide-react';
 import { api } from '../services/api';
+import { toast } from './Toaster';
 
 // Shared discussion thread for a weekly hour log. Used by reviewers (from
 // /hours/approvals) AND by the employee themselves (from My Portal → My
@@ -66,10 +67,11 @@ export default function HourLogCommentsModal({
         author_role: currentUser.role,
         body: draft.trim(),
       });
+      toast.success('Comment posted', 'The other side has been notified.');
       setDraft('');
       refresh();
       onAfterPost?.();
-    } catch (e: any) { alert(e?.message ?? 'Failed to post comment'); }
+    } catch (e: any) { toast.error('Failed to post comment', e?.message); }
     finally { setPosting(false); }
   };
 

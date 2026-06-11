@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react';
 import { Plus, Check, X, Clock, Calendar, User, ChevronDown, Edit3 } from 'lucide-react';
 import { api } from '../services/api';
 import { slotLabel } from '../utils/leaveLabel';
+import { toast } from '../components/Toaster';
 import { useAuth } from '../context/AuthContext';
 
 function parseLocalDate(dateStr: string): Date {
@@ -635,7 +636,11 @@ export default function Leave() {
         approver_note: approver_note ?? r.approver_note,
       } : r));
       if (selectedEmpId) api.getLeaveBalance(selectedEmpId).then(setEmpBalance).catch(() => {});
-    } catch (e: any) { setActionError(e.message ?? 'Failed to approve leave'); }
+      toast.success('Leave approved', 'Employee has been notified.');
+    } catch (e: any) {
+      setActionError(e.message ?? 'Failed to approve leave');
+      toast.error('Failed to approve leave', e?.message);
+    }
   };
 
   const handleReject = async (id: string, rejection_reason: string, approver_note?: string) => {
@@ -647,7 +652,11 @@ export default function Leave() {
         hr_actioned_at: new Date().toISOString(), rejection_reason,
         approver_note: approver_note ?? r.approver_note,
       } : r));
-    } catch (e: any) { setActionError(e.message ?? 'Failed to reject leave'); }
+      toast.success('Leave rejected', 'Employee has been notified with your reason.');
+    } catch (e: any) {
+      setActionError(e.message ?? 'Failed to reject leave');
+      toast.error('Failed to reject leave', e?.message);
+    }
   };
 
   const handleCancel = async (id: string, cancellation_reason: string) => {
@@ -660,7 +669,11 @@ export default function Leave() {
       } : r));
       // Refresh balance after cancellation (balance was restored)
       if (selectedEmpId) api.getLeaveBalance(selectedEmpId).then(setEmpBalance).catch(() => {});
-    } catch (e: any) { setActionError(e.message ?? 'Failed to cancel leave'); }
+      toast.success('Leave cancelled', 'Balance has been restored.');
+    } catch (e: any) {
+      setActionError(e.message ?? 'Failed to cancel leave');
+      toast.error('Failed to cancel leave', e?.message);
+    }
   };
 
   const handleApply = async (data: any) => {
@@ -670,6 +683,7 @@ export default function Leave() {
     if (!targetId) return;
     await api.applyLeave({ ...data, employee_id: targetId, employee_name: targetName });
     await loadRequests(selectedEmpId || undefined);
+    toast.success('Leave applied', selectedEmpId ? `Applied on behalf of ${targetName}.` : 'Your manager and HR have been notified.');
     // Refresh balance after applying leave
     if (selectedEmpId) {
       api.getLeaveBalance(selectedEmpId).then(setEmpBalance).catch(() => {});

@@ -6,6 +6,7 @@ import TodoTab from '../../components/TodoTab';
 import MonthSelector, { monthLabel } from '../../components/MonthSelector';
 import { leaveTypeLabel } from '../../utils/leaveLabel';
 import HourLogCommentsModal from '../../components/HourLogCommentsModal';
+import { toast } from '../../components/Toaster';
 import { useAuth } from '../../context/AuthContext';
 import { api } from '../../services/api';
 import { financeApi } from '../../services/financeApi';
@@ -781,6 +782,7 @@ export default function MyPortal() {
     if (!emp) return;
     await api.applyLeave({ ...data, employee_id: emp.id, employee_name: user?.name });
     api.getLeaveRequests({ employee_id: emp.id }).then(setLeaves);
+    toast.success('Leave applied', 'Your manager and HR have been notified.');
   };
 
   const updateGoal = (i: number, field: string, val: string) =>
@@ -978,10 +980,10 @@ export default function MyPortal() {
     try {
       await api.managerApproveLeave(leaveId, { status, manager_id: empDbId, manager_name: user?.name, rejection_reason, approver_note });
       setTeamPendingLeaves(prev => prev.filter(l => l.id !== leaveId));
+      if (status === 'approved') toast.success('Leave approved', 'Sent to HR for final approval.');
+      else                       toast.success('Leave rejected', 'Employee has been notified.');
     } catch (e: any) {
-      // Silent catch was masking permission / validation errors — manager
-      // would click Approve and nothing visible would happen. Surface it.
-      alert(e?.message ?? 'Action failed. Please try again.');
+      toast.error('Action failed', e?.message ?? 'Please try again.');
     } finally {
       setApprovingLeave(prev => ({ ...prev, [leaveId]: false }));
     }
@@ -1728,8 +1730,11 @@ export default function MyPortal() {
                                 onClick={async () => {
                                   const reason = prompt('Reason for cancellation (required):');
                                   if (!reason?.trim()) return;
-                                  await api.cancelWfh(w.id, user?.name ?? 'Employee', reason.trim());
-                                  setWfhRequests(prev => prev.map(x => x.id === w.id ? { ...x, status: 'cancelled' } : x));
+                                  try {
+                                    await api.cancelWfh(w.id, user?.name ?? 'Employee', reason.trim());
+                                    setWfhRequests(prev => prev.map(x => x.id === w.id ? { ...x, status: 'cancelled' } : x));
+                                    toast.success('WFH cancelled', 'Manager has been notified.');
+                                  } catch (e: any) { toast.error('Failed to cancel WFH', e?.message); }
                                 }}
                                 className="text-xs px-2.5 py-1 bg-surface-2 text-on-surface-muted rounded-md hover:bg-surface-3 font-medium whitespace-nowrap">
                                 Cancel
@@ -1817,7 +1822,8 @@ export default function MyPortal() {
                           });
                           setWfhRequests(prev => [created, ...prev]);
                           setApplyWfh(false);
-                        } catch { /* ignore */ }
+                          toast.success('WFH applied', 'Your manager has been notified.');
+                        } catch (e: any) { toast.error('Failed to apply WFH', e?.message); }
                         finally { setSavingWfh(false); }
                       }}
                       className="flex-1 py-2.5 text-white rounded-lg text-sm font-semibold disabled:opacity-60"
@@ -3657,6 +3663,7 @@ function HourLogModal({
         actor_name: employeeName,
         actor_role: user?.role ?? 'employee',
       });
+      toast.success('Week log deleted', `${assignment.project_name} · W${weekNum} cleared.`);
       onSaved();
     } catch (e: any) { setError(e?.message ?? 'Failed to delete the log.'); }
     finally { setDeleting(false); }
@@ -3713,9 +3720,11 @@ function HourLogModal({
         }
       }
       await Promise.all(ops);
+      toast.success('Hours saved', `${total}h on ${assignment.project_name} · W${weekNum}.`);
       onSaved();
     } catch (err: any) {
       setError(err.message ?? 'Save failed.');
+      toast.error('Failed to save hours', err?.message);
     } finally {
       setSaving(false);
     }

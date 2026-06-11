@@ -3,6 +3,7 @@ import { Plus, X, Calendar, Briefcase, Monitor, DollarSign, ListChecks } from 'l
 import { useNavigate, useLocation } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import { api } from '../services/api';
+import { toast } from './Toaster';
 
 // Global Quick Actions FAB. Renders on every page (inside Layout) for any
 // signed-in user. Actions that need a host page (Apply Leave / Apply WFH /
@@ -124,6 +125,7 @@ function QuickTodoModal({ onClose, onAdded }: { onClose: () => void; onAdded: ()
         due_date: dueDate || undefined,
         priority,
       });
+      toast.success('To-do added', title.trim());
       onAdded();
     } catch (e: any) { setError(e?.message ?? 'Failed to add'); }
     finally { setBusy(false); }

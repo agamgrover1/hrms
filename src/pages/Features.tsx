@@ -3,6 +3,7 @@ import { Plus, X, Edit2, Trash2, Megaphone, CheckCircle, Clock, Eye, Sparkles } 
 import { api } from '../services/api';
 import type { FeatureAnnouncement } from '../services/api';
 import { useAuth } from '../context/AuthContext';
+import { toast } from '../components/Toaster';
 
 // "What's new" management. Anyone with admin/HR access can draft an
 // announcement; only admin can publish it. Drafts sit in the top section
@@ -35,20 +36,29 @@ export default function Features() {
 
   const publish = async (it: FeatureAnnouncement) => {
     if (!confirm(`Publish "${it.title}" to everyone? Each user will see a popup on their next page load.`)) return;
-    try { await api.updateFeature(it.id, { status: 'published' }); load(); }
-    catch (e: any) { alert(e?.message ?? 'Failed to publish'); }
+    try {
+      await api.updateFeature(it.id, { status: 'published' });
+      toast.success('Feature published', `"${it.title}" is now live for everyone.`);
+      load();
+    } catch (e: any) { toast.error('Failed to publish', e?.message); }
   };
 
   const unpublish = async (it: FeatureAnnouncement) => {
     if (!confirm('Unpublish this announcement? Existing acknowledgements are kept, so re-publishing will only popup for new users.')) return;
-    try { await api.updateFeature(it.id, { status: 'draft' }); load(); }
-    catch (e: any) { alert(e?.message ?? 'Failed to unpublish'); }
+    try {
+      await api.updateFeature(it.id, { status: 'draft' });
+      toast.success('Feature unpublished', 'Moved back to drafts.');
+      load();
+    } catch (e: any) { toast.error('Failed to unpublish', e?.message); }
   };
 
   const remove = async (it: FeatureAnnouncement) => {
     if (!confirm(`Delete "${it.title}"? This also wipes the acknowledgement history for it.`)) return;
-    try { await api.deleteFeature(it.id); load(); }
-    catch (e: any) { alert(e?.message ?? 'Failed to delete'); }
+    try {
+      await api.deleteFeature(it.id);
+      toast.success('Feature deleted', `"${it.title}" removed.`);
+      load();
+    } catch (e: any) { toast.error('Failed to delete', e?.message); }
   };
 
   if (!canDraft) {
