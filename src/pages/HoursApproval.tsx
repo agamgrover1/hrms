@@ -1,7 +1,8 @@
 import { useState, useEffect, useCallback, useMemo } from 'react';
-import { CheckCircle, XCircle, AlertTriangle, X, Filter, ClipboardCheck, ArrowUpDown, Clock, PauseCircle, MessageSquare, Send } from 'lucide-react';
+import { CheckCircle, XCircle, AlertTriangle, X, Filter, ClipboardCheck, ArrowUpDown, Clock, PauseCircle, MessageSquare } from 'lucide-react';
 import { api } from '../services/api';
 import { useAuth } from '../context/AuthContext';
+import HourLogCommentsModal from '../components/HourLogCommentsModal';
 
 type SortKey = 'oldest' | 'newest' | 'project' | 'hours_desc' | 'over_alloc';
 
@@ -48,15 +49,6 @@ interface HourLog {
   project_reporting_name?: string | null;
   w1_hours?: number; w2_hours?: number; w3_hours?: number; w4_hours?: number; w5_hours?: number;
   comment_count?: number;
-}
-
-interface HourLogComment {
-  id: string;
-  author_id: string | null;
-  author_name: string | null;
-  author_role: string | null;
-  body: string;
-  created_at: string;
 }
 
 const MONTHS = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
@@ -113,6 +105,26 @@ export default function HoursApproval() {
     if (scope === 'mine' && !reviewerEmpId) return; // wait until we know who I am
     load();
   }, [load, scope, reviewerEmpId]);
+
+  // Deep-link auto-open: a notification can land here with ?logId=…&discuss=1
+  // (e.g. an employee replied on a held log) and we open the modal once the
+  // matching row is in state. We widen filterStatus to 'all' first so the
+  // log shows up regardless of its current status — otherwise a held log
+  // wouldn't be in the default "pending" view. Clean the URL so a refresh
+  // doesn't repop the modal.
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const logId = params.get('logId');
+    const wantDiscuss = params.get('discuss') === '1';
+    if (!logId || !wantDiscuss) return;
+    if (filterStatus !== 'all') { setFilterStatus('all'); return; }
+    const log = logs.find(l => l.id === logId);
+    if (!log) return;
+    setCommentingOn(log);
+    const u = new URL(window.location.href);
+    u.searchParams.delete('logId'); u.searchParams.delete('discuss');
+    window.history.replaceState({}, '', u.toString());
+  }, [logs, filterStatus]);
 
   const approve = async (log: HourLog) => {
     await api.approveHourLog(log.id, {
@@ -438,8 +450,9 @@ export default function HoursApproval() {
       )}
 
       {commentingOn && (
-        <CommentsModal
-          log={commentingOn}
+        <HourLogCommentsModal
+          logId={commentingOn.id}
+          subtitle={`${commentingOn.employee_name} · ${commentingOn.project_name ?? ''} · W${commentingOn.week_num} · ${commentingOn.hours_logged}h`}
           currentUser={{ id: reviewerEmpId ?? user?.id ?? '', name: user?.name ?? '', role: user?.role ?? '' }}
           onClose={() => setCommentingOn(null)}
           onAfterPost={load}
@@ -778,103 +791,6 @@ function HoldModal({ log, onClose, onConfirm }: { log: HourLog; onClose: () => v
             className="px-4 py-2 text-sm font-semibold text-white rounded-lg disabled:opacity-50 bg-accent hover:opacity-90 transition-colors">
             Put on hold
           </button>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-// Comments thread modal — loads the full back-and-forth for one log and
-// lets the viewer add a reply. Used by reviewer (to ask for justification
-// without flipping status), employee (to respond), or anyone else with
-// access. Each side gets pinged on the other's reply via the POST
-// endpoint's notification logic, so this is the entire conversation.
-function CommentsModal({ log, currentUser, onClose, onAfterPost }: {
-  log: HourLog;
-  currentUser: { id: string; name: string; role: string };
-  onClose: () => void;
-  onAfterPost: () => void;
-}) {
-  const [comments, setComments] = useState<HourLogComment[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [draft, setDraft] = useState('');
-  const [posting, setPosting] = useState(false);
-
-  const refresh = useCallback(() => {
-    setLoading(true);
-    api.getHourLogComments(log.id)
-      .then(setComments)
-      .catch(() => {})
-      .finally(() => setLoading(false));
-  }, [log.id]);
-  useEffect(refresh, [refresh]);
-
-  const post = async () => {
-    if (!draft.trim()) return;
-    setPosting(true);
-    try {
-      await api.addHourLogComment(log.id, {
-        author_id: currentUser.id,
-        author_name: currentUser.name,
-        author_role: currentUser.role,
-        body: draft.trim(),
-      });
-      setDraft('');
-      refresh();
-      onAfterPost();
-    } catch (e: any) { alert(e?.message ?? 'Failed to post comment'); }
-    finally { setPosting(false); }
-  };
-
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-bg/55 backdrop-blur-sm p-4">
-      <div className="bg-surface rounded-2xl shadow-elev-4 border border-outline w-full max-w-lg flex flex-col max-h-[85vh]">
-        <div className="flex items-center justify-between px-6 py-5 border-b border-outline">
-          <div>
-            <h3 className="font-display text-lg font-semibold text-on-surface inline-flex items-center gap-2">
-              <MessageSquare size={18} className="text-accent" /> Discussion
-            </h3>
-            <p className="text-xs text-on-surface-muted mt-0.5">
-              {log.employee_name} · {log.project_name} · W{log.week_num} · <span className="num-mono">{log.hours_logged}h</span>
-            </p>
-          </div>
-          <button onClick={onClose} className="p-1.5 hover:bg-surface-2 rounded-lg"><X size={16} className="text-on-surface-muted" /></button>
-        </div>
-        <div className="p-6 space-y-3 overflow-y-auto flex-1 bg-surface-2/30">
-          {loading ? (
-            <p className="text-sm text-on-surface-subtle text-center py-8">Loading…</p>
-          ) : comments.length === 0 ? (
-            <p className="text-sm text-on-surface-subtle text-center py-8">
-              No comments yet. Start the conversation below — useful when a specific DSR task needs justification.
-            </p>
-          ) : (
-            comments.map(c => {
-              const isMe = !!c.author_id && c.author_id === currentUser.id;
-              return (
-                <div key={c.id} className={`flex ${isMe ? 'justify-end' : 'justify-start'}`}>
-                  <div className={`max-w-[80%] rounded-2xl px-3.5 py-2 text-sm ${isMe ? 'bg-accent text-on-accent' : 'bg-surface border border-outline text-on-surface'}`}>
-                    <div className={`text-[10px] font-semibold mb-0.5 ${isMe ? 'text-on-accent/80' : 'text-on-surface-muted'}`}>
-                      {c.author_name || 'Unknown'}{c.author_role ? ` · ${c.author_role}` : ''} · {ago(c.created_at)}
-                    </div>
-                    <div className="whitespace-pre-line leading-snug">{c.body}</div>
-                  </div>
-                </div>
-              );
-            })
-          )}
-        </div>
-        <div className="px-6 py-4 border-t border-outline">
-          <div className="flex items-end gap-2">
-            <textarea value={draft} onChange={e => setDraft(e.target.value)} rows={2}
-              placeholder="Add a comment…"
-              onKeyDown={e => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) post(); }}
-              className="flex-1 bg-surface border border-outline rounded-lg px-3 py-2 text-sm text-on-surface focus:outline-none focus:ring-2 focus:ring-accent/30 resize-none" />
-            <button onClick={post} disabled={!draft.trim() || posting}
-              className="px-3 py-2 rounded-lg text-sm font-semibold text-white bg-accent hover:opacity-90 disabled:opacity-50 transition-colors inline-flex items-center gap-1">
-              <Send size={13} /> {posting ? '…' : 'Send'}
-            </button>
-          </div>
-          <p className="text-[10px] text-on-surface-subtle mt-1.5">Tip: ⌘/Ctrl + Enter to send.</p>
         </div>
       </div>
     </div>

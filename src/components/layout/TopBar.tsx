@@ -399,7 +399,12 @@ export default function TopBar({ title }: Props) {
                         key={n.id}
                         onClick={() => {
                           if (!n.is_read) handleMarkRead(n.id);
-                          const route = getNotifRoute(n.type, user?.role ?? '');
+                          // Per-notification link wins when present (carries
+                          // a specific entity id, e.g. hours_comment deep-
+                          // linking to the right log + auto-opening the
+                          // discussion modal). Falls back to the role-based
+                          // type → route map otherwise.
+                          const route = (n as any).link || getNotifRoute(n.type, user?.role ?? '');
                           setShowNotifs(false);
                           navigate(route);
                         }}

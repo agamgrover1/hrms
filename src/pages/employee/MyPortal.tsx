@@ -4,6 +4,7 @@ import { Clock, Calendar, DollarSign, User, CheckCircle, XCircle, AlertCircle, P
 import MyRoleTab from '../../components/MyRoleTab';
 import TodoTab from '../../components/TodoTab';
 import MonthSelector, { monthLabel } from '../../components/MonthSelector';
+import HourLogCommentsModal from '../../components/HourLogCommentsModal';
 import { useAuth } from '../../context/AuthContext';
 import { api } from '../../services/api';
 import { financeApi } from '../../services/financeApi';
@@ -3311,6 +3312,9 @@ interface MHLog {
   status: string;
   rejection_reason: string | null;
   reviewed_by_name: string | null;
+  // Returned by /api/hour-logs so we can surface "💬 N" badges + open the
+  // shared discussion modal directly from the employee's My Hours tab.
+  comment_count?: number;
 }
 
 // Non-project hours — for HR, recruiters, coordinators, bench, admin doing
@@ -3467,6 +3471,7 @@ function InternalHoursPanel() {
 }
 
 function MyHoursTab({ employeeId, employeeName }: { employeeId: string; employeeName: string }) {
+  const { user } = useAuth();
   const today = new Date();
   const [month, setMonth] = useState(today.getMonth() + 1);
   const [year, setYear] = useState(today.getFullYear());
@@ -3474,6 +3479,10 @@ function MyHoursTab({ employeeId, employeeName }: { employeeId: string; employee
   const [logs, setLogs] = useState<MHLog[]>([]);
   const [loading, setLoading] = useState(true);
   const [logging, setLogging] = useState<{ assignment: MHAssignment; weekNum: number; existing?: MHLog } | null>(null);
+  // Discussion thread for a specific week log. Opened from the WeekCell's
+  // 💬 chip OR auto-opened when the bell notification deep-links here
+  // with `?logId=…&discuss=1` in the URL.
+  const [discussing, setDiscussing] = useState<{ log: MHLog; assignmentName: string } | null>(null);
 
   const load = () => {
     setLoading(true);
@@ -3484,6 +3493,24 @@ function MyHoursTab({ employeeId, employeeName }: { employeeId: string; employee
   };
 
   useEffect(() => { load(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [employeeId, month, year]);
+
+  // Deep-link: when the employee clicks the bell on a "Discuss / commented"
+  // notification, we land here with `?logId=hl_…&discuss=1`. As soon as the
+  // matching log shows up in state, auto-open the discussion modal.
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const logId = params.get('logId');
+    const wantDiscuss = params.get('discuss') === '1';
+    if (!logId || !wantDiscuss) return;
+    const log = logs.find(l => l.id === logId);
+    if (!log) return;
+    const assn = assignments.find(a => a.project_id === log.project_id);
+    setDiscussing({ log, assignmentName: assn?.project_name ?? 'Project' });
+    // Clean the URL so refreshing doesn't re-open the modal on top of itself.
+    const u = new URL(window.location.href);
+    u.searchParams.delete('logId'); u.searchParams.delete('discuss');
+    window.history.replaceState({}, '', u.toString());
+  }, [logs, assignments]);
 
   const logByKey = new Map<string, MHLog>();
   for (const l of logs) logByKey.set(`${l.project_id}_${l.week_num}`, l);
@@ -3553,7 +3580,10 @@ function MyHoursTab({ employeeId, employeeName }: { employeeId: string; employee
                     if (!showCell) return <td key={i} className="px-3 py-3 text-center text-on-surface-subtle">—</td>;
                     return (
                       <td key={i} className="px-3 py-3 text-center">
-                        <WeekCell alloc={allocN} log={log} onClick={() => setLogging({ assignment: a, weekNum, existing: log })} />
+                        <WeekCell alloc={allocN} log={log}
+                          onClick={() => setLogging({ assignment: a, weekNum, existing: log })}
+                          onDiscuss={log ? () => setDiscussing({ log, assignmentName: a.project_name ?? 'Project' }) : undefined}
+                        />
                       </td>
                     );
                   })}
@@ -3602,6 +3632,15 @@ function MyHoursTab({ employeeId, employeeName }: { employeeId: string; employee
           onSaved={() => { setLogging(null); load(); }}
         />
       )}
+      {discussing && (
+        <HourLogCommentsModal
+          logId={discussing.log.id}
+          subtitle={`${employeeName} · ${discussing.assignmentName} · W${discussing.log.week_num} · ${discussing.log.hours_logged}h`}
+          currentUser={{ id: user?.id ?? '', name: user?.name ?? '', role: user?.role ?? '' }}
+          onClose={() => setDiscussing(null)}
+          onAfterPost={load}
+        />
+      )}
     </div>
   );
 }
@@ -3615,7 +3654,7 @@ function Tile({ label, value, color }: { label: string; value: string; color?: s
   );
 }
 
-function WeekCell({ alloc, log, onClick }: { alloc: number; log?: MHLog; onClick: () => void }) {
+function WeekCell({ alloc, log, onClick, onDiscuss }: { alloc: number; log?: MHLog; onClick: () => void; onDiscuss?: () => void }) {
   if (!log) {
     return (
       <button onClick={onClick}
@@ -3634,21 +3673,39 @@ function WeekCell({ alloc, log, onClick }: { alloc: number; log?: MHLog; onClick
   // daily entries) recorded without having to re-open the modal. Hover
   // tooltip shows the full text, the cell shows a one-line preview.
   const desc = (log.effective_description ?? log.work_description ?? '').trim();
+  const commentCount = Number(log.comment_count ?? 0);
   return (
-    <button onClick={onClick}
-      title={desc ? `What you logged: ${desc}` : undefined}
-      className={`inline-flex flex-col items-stretch min-w-[80px] gap-0.5 px-2.5 py-1.5 rounded-md text-xs hover:bg-surface-2 ${pillCfg.text} font-semibold`}>
-      <span className="inline-flex items-center justify-center gap-1.5">
-        <span className="w-1.5 h-1.5 rounded-full" style={{ background: pillCfg.dot }} />
-        {Number(log.hours_logged)} / {alloc}
-        <Edit2 size={10} className="opacity-50" />
-      </span>
-      {desc && (
-        <span className="text-[10px] font-normal text-on-surface-muted leading-snug truncate max-w-[120px]">
-          {desc}
+    <div className="inline-flex flex-col items-stretch min-w-[80px] gap-0.5">
+      <button onClick={onClick}
+        title={desc ? `What you logged: ${desc}` : undefined}
+        className={`inline-flex flex-col items-stretch gap-0.5 px-2.5 py-1.5 rounded-md text-xs hover:bg-surface-2 ${pillCfg.text} font-semibold`}>
+        <span className="inline-flex items-center justify-center gap-1.5">
+          <span className="w-1.5 h-1.5 rounded-full" style={{ background: pillCfg.dot }} />
+          {Number(log.hours_logged)} / {alloc}
+          <Edit2 size={10} className="opacity-50" />
         </span>
+        {desc && (
+          <span className="text-[10px] font-normal text-on-surface-muted leading-snug truncate max-w-[120px]">
+            {desc}
+          </span>
+        )}
+      </button>
+      {/* Separate discussion chip — clicking the cell above edits the log,
+          this opens the back-and-forth thread. We show it always when a log
+          exists so the employee can ALWAYS start / continue a conversation,
+          not only when someone else has already commented. */}
+      {onDiscuss && (
+        <button onClick={onDiscuss}
+          className={`inline-flex items-center justify-center gap-1 text-[10px] font-semibold px-1.5 py-0.5 rounded-md transition-colors ${
+            commentCount > 0
+              ? 'bg-accent/10 text-accent border border-accent/30 hover:bg-accent/20'
+              : 'text-on-surface-subtle border border-outline hover:bg-surface-2'
+          }`}
+          title={commentCount > 0 ? `${commentCount} comment${commentCount === 1 ? '' : 's'} — click to open the thread` : 'Start a discussion on this week'}>
+          💬 {commentCount > 0 ? commentCount : 'Discuss'}
+        </button>
       )}
-    </button>
+    </div>
   );
 }
 

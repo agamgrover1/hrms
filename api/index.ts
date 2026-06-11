@@ -50,9 +50,10 @@ app.use(cors({
 app.use(express.json());
 
 // ── Notification helpers ──────────────────────────────────────────────────
-async function notifyUser(userId: string, type: string, title: string, body?: string) {
+async function notifyUser(userId: string, type: string, title: string, body?: string, link?: string) {
   try {
-    await sql`INSERT INTO notifications (user_id, type, title, body) VALUES (${userId}, ${type}, ${title}, ${body ?? null})`;
+    await sql`INSERT INTO notifications (user_id, type, title, body, link)
+              VALUES (${userId}, ${type}, ${title}, ${body ?? null}, ${link ?? null})`;
   } catch { /* non-fatal */ }
 }
 
@@ -124,10 +125,10 @@ async function recordHourLogAudit(p: {
   } catch { /* non-fatal */ }
 }
 
-async function notifyEmployeeUser(employeeDbId: string, type: string, title: string, body?: string) {
+async function notifyEmployeeUser(employeeDbId: string, type: string, title: string, body?: string, link?: string) {
   try {
     const users = await sql`SELECT u.id FROM app_users u JOIN employees e ON e.employee_id = u.employee_id_ref WHERE e.id = ${employeeDbId}`;
-    await Promise.all((users as any[]).map((u: any) => notifyUser(u.id, type, title, body)));
+    await Promise.all((users as any[]).map((u: any) => notifyUser(u.id, type, title, body, link)));
   } catch { /* non-fatal */ }
 }
 
@@ -414,6 +415,11 @@ async function runStartupMigrations() {
       title TEXT NOT NULL, body TEXT, is_read BOOLEAN DEFAULT FALSE,
       created_at TIMESTAMPTZ DEFAULT NOW()
     )`;
+  // Per-notification deep-link override. Used when type+role can't uniquely
+  // identify a destination — e.g. an "hours_comment" ping needs to jump to
+  // the SPECIFIC log so the employee can reply. When null the TopBar falls
+  // back to the role-based getNotifRoute() heuristic.
+  await sql`ALTER TABLE notifications ADD COLUMN IF NOT EXISTS link TEXT`.catch(()=>{});
   await sql`
     CREATE TABLE IF NOT EXISTS payroll_records (
       id SERIAL PRIMARY KEY, employee_id TEXT NOT NULL, month TEXT, year INTEGER,
@@ -6936,7 +6942,8 @@ app.patch('/api/hour-logs/:id/hold', async (req, res) => {
       const projectName = (proj as any[])[0]?.name || 'a project';
       notifyEmployeeUser(r.employee_id, 'hours_on_hold',
         'Hours Held — clarification needed',
-        `${reviewer_name || 'Your reviewer'} put your ${r.hours_logged}h on ${projectName} (W${r.week_num}) on hold: ${note.trim().slice(0, 140)}`).catch(()=>{});
+        `${reviewer_name || 'Your reviewer'} put your ${r.hours_logged}h on ${projectName} (W${r.week_num}) on hold: ${note.trim().slice(0, 140)}`,
+        `/my?tab=my-hours&logId=${r.id}&discuss=1`).catch(()=>{});
     } catch {}
     res.json(r);
   } catch (err: any) { res.status(500).json({ error: err.message || 'Server error' }); }
@@ -6975,16 +6982,23 @@ app.post('/api/hour-logs/:id/comments', async (req, res) => {
       const proj = await sql`SELECT name FROM projects WHERE id=${log.project_id}`;
       const projectName = (proj as any[])[0]?.name || 'a project';
       const fromEmployee = author_id && author_id === log.employee_id;
+      // Reviewer-side deep-link → opens the same modal on /hours/approvals
+      // by also accepting ?logId. Employee-side deep-link → My Hours tab
+      // with auto-open of the discussion modal for the matching log.
+      const reviewerLink = `/hours/approvals?logId=${log.id}&discuss=1`;
+      const employeeLink = `/my?tab=my-hours&logId=${log.id}&discuss=1`;
       if (fromEmployee && log.reviewed_by_id) {
         // Employee replied — ping the reviewer who held / reviewed it.
         notifyEmployeeUser(log.reviewed_by_id, 'hours_comment',
           `${log.employee_name || 'Employee'} replied on hours`,
-          `${log.employee_name || 'Employee'} commented on ${projectName} (W${log.week_num}): ${body.trim().slice(0, 140)}`).catch(()=>{});
+          `${log.employee_name || 'Employee'} commented on ${projectName} (W${log.week_num}): ${body.trim().slice(0, 140)}`,
+          reviewerLink).catch(()=>{});
       } else if (!fromEmployee) {
         // Reviewer/admin/HR commented — ping the employee.
         notifyEmployeeUser(log.employee_id, 'hours_comment',
           `New comment on your hours`,
-          `${author_name || 'Reviewer'} commented on your ${projectName} (W${log.week_num}) log: ${body.trim().slice(0, 140)}`).catch(()=>{});
+          `${author_name || 'Reviewer'} commented on your ${projectName} (W${log.week_num}) log: ${body.trim().slice(0, 140)}`,
+          employeeLink).catch(()=>{});
       }
     } catch {}
     res.status(201).json(row);

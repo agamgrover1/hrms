@@ -73,6 +73,8 @@ function AppRoutes() {
             leads (role=employee) need this to see all projects they lead. */}
         <Route path="hours" element={<ProtectedRoute><ProjectHours /></ProtectedRoute>} />
         <Route path="hours/approvals" element={<ProtectedRoute><HoursApproval /></ProtectedRoute>} />
+        {/* Legacy singular spelling — bookmarks / typos shouldn't dead-end. */}
+        <Route path="hours/approval" element={<Navigate to="/hours/approvals" replace />} />
         <Route path="hours/compliance" element={<ProtectedRoute><HoursCompliance /></ProtectedRoute>} />
         {/* Utilization: server enforces role-based scoping + cost stripping */}
         <Route path="hours/utilization" element={<ProtectedRoute><HoursUtilization /></ProtectedRoute>} />
