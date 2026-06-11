@@ -103,6 +103,8 @@ export function getNotifRoute(type: string, role: string): string {
     case 'hours_removed':
     case 'hours_approved':
     case 'hours_rejected':
+    case 'hours_on_hold':
+    case 'hours_comment':
     case 'hours_admin_edited':
       // Personal events → recipient's own My Hours tab.
       // HR/admin only get these as side-effects → master grid.
@@ -187,6 +189,8 @@ export const TYPE_CONFIG: Record<string, { icon: any; color: string; bg: string 
   hours_logged:            { icon: FileText,       color: '#7c3aed', bg: '#f5f3ff' },
   hours_approved:          { icon: CheckCircle,    color: '#15803d', bg: '#f0fdf4' },
   hours_rejected:          { icon: XCircle,        color: '#dc2626', bg: '#fef2f2' },
+  hours_on_hold:           { icon: ClockIcon,      color: '#7c3aed', bg: '#f5f3ff' },
+  hours_comment:           { icon: FileText,       color: '#7c3aed', bg: '#f5f3ff' },
   hours_admin_edited:      { icon: AlertTriangle,  color: '#b45309', bg: '#fffbeb' },
   // Invoices
   invoice_raised:          { icon: FileText,       color: '#2563eb', bg: '#eff6ff' },
