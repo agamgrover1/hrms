@@ -1,7 +1,7 @@
 import { useState, useEffect, useMemo } from 'react';
-import { useSearchParams, useNavigate } from 'react-router-dom';
+import { useSearchParams, useNavigate, Link } from 'react-router-dom';
 import { Users, Calendar, TrendingUp, CheckCircle, XCircle, AlertCircle,
-  X, Save, RefreshCw, Clock, UserCheck, Monitor } from 'lucide-react';
+  X, Save, RefreshCw, Clock, UserCheck, Monitor, Info } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
 import { api } from '../../services/api';
 import MemberCalendarModal from '../../components/MemberCalendarModal';
@@ -665,8 +665,16 @@ export default function MyTeam() {
             <div className="group relative bg-surface rounded-xl-2 border border-outline shadow-elev-1 hover:shadow-elev-2 transition-shadow overflow-hidden p-5">
               <div className="absolute -top-8 -right-8 w-28 h-28 rounded-full bg-accent/15 blur-2xl opacity-50" />
               <div className="relative">
-                <h3 className="font-display text-xl font-bold tracking-tight text-on-surface mb-1">Leave Distribution</h3>
-                <p className="text-xs text-on-surface-muted mb-4">By type this month</p>
+                <div className="flex items-center gap-1.5 mb-1">
+                  <h3 className="font-display text-xl font-bold tracking-tight text-on-surface">Leave Distribution</h3>
+                  <Link to="/help/how-it-works?section=my-team" title="What does this card show?"
+                    className="text-on-surface-subtle hover:text-accent transition-colors">
+                    <Info size={13} />
+                  </Link>
+                </div>
+                <p className="text-xs text-on-surface-muted mb-4">
+                  Share of your team's leaves this month by type — Full Day, Half Day, Short Leave, Optional.
+                </p>
                 {leaveDonutData.length === 0 ? (
                   <div className="flex flex-col items-center justify-center h-40 gap-2">
                     <Calendar size={28} className="text-success/60" />

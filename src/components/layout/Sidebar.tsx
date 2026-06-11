@@ -2,7 +2,7 @@ import { NavLink, useLocation } from 'react-router-dom';
 import {
   LayoutDashboard, Users, Clock3, CalendarDays, Wallet, Sparkles,
   ChevronLeft, ChevronRight, UserCog, User, SlidersHorizontal, TrendingUp, Wrench,
-  Briefcase, ClipboardCheck, Layers, LineChart, AlertTriangle, Activity, Megaphone, type LucideIcon,
+  Briefcase, ClipboardCheck, Layers, LineChart, AlertTriangle, Activity, Megaphone, BookOpen, HelpCircle, type LucideIcon,
 } from 'lucide-react';
 import { useState, useEffect, useRef } from 'react';
 import { useAuth } from '../../context/AuthContext';
@@ -180,6 +180,17 @@ export default function Sidebar({ mobileOpen = false, onMobileClose }: { mobileO
     ],
   } : null;
   if (personalGroup) groups.push(personalGroup);
+
+  // Help group at the bottom — visible to everyone signed in. Single source
+  // of truth for "what does this card mean?" + Pulse rubric.
+  groups.push({
+    id: 'help',
+    label: 'Help',
+    items: [
+      { to: '/help/how-it-works', icon: BookOpen, label: 'How it works' },
+      { to: '/help/pulse', icon: HelpCircle, label: 'Pulse rubric' },
+    ],
+  });
 
   const rolePill = ROLE_PILL[role] ?? ROLE_PILL.employee;
 

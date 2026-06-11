@@ -25,6 +25,7 @@ import HoursCompliance from './pages/HoursCompliance';
 import HoursUtilization from './pages/HoursUtilization';
 import Notifications from './pages/Notifications';
 import Features from './pages/Features';
+import HowItWorks from './pages/HowItWorks';
 import Finance from './pages/finance/Finance';
 
 function landingFor(role: string): string {
@@ -58,6 +59,7 @@ function AppRoutes() {
         <Route path="performance/pulse" element={<ProtectedRoute roles={['admin', 'hr_manager', 'project_coordinator']}><PerformancePulse /></ProtectedRoute>} />
         {/* Open to anyone signed in — employees, coords, managers, HR/admin */}
         <Route path="help/pulse" element={<ProtectedRoute><PulseHelp /></ProtectedRoute>} />
+        <Route path="help/how-it-works" element={<ProtectedRoute><HowItWorks /></ProtectedRoute>} />
         <Route path="users" element={<ProtectedRoute roles={['admin', 'hr_manager']}><UserManagement /></ProtectedRoute>} />
         <Route path="config" element={<ProtectedRoute roles={['admin', 'hr_manager']}><Config /></ProtectedRoute>} />
         <Route path="incentives" element={<ProtectedRoute roles={['admin', 'hr_manager']}><Incentives /></ProtectedRoute>} />
