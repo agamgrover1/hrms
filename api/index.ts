@@ -1074,6 +1074,26 @@ async function runStartupMigrations() {
       PRIMARY KEY (user_id, feature_id)
     )`;
 
+  // ── Attendance notes ────────────────────────────────────────────────────
+  // Short-day / partial-day context. Anyone with access (the employee, their
+  // reporting manager up the chain, HR, admin) can attach a note explaining
+  // why a particular day was short. One note per (employee, date) — editing
+  // overwrites with the latest author. Audit trail lives in updated_at /
+  // author_* columns; we don't keep history since the use-case is "what
+  // happened that day" not "every revision".
+  await sql`
+    CREATE TABLE IF NOT EXISTS attendance_notes (
+      employee_id TEXT NOT NULL,
+      date DATE NOT NULL,
+      note TEXT NOT NULL,
+      author_id TEXT,
+      author_name TEXT,
+      author_role TEXT,
+      created_at TIMESTAMPTZ DEFAULT NOW(),
+      updated_at TIMESTAMPTZ DEFAULT NOW(),
+      PRIMARY KEY (employee_id, date)
+    )`;
+
   // ── Allocation change requests ──────────────────────────────────────────
   // Managers / project reviewers can propose changes to an employee's
   // weekly/monthly allocation on a project. Coordinators (and admin) approve;
@@ -3760,6 +3780,93 @@ app.patch('/api/allocation-requests/:id/cancel', async (req, res) => {
       UPDATE allocation_change_requests SET status='cancelled', updated_at=NOW()
       WHERE id=${req.params.id} RETURNING *`)[0];
     res.json(updated);
+  } catch (err: any) { res.status(500).json({ error: err.message ?? 'Server error' }); }
+});
+
+// ─────────────────────────────────────────────────────────────────────────
+// Attendance notes — context for short days / partial attendance.
+// Permission: the employee themselves, anyone up their reporting chain,
+// HR, admin. The chain walk caps at 10 levels (same as the todo/allocation
+// helpers).
+// ─────────────────────────────────────────────────────────────────────────
+
+async function canTouchAttendanceNote(u: any, actorEmpId: string | null, targetEmpId: string): Promise<boolean> {
+  if (!u) return false;
+  if (u.role === 'admin' || u.role === 'hr_manager') return true;
+  if (actorEmpId && actorEmpId === targetEmpId) return true;
+  if (!actorEmpId) return false;
+  let cur = targetEmpId;
+  for (let i = 0; i < 10; i++) {
+    const row = (await sql`SELECT reporting_manager_id FROM employees WHERE id=${cur}`)[0] as any;
+    if (!row?.reporting_manager_id) return false;
+    if (row.reporting_manager_id === actorEmpId) return true;
+    cur = row.reporting_manager_id;
+  }
+  return false;
+}
+
+// GET /api/attendance-notes?employee_id=&month=&year= — list notes for
+// the month so the UI can colocate them with the attendance rows. Read
+// access is the same as write access (covered by canTouchAttendanceNote).
+app.get('/api/attendance-notes', async (req, res) => {
+  try {
+    await runStartupMigrations();
+    const uid = req.header('x-user-id');
+    if (!uid) return res.status(401).json({ error: 'Sign in required' });
+    const u = (await sql`SELECT id, role, employee_id_ref, email, name FROM app_users WHERE id=${uid}`)[0] as any;
+    if (!u) return res.status(401).json({ error: 'Unknown user' });
+    const employee_id = (req.query.employee_id as string) || '';
+    const month = Number(req.query.month);
+    const year = Number(req.query.year);
+    if (!employee_id || !month || !year) return res.status(400).json({ error: 'employee_id, month, year are required' });
+
+    const actorEmpId = await resolveUserToEmployee(u);
+    const ok = await canTouchAttendanceNote(u, actorEmpId, employee_id);
+    if (!ok) return res.status(403).json({ error: 'Not permitted to view notes for this employee.' });
+
+    const rows = await sql`
+      SELECT employee_id, date::text AS date, note, author_id, author_name, author_role,
+             created_at, updated_at
+      FROM attendance_notes
+      WHERE employee_id=${employee_id}
+        AND EXTRACT(MONTH FROM date) = ${month}
+        AND EXTRACT(YEAR  FROM date) = ${year}
+      ORDER BY date`;
+    res.json(rows);
+  } catch (err: any) { res.status(500).json({ error: err.message ?? 'Server error' }); }
+});
+
+// PUT /api/attendance-notes — upsert one note. Empty body = delete.
+app.put('/api/attendance-notes', async (req, res) => {
+  try {
+    await runStartupMigrations();
+    const uid = req.header('x-user-id');
+    if (!uid) return res.status(401).json({ error: 'Sign in required' });
+    const u = (await sql`SELECT id, name, role FROM app_users WHERE id=${uid}`)[0] as any;
+    if (!u) return res.status(401).json({ error: 'Unknown user' });
+    const { employee_id, date, note } = req.body ?? {};
+    if (!employee_id || !date) return res.status(400).json({ error: 'employee_id and date are required' });
+
+    const actorEmpId = await resolveUserToEmployee(u);
+    const ok = await canTouchAttendanceNote(u, actorEmpId, employee_id);
+    if (!ok) return res.status(403).json({ error: 'Not permitted to add a note for this employee.' });
+
+    if (!note || !note.trim()) {
+      await sql`DELETE FROM attendance_notes WHERE employee_id=${employee_id} AND date=${date}`;
+      return res.json({ ok: true, deleted: true });
+    }
+
+    const row = (await sql`
+      INSERT INTO attendance_notes (employee_id, date, note, author_id, author_name, author_role)
+      VALUES (${employee_id}, ${date}, ${note.trim()}, ${u.id}, ${u.name}, ${u.role})
+      ON CONFLICT (employee_id, date) DO UPDATE SET
+        note = EXCLUDED.note,
+        author_id = EXCLUDED.author_id,
+        author_name = EXCLUDED.author_name,
+        author_role = EXCLUDED.author_role,
+        updated_at = NOW()
+      RETURNING employee_id, date::text AS date, note, author_id, author_name, author_role, created_at, updated_at`)[0];
+    res.json(row);
   } catch (err: any) { res.status(500).json({ error: err.message ?? 'Server error' }); }
 });
 

@@ -465,6 +465,14 @@ export default function MyPortal() {
   const [wfhForm, setWfhForm] = useState({ date: '', type: 'full_day', reason: '' });
   const [savingWfh, setSavingWfh] = useState(false);
   const [attendance, setAttendance] = useState<any[]>([]);
+  // Browseable month for the Attendance tab. Defaults to the current
+  // month; arrows step back so the employee can review past months.
+  const [attMonth, setAttMonth] = useState<number>(new Date().getUTCMonth() + 1);
+  const [attYear,  setAttYear]  = useState<number>(new Date().getUTCFullYear());
+  const [attLoading, setAttLoading] = useState(false);
+  // date (YYYY-MM-DD) → note row. One note per day, latest author wins.
+  const [attendanceNotes, setAttendanceNotes] = useState<Record<string, { note: string; author_name: string | null; author_role: string | null; updated_at: string }>>({});
+  const [editingNoteDate, setEditingNoteDate] = useState<string | null>(null);
   const [leaves, setLeaves] = useState<any[]>([]);
   const [payroll, setPayroll] = useState<any | null>(null);
   const [balance, setBalance] = useState<any>({ casual: 0, sick: 0, earned: 0 });
@@ -518,6 +526,47 @@ export default function MyPortal() {
   const [savingTeamReview, setSavingTeamReview] = useState(false);
 
   const empRef = user?.employee_id_ref;
+
+  // Refetch attendance + notes whenever the user steps the month selector
+  // on the Attendance tab. Initial load (current month) is already covered
+  // by the main employee-load effect, but stepping back/forward needs this.
+  useEffect(() => {
+    if (!empDbId) return;
+    // Skip the current-month fetch on first paint — the main loader already
+    // populated `attendance` with the current month. Only kick in when the
+    // user navigates AWAY from the live month.
+    const now = new Date();
+    const isCurrent = attMonth === now.getUTCMonth() + 1 && attYear === now.getUTCFullYear();
+    if (isCurrent && attendance.length) return;
+    setAttLoading(true);
+    Promise.all([
+      api.getAttendance({ employee_id: empDbId, month: attMonth, year: attYear }),
+      api.getAttendanceNotes(empDbId, attMonth, attYear).catch(() => []),
+    ])
+      .then(([att, notes]) => {
+        setAttendance(att);
+        const byDate: Record<string, any> = {};
+        (notes as any[]).forEach(n => { byDate[n.date] = n; });
+        setAttendanceNotes(byDate);
+      })
+      .catch(() => {})
+      .finally(() => setAttLoading(false));
+  }, [empDbId, attMonth, attYear]);
+
+  // Notes for the CURRENT month — load them once empDbId resolves so the
+  // initial render of the Attendance tab already shows existing notes.
+  useEffect(() => {
+    if (!empDbId) return;
+    const now = new Date();
+    if (attMonth !== now.getUTCMonth() + 1 || attYear !== now.getUTCFullYear()) return;
+    api.getAttendanceNotes(empDbId, attMonth, attYear)
+      .then(notes => {
+        const byDate: Record<string, any> = {};
+        (notes as any[]).forEach(n => { byDate[n.date] = n; });
+        setAttendanceNotes(byDate);
+      })
+      .catch(() => {});
+  }, [empDbId]);
 
   // For admin / HR, the Todo assignment picker needs the full org. Fetch
   // lazily when they hit the Todo tab to avoid eating bandwidth otherwise.
@@ -1147,40 +1196,96 @@ export default function MyPortal() {
       {/* ── Attendance ── */}
       {tab === 'attendance' && (
         <div className="bg-surface rounded-xl border border-outline shadow-sm overflow-hidden">
-          <div className="px-5 py-4 border-b border-outline">
-            <h3 className="font-semibold text-on-surface">My Attendance — {new Date().toLocaleString('default', { month: 'long', year: 'numeric' })}</h3>
+          <div className="px-5 py-4 border-b border-outline flex items-center justify-between gap-3 flex-wrap">
+            <h3 className="font-semibold text-on-surface">My Attendance — {monthLabel(attMonth, attYear)}</h3>
+            <MonthSelector month={attMonth} year={attYear} onChange={(m, y) => { setAttMonth(m); setAttYear(y); }} />
           </div>
           <div className="divide-y divide-gray-50">
-            {attendance.filter(r => r.status !== 'weekend').map(r => {
+            {attLoading ? (
+              <p className="text-center text-on-surface-subtle text-sm py-12">Loading…</p>
+            ) : attendance.filter(r => r.status !== 'weekend').length === 0 ? (
+              <p className="text-center text-on-surface-subtle text-sm py-12">No records this month</p>
+            ) : attendance.filter(r => r.status !== 'weekend').map(r => {
               const cfg = statusConfig[r.status as keyof typeof statusConfig];
               const isShortDay = (r.status === 'present' || r.status === 'late')
                 && r.check_out && Number(r.total_hours) > 0 && Number(r.total_hours) < 9;
+              const note = attendanceNotes[r.date];
+              // Show the note affordance on short days (the original ask)
+              // AND on any incomplete day (Late with no check_out, etc.) —
+              // those are also "needs context" cases that benefit from a note.
+              const noteApplies = isShortDay || (r.status === 'late' && !r.check_out);
               return (
-                <div key={r.date} className="flex items-center justify-between px-5 py-3 hover:bg-surface-2/50">
-                  <div className="flex items-center gap-3 flex-wrap">
-                    <span className={`w-2 h-2 rounded-full ${cfg?.dot} flex-shrink-0`} />
-                    <span className="text-sm text-on-surface-muted">
-                      {parseLocalDate(r.date).toLocaleDateString('en-IN', { weekday: 'short', day: 'numeric', month: 'short' })}
-                    </span>
-                    <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${cfg?.color}`}>{cfg?.label}</span>
-                    {isShortDay && (
-                      <span className="text-xs px-2 py-0.5 rounded-full font-semibold"
-                        style={{ background: '#fffbeb', color: '#b45309', border: '1px solid #fde68a' }}>
-                        Short Day
+                <div key={r.date} className="px-5 py-3 hover:bg-surface-2/50">
+                  <div className="flex items-center justify-between gap-3 flex-wrap">
+                    <div className="flex items-center gap-3 flex-wrap">
+                      <span className={`w-2 h-2 rounded-full ${cfg?.dot} flex-shrink-0`} />
+                      <span className="text-sm text-on-surface-muted">
+                        {parseLocalDate(r.date).toLocaleDateString('en-IN', { weekday: 'short', day: 'numeric', month: 'short' })}
                       </span>
-                    )}
+                      <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${cfg?.color}`}>{cfg?.label}</span>
+                      {isShortDay && (
+                        <span className="text-xs px-2 py-0.5 rounded-full font-semibold"
+                          style={{ background: '#fffbeb', color: '#b45309', border: '1px solid #fde68a' }}>
+                          Short Day
+                        </span>
+                      )}
+                      {noteApplies && (
+                        <button onClick={() => setEditingNoteDate(r.date)}
+                          className={`text-[10px] px-2 py-0.5 rounded-full font-semibold border transition-colors ${
+                            note
+                              ? 'bg-accent/10 text-accent border-accent/30 hover:bg-accent/20'
+                              : 'text-on-surface-subtle border-outline hover:bg-surface-2'
+                          }`}>
+                          {note ? '📝 Edit note' : '+ Add note'}
+                        </button>
+                      )}
+                    </div>
+                    <span className="text-sm text-on-surface-subtle whitespace-nowrap">
+                      {r.check_in ? `${r.check_in} – ${r.check_out ?? '—'} (${fmtHours(r.total_hours)})` : '—'}
+                    </span>
                   </div>
-                  <span className="text-sm text-on-surface-subtle whitespace-nowrap">
-                    {r.check_in ? `${r.check_in} – ${r.check_out ?? '—'} (${fmtHours(r.total_hours)})` : '—'}
-                  </span>
+                  {note && (
+                    <div className="mt-2 ml-5 text-xs bg-accent/5 border border-accent/20 rounded-md px-3 py-2">
+                      <p className="text-on-surface whitespace-pre-line">{note.note}</p>
+                      <p className="text-[10px] text-on-surface-subtle mt-1">
+                        — {note.author_name ?? 'Unknown'}{note.author_role ? ` (${note.author_role})` : ''} · {new Date(note.updated_at).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' })}
+                      </p>
+                    </div>
+                  )}
                 </div>
               );
             })}
-            {attendance.filter(r => r.status !== 'weekend').length === 0 && (
-              <p className="text-center text-on-surface-subtle text-sm py-12">No records yet this month</p>
-            )}
           </div>
         </div>
+      )}
+
+      {editingNoteDate && empDbId && (
+        <AttendanceNoteModal
+          employeeId={empDbId}
+          date={editingNoteDate}
+          existing={attendanceNotes[editingNoteDate]?.note ?? ''}
+          onClose={() => setEditingNoteDate(null)}
+          onSaved={(noteText) => {
+            setEditingNoteDate(null);
+            if (!noteText) {
+              setAttendanceNotes(prev => {
+                const next = { ...prev };
+                delete next[editingNoteDate];
+                return next;
+              });
+            } else {
+              setAttendanceNotes(prev => ({
+                ...prev,
+                [editingNoteDate]: {
+                  note: noteText,
+                  author_name: user?.name ?? null,
+                  author_role: user?.role ?? null,
+                  updated_at: new Date().toISOString(),
+                },
+              }));
+            }
+          }}
+        />
       )}
 
       {/* ── Leaves ── */}
@@ -2947,6 +3052,63 @@ export default function MyPortal() {
 // Lightweight modal for the FAB → "Add To-Do" action. Keeps the user where
 // they were and avoids the full Todo tab for a quick capture. Always
 // self-assigned; for assign-to-someone-else, the user opens the To-Do tab.
+// Inline note editor for a short / incomplete attendance day. Used by both
+// the employee (self-reporting) AND the manager / HR / admin (annotating
+// someone else's day). The server enforces who can touch which row; this
+// component is identical regardless of viewer. Empty save = delete the
+// existing note. Enter+meta sends.
+function AttendanceNoteModal({ employeeId, date, existing, onClose, onSaved }: {
+  employeeId: string;
+  date: string;
+  existing: string;
+  onClose: () => void;
+  onSaved: (noteText: string) => void;
+}) {
+  const [text, setText] = useState(existing);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+
+  const submit = async () => {
+    setBusy(true); setError('');
+    try {
+      await api.upsertAttendanceNote({ employee_id: employeeId, date, note: text.trim() });
+      onSaved(text.trim());
+    } catch (e: any) { setError(e?.message ?? 'Failed to save'); }
+    finally { setBusy(false); }
+  };
+
+  const friendlyDate = new Date(date + 'T12:00:00Z').toLocaleDateString('en-IN', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' });
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm p-4">
+      <div className="bg-surface rounded-2xl shadow-2xl w-full max-w-md overflow-hidden border border-outline">
+        <div className="flex items-center justify-between px-6 py-4 border-b border-outline">
+          <div>
+            <h3 className="font-display text-base font-bold text-on-surface">Note for {friendlyDate}</h3>
+            <p className="text-[11px] text-on-surface-muted mt-0.5">Add context for HR / your manager. Leave it blank and save to clear.</p>
+          </div>
+          <button onClick={onClose}><X size={16} className="text-on-surface-subtle" /></button>
+        </div>
+        <div className="p-6 space-y-3">
+          <textarea value={text} onChange={e => setText(e.target.value)} rows={4} autoFocus
+            placeholder="e.g. Left early for a doctor's appointment. Will make up the hours on Saturday."
+            onKeyDown={e => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) submit(); }}
+            className="w-full text-sm border border-outline rounded-lg px-3 py-2 bg-surface resize-none focus:outline-none focus:ring-2 focus:ring-accent/30" />
+          {error && <p className="text-xs text-danger bg-danger-container/40 border border-danger/20 rounded-lg px-3 py-2">{error}</p>}
+          <p className="text-[10px] text-on-surface-subtle">⌘/Ctrl-Enter to save.</p>
+        </div>
+        <div className="px-6 py-3 border-t border-outline flex justify-end gap-2">
+          <button onClick={onClose} className="px-4 py-2 text-sm font-medium text-on-surface-muted hover:bg-surface-2 rounded-lg">Cancel</button>
+          <button onClick={submit} disabled={busy}
+            className="px-4 py-2 text-sm font-semibold bg-accent text-on-accent rounded-lg disabled:opacity-50">
+            {busy ? 'Saving…' : (existing && !text.trim()) ? 'Delete note' : existing ? 'Update' : 'Save note'}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function QuickTodoModal({ onClose, onAdded }: { onClose: () => void; onAdded: () => void }) {
   const [title, setTitle] = useState('');
   const [description, setDescription] = useState('');

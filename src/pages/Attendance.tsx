@@ -268,6 +268,22 @@ export default function Attendance() {
     api.getLeaveRequests({ employee_id: selectedEmpId }).then(setLeaves).catch(() => {});
   }, [selectedEmpId]);
 
+  // Short-day notes for the selected employee + visible month. HR / manager
+  // can annotate someone else's day; the server enforces who's allowed.
+  // Keyed by date (YYYY-MM-DD) so render-time lookup is O(1).
+  const [attendanceNotes, setAttendanceNotes] = useState<Record<string, { note: string; author_name: string | null; author_role: string | null; updated_at: string }>>({});
+  const [editingNoteDate, setEditingNoteDate] = useState<string | null>(null);
+  useEffect(() => {
+    if (!selectedEmpId) { setAttendanceNotes({}); return; }
+    api.getAttendanceNotes(selectedEmpId, viewMonth + 1, viewYear)
+      .then(rows => {
+        const byDate: Record<string, any> = {};
+        (rows as any[]).forEach(n => { byDate[n.date] = n; });
+        setAttendanceNotes(byDate);
+      })
+      .catch(() => setAttendanceNotes({}));
+  }, [selectedEmpId, viewMonth, viewYear]);
+
   const fetchSyncHistory = useCallback(() => {
     api.getBiometricSyncHistory().then(setSyncHistory).catch(() => {});
   }, []);
@@ -714,16 +730,31 @@ export default function Attendance() {
                 const isShortDay = (r.status === 'present' || r.status === 'late')
                   && r.check_out && productiveMin > 0 && productiveMin < 8 * 60;
 
+                const noteRow = attendanceNotes[r.date];
                 return (
-                  <div key={r.date}
+                  <div key={r.date} className="border-b border-outline last:border-0">
+                  <div
                     onClick={() => r.check_in && handleOpenSessions(r)}
-                    className={`flex items-start justify-between py-2.5 border-b border-outline last:border-0 gap-3 ${r.check_in ? 'cursor-pointer hover:bg-surface-2 rounded-lg px-1 -mx-1 transition-colors' : ''}`}>
+                    className={`flex items-start justify-between py-2.5 gap-3 ${r.check_in ? 'cursor-pointer hover:bg-surface-2 rounded-lg px-1 -mx-1 transition-colors' : ''}`}>
                     {/* Left: status + date */}
                     <div className="flex items-center gap-2 flex-wrap min-w-0">
                       <span className={`text-xs px-2 py-0.5 rounded-full font-medium flex-shrink-0 ${cfg?.color}`}>{cfg?.label}</span>
                       {isShortDay && (
                         <span className="text-xs px-2 py-0.5 rounded-full font-semibold border border-warning/40 bg-warning-container text-warning flex-shrink-0">Short Day</span>
                       )}
+                      {(isShortDay || (r.status === 'late' && !r.check_out)) && (() => {
+                        const has = !!attendanceNotes[r.date];
+                        return (
+                          <button onClick={(e) => { e.stopPropagation(); setEditingNoteDate(r.date); }}
+                            className={`text-[10px] px-2 py-0.5 rounded-full font-semibold border flex-shrink-0 transition-colors ${
+                              has
+                                ? 'bg-accent/10 text-accent border-accent/30 hover:bg-accent/20'
+                                : 'text-on-surface-subtle border-outline hover:bg-surface-2'
+                            }`}>
+                            {has ? '📝 Note' : '+ Add note'}
+                          </button>
+                        );
+                      })()}
                       {leaveTag && (
                         <span className="text-xs px-2 py-0.5 rounded-full font-semibold border flex-shrink-0"
                           style={{ background: leaveTag.bg, color: leaveTag.color, borderColor: leaveTag.color + '40' }}>
@@ -780,6 +811,15 @@ export default function Attendance() {
                         })()}
                       </div>
                     ) : <span className="text-xs text-on-surface-subtle">—</span>}
+                  </div>
+                  {noteRow && (
+                    <div className="mt-1 ml-1 text-xs bg-accent/5 border border-accent/20 rounded-md px-3 py-1.5 mb-2">
+                      <p className="text-on-surface whitespace-pre-line">{noteRow.note}</p>
+                      <p className="text-[10px] text-on-surface-subtle mt-0.5">
+                        — {noteRow.author_name ?? 'Unknown'}{noteRow.author_role ? ` (${noteRow.author_role})` : ''} · {new Date(noteRow.updated_at).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' })}
+                      </p>
+                    </div>
+                  )}
                   </div>
                 );
               })}
@@ -1073,6 +1113,93 @@ export default function Attendance() {
           </div>
         </div>
       )}
+
+      {editingNoteDate && selectedEmpId && (
+        <AttendanceNoteEditor
+          employeeId={selectedEmpId}
+          date={editingNoteDate}
+          existing={attendanceNotes[editingNoteDate]?.note ?? ''}
+          authorName={user?.name ?? null}
+          authorRole={user?.role ?? null}
+          onClose={() => setEditingNoteDate(null)}
+          onSaved={(noteText) => {
+            setEditingNoteDate(null);
+            if (!noteText) {
+              setAttendanceNotes(prev => {
+                const next = { ...prev };
+                delete next[editingNoteDate];
+                return next;
+              });
+            } else {
+              setAttendanceNotes(prev => ({
+                ...prev,
+                [editingNoteDate]: {
+                  note: noteText,
+                  author_name: user?.name ?? null,
+                  author_role: user?.role ?? null,
+                  updated_at: new Date().toISOString(),
+                },
+              }));
+            }
+          }}
+        />
+      )}
+    </div>
+  );
+}
+
+// Lightweight inline editor for an attendance-day note. Same shape as the
+// employee-side modal in MyPortal — kept separate so the HR page doesn't
+// pull a chunk of MyPortal as a dep. Empty save = delete.
+function AttendanceNoteEditor({ employeeId, date, existing, authorName, authorRole, onClose, onSaved }: {
+  employeeId: string;
+  date: string;
+  existing: string;
+  authorName: string | null;
+  authorRole: string | null;
+  onClose: () => void;
+  onSaved: (text: string) => void;
+}) {
+  const [text, setText] = useState(existing);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+  const friendlyDate = new Date(date + 'T12:00:00Z').toLocaleDateString('en-IN', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' });
+  const submit = async () => {
+    setBusy(true); setError('');
+    try {
+      await api.upsertAttendanceNote({ employee_id: employeeId, date, note: text.trim() });
+      onSaved(text.trim());
+    } catch (e: any) { setError(e?.message ?? 'Failed to save'); }
+    finally { setBusy(false); }
+  };
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm p-4">
+      <div className="bg-surface rounded-2xl shadow-2xl w-full max-w-md overflow-hidden border border-outline">
+        <div className="flex items-center justify-between px-6 py-4 border-b border-outline">
+          <div>
+            <h3 className="font-display text-base font-bold text-on-surface">Note for {friendlyDate}</h3>
+            <p className="text-[11px] text-on-surface-muted mt-0.5">
+              Saving as <b>{authorName ?? 'you'}</b>{authorRole ? ` (${authorRole})` : ''}. Blank + save deletes the note.
+            </p>
+          </div>
+          <button onClick={onClose}><X size={16} className="text-on-surface-subtle" /></button>
+        </div>
+        <div className="p-6 space-y-3">
+          <textarea value={text} onChange={e => setText(e.target.value)} rows={4} autoFocus
+            placeholder="e.g. Left early for a customer meeting at 4 PM. Manager approved."
+            onKeyDown={e => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) submit(); }}
+            className="w-full text-sm border border-outline rounded-lg px-3 py-2 bg-surface resize-none focus:outline-none focus:ring-2 focus:ring-accent/30" />
+          {error && <p className="text-xs text-danger bg-danger-container/40 border border-danger/20 rounded-lg px-3 py-2">{error}</p>}
+          <p className="text-[10px] text-on-surface-subtle">⌘/Ctrl-Enter to save.</p>
+        </div>
+        <div className="px-6 py-3 border-t border-outline flex justify-end gap-2">
+          <button onClick={onClose} className="px-4 py-2 text-sm font-medium text-on-surface-muted hover:bg-surface-2 rounded-lg">Cancel</button>
+          <button onClick={submit} disabled={busy}
+            className="px-4 py-2 text-sm font-semibold bg-accent text-on-accent rounded-lg disabled:opacity-50">
+            {busy ? 'Saving…' : (existing && !text.trim()) ? 'Delete note' : existing ? 'Update' : 'Save note'}
+          </button>
+        </div>
+      </div>
     </div>
   );
 }
