@@ -503,6 +503,7 @@ export default function MyPortal() {
   const [teamPerf, setTeamPerf] = useState<Record<string, any[]>>({});
   const [approvingLeave, setApprovingLeave] = useState<Record<string, boolean>>({});
   const [rejectLeaveTarget, setRejectLeaveTarget] = useState<string | null>(null);
+  const [approveLeaveTarget, setApproveLeaveTarget] = useState<string | null>(null);
   // Team member leave viewer
   const [viewLeavesFor, setViewLeavesFor] = useState<any | null>(null); // employee record
   const [teamMemberLeaves, setTeamMemberLeaves] = useState<any[]>([]);
@@ -822,10 +823,10 @@ export default function MyPortal() {
     }
   };
 
-  const handleManagerApproveLeave = async (leaveId: string, status: 'approved' | 'rejected', rejection_reason?: string) => {
+  const handleManagerApproveLeave = async (leaveId: string, status: 'approved' | 'rejected', rejection_reason?: string, approver_note?: string) => {
     setApprovingLeave(prev => ({ ...prev, [leaveId]: true }));
     try {
-      await api.managerApproveLeave(leaveId, { status, manager_id: empDbId, manager_name: user?.name, rejection_reason });
+      await api.managerApproveLeave(leaveId, { status, manager_id: empDbId, manager_name: user?.name, rejection_reason, approver_note });
       setTeamPendingLeaves(prev => prev.filter(l => l.id !== leaveId));
     } catch { /* ignore */ } finally {
       setApprovingLeave(prev => ({ ...prev, [leaveId]: false }));
@@ -1291,6 +1292,7 @@ export default function MyPortal() {
                                     </span>
                                   )}
                                   {l.manager_rejection_reason && <span className="text-danger italic block">"{l.manager_rejection_reason}"</span>}
+                                  {l.manager_approver_note && <span className="text-on-surface-muted italic block">📝 {l.manager_approver_note}</span>}
                                 </div>
                               )}
                               {l.hr_actioned_at && (
@@ -1304,6 +1306,7 @@ export default function MyPortal() {
                                     {', '}{new Date(l.hr_actioned_at).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', hour12: true })}
                                   </span>
                                   {l.rejection_reason && <span className="text-danger italic block">"{l.rejection_reason}"</span>}
+                                  {l.approver_note && <span className="text-on-surface-muted italic block">📝 {l.approver_note}</span>}
                                 </div>
                               )}
                               {!l.manager_approved_at && !l.hr_actioned_at && <span className="text-xs text-on-surface-subtle">Pending</span>}
@@ -2551,7 +2554,7 @@ export default function MyPortal() {
                     </div>
                     <div className="flex gap-2">
                       <button
-                        onClick={() => handleManagerApproveLeave(l.id, 'approved')}
+                        onClick={() => setApproveLeaveTarget(l.id)}
                         disabled={approvingLeave[l.id]}
                         className="px-3 py-1.5 text-xs font-semibold rounded-lg disabled:opacity-50 transition-colors"
                         style={{ background: '#dcfce7', color: '#15803d' }}>
@@ -2719,6 +2722,7 @@ export default function MyPortal() {
                                                     </span>
                                                   )}
                                                   {l.manager_rejection_reason && <span className="text-danger italic block">"{l.manager_rejection_reason}"</span>}
+                                                  {l.manager_approver_note && <span className="text-on-surface-muted italic block">📝 {l.manager_approver_note}</span>}
                                                 </div>
                                               )}
                                               {l.hr_actioned_at && (
@@ -2732,6 +2736,7 @@ export default function MyPortal() {
                                                     {', '}{new Date(l.hr_actioned_at).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', hour12: true })}
                                                   </span>
                                                   {l.rejection_reason && <span className="text-danger italic block">"{l.rejection_reason}"</span>}
+                                                  {l.approver_note && <span className="text-on-surface-muted italic block">📝 {l.approver_note}</span>}
                                                 </div>
                                               )}
                                               {l.cancelled_at && (
@@ -2851,6 +2856,30 @@ export default function MyPortal() {
               onConfirm={reason => {
                 handleManagerApproveLeave(rejectLeaveTarget, 'rejected', reason);
                 setRejectLeaveTarget(null);
+              }}
+            />
+          </div>
+        </div>
+      )}
+      {approveLeaveTarget && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 backdrop-blur-sm p-4">
+          <div className="bg-surface rounded-2xl shadow-2xl w-full max-w-sm p-6">
+            <div className="flex items-center justify-between mb-4">
+              <h3 className="text-base font-semibold text-on-surface">Approve leave</h3>
+              <button onClick={() => setApproveLeaveTarget(null)}><X size={16} className="text-on-surface-subtle" /></button>
+            </div>
+            <p className="text-xs text-on-surface-muted mb-3">
+              Add a note for the employee — optional. They'll see it on the request and in the approval notification.
+            </p>
+            <RejectReasonInput
+              placeholder="e.g. Hand over the Acme deck to Priya before EOD."
+              confirmLabel="Approve"
+              confirmClass="bg-success hover:opacity-90"
+              optional
+              onClose={() => setApproveLeaveTarget(null)}
+              onConfirm={note => {
+                handleManagerApproveLeave(approveLeaveTarget, 'approved', undefined, note || undefined);
+                setApproveLeaveTarget(null);
               }}
             />
           </div>
@@ -3060,14 +3089,19 @@ function RejectReasonInput({
   placeholder = 'Enter reason (required)...',
   confirmLabel = 'Confirm Reject',
   confirmClass = 'bg-danger hover:bg-red-600',
+  optional = false,
 }: {
   onClose: () => void;
   onConfirm: (reason: string) => void;
   placeholder?: string;
   confirmLabel?: string;
   confirmClass?: string;
+  // When true, the textarea can be empty — used by the approve-with-note
+  // flow where the note is voluntary, not a justification for denial.
+  optional?: boolean;
 }) {
   const [reason, setReason] = useState('');
+  const canConfirm = optional || reason.trim().length > 0;
   return (
     <>
       <textarea
@@ -3081,8 +3115,8 @@ function RejectReasonInput({
       <div className="flex gap-3">
         <button onClick={onClose} className="flex-1 py-2.5 border border-outline text-on-surface-muted rounded-lg text-sm font-medium hover:bg-surface-2">Cancel</button>
         <button
-          onClick={() => { if (reason.trim()) onConfirm(reason.trim()); }}
-          disabled={!reason.trim()}
+          onClick={() => { if (canConfirm) onConfirm(reason.trim()); }}
+          disabled={!canConfirm}
           className={`flex-1 py-2.5 disabled:opacity-40 text-white rounded-lg text-sm font-medium ${confirmClass}`}>
           {confirmLabel}
         </button>

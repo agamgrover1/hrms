@@ -1172,6 +1172,12 @@ async function runStartupMigrations() {
     await sql`ALTER TABLE leave_requests ADD COLUMN IF NOT EXISTS cancelled_by VARCHAR(200)`;
     await sql`ALTER TABLE leave_requests ADD COLUMN IF NOT EXISTS cancelled_at TIMESTAMPTZ`;
     await sql`ALTER TABLE leave_requests ADD COLUMN IF NOT EXISTS cancellation_reason TEXT`;
+    // Optional approver note — anything the manager / HR wants to add when
+    // approving (or rejecting). Separate from rejection_reason so it works
+    // for both decisions. manager_approver_note tracks the manager stage;
+    // approver_note tracks the final HR decision.
+    await sql`ALTER TABLE leave_requests ADD COLUMN IF NOT EXISTS approver_note TEXT`;
+    await sql`ALTER TABLE leave_requests ADD COLUMN IF NOT EXISTS manager_approver_note TEXT`;
     await sql`ALTER TABLE upsell_requests ALTER COLUMN requested_amount DROP NOT NULL`.catch(()=>{});
     // Optional total-hours cap per project (one-time / fixed-budget projects).
     // Null = uncapped / recurring.
@@ -3678,13 +3684,14 @@ app.post('/api/leave/requests', async (req, res) => {
 // Manager first-level approval
 app.patch('/api/leave/requests/:id/manager-approve', async (req, res) => {
   try {
-    const { status, manager_id, manager_name, rejection_reason } = req.body;
+    const { status, manager_id, manager_name, rejection_reason, approver_note } = req.body;
     if (status === 'rejected') {
       const rows = await sql`
         UPDATE leave_requests
         SET manager_status='rejected', manager_id=${manager_id ?? null},
             manager_name=${manager_name ?? null},
             manager_rejection_reason=${rejection_reason ?? null},
+            manager_approver_note=${approver_note ?? null},
             manager_approved_at=NOW(), status='rejected'
         WHERE id=${req.params.id} RETURNING *`;
       if (!rows.length) return res.status(404).json({ error: 'Not found' });
@@ -3704,6 +3711,7 @@ app.patch('/api/leave/requests/:id/manager-approve', async (req, res) => {
       UPDATE leave_requests
       SET manager_status='approved', manager_id=${manager_id ?? null},
           manager_name=${manager_name ?? null},
+          manager_approver_note=${approver_note ?? null},
           manager_approved_at=NOW()
       WHERE id=${req.params.id} RETURNING *`;
     if (!rows.length) return res.status(404).json({ error: 'Not found' });
@@ -3719,13 +3727,14 @@ app.patch('/api/leave/requests/:id/manager-approve', async (req, res) => {
 // HR final approval
 app.patch('/api/leave/requests/:id', async (req, res) => {
   try {
-    const { status, actioner_name, rejection_reason } = req.body;
+    const { status, actioner_name, rejection_reason, approver_note } = req.body;
     const rows = await sql`
       UPDATE leave_requests
       SET status=${status},
           hr_actioner_name=${actioner_name ?? null},
           hr_actioned_at=NOW(),
-          rejection_reason=${status === 'rejected' ? (rejection_reason ?? null) : null}
+          rejection_reason=${status === 'rejected' ? (rejection_reason ?? null) : null},
+          approver_note=${approver_note ?? null}
       WHERE id=${req.params.id} RETURNING *`;
     if (!rows.length) return res.status(404).json({ error: 'Not found' });
     const leave = rows[0] as any;
@@ -3741,9 +3750,10 @@ app.patch('/api/leave/requests/:id', async (req, res) => {
     }
     const from = new Date(leave.from_date).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' });
     const to   = new Date(leave.to_date).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' });
+    const noteSuffix = approver_note?.trim() ? ` Note: ${approver_note.trim().slice(0, 200)}` : '';
     notifyEmployeeUser(leave.employee_id, status === 'approved' ? 'leave_approved' : 'leave_rejected',
       status === 'approved' ? 'Leave Approved' : 'Leave Rejected',
-      `Your ${leave.type.replace('_',' ')} leave (${from} – ${to}) has been ${status}.`);
+      `Your ${leave.type.replace('_',' ')} leave (${from} – ${to}) has been ${status}.${noteSuffix}`);
     res.json(leave);
   } catch (err) { res.status(500).json({ error: 'Server error' }); }
 });

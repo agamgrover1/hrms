@@ -437,45 +437,53 @@ export default function Dashboard() {
               <h3 className="font-display text-xl font-bold text-on-surface tracking-tight">Pending leaves</h3>
               <span className="num-mono text-xs bg-warning-container text-warning px-2.5 py-0.5 rounded-full font-semibold"><CountUp to={pendingLeaves.length} /> pending</span>
             </div>
-            <div className="space-y-3">
-              {pendingLeaves.slice(0, 3).map((l: any) => {
-                const busy = approvingLeave[l.id];
-                return (
-                  <div key={l.id} className="flex items-center justify-between gap-2">
-                    <div className="flex items-center gap-2.5 min-w-0">
-                      <div className="w-8 h-8 rounded-full bg-brand-container flex items-center justify-center text-on-brand-container text-xs font-bold flex-shrink-0">
-                        {(l.employee_name ?? '?').split(' ').map((n: string) => n[0]).join('').slice(0, 2)}
+            {/* Scrollable list — when there are many pending, the widget
+                used to truncate at 3 and only hint "+N more". HR needs to
+                see every request without leaving the dashboard, so keep
+                everything in the DOM and let it scroll inside a fixed
+                viewport. The fade-out at the bottom signals "more below" */}
+            <div className="relative">
+              <div className="space-y-3 max-h-[300px] overflow-y-auto pr-1 -mr-1">
+                {pendingLeaves.map((l: any) => {
+                  const busy = approvingLeave[l.id];
+                  return (
+                    <div key={l.id} className="flex items-center justify-between gap-2">
+                      <div className="flex items-center gap-2.5 min-w-0">
+                        <div className="w-8 h-8 rounded-full bg-brand-container flex items-center justify-center text-on-brand-container text-xs font-bold flex-shrink-0">
+                          {(l.employee_name ?? '?').split(' ').map((n: string) => n[0]).join('').slice(0, 2)}
+                        </div>
+                        <div className="min-w-0">
+                          <p className="text-sm font-semibold text-on-surface truncate">{(l.employee_name ?? 'Employee').split(' ')[0]}</p>
+                          <p className="text-xs text-on-surface-muted capitalize truncate">{(l.type ?? '').replace(/_/g, ' ')} · {l.days}d</p>
+                        </div>
                       </div>
-                      <div className="min-w-0">
-                        <p className="text-sm font-semibold text-on-surface truncate">{(l.employee_name ?? 'Employee').split(' ')[0]}</p>
-                        <p className="text-xs text-on-surface-muted capitalize truncate">{(l.type ?? '').replace(/_/g, ' ')} · {l.days}d</p>
+                      <div className="flex gap-1.5 flex-shrink-0">
+                        <button
+                          disabled={busy}
+                          onClick={() => handleLeaveAction(l.id, 'approved')}
+                          className="px-2.5 py-1 text-xs bg-success-container text-success rounded-md hover:opacity-80 transition-opacity font-semibold disabled:opacity-50">
+                          {busy ? '…' : 'Approve'}
+                        </button>
+                        <button
+                          disabled={busy}
+                          onClick={() => handleLeaveAction(l.id, 'rejected')}
+                          className="px-2.5 py-1 text-xs bg-danger-container text-danger rounded-md hover:opacity-80 transition-opacity font-semibold disabled:opacity-50">
+                          Reject
+                        </button>
                       </div>
                     </div>
-                    <div className="flex gap-1.5 flex-shrink-0">
-                      <button
-                        disabled={busy}
-                        onClick={() => handleLeaveAction(l.id, 'approved')}
-                        className="px-2.5 py-1 text-xs bg-success-container text-success rounded-md hover:opacity-80 transition-opacity font-semibold disabled:opacity-50">
-                        {busy ? '…' : 'Approve'}
-                      </button>
-                      <button
-                        disabled={busy}
-                        onClick={() => handleLeaveAction(l.id, 'rejected')}
-                        className="px-2.5 py-1 text-xs bg-danger-container text-danger rounded-md hover:opacity-80 transition-opacity font-semibold disabled:opacity-50">
-                        Reject
-                      </button>
-                    </div>
+                  );
+                })}
+                {pendingLeaves.length === 0 && (
+                  <div className="flex flex-col items-center gap-1.5 py-4 text-on-surface-muted">
+                    <CheckCircle2 size={20} className="text-success/60" />
+                    <p className="text-sm">No pending requests</p>
                   </div>
-                );
-              })}
+                )}
+              </div>
+              {/* Fade-out hint so users know there's more below the fold */}
               {pendingLeaves.length > 3 && (
-                <p className="text-xs text-center text-on-surface-muted pt-1">+{pendingLeaves.length - 3} more — see Leave Management</p>
-              )}
-              {pendingLeaves.length === 0 && (
-                <div className="flex flex-col items-center gap-1.5 py-4 text-on-surface-muted">
-                  <CheckCircle2 size={20} className="text-success/60" />
-                  <p className="text-sm">No pending requests</p>
-                </div>
+                <div className="pointer-events-none absolute bottom-0 left-0 right-0 h-6 bg-gradient-to-t from-surface to-transparent" />
               )}
             </div>
           </div>

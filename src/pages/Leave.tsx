@@ -70,7 +70,10 @@ function LeaveStatusBadge({ req }: { req: any }) {
 }
 
 function ActionTrail({ req }: { req: any }) {
-  const lines: { label: string; name: string | null; at: string | null; reason?: string | null; color: string }[] = [];
+  // `note` lives on a separate slot so it can render in a softer tone than
+  // a rejection reason — it's contextual guidance, not an explanation for
+  // why something was denied.
+  const lines: { label: string; name: string | null; at: string | null; reason?: string | null; note?: string | null; color: string }[] = [];
 
   if (req.manager_status === 'approved' || req.manager_status === 'rejected') {
     lines.push({
@@ -78,6 +81,7 @@ function ActionTrail({ req }: { req: any }) {
       name: req.manager_name ?? null,
       at: req.manager_approved_at ?? null,
       reason: req.manager_rejection_reason ?? null,
+      note: req.manager_approver_note ?? null,
       color: req.manager_status === 'approved' ? 'text-success' : 'text-danger',
     });
   }
@@ -87,6 +91,7 @@ function ActionTrail({ req }: { req: any }) {
       name: req.hr_actioner_name ?? null,
       at: req.hr_actioned_at ?? null,
       reason: req.rejection_reason ?? null,
+      note: req.approver_note ?? null,
       color: req.status === 'approved' ? 'text-success' : 'text-danger',
     });
   }
@@ -109,8 +114,47 @@ function ActionTrail({ req }: { req: any }) {
           {l.name && <span className="text-on-surface-muted"> · {l.name}</span>}
           {l.at && <span className="text-on-surface-subtle block">{fmtDateTime(l.at)}</span>}
           {l.reason && <span className="text-danger/70 italic block">"{l.reason}"</span>}
+          {l.note && <span className="text-on-surface-muted italic block">📝 {l.note}</span>}
         </div>
       ))}
+    </div>
+  );
+}
+
+// Optional-note modal shown before a manager / HR approves a leave. The
+// textarea is fully optional — leaving it blank and hitting Enter still
+// approves cleanly, so this doesn't slow down the bulk-clear flow. When a
+// note IS added, the employee sees it in the row + in the approval push.
+function ApproveNoteModal({ onClose, onConfirm }: { onClose: () => void; onConfirm: (note: string) => void }) {
+  const [note, setNote] = useState('');
+  const submit = () => { onConfirm(note.trim()); onClose(); };
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 backdrop-blur-sm p-4">
+      <div className="bg-surface rounded-xl-2 shadow-elev-3 w-full max-w-sm p-6 border border-outline">
+        <div className="flex items-center justify-between mb-4">
+          <h3 className="font-display text-base font-semibold tracking-tight text-on-surface">Approve leave</h3>
+          <button onClick={onClose}><X size={16} className="text-on-surface-subtle" /></button>
+        </div>
+        <p className="text-xs text-on-surface-muted mb-3">
+          Add a note for the employee — optional. They'll see it on the request and in the approval notification.
+        </p>
+        <textarea
+          value={note}
+          onChange={e => setNote(e.target.value)}
+          rows={3}
+          placeholder="e.g. Make sure to hand over the Acme deck to Priya before EOD."
+          onKeyDown={e => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) submit(); }}
+          className="w-full border border-outline bg-surface rounded-lg px-3 py-2.5 text-sm text-on-surface focus:outline-none focus:ring-2 focus:ring-success/30 resize-none mb-4"
+          autoFocus
+        />
+        <div className="flex gap-3">
+          <button onClick={onClose} className="flex-1 py-2.5 border border-outline text-on-surface-muted rounded-lg text-sm font-medium hover:bg-surface-2 transition-colors">Cancel</button>
+          <button onClick={submit}
+            className="flex-1 py-2.5 bg-success hover:opacity-90 text-white rounded-lg text-sm font-medium transition-opacity">
+            {note.trim() ? 'Approve with note' : 'Approve'}
+          </button>
+        </div>
+      </div>
     </div>
   );
 }
@@ -464,6 +508,7 @@ export default function Leave() {
   const [showApply, setShowApply] = useState(false);
   const [rejectTarget, setRejectTarget] = useState<string | null>(null);
   const [cancelTarget, setCancelTarget] = useState<string | null>(null);
+  const [approveTarget, setApproveTarget] = useState<string | null>(null);
   const [requests, setRequests] = useState<any[]>([]);
   const [balance, setBalance] = useState<any>(null);
   const [loading, setLoading] = useState(true);
@@ -518,25 +563,26 @@ export default function Leave() {
 
   const displayed = tab === 'all' ? requests : requests.filter(r => r.status === tab);
 
-  const handleApprove = async (id: string) => {
+  const handleApprove = async (id: string, approver_note?: string) => {
     setActionError('');
     try {
-      await api.updateLeaveStatus(id, 'approved', { actioner_name: user?.name });
+      await api.updateLeaveStatus(id, 'approved', { actioner_name: user?.name, approver_note });
       setRequests(prev => prev.map(r => r.id === id ? {
         ...r, status: 'approved', hr_actioner_name: user?.name, hr_actioned_at: new Date().toISOString(),
+        approver_note: approver_note ?? r.approver_note,
       } : r));
-      // Refresh selected employee balance after approval (balance was deducted)
       if (selectedEmpId) api.getLeaveBalance(selectedEmpId).then(setEmpBalance).catch(() => {});
     } catch (e: any) { setActionError(e.message ?? 'Failed to approve leave'); }
   };
 
-  const handleReject = async (id: string, rejection_reason: string) => {
+  const handleReject = async (id: string, rejection_reason: string, approver_note?: string) => {
     setActionError('');
     try {
-      await api.updateLeaveStatus(id, 'rejected', { actioner_name: user?.name, rejection_reason });
+      await api.updateLeaveStatus(id, 'rejected', { actioner_name: user?.name, rejection_reason, approver_note });
       setRequests(prev => prev.map(r => r.id === id ? {
         ...r, status: 'rejected', hr_actioner_name: user?.name,
         hr_actioned_at: new Date().toISOString(), rejection_reason,
+        approver_note: approver_note ?? r.approver_note,
       } : r));
     } catch (e: any) { setActionError(e.message ?? 'Failed to reject leave'); }
   };
@@ -875,13 +921,13 @@ export default function Leave() {
                             return (
                               <>
                                 {readyForHR && (
-                                  <button onClick={() => handleApprove(req.id)} className="px-2.5 py-1 text-xs bg-success-container text-success hover:opacity-80 transition-opacity rounded-md font-semibold">Approve</button>
+                                  <button onClick={() => setApproveTarget(req.id)} className="px-2.5 py-1 text-xs bg-success-container text-success hover:opacity-80 transition-opacity rounded-md font-semibold">Approve</button>
                                 )}
                                 {/* HR can always reject, even before manager acts */}
                                 <button onClick={() => setRejectTarget(req.id)} className="px-2.5 py-1 text-xs bg-danger-container text-danger hover:opacity-80 transition-opacity rounded-md font-semibold">Reject</button>
                                 {/* Override: allow HR to approve even if manager hasn't acted yet */}
                                 {pendingManager && (
-                                  <button onClick={() => handleApprove(req.id)} className="px-2.5 py-1 text-xs bg-brand-container text-on-brand-container hover:opacity-80 transition-opacity rounded-md font-semibold" title="Override: approve directly without manager">Override ✓</button>
+                                  <button onClick={() => setApproveTarget(req.id)} className="px-2.5 py-1 text-xs bg-brand-container text-on-brand-container hover:opacity-80 transition-opacity rounded-md font-semibold" title="Override: approve directly without manager">Override ✓</button>
                                 )}
                               </>
                             );
@@ -906,6 +952,12 @@ export default function Leave() {
       </div>
 
       {showApply && <ApplyModal onClose={() => setShowApply(false)} onSubmit={handleApply} />}
+      {approveTarget && (
+        <ApproveNoteModal
+          onClose={() => setApproveTarget(null)}
+          onConfirm={note => handleApprove(approveTarget, note)}
+        />
+      )}
       {rejectTarget && (
         <RejectReasonModal
           onClose={() => setRejectTarget(null)}
