@@ -1,6 +1,22 @@
 const BASE = '/api';
 const SESSION_KEY = 'digitalleap_hrms_session';
 
+export interface FeatureAnnouncement {
+  id: string;
+  title: string; body: string;
+  image_url: string | null;
+  cta_label: string | null; cta_url: string | null;
+  status: 'draft' | 'published';
+  drafted_by_id: string | null; drafted_by_name: string | null;
+  approved_by_id: string | null; approved_by_name: string | null;
+  approved_at: string | null;
+  published_at: string | null;
+  created_at: string; updated_at: string;
+  // Only set on the GET /api/features list for non-admin viewers — true
+  // if the current user has already dismissed the popup for this item.
+  seen?: boolean;
+}
+
 export interface TodoTask {
   id: string;
   assignee_id: string; assignee_name: string | null;
@@ -669,4 +685,16 @@ export const api = {
     request<TodoTask>(`/todos/${id}`, { method: 'PATCH', body: JSON.stringify(data) }),
   deleteTodo: (id: string) =>
     request(`/todos/${id}`, { method: 'DELETE' }),
+
+  // ── Feature announcements ────────────────────────────────────────────
+  getFeatures: () => request<FeatureAnnouncement[]>(`/features`),
+  getUnseenFeature: () => request<FeatureAnnouncement | null>(`/features/unseen`),
+  createFeature: (data: { title: string; body: string; image_url?: string; cta_label?: string; cta_url?: string }) =>
+    request<FeatureAnnouncement>(`/features`, { method: 'POST', body: JSON.stringify(data) }),
+  updateFeature: (id: string, data: Partial<{ title: string; body: string; image_url: string | null; cta_label: string | null; cta_url: string | null; status: 'draft' | 'published' }>) =>
+    request<FeatureAnnouncement>(`/features/${id}`, { method: 'PATCH', body: JSON.stringify(data) }),
+  deleteFeature: (id: string) =>
+    request(`/features/${id}`, { method: 'DELETE' }),
+  ackFeature: (id: string) =>
+    request(`/features/${id}/ack`, { method: 'POST' }),
 };

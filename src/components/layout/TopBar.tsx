@@ -1,4 +1,4 @@
-import { Bell, ChevronDown, LogOut, CheckCircle, Calendar, TrendingUp, FileText, Target, XCircle, Award, Check, Trash2, AlertTriangle, ShieldAlert, KeyRound, Eye, EyeOff, Wrench, Clock as ClockIcon, Search } from 'lucide-react';
+import { Bell, ChevronDown, LogOut, CheckCircle, Calendar, TrendingUp, FileText, Target, XCircle, Award, Check, Trash2, AlertTriangle, ShieldAlert, KeyRound, Eye, EyeOff, Wrench, Clock as ClockIcon, Search, Megaphone, Sparkles } from 'lucide-react';
 import { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../../context/AuthContext';
@@ -114,6 +114,17 @@ export function getNotifRoute(type: string, role: string): string {
       // Reviewer receives → Approvals queue
       return '/hours/approvals';
 
+    // ── Feature announcements ──────────────────────────────────────────────────
+    case 'feature_draft':
+      // Pending approval — admin/HR land on the Features management page.
+      return '/features';
+    case 'feature_published':
+      // Everyone — for those who dismissed the popup, the bell click takes
+      // them to the management page (admin/HR) or back to dashboard so the
+      // popup logic picks it up again. We can revisit once a /whats-new
+      // history page exists.
+      return isHR ? '/features' : '/';
+
     // ── Invoices (finance) ─────────────────────────────────────────────────────
     case 'invoice_raised':
     case 'invoice_cleared':
@@ -192,6 +203,9 @@ export const TYPE_CONFIG: Record<string, { icon: any; color: string; bg: string 
   hours_on_hold:           { icon: ClockIcon,      color: '#7c3aed', bg: '#f5f3ff' },
   hours_comment:           { icon: FileText,       color: '#7c3aed', bg: '#f5f3ff' },
   hours_admin_edited:      { icon: AlertTriangle,  color: '#b45309', bg: '#fffbeb' },
+  // Feature announcements
+  feature_draft:           { icon: Megaphone,      color: '#b45309', bg: '#fffbeb' },
+  feature_published:       { icon: Sparkles,       color: '#7c3aed', bg: '#f5f3ff' },
   // Invoices
   invoice_raised:          { icon: FileText,       color: '#2563eb', bg: '#eff6ff' },
   invoice_cleared:         { icon: CheckCircle,    color: '#15803d', bg: '#f0fdf4' },

@@ -1038,6 +1038,42 @@ async function runStartupMigrations() {
   await sql`CREATE INDEX IF NOT EXISTS idx_todo_assignee_status ON todo_tasks(assignee_id, status, due_date)`.catch(()=>{});
   await sql`CREATE INDEX IF NOT EXISTS idx_todo_created_by ON todo_tasks(created_by_id, status)`.catch(()=>{});
 
+  // ── Feature announcements ───────────────────────────────────────────────
+  // Lightweight "What's new" mechanism. Anyone with admin/HR draft access
+  // can write an announcement (title + body + optional image). Admin
+  // publishes it. On publish, every user sees a one-time modal popup
+  // until they ack it (one row in feature_acks per user per feature).
+  await sql`
+    CREATE TABLE IF NOT EXISTS feature_announcements (
+      id TEXT PRIMARY KEY,
+      title TEXT NOT NULL,
+      body TEXT NOT NULL,
+      image_url TEXT,
+      cta_label TEXT,
+      cta_url TEXT,
+      status TEXT NOT NULL DEFAULT 'draft',
+      drafted_by_id TEXT,
+      drafted_by_name TEXT,
+      approved_by_id TEXT,
+      approved_by_name TEXT,
+      approved_at TIMESTAMPTZ,
+      published_at TIMESTAMPTZ,
+      created_at TIMESTAMPTZ DEFAULT NOW(),
+      updated_at TIMESTAMPTZ DEFAULT NOW()
+    )`;
+  await sql`CREATE INDEX IF NOT EXISTS idx_feature_status ON feature_announcements(status, published_at DESC)`.catch(()=>{});
+
+  // Per-user ack so each user only sees each published feature popup once.
+  // Composite PK keeps the row count bounded and idempotent on duplicate
+  // POSTs (no need for ON CONFLICT logic on the ack endpoint).
+  await sql`
+    CREATE TABLE IF NOT EXISTS feature_acks (
+      user_id TEXT NOT NULL,
+      feature_id TEXT NOT NULL,
+      acknowledged_at TIMESTAMPTZ DEFAULT NOW(),
+      PRIMARY KEY (user_id, feature_id)
+    )`;
+
   // ── Performance Pulse: automated 30-day score, runs alongside the manual
   // monthly_performance reviews. snapshots = one row per employee per day,
   // pulse_ratings = weekly manager emoji input, weights = per-dept overrides
@@ -3302,6 +3338,175 @@ app.delete('/api/todos/:id', async (req, res) => {
     const isAdmin = u.role === 'admin' || u.role === 'hr_manager';
     if (!isAdmin && actorEmpId !== t.created_by_id) return res.status(403).json({ error: 'Only the creator or HR/admin can delete a task' });
     await sql`DELETE FROM todo_tasks WHERE id=${req.params.id}`;
+    res.json({ ok: true });
+  } catch (err: any) { res.status(500).json({ error: err.message ?? 'Server error' }); }
+});
+
+// ─────────────────────────────────────────────────────────────────────────
+// Feature announcements ("What's new")
+// - Admin/HR can draft. Only admin can publish.
+// - Once published, every user sees a one-time modal on their next page
+//   load until they ack it. Acks are per-user, per-feature, idempotent.
+// - Drafts and unpublished items are not visible to anyone outside admin/HR.
+// ─────────────────────────────────────────────────────────────────────────
+
+// GET /api/features — returns the list, scoped by role.
+//   admin / hr_manager → drafts + published (everything)
+//   everyone else      → only published items, plus a "seen" flag per item
+//                        so a What's-new page can render history with a
+//                        "NEW" badge on unseen rows.
+app.get('/api/features', async (req, res) => {
+  try {
+    await runStartupMigrations();
+    const uid = req.header('x-user-id');
+    if (!uid) return res.status(401).json({ error: 'Sign in required' });
+    const u = (await sql`SELECT id, role FROM app_users WHERE id=${uid}`)[0] as any;
+    if (!u) return res.status(401).json({ error: 'Unknown user' });
+    const isAdminish = u.role === 'admin' || u.role === 'hr_manager';
+    if (isAdminish) {
+      const rows = await sql`SELECT * FROM feature_announcements ORDER BY
+                              CASE status WHEN 'draft' THEN 0 ELSE 1 END,
+                              COALESCE(published_at, updated_at) DESC`;
+      return res.json(rows);
+    }
+    const rows = await sql`
+      SELECT f.*,
+        (a.user_id IS NOT NULL) AS seen
+      FROM feature_announcements f
+      LEFT JOIN feature_acks a ON a.feature_id = f.id AND a.user_id = ${uid}
+      WHERE f.status = 'published'
+      ORDER BY f.published_at DESC`;
+    res.json(rows);
+  } catch (err: any) { res.status(500).json({ error: err.message ?? 'Server error' }); }
+});
+
+// GET /api/features/unseen — the FIRST published feature the current user
+// hasn't acknowledged yet. The popup component polls this on mount; if it's
+// null, nothing pops. We return one at a time so multiple announcements
+// surface as a stack (close one, the next pops on the next render cycle).
+app.get('/api/features/unseen', async (req, res) => {
+  try {
+    await runStartupMigrations();
+    const uid = req.header('x-user-id');
+    if (!uid) return res.status(401).json({ error: 'Sign in required' });
+    const rows = await sql`
+      SELECT f.* FROM feature_announcements f
+      WHERE f.status = 'published'
+        AND NOT EXISTS (
+          SELECT 1 FROM feature_acks a
+          WHERE a.feature_id = f.id AND a.user_id = ${uid}
+        )
+      ORDER BY f.published_at ASC
+      LIMIT 1`;
+    res.json(rows[0] ?? null);
+  } catch (err: any) { res.status(500).json({ error: err.message ?? 'Server error' }); }
+});
+
+// POST /api/features — create a new draft. Admin or HR.
+app.post('/api/features', async (req, res) => {
+  try {
+    const uid = req.header('x-user-id');
+    if (!uid) return res.status(401).json({ error: 'Sign in required' });
+    const u = (await sql`SELECT id, name, role FROM app_users WHERE id=${uid}`)[0] as any;
+    if (!u) return res.status(401).json({ error: 'Unknown user' });
+    if (u.role !== 'admin' && u.role !== 'hr_manager') return res.status(403).json({ error: 'Admin or HR only' });
+    const { title, body, image_url, cta_label, cta_url } = req.body ?? {};
+    if (!title?.trim() || !body?.trim()) return res.status(400).json({ error: 'Title and body are required' });
+    const id = `feat_${Date.now()}`;
+    const row = (await sql`
+      INSERT INTO feature_announcements (id, title, body, image_url, cta_label, cta_url, drafted_by_id, drafted_by_name)
+      VALUES (${id}, ${title.trim()}, ${body.trim()}, ${image_url || null}, ${cta_label || null}, ${cta_url || null}, ${u.id}, ${u.name})
+      RETURNING *`)[0];
+    // Ping admins so they know a new draft is waiting for review.
+    notifyAdminsAndHR('feature_draft', 'New feature draft awaiting approval',
+      `${u.name} drafted "${title.trim().slice(0, 80)}". Open Features to review and publish.`).catch(()=>{});
+    res.status(201).json(row);
+  } catch (err: any) { res.status(500).json({ error: err.message ?? 'Server error' }); }
+});
+
+// PATCH /api/features/:id — edit or publish.
+//   - status='published' requires admin (HR can draft but not push).
+//   - editing content while still a draft is open to admin + HR.
+//   - editing content AFTER publish is admin-only (it goes out to everyone).
+app.patch('/api/features/:id', async (req, res) => {
+  try {
+    const uid = req.header('x-user-id');
+    if (!uid) return res.status(401).json({ error: 'Sign in required' });
+    const u = (await sql`SELECT id, name, role FROM app_users WHERE id=${uid}`)[0] as any;
+    if (!u) return res.status(401).json({ error: 'Unknown user' });
+    const isAdmin = u.role === 'admin';
+    const isHR    = u.role === 'hr_manager';
+    if (!isAdmin && !isHR) return res.status(403).json({ error: 'Admin or HR only' });
+    const cur = (await sql`SELECT * FROM feature_announcements WHERE id=${req.params.id}`)[0] as any;
+    if (!cur) return res.status(404).json({ error: 'Feature not found' });
+    const { title, body, image_url, cta_label, cta_url, status } = req.body ?? {};
+    const goingLive   = status === 'published' && cur.status !== 'published';
+    const goingDraft  = status === 'draft' && cur.status === 'published';
+    if ((goingLive || goingDraft) && !isAdmin) {
+      return res.status(403).json({ error: 'Only admin can publish or unpublish' });
+    }
+    if (cur.status === 'published' && !isAdmin) {
+      return res.status(403).json({ error: 'Only admin can edit a published announcement' });
+    }
+    const finalStatus = status ?? cur.status;
+    const row = (await sql`
+      UPDATE feature_announcements SET
+        title       = ${title?.trim() ?? cur.title},
+        body        = ${body?.trim() ?? cur.body},
+        image_url   = ${image_url !== undefined ? (image_url || null) : cur.image_url},
+        cta_label   = ${cta_label !== undefined ? (cta_label || null) : cur.cta_label},
+        cta_url     = ${cta_url !== undefined ? (cta_url || null) : cur.cta_url},
+        status      = ${finalStatus},
+        approved_by_id   = ${goingLive ? u.id : cur.approved_by_id},
+        approved_by_name = ${goingLive ? u.name : cur.approved_by_name},
+        approved_at      = ${goingLive ? new Date().toISOString() : cur.approved_at},
+        published_at     = ${goingLive ? new Date().toISOString() : (goingDraft ? null : cur.published_at)},
+        updated_at       = NOW()
+      WHERE id=${req.params.id}
+      RETURNING *`)[0];
+
+    if (goingLive) {
+      // Broadcast — every active user gets a notification AND the modal
+      // will pop next time they load any page. We DON'T pre-create acks;
+      // absence of an ack row is what triggers the popup, so leaving it
+      // empty means everyone sees it once.
+      try {
+        const users = (await sql`SELECT id FROM app_users WHERE active = TRUE`) as any[];
+        for (const usr of users) {
+          notifyEmployeeUser(usr.id, 'feature_published', `New feature: ${row.title.slice(0, 80)}`,
+            row.body.slice(0, 200)).catch(()=>{});
+        }
+      } catch {}
+    }
+    res.json(row);
+  } catch (err: any) { res.status(500).json({ error: err.message ?? 'Server error' }); }
+});
+
+// DELETE /api/features/:id — admin only.
+app.delete('/api/features/:id', async (req, res) => {
+  try {
+    const uid = req.header('x-user-id');
+    if (!uid) return res.status(401).json({ error: 'Sign in required' });
+    const u = (await sql`SELECT id, role FROM app_users WHERE id=${uid}`)[0] as any;
+    if (!u) return res.status(401).json({ error: 'Unknown user' });
+    if (u.role !== 'admin') return res.status(403).json({ error: 'Admin only' });
+    await sql`DELETE FROM feature_acks WHERE feature_id=${req.params.id}`.catch(()=>{});
+    await sql`DELETE FROM feature_announcements WHERE id=${req.params.id}`;
+    res.json({ ok: true });
+  } catch (err: any) { res.status(500).json({ error: err.message ?? 'Server error' }); }
+});
+
+// POST /api/features/:id/ack — current user dismisses the popup. Idempotent
+// thanks to ON CONFLICT DO NOTHING + the composite PK on (user_id,
+// feature_id) — double-clicks or stale tabs can hammer this with no harm.
+app.post('/api/features/:id/ack', async (req, res) => {
+  try {
+    const uid = req.header('x-user-id');
+    if (!uid) return res.status(401).json({ error: 'Sign in required' });
+    await sql`
+      INSERT INTO feature_acks (user_id, feature_id)
+      VALUES (${uid}, ${req.params.id})
+      ON CONFLICT (user_id, feature_id) DO NOTHING`;
     res.json({ ok: true });
   } catch (err: any) { res.status(500).json({ error: err.message ?? 'Server error' }); }
 });

@@ -2,7 +2,7 @@ import { NavLink, useLocation } from 'react-router-dom';
 import {
   LayoutDashboard, Users, Clock3, CalendarDays, Wallet, Sparkles,
   ChevronLeft, ChevronRight, UserCog, User, SlidersHorizontal, TrendingUp, Wrench,
-  Briefcase, ClipboardCheck, Layers, LineChart, AlertTriangle, Activity, type LucideIcon,
+  Briefcase, ClipboardCheck, Layers, LineChart, AlertTriangle, Activity, Megaphone, type LucideIcon,
 } from 'lucide-react';
 import { useState, useEffect, useRef } from 'react';
 import { useAuth } from '../../context/AuthContext';
@@ -69,6 +69,7 @@ const settingsGroup: NavGroup = {
   label: 'Settings',
   items: [
     { to: '/users', icon: UserCog, label: 'User mgmt' },
+    { to: '/features', icon: Megaphone, label: 'Features' },
     { to: '/config', icon: SlidersHorizontal, label: 'Configuration' },
   ],
 };

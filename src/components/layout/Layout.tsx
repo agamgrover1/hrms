@@ -3,6 +3,7 @@ import Sidebar from './Sidebar';
 import TopBar from './TopBar';
 import CommandPalette from '../CommandPalette';
 import ShiftEndReminder from '../ShiftEndReminder';
+import FeaturePopup from '../FeaturePopup';
 
 const pageTitles: Record<string, string> = {
   '/': 'Dashboard',
@@ -22,6 +23,7 @@ const pageTitles: Record<string, string> = {
   '/hours/compliance': 'Daily Log Compliance',
   '/hours/utilization': 'Staff Utilization',
   '/notifications': 'Notifications',
+  '/features': 'Features',
   '/my': 'My Portal',
   '/my-team': 'My Team',
 };
@@ -47,6 +49,7 @@ export default function Layout() {
         </main>
       </div>
       <CommandPalette />
+      <FeaturePopup />
     </div>
   );
 }
