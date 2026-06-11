@@ -335,12 +335,23 @@ function ApplyLeaveModal({ onClose, onSubmit, balance, reportingManager }: { onC
   // Leave is picked — saves the user one extra click on the common case.
   const defaultSlot = (t: string) => t === 'half_day' ? 'morning' : t === 'short_leave' ? 'q1' : '';
   const [form, setForm] = useState({ type: availableTypes[0].key, slot: defaultSlot(availableTypes[0].key), from: '', to: '', reason: '' });
+  const [error, setError] = useState('');
+  const [submitting, setSubmitting] = useState(false);
   const isSingleDay = form.type === 'half_day' || form.type === 'short_leave';
   const needsSlot = isSingleDay;
 
-  const handleSubmit = () => {
-    if (!form.from || !form.reason?.trim()) return;
-    if (needsSlot && !form.slot) return;
+  // onSubmit is async (it hits the API). The modal MUST wait for it to
+  // settle before closing — otherwise the user sees the form vanish even
+  // when the backend rejected (missing balance, invalid slot, etc.) and
+  // assumes the leave went through.
+  const handleSubmit = async () => {
+    setError('');
+    if (!form.from) { setError('Pick a date.'); return; }
+    if (!isSingleDay && !form.to) { setError('Pick an end date.'); return; }
+    if (!isSingleDay && form.to < form.from) { setError('End date must be on or after start.'); return; }
+    if (!form.reason?.trim()) { setError('Add a brief reason.'); return; }
+    if (needsSlot && !form.slot) { setError(form.type === 'half_day' ? 'Pick Morning or Evening.' : 'Pick a quarter.'); return; }
+
     const countWorkingDays = (from: string, to: string) => {
       let count = 0, cur = from;
       while (cur <= to) {
@@ -352,8 +363,15 @@ function ApplyLeaveModal({ onClose, onSubmit, balance, reportingManager }: { onC
       return Math.max(1, count);
     };
     const days = isSingleDay ? 1 : countWorkingDays(form.from, form.to);
-    onSubmit({ ...form, days, from_date: form.from, to_date: isSingleDay ? form.from : form.to, slot: needsSlot ? form.slot : undefined });
-    onClose();
+    setSubmitting(true);
+    try {
+      await onSubmit({ ...form, days, from_date: form.from, to_date: isSingleDay ? form.from : form.to, slot: needsSlot ? form.slot : undefined });
+      onClose();
+    } catch (e: any) {
+      setError(e?.message ?? 'Failed to apply. Please try again.');
+    } finally {
+      setSubmitting(false);
+    }
   };
 
   return (
@@ -464,9 +482,16 @@ function ApplyLeaveModal({ onClose, onSubmit, balance, reportingManager }: { onC
               No reporting manager on your profile — HR will review this directly.
             </div>
           )}
+          {error && (
+            <p className="text-xs text-danger bg-danger-container/40 border border-danger/20 rounded-lg px-3 py-2">
+              {error}
+            </p>
+          )}
           <div className="flex gap-3 pt-1">
-            <button onClick={onClose} className="flex-1 py-2.5 border border-outline rounded-lg text-sm font-medium text-on-surface-muted hover:bg-surface-2">Cancel</button>
-            <button onClick={handleSubmit} className="flex-1 py-2.5 text-white rounded-lg text-sm font-medium" style={{ background: '#192250' }}>Submit</button>
+            <button onClick={onClose} disabled={submitting} className="flex-1 py-2.5 border border-outline rounded-lg text-sm font-medium text-on-surface-muted hover:bg-surface-2 disabled:opacity-50">Cancel</button>
+            <button onClick={handleSubmit} disabled={submitting} className="flex-1 py-2.5 text-white rounded-lg text-sm font-medium disabled:opacity-50" style={{ background: '#192250' }}>
+              {submitting ? 'Submitting…' : 'Submit'}
+            </button>
           </div>
         </div>
       </div>
@@ -934,7 +959,11 @@ export default function MyPortal() {
     try {
       await api.managerApproveLeave(leaveId, { status, manager_id: empDbId, manager_name: user?.name, rejection_reason, approver_note });
       setTeamPendingLeaves(prev => prev.filter(l => l.id !== leaveId));
-    } catch { /* ignore */ } finally {
+    } catch (e: any) {
+      // Silent catch was masking permission / validation errors — manager
+      // would click Approve and nothing visible would happen. Surface it.
+      alert(e?.message ?? 'Action failed. Please try again.');
+    } finally {
       setApprovingLeave(prev => ({ ...prev, [leaveId]: false }));
     }
   };
@@ -1427,7 +1456,7 @@ export default function MyPortal() {
                         : '—';
                       return (
                         <tr key={l.id} className="border-b border-gray-50">
-                          <td className="px-4 py-3 text-sm font-medium text-on-surface capitalize">{(l.type ?? '').replace('_', ' ')}</td>
+                          <td className="px-4 py-3 text-sm font-medium text-on-surface capitalize">{leaveTypeLabel(l.type, l.slot)}</td>
                           <td className="px-4 py-3 text-sm text-on-surface-muted whitespace-nowrap">
                             {parseLocalDate(l.from_date).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' })}
                             {l.from_date !== l.to_date && ` – ${parseLocalDate(l.to_date).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' })}`}

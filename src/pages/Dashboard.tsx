@@ -149,11 +149,23 @@ export default function Dashboard() {
   const yMax = Math.max(5, Math.ceil((activeEmployees + 1) / 5) * 5);
 
   const handleLeaveAction = async (leaveId: string, action: 'approved' | 'rejected') => {
+    // Reject must carry a reason — otherwise the employee gets a bare
+    // "Leave Rejected" ping with no context. Prompt inline; abort on
+    // empty / cancel.
+    let rejection_reason: string | undefined;
+    if (action === 'rejected') {
+      const r = window.prompt('Reason for rejection (will be shown to the employee):', '');
+      if (r === null) return;            // user cancelled
+      if (!r.trim()) { alert('A rejection reason is required.'); return; }
+      rejection_reason = r.trim();
+    }
     setApprovingLeave(prev => ({ ...prev, [leaveId]: true }));
     try {
-      await api.updateLeaveStatus(leaveId, action, { actioner_name: user?.name });
+      await api.updateLeaveStatus(leaveId, action, { actioner_name: user?.name, rejection_reason });
       setLeaveRequests(prev => prev.map(l => l.id === leaveId ? { ...l, status: action } : l));
-    } catch { /* ignore — Leave page handles errors */ }
+    } catch (e: any) {
+      alert(e?.message ?? 'Action failed.');
+    }
     finally { setApprovingLeave(prev => ({ ...prev, [leaveId]: false })); }
   };
 

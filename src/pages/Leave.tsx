@@ -204,14 +204,20 @@ function RejectReasonModal({
   );
 }
 
-function ApplyModal({ onClose, onSubmit }: { onClose: () => void; onSubmit: (data: any) => void }) {
+function ApplyModal({ onClose, onSubmit }: { onClose: () => void; onSubmit: (data: any) => Promise<void> | void }) {
   const defaultSlot = (t: string) => t === 'half_day' ? 'morning' : t === 'short_leave' ? 'q1' : '';
   const [form, setForm] = useState({ type: 'full_day', slot: defaultSlot('full_day'), from: '', to: '', reason: '' });
+  const [error, setError] = useState('');
+  const [submitting, setSubmitting] = useState(false);
   const isSingleDay = form.type === 'half_day' || form.type === 'short_leave';
   const needsSlot = isSingleDay;
-  const handleSubmit = () => {
-    if (!form.from || !form.to || !form.reason?.trim()) return;
-    if (needsSlot && !form.slot) return;
+  const handleSubmit = async () => {
+    setError('');
+    if (!form.from) { setError('Pick a start date.'); return; }
+    if (!isSingleDay && !form.to) { setError('Pick an end date.'); return; }
+    if (!isSingleDay && form.to < form.from) { setError('End date must be on or after start.'); return; }
+    if (!form.reason?.trim()) { setError('Add a brief reason.'); return; }
+    if (needsSlot && !form.slot) { setError(form.type === 'half_day' ? 'Pick Morning or Evening.' : 'Pick a quarter.'); return; }
     const countWorkingDays = (from: string, to: string) => {
       let count = 0, cur = from;
       while (cur <= to) {
@@ -223,8 +229,13 @@ function ApplyModal({ onClose, onSubmit }: { onClose: () => void; onSubmit: (dat
       return Math.max(1, count);
     };
     const days = isSingleDay ? 1 : countWorkingDays(form.from, form.to);
-    onSubmit({ ...form, days, from_date: form.from, to_date: form.to, slot: needsSlot ? form.slot : undefined });
-    onClose();
+    setSubmitting(true);
+    try {
+      await onSubmit({ ...form, days, from_date: form.from, to_date: isSingleDay ? form.from : form.to, slot: needsSlot ? form.slot : undefined });
+      onClose();
+    } catch (e: any) {
+      setError(e?.message ?? 'Failed to apply leave.');
+    } finally { setSubmitting(false); }
   };
   const newTypes = leaveTypes.filter(t => !['casual', 'sick', 'earned'].includes(t.key));
   return (
@@ -310,9 +321,14 @@ function ApplyModal({ onClose, onSubmit }: { onClose: () => void; onSubmit: (dat
               rows={3} placeholder="Brief reason for leave..."
               className="w-full border border-outline bg-surface rounded-lg px-3 py-2.5 text-sm text-on-surface focus:outline-none focus:ring-2 focus:ring-brand/20 resize-none" />
           </div>
+          {error && (
+            <p className="text-xs text-danger bg-danger-container/40 border border-danger/20 rounded-lg px-3 py-2">{error}</p>
+          )}
           <div className="flex gap-3 pt-2">
-            <button onClick={onClose} className="flex-1 py-2.5 border border-outline text-on-surface-muted rounded-lg text-sm font-medium hover:bg-surface-2 transition-colors">Cancel</button>
-            <button onClick={handleSubmit} className="flex-1 py-2.5 bg-brand hover:opacity-90 text-white rounded-lg text-sm font-medium transition-opacity shadow-elev-1">Submit</button>
+            <button onClick={onClose} disabled={submitting} className="flex-1 py-2.5 border border-outline text-on-surface-muted rounded-lg text-sm font-medium hover:bg-surface-2 transition-colors disabled:opacity-50">Cancel</button>
+            <button onClick={handleSubmit} disabled={submitting} className="flex-1 py-2.5 bg-brand hover:opacity-90 text-white rounded-lg text-sm font-medium transition-opacity shadow-elev-1 disabled:opacity-50">
+              {submitting ? 'Submitting…' : 'Submit'}
+            </button>
           </div>
         </div>
       </div>

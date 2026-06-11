@@ -3995,6 +3995,15 @@ app.post('/api/attendance/biometric-sync', async (req, res) => {
 });
 
 // ── Leave helpers ─────────────────────────────────────────────────────────
+// Centralized label for leave notifications so manager + HR + employee
+// pings all read the same way: "half day · morning", "short leave · Q2".
+function formatLeaveLabel(type: string | null | undefined, slot?: string | null): string {
+  const base = (type ?? '').replace(/_/g, ' ');
+  const slotMap: Record<string, string> = { morning: 'morning', evening: 'evening', q1: 'Q1', q2: 'Q2', q3: 'Q3', q4: 'Q4' };
+  const suffix = slot && slotMap[slot] ? ` · ${slotMap[slot]}` : '';
+  return `${base}${suffix}`;
+}
+
 function isOnProbation(joinDate: string | null, probationEndDate?: string | null): boolean {
   if (!joinDate) return false;
   const end = probationEndDate
@@ -4259,13 +4268,7 @@ app.post('/api/leave/requests', async (req, res) => {
       RETURNING *`;
     const from = new Date(from_date).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' });
     const to   = new Date(to_date).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' });
-    // Friendly slot suffix for the reviewer's notification ("half day · morning",
-    // "short leave · Q2") so they get context without opening the request.
-    const slotLabel = slot === 'morning' ? 'morning'
-      : slot === 'evening' ? 'evening'
-      : slot === 'q1' ? 'Q1' : slot === 'q2' ? 'Q2' : slot === 'q3' ? 'Q3' : slot === 'q4' ? 'Q4'
-      : null;
-    const typeLabel = `${type.replace('_',' ')}${slotLabel ? ` · ${slotLabel}` : ''}`;
+    const typeLabel = formatLeaveLabel(type, slot);
     if (emp.reporting_manager_id) {
       notifyEmployeeUser(emp.reporting_manager_id, 'leave_applied', 'New Leave Request', `${employee_name} applied for ${typeLabel} leave (${from} – ${to})`).catch(()=>{});
     } else {
@@ -4298,7 +4301,7 @@ app.patch('/api/leave/requests/:id/manager-approve', async (req, res) => {
       const from = new Date(leave.from_date).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' });
       const to   = new Date(leave.to_date).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' });
       notifyEmployeeUser(leave.employee_id, 'leave_rejected', 'Leave Rejected by Manager',
-        `Your ${leave.type.replace('_',' ')} leave (${from} – ${to}) was rejected by your manager.`);
+        `Your ${formatLeaveLabel(leave.type, leave.slot)} leave (${from} – ${to}) was rejected by your manager.`);
       return res.json(leave);
     }
     const rows = await sql`
@@ -4313,7 +4316,7 @@ app.patch('/api/leave/requests/:id/manager-approve', async (req, res) => {
     const from = new Date(leave.from_date).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' });
     const to   = new Date(leave.to_date).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' });
     notifyAdminsAndHR('leave_applied', 'Leave Needs HR Approval',
-      `${leave.employee_name}'s ${leave.type.replace('_',' ')} leave (${from} – ${to}) approved by manager — awaiting your final approval.`);
+      `${leave.employee_name}'s ${formatLeaveLabel(leave.type, leave.slot)} leave (${from} – ${to}) approved by manager — awaiting your final approval.`);
     res.json(leave);
   } catch (err) { res.status(500).json({ error: 'Server error' }); }
 });
@@ -4347,7 +4350,7 @@ app.patch('/api/leave/requests/:id', async (req, res) => {
     const noteSuffix = approver_note?.trim() ? ` Note: ${approver_note.trim().slice(0, 200)}` : '';
     notifyEmployeeUser(leave.employee_id, status === 'approved' ? 'leave_approved' : 'leave_rejected',
       status === 'approved' ? 'Leave Approved' : 'Leave Rejected',
-      `Your ${leave.type.replace('_',' ')} leave (${from} – ${to}) has been ${status}.${noteSuffix}`);
+      `Your ${formatLeaveLabel(leave.type, leave.slot)} leave (${from} – ${to}) has been ${status}.${noteSuffix}`);
     res.json(leave);
   } catch (err) { res.status(500).json({ error: 'Server error' }); }
 });
@@ -4370,7 +4373,7 @@ app.patch('/api/leave/requests/:id/cancel', async (req, res) => {
     const from = new Date(leave.from_date).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' });
     const to   = new Date(leave.to_date).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' });
     notifyEmployeeUser(leave.employee_id, 'leave_rejected', 'Leave Cancelled',
-      `Your approved ${leave.type.replace('_',' ')} leave (${from} – ${to}) was cancelled by ${cancelled_by ?? 'admin'}.${cancellation_reason ? ' Reason: ' + cancellation_reason : ''}`);
+      `Your approved ${formatLeaveLabel(leave.type, leave.slot)} leave (${from} – ${to}) was cancelled by ${cancelled_by ?? 'admin'}.${cancellation_reason ? ' Reason: ' + cancellation_reason : ''}`);
     res.json(rows[0]);
   } catch (err) { res.status(500).json({ error: 'Server error' }); }
 });
