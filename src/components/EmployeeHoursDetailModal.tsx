@@ -711,16 +711,22 @@ function EditAllocationModal({ assignment: a, employeeName, month, year, onClose
     finally { setBusy(false); }
   };
 
-  const Cell = ({ label, value, onChange }: { label: string; value: string; onChange: (v: string) => void }) => (
-    <div className="flex flex-col items-center">
-      <label className="text-[10px] font-bold text-on-surface-subtle uppercase tracking-wider mb-1">{label}</label>
-      <input type="number" min="0" step="0.5" value={value} onChange={e => onChange(e.target.value)}
-        className="w-14 text-center num-mono text-sm border border-outline rounded-md py-1.5 bg-surface focus:outline-none focus:ring-2 focus:ring-accent/30" />
-    </div>
-  );
+  // NOTE: Do NOT extract these inputs into a closure-defined sub-component.
+  // The parent re-renders on every keystroke and any inline component would
+  // get a fresh function identity → React treats it as a new component type
+  // → remounts the <input> → focus is lost between every character typed.
+  // Keep the JSX inline.
 
   return (
-    <div className="fixed inset-0 z-[55] flex items-center justify-center bg-black/40 backdrop-blur-sm p-4">
+    // stopPropagation on the backdrop is critical here. This modal is
+    // rendered as a sibling of the parent EmployeeHoursDetailModal's content
+    // but INSIDE its full-screen backdrop, which has onClick={onClose}. Any
+    // click reaching the parent backdrop closes BOTH modals — and yes,
+    // clicking inside an <input> dispatches a click event that bubbles up
+    // before the focus is established. So a stray keystroke or click in
+    // this child modal was tearing down the parent on every interaction.
+    <div className="fixed inset-0 z-[55] flex items-center justify-center bg-black/40 backdrop-blur-sm p-4"
+         onClick={e => e.stopPropagation()}>
       <div className="bg-surface rounded-2xl shadow-2xl w-full max-w-lg overflow-hidden border border-outline">
         <div className="flex items-center justify-between px-6 py-4 border-b border-outline">
           <div>
@@ -764,11 +770,14 @@ function EditAllocationModal({ assignment: a, employeeName, month, year, onClose
               )}
             </div>
             <div className="flex gap-2 justify-between bg-accent/5 rounded-lg p-3 border border-accent/30">
-              <Cell label="W1" value={w.w1} onChange={v => setW(p => ({ ...p, w1: v }))} />
-              <Cell label="W2" value={w.w2} onChange={v => setW(p => ({ ...p, w2: v }))} />
-              <Cell label="W3" value={w.w3} onChange={v => setW(p => ({ ...p, w3: v }))} />
-              <Cell label="W4" value={w.w4} onChange={v => setW(p => ({ ...p, w4: v }))} />
-              <Cell label="W5" value={w.w5} onChange={v => setW(p => ({ ...p, w5: v }))} />
+              {(['w1','w2','w3','w4','w5'] as const).map(k => (
+                <div key={k} className="flex flex-col items-center">
+                  <label className="text-[10px] font-bold text-on-surface-subtle uppercase tracking-wider mb-1">{k.toUpperCase()}</label>
+                  <input type="number" min="0" step="0.5" value={w[k]}
+                    onChange={e => { const v = e.target.value; setW(p => ({ ...p, [k]: v })); }}
+                    className="w-14 text-center num-mono text-sm border border-outline rounded-md py-1.5 bg-surface focus:outline-none focus:ring-2 focus:ring-accent/30" />
+                </div>
+              ))}
               <div className="flex flex-col items-center pl-2 ml-2 border-l border-accent/30">
                 <label className="text-[10px] font-bold text-accent uppercase tracking-wider mb-1">Month</label>
                 <input type="number" min="0" step="0.5" value={monthlyTouched ? w.monthly : String(effectiveMonthly)}
