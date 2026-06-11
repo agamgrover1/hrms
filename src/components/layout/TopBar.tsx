@@ -114,6 +114,17 @@ export function getNotifRoute(type: string, role: string): string {
       // Reviewer receives → Approvals queue
       return '/hours/approvals';
 
+    // ── Allocation change requests ─────────────────────────────────────────────
+    case 'allocation_request':
+    case 'allocation_approved':
+    case 'allocation_rejected':
+      // Approver side AND requester side both land on the new tab inside
+      // the approvals page where the cards live.
+      return '/hours/approvals';
+    case 'allocation_changed':
+      // The affected employee — show them what they're now planned for.
+      return isHR ? '/hours' : '/my?tab=my-hours';
+
     // ── Feature announcements ──────────────────────────────────────────────────
     case 'feature_draft':
       // Pending approval — admin/HR land on the Features management page.
@@ -203,6 +214,11 @@ export const TYPE_CONFIG: Record<string, { icon: any; color: string; bg: string 
   hours_on_hold:           { icon: ClockIcon,      color: '#7c3aed', bg: '#f5f3ff' },
   hours_comment:           { icon: FileText,       color: '#7c3aed', bg: '#f5f3ff' },
   hours_admin_edited:      { icon: AlertTriangle,  color: '#b45309', bg: '#fffbeb' },
+  // Allocation change requests
+  allocation_request:      { icon: ClockIcon,      color: '#b45309', bg: '#fffbeb' },
+  allocation_approved:     { icon: CheckCircle,    color: '#15803d', bg: '#f0fdf4' },
+  allocation_rejected:     { icon: XCircle,        color: '#dc2626', bg: '#fef2f2' },
+  allocation_changed:      { icon: AlertTriangle,  color: '#7c3aed', bg: '#f5f3ff' },
   // Feature announcements
   feature_draft:           { icon: Megaphone,      color: '#b45309', bg: '#fffbeb' },
   feature_published:       { icon: Sparkles,       color: '#7c3aed', bg: '#f5f3ff' },

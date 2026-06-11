@@ -697,4 +697,39 @@ export const api = {
     request(`/features/${id}`, { method: 'DELETE' }),
   ackFeature: (id: string) =>
     request(`/features/${id}/ack`, { method: 'POST' }),
+
+  // ── Allocation change requests ───────────────────────────────────────
+  getAllocationRequests: (params: { status?: string; project_id?: string } = {}) => {
+    const qs = new URLSearchParams();
+    if (params.status) qs.set('status', params.status);
+    if (params.project_id) qs.set('project_id', params.project_id);
+    return request<AllocationChangeRequest[]>(`/allocation-requests${qs.toString() ? `?${qs}` : ''}`);
+  },
+  createAllocationRequest: (data: {
+    assignment_id: string;
+    proposed_w1?: number | null; proposed_w2?: number | null; proposed_w3?: number | null;
+    proposed_w4?: number | null; proposed_w5?: number | null; proposed_monthly?: number | null;
+    reason: string;
+  }) => request<AllocationChangeRequest>(`/allocation-requests`, { method: 'POST', body: JSON.stringify(data) }),
+  approveAllocationRequest: (id: string, data: { review_note?: string } = {}) =>
+    request<AllocationChangeRequest>(`/allocation-requests/${id}/approve`, { method: 'PATCH', body: JSON.stringify(data) }),
+  rejectAllocationRequest: (id: string, data: { review_note: string }) =>
+    request<AllocationChangeRequest>(`/allocation-requests/${id}/reject`, { method: 'PATCH', body: JSON.stringify(data) }),
+  cancelAllocationRequest: (id: string) =>
+    request<AllocationChangeRequest>(`/allocation-requests/${id}/cancel`, { method: 'PATCH' }),
 };
+
+export interface AllocationChangeRequest {
+  id: string;
+  assignment_id: string;
+  project_id: string; project_name: string | null;
+  employee_id: string; employee_name: string | null;
+  month: number; year: number;
+  current_w1: number; current_w2: number; current_w3: number; current_w4: number; current_w5: number; current_monthly: number;
+  proposed_w1: number | null; proposed_w2: number | null; proposed_w3: number | null; proposed_w4: number | null; proposed_w5: number | null; proposed_monthly: number | null;
+  reason: string;
+  status: 'pending' | 'approved' | 'rejected' | 'cancelled';
+  requested_by_id: string | null; requested_by_name: string | null; requested_by_role: string | null;
+  reviewed_by_id: string | null; reviewed_by_name: string | null; reviewed_at: string | null; review_note: string | null;
+  created_at: string; updated_at: string;
+}

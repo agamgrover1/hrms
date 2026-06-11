@@ -1074,6 +1074,34 @@ async function runStartupMigrations() {
       PRIMARY KEY (user_id, feature_id)
     )`;
 
+  // ── Allocation change requests ──────────────────────────────────────────
+  // Managers / project reviewers can propose changes to an employee's
+  // weekly/monthly allocation on a project. Coordinators (and admin) approve;
+  // approval is what actually writes back to project_assignments. We snapshot
+  // the current values at request time so the diff stays meaningful even if
+  // someone else moves the assignment in the meantime.
+  await sql`
+    CREATE TABLE IF NOT EXISTS allocation_change_requests (
+      id TEXT PRIMARY KEY,
+      assignment_id TEXT NOT NULL,
+      project_id TEXT NOT NULL,
+      project_name TEXT,
+      employee_id TEXT NOT NULL,
+      employee_name TEXT,
+      month INTEGER NOT NULL,
+      year INTEGER NOT NULL,
+      current_w1 NUMERIC, current_w2 NUMERIC, current_w3 NUMERIC, current_w4 NUMERIC, current_w5 NUMERIC, current_monthly NUMERIC,
+      proposed_w1 NUMERIC, proposed_w2 NUMERIC, proposed_w3 NUMERIC, proposed_w4 NUMERIC, proposed_w5 NUMERIC, proposed_monthly NUMERIC,
+      reason TEXT,
+      status TEXT NOT NULL DEFAULT 'pending',
+      requested_by_id TEXT, requested_by_name TEXT, requested_by_role TEXT,
+      reviewed_by_id TEXT, reviewed_by_name TEXT, reviewed_at TIMESTAMPTZ, review_note TEXT,
+      created_at TIMESTAMPTZ DEFAULT NOW(),
+      updated_at TIMESTAMPTZ DEFAULT NOW()
+    )`;
+  await sql`CREATE INDEX IF NOT EXISTS idx_alloc_req_status ON allocation_change_requests(status, created_at DESC)`.catch(()=>{});
+  await sql`CREATE INDEX IF NOT EXISTS idx_alloc_req_assignment ON allocation_change_requests(assignment_id)`.catch(()=>{});
+
   // ── Performance Pulse: automated 30-day score, runs alongside the manual
   // monthly_performance reviews. snapshots = one row per employee per day,
   // pulse_ratings = weekly manager emoji input, weights = per-dept overrides
@@ -3508,6 +3536,230 @@ app.post('/api/features/:id/ack', async (req, res) => {
       VALUES (${uid}, ${req.params.id})
       ON CONFLICT (user_id, feature_id) DO NOTHING`;
     res.json({ ok: true });
+  } catch (err: any) { res.status(500).json({ error: err.message ?? 'Server error' }); }
+});
+
+// ─────────────────────────────────────────────────────────────────────────
+// Allocation change requests
+// Manager / project reviewer proposes new W1-W5 + monthly_hours for an
+// employee's project assignment. Coordinator (or admin) approves to write
+// the change back to project_assignments. Approval is the only path that
+// mutates the source table — the request flow itself is purely additive.
+// ─────────────────────────────────────────────────────────────────────────
+
+// Permission: who can REQUEST a change against `targetEmpId` on this project?
+// - admin / HR / project_coordinator: always
+// - direct reporting manager of the employee (walks the chain)
+// - reporting_person_id on the project (the "reviewer")
+async function canRequestAllocation(u: any, actorEmpId: string | null, targetEmpId: string, projectId: string): Promise<boolean> {
+  if (!u) return false;
+  if (u.role === 'admin' || u.role === 'hr_manager' || u.role === 'project_coordinator') return true;
+  if (!actorEmpId) return false;
+  // Project reviewer?
+  const p = (await sql`SELECT reporting_person_id FROM projects WHERE id=${projectId}`)[0] as any;
+  if (p?.reporting_person_id && p.reporting_person_id === actorEmpId) return true;
+  // Manager walk
+  let cur = targetEmpId;
+  for (let i = 0; i < 10; i++) {
+    const row = (await sql`SELECT reporting_manager_id FROM employees WHERE id=${cur}`)[0] as any;
+    if (!row?.reporting_manager_id) return false;
+    if (row.reporting_manager_id === actorEmpId) return true;
+    cur = row.reporting_manager_id;
+  }
+  return false;
+}
+
+// POST /api/allocation-requests — propose a change.
+app.post('/api/allocation-requests', async (req, res) => {
+  try {
+    await runStartupMigrations();
+    const uid = req.header('x-user-id');
+    if (!uid) return res.status(401).json({ error: 'Sign in required' });
+    const u = (await sql`SELECT id, name, role FROM app_users WHERE id=${uid}`)[0] as any;
+    if (!u) return res.status(401).json({ error: 'Unknown user' });
+
+    const { assignment_id, proposed_w1, proposed_w2, proposed_w3, proposed_w4, proposed_w5, proposed_monthly, reason } = req.body ?? {};
+    if (!assignment_id) return res.status(400).json({ error: 'assignment_id is required' });
+    if (!reason?.trim()) return res.status(400).json({ error: 'Reason is required' });
+
+    const assn = (await sql`
+      SELECT a.*, p.name AS project_name
+      FROM project_assignments a
+      JOIN projects p ON p.id = a.project_id
+      WHERE a.id=${assignment_id}`)[0] as any;
+    if (!assn) return res.status(404).json({ error: 'Assignment not found' });
+
+    const actorEmpId = await resolveUserToEmployee(u);
+    const allowed = await canRequestAllocation(u, actorEmpId, assn.employee_id, assn.project_id);
+    if (!allowed) return res.status(403).json({ error: 'You can only propose changes for your team or projects you review.' });
+
+    // Block duplicate pending requests against the same assignment so the
+    // coordinator's queue stays clean. If you want to revise, cancel first.
+    const dupe = (await sql`SELECT id FROM allocation_change_requests WHERE assignment_id=${assignment_id} AND status='pending' LIMIT 1`)[0] as any;
+    if (dupe) return res.status(409).json({ error: 'There is already a pending request for this assignment. Cancel it first.' });
+
+    const id = `ar_${Date.now()}`;
+    const num = (v: any) => v == null || v === '' ? null : Number(v);
+    const row = (await sql`
+      INSERT INTO allocation_change_requests
+        (id, assignment_id, project_id, project_name, employee_id, employee_name, month, year,
+         current_w1, current_w2, current_w3, current_w4, current_w5, current_monthly,
+         proposed_w1, proposed_w2, proposed_w3, proposed_w4, proposed_w5, proposed_monthly,
+         reason, requested_by_id, requested_by_name, requested_by_role)
+      VALUES
+        (${id}, ${assignment_id}, ${assn.project_id}, ${assn.project_name}, ${assn.employee_id}, ${assn.employee_name},
+         ${assn.month}, ${assn.year},
+         ${assn.w1_hours}, ${assn.w2_hours}, ${assn.w3_hours}, ${assn.w4_hours}, ${assn.w5_hours}, ${assn.monthly_hours},
+         ${num(proposed_w1)}, ${num(proposed_w2)}, ${num(proposed_w3)}, ${num(proposed_w4)}, ${num(proposed_w5)}, ${num(proposed_monthly)},
+         ${reason.trim()}, ${u.id}, ${u.name}, ${u.role})
+      RETURNING *`)[0];
+
+    // Ping coordinators (the approvers) AND admins+HR so the queue doesn't
+    // sit unattended if a coordinator is OOO.
+    const blurb = `${u.name} proposed a change for ${assn.employee_name} on ${assn.project_name} (${assn.month}/${assn.year}). Reason: ${reason.trim().slice(0, 140)}`;
+    notifyCoordinators('allocation_request', 'Allocation change requested', blurb).catch(()=>{});
+    notifyAdminsAndHR('allocation_request', 'Allocation change requested', blurb).catch(()=>{});
+
+    res.status(201).json(row);
+  } catch (err: any) { res.status(500).json({ error: err.message ?? 'Server error' }); }
+});
+
+// GET /api/allocation-requests — list. Coordinators/admin/HR see everything;
+// requesters see their own. Filters: status, project_id.
+app.get('/api/allocation-requests', async (req, res) => {
+  try {
+    await runStartupMigrations();
+    const uid = req.header('x-user-id');
+    if (!uid) return res.status(401).json({ error: 'Sign in required' });
+    const u = (await sql`SELECT id, role FROM app_users WHERE id=${uid}`)[0] as any;
+    if (!u) return res.status(401).json({ error: 'Unknown user' });
+
+    const isReviewer = u.role === 'admin' || u.role === 'hr_manager' || u.role === 'project_coordinator';
+    const status = (req.query.status as string) || null;
+    const projectId = (req.query.project_id as string) || null;
+
+    const rows = await sql`
+      SELECT * FROM allocation_change_requests
+      WHERE (${status}::text IS NULL OR status = ${status})
+        AND (${projectId}::text IS NULL OR project_id = ${projectId})
+        AND (${isReviewer ? true : false} OR requested_by_id = ${uid})
+      ORDER BY
+        CASE status WHEN 'pending' THEN 0 ELSE 1 END,
+        created_at DESC`;
+    res.json(rows);
+  } catch (err: any) { res.status(500).json({ error: err.message ?? 'Server error' }); }
+});
+
+// PATCH /api/allocation-requests/:id/approve — coordinator / admin only.
+// On approve: copy proposed_* → project_assignments, then mark request
+// approved. Reason: the source-of-truth is project_assignments, not the
+// request table — approving is what makes the change real.
+app.patch('/api/allocation-requests/:id/approve', async (req, res) => {
+  try {
+    const uid = req.header('x-user-id');
+    if (!uid) return res.status(401).json({ error: 'Sign in required' });
+    const u = (await sql`SELECT id, name, role FROM app_users WHERE id=${uid}`)[0] as any;
+    if (!u) return res.status(401).json({ error: 'Unknown user' });
+    if (u.role !== 'admin' && u.role !== 'project_coordinator') {
+      return res.status(403).json({ error: 'Only coordinators or admin can approve allocation changes.' });
+    }
+    const { review_note } = req.body ?? {};
+
+    const r = (await sql`SELECT * FROM allocation_change_requests WHERE id=${req.params.id}`)[0] as any;
+    if (!r) return res.status(404).json({ error: 'Request not found' });
+    if (r.status !== 'pending') return res.status(409).json({ error: `Already ${r.status}` });
+
+    // Apply proposed values, falling back to current for any null slot
+    // (lets the requester touch just the weeks they care about).
+    const apply = (proposed: any, current: any) => proposed == null ? current : proposed;
+    await sql`
+      UPDATE project_assignments SET
+        w1_hours = ${apply(r.proposed_w1, r.current_w1)},
+        w2_hours = ${apply(r.proposed_w2, r.current_w2)},
+        w3_hours = ${apply(r.proposed_w3, r.current_w3)},
+        w4_hours = ${apply(r.proposed_w4, r.current_w4)},
+        w5_hours = ${apply(r.proposed_w5, r.current_w5)},
+        monthly_hours = ${apply(r.proposed_monthly, r.current_monthly)},
+        updated_at = NOW()
+      WHERE id = ${r.assignment_id}`;
+
+    const updated = (await sql`
+      UPDATE allocation_change_requests SET
+        status='approved',
+        reviewed_by_id=${u.id}, reviewed_by_name=${u.name},
+        reviewed_at=NOW(), review_note=${review_note ?? null},
+        updated_at=NOW()
+      WHERE id=${req.params.id}
+      RETURNING *`)[0];
+
+    // Notify requester + affected employee (they should know their plan moved).
+    if (r.requested_by_id && r.requested_by_id !== u.id) {
+      notifyEmployeeUser(r.requested_by_id, 'allocation_approved',
+        'Allocation change approved',
+        `${u.name} approved your change for ${r.employee_name} on ${r.project_name}.`).catch(()=>{});
+    }
+    if (r.employee_id) {
+      notifyEmployeeUser(r.employee_id, 'allocation_changed',
+        'Your allocation was updated',
+        `${u.name} updated your hours on ${r.project_name} for ${r.month}/${r.year}.`).catch(()=>{});
+    }
+    res.json(updated);
+  } catch (err: any) { res.status(500).json({ error: err.message ?? 'Server error' }); }
+});
+
+// PATCH /api/allocation-requests/:id/reject — coordinator / admin only.
+app.patch('/api/allocation-requests/:id/reject', async (req, res) => {
+  try {
+    const uid = req.header('x-user-id');
+    if (!uid) return res.status(401).json({ error: 'Sign in required' });
+    const u = (await sql`SELECT id, name, role FROM app_users WHERE id=${uid}`)[0] as any;
+    if (!u) return res.status(401).json({ error: 'Unknown user' });
+    if (u.role !== 'admin' && u.role !== 'project_coordinator') {
+      return res.status(403).json({ error: 'Only coordinators or admin can reject allocation changes.' });
+    }
+    const { review_note } = req.body ?? {};
+    if (!review_note?.trim()) return res.status(400).json({ error: 'A note is required when rejecting' });
+
+    const r = (await sql`SELECT * FROM allocation_change_requests WHERE id=${req.params.id}`)[0] as any;
+    if (!r) return res.status(404).json({ error: 'Request not found' });
+    if (r.status !== 'pending') return res.status(409).json({ error: `Already ${r.status}` });
+
+    const updated = (await sql`
+      UPDATE allocation_change_requests SET
+        status='rejected',
+        reviewed_by_id=${u.id}, reviewed_by_name=${u.name},
+        reviewed_at=NOW(), review_note=${review_note.trim()},
+        updated_at=NOW()
+      WHERE id=${req.params.id}
+      RETURNING *`)[0];
+
+    if (r.requested_by_id && r.requested_by_id !== u.id) {
+      notifyEmployeeUser(r.requested_by_id, 'allocation_rejected',
+        'Allocation change rejected',
+        `${u.name} rejected your change for ${r.employee_name} on ${r.project_name}: ${review_note.trim().slice(0, 140)}`).catch(()=>{});
+    }
+    res.json(updated);
+  } catch (err: any) { res.status(500).json({ error: err.message ?? 'Server error' }); }
+});
+
+// PATCH /api/allocation-requests/:id/cancel — the original requester can
+// cancel their own pending request (e.g. they want to revise).
+app.patch('/api/allocation-requests/:id/cancel', async (req, res) => {
+  try {
+    const uid = req.header('x-user-id');
+    if (!uid) return res.status(401).json({ error: 'Sign in required' });
+    const r = (await sql`SELECT * FROM allocation_change_requests WHERE id=${req.params.id}`)[0] as any;
+    if (!r) return res.status(404).json({ error: 'Request not found' });
+    if (r.status !== 'pending') return res.status(409).json({ error: `Already ${r.status}` });
+    const u = (await sql`SELECT id, role FROM app_users WHERE id=${uid}`)[0] as any;
+    if (!u) return res.status(401).json({ error: 'Unknown user' });
+    if (r.requested_by_id !== uid && u.role !== 'admin') {
+      return res.status(403).json({ error: 'Only the requester or admin can cancel.' });
+    }
+    const updated = (await sql`
+      UPDATE allocation_change_requests SET status='cancelled', updated_at=NOW()
+      WHERE id=${req.params.id} RETURNING *`)[0];
+    res.json(updated);
   } catch (err: any) { res.status(500).json({ error: err.message ?? 'Server error' }); }
 });
 

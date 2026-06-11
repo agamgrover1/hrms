@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { X, AlertTriangle, CheckCircle, XCircle, Clock as ClockIcon, Pencil, Save, History, ChevronDown, Trash2 } from 'lucide-react';
+import { X, AlertTriangle, CheckCircle, XCircle, Clock as ClockIcon, Pencil, Save, History, ChevronDown, Trash2, SlidersHorizontal } from 'lucide-react';
 import { api } from '../services/api';
 import { useAuth } from '../context/AuthContext';
 
@@ -76,6 +76,15 @@ export default function EmployeeHoursDetailModal({ employeeId, employeeName, mon
   const [historyOpenFor, setHistoryOpenFor] = useState<string | null>(null);
   const [historyData, setHistoryData] = useState<Record<string, any[]>>({});
   const [historyLoading, setHistoryLoading] = useState<Record<string, boolean>>({});
+  // Allocation-change request flow: who can request, the modal target, and
+  // the set of assignment ids that already have a pending request (so the
+  // button switches to "Pending" instead of letting the user fire a duplicate
+  // — the backend would 409 anyway, but this avoids the round-trip).
+  const canRequestAlloc =
+    user?.role === 'admin' || user?.role === 'hr_manager' ||
+    user?.role === 'project_coordinator' || user?.role === 'employee';
+  const [editingAlloc, setEditingAlloc] = useState<AssignmentRow | null>(null);
+  const [pendingAllocs, setPendingAllocs] = useState<Set<string>>(new Set());
 
   const reload = () => {
     setLoading(true);
@@ -83,6 +92,12 @@ export default function EmployeeHoursDetailModal({ employeeId, employeeName, mon
       api.getHourLogs({ employee_id: employeeId, month, year }).then(d => setLogs(d as LogRow[])).catch(() => {}),
       api.getHourLogDays({ employee_id: employeeId, month, year }).then(d => setDays(d as DayRow[])).catch(() => setDays([])),
       api.getProjectAssignments({ employee_id: employeeId, month, year }).then(d => setAssignments(d as AssignmentRow[])).catch(() => setAssignments([])),
+      api.getAllocationRequests({ status: 'pending' }).then(rs => {
+        // Build a quick lookup for "this assignment already has a pending
+        // request". Filtered to the current employee so we don't carry a
+        // larger set than needed for the render.
+        setPendingAllocs(new Set(rs.filter(r => r.employee_id === employeeId).map(r => r.assignment_id)));
+      }).catch(() => setPendingAllocs(new Set())),
     ]).finally(() => setLoading(false));
   };
 
@@ -261,6 +276,7 @@ export default function EmployeeHoursDetailModal({ employeeId, employeeName, mon
                         <th className="px-2 py-2 text-center font-bold">W5</th>
                         <th className="px-2 py-2 text-center font-bold bg-surface-3">M</th>
                         <th className="px-3 py-2 text-right font-bold">Logged / Plan</th>
+                        {canRequestAlloc && <th className="px-2 py-2 text-right font-bold w-px">{/* edit column */}</th>}
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-outline">
@@ -304,6 +320,22 @@ export default function EmployeeHoursDetailModal({ employeeId, employeeName, mon
                                   </p>
                                 )}
                               </td>
+                              {canRequestAlloc && (
+                                <td className="px-2 py-2 text-right">
+                                  {pendingAllocs.has(a.id) ? (
+                                    <span className="inline-flex items-center gap-1 text-[10px] font-bold text-warning bg-warning-container px-2 py-1 rounded-md whitespace-nowrap">
+                                      <ClockIcon size={10} /> Pending
+                                    </span>
+                                  ) : (
+                                    <button
+                                      onClick={() => setEditingAlloc(a)}
+                                      title="Propose a change to this allocation"
+                                      className="inline-flex items-center gap-1 text-[10px] font-semibold text-accent border border-accent/30 hover:bg-accent/10 px-2 py-1 rounded-md whitespace-nowrap">
+                                      <SlidersHorizontal size={10} /> Edit
+                                    </button>
+                                  )}
+                                </td>
+                              )}
                             </tr>
                           );
                         })}
@@ -612,6 +644,155 @@ export default function EmployeeHoursDetailModal({ employeeId, employeeName, mon
         {/* Footer */}
         <div className="px-5 py-3 border-t border-outline bg-surface-2/60 flex justify-end">
           <button onClick={onClose} className="px-4 py-2 text-sm font-medium text-on-surface-muted hover:bg-surface-3 rounded-lg transition-colors">Close</button>
+        </div>
+      </div>
+      {editingAlloc && (
+        <EditAllocationModal
+          assignment={editingAlloc}
+          employeeName={employeeName}
+          month={month}
+          year={year}
+          onClose={() => setEditingAlloc(null)}
+          onSubmitted={() => { setEditingAlloc(null); reload(); }}
+        />
+      )}
+    </div>
+  );
+}
+
+// Modal for proposing a change to an assignment's W1-W5 + monthly. Submits
+// as a pending allocation_change_request; coordinator approves separately
+// to write back to project_assignments. Requester puts in a free-text
+// reason so the coordinator has context to decide.
+function EditAllocationModal({ assignment: a, employeeName, month, year, onClose, onSubmitted }: {
+  assignment: AssignmentRow;
+  employeeName: string;
+  month: number; year: number;
+  onClose: () => void;
+  onSubmitted: () => void;
+}) {
+  const [w, setW] = useState({
+    w1: String(Number(a.w1_hours) || 0),
+    w2: String(Number(a.w2_hours) || 0),
+    w3: String(Number(a.w3_hours) || 0),
+    w4: String(Number(a.w4_hours) || 0),
+    w5: String(Number(a.w5_hours) || 0),
+    monthly: String(Number(a.monthly_hours) || 0),
+  });
+  // Auto-sum the week values into the monthly total UNLESS the user has
+  // touched the monthly field directly. That way the common case (edit a
+  // week, monthly follows) is friction-free, but the edge case (a project
+  // that bills a flat monthly cap regardless of week split) is still
+  // expressible.
+  const [monthlyTouched, setMonthlyTouched] = useState(false);
+  const weekSum = ['w1','w2','w3','w4','w5'].reduce((s, k) => s + (Number((w as any)[k]) || 0), 0);
+  const effectiveMonthly = monthlyTouched ? Number(w.monthly) || 0 : weekSum;
+
+  const [reason, setReason] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+
+  const submit = async () => {
+    if (!reason.trim()) { setError('Reason is required'); return; }
+    setBusy(true); setError('');
+    try {
+      await api.createAllocationRequest({
+        assignment_id: a.id,
+        proposed_w1: Number(w.w1) || 0,
+        proposed_w2: Number(w.w2) || 0,
+        proposed_w3: Number(w.w3) || 0,
+        proposed_w4: Number(w.w4) || 0,
+        proposed_w5: Number(w.w5) || 0,
+        proposed_monthly: effectiveMonthly,
+        reason: reason.trim(),
+      });
+      onSubmitted();
+    } catch (e: any) { setError(e?.message ?? 'Failed to submit'); }
+    finally { setBusy(false); }
+  };
+
+  const Cell = ({ label, value, onChange }: { label: string; value: string; onChange: (v: string) => void }) => (
+    <div className="flex flex-col items-center">
+      <label className="text-[10px] font-bold text-on-surface-subtle uppercase tracking-wider mb-1">{label}</label>
+      <input type="number" min="0" step="0.5" value={value} onChange={e => onChange(e.target.value)}
+        className="w-14 text-center num-mono text-sm border border-outline rounded-md py-1.5 bg-surface focus:outline-none focus:ring-2 focus:ring-accent/30" />
+    </div>
+  );
+
+  return (
+    <div className="fixed inset-0 z-[55] flex items-center justify-center bg-black/40 backdrop-blur-sm p-4">
+      <div className="bg-surface rounded-2xl shadow-2xl w-full max-w-lg overflow-hidden border border-outline">
+        <div className="flex items-center justify-between px-6 py-4 border-b border-outline">
+          <div>
+            <h2 className="font-display text-base font-bold text-on-surface inline-flex items-center gap-2">
+              <SlidersHorizontal size={16} className="text-accent" /> Propose allocation change
+            </h2>
+            <p className="text-[11px] text-on-surface-muted mt-0.5">
+              {employeeName} · {a.project_name} · {month}/{year}
+            </p>
+          </div>
+          <button onClick={onClose}><X size={16} className="text-on-surface-subtle" /></button>
+        </div>
+        <div className="p-6 space-y-4">
+          <p className="text-xs text-on-surface-muted">
+            Coordinator approval is required before this takes effect. Until they approve, the planned hours stay as they are.
+          </p>
+
+          <div>
+            <div className="flex items-center justify-between mb-2">
+              <p className="text-[10px] uppercase tracking-wider font-bold text-on-surface-subtle">Current plan</p>
+            </div>
+            <div className="flex gap-2 justify-between bg-surface-2/50 rounded-lg p-3 border border-outline">
+              {['w1','w2','w3','w4','w5'].map(k => (
+                <div key={k} className="flex flex-col items-center">
+                  <span className="text-[9px] uppercase tracking-wider font-bold text-on-surface-subtle">{k.toUpperCase()}</span>
+                  <span className="num-mono text-sm text-on-surface-muted">{Number((a as any)[`${k}_hours`]) || 0}</span>
+                </div>
+              ))}
+              <div className="flex flex-col items-center pl-2 ml-2 border-l border-outline">
+                <span className="text-[9px] uppercase tracking-wider font-bold text-on-surface-subtle">Month</span>
+                <span className="num-mono text-sm font-bold text-on-surface">{Number(a.monthly_hours) || 0}</span>
+              </div>
+            </div>
+          </div>
+
+          <div>
+            <div className="flex items-center justify-between mb-2">
+              <p className="text-[10px] uppercase tracking-wider font-bold text-accent">Proposed plan</p>
+              {!monthlyTouched && (
+                <span className="text-[10px] text-on-surface-subtle">Monthly auto-sums from weeks</span>
+              )}
+            </div>
+            <div className="flex gap-2 justify-between bg-accent/5 rounded-lg p-3 border border-accent/30">
+              <Cell label="W1" value={w.w1} onChange={v => setW(p => ({ ...p, w1: v }))} />
+              <Cell label="W2" value={w.w2} onChange={v => setW(p => ({ ...p, w2: v }))} />
+              <Cell label="W3" value={w.w3} onChange={v => setW(p => ({ ...p, w3: v }))} />
+              <Cell label="W4" value={w.w4} onChange={v => setW(p => ({ ...p, w4: v }))} />
+              <Cell label="W5" value={w.w5} onChange={v => setW(p => ({ ...p, w5: v }))} />
+              <div className="flex flex-col items-center pl-2 ml-2 border-l border-accent/30">
+                <label className="text-[10px] font-bold text-accent uppercase tracking-wider mb-1">Month</label>
+                <input type="number" min="0" step="0.5" value={monthlyTouched ? w.monthly : String(effectiveMonthly)}
+                  onChange={e => { setMonthlyTouched(true); setW(p => ({ ...p, monthly: e.target.value })); }}
+                  className="w-16 text-center num-mono text-sm font-bold border border-accent/40 rounded-md py-1.5 bg-surface focus:outline-none focus:ring-2 focus:ring-accent/30" />
+              </div>
+            </div>
+          </div>
+
+          <div>
+            <label className="text-[10px] uppercase tracking-wider font-bold text-on-surface-subtle mb-1 block">Reason *</label>
+            <textarea value={reason} onChange={e => setReason(e.target.value)} rows={3}
+              placeholder="e.g. Sprint scope changed — moving 4h from W2 to W3 for the migration. Coordinator will see this."
+              className="w-full text-sm border border-outline rounded-lg px-3 py-2 bg-surface resize-none focus:outline-none focus:ring-2 focus:ring-accent/30" />
+          </div>
+
+          {error && <p className="text-xs text-danger bg-danger-container/40 border border-danger/20 rounded-lg px-3 py-2">{error}</p>}
+        </div>
+        <div className="px-6 py-3 border-t border-outline flex justify-end gap-2">
+          <button onClick={onClose} className="px-4 py-2 text-sm font-medium text-on-surface-muted hover:bg-surface-2 rounded-lg">Cancel</button>
+          <button onClick={submit} disabled={busy}
+            className="px-4 py-2 text-sm font-semibold bg-accent text-on-accent rounded-lg disabled:opacity-50">
+            {busy ? 'Sending…' : 'Send for approval'}
+          </button>
         </div>
       </div>
     </div>
