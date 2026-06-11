@@ -81,8 +81,21 @@ const ROLE_PILL: Record<string, { label: string; bg: string; color: string }> = 
   employee:            { label: 'Employee',      bg: 'rgba(255,255,255,0.08)', color: 'rgba(255,255,255,0.7)' },
 };
 
-export default function Sidebar() {
-  const [collapsed, setCollapsed] = useState(false);
+export default function Sidebar({ mobileOpen = false, onMobileClose }: { mobileOpen?: boolean; onMobileClose?: () => void }) {
+  const [collapsedRaw, setCollapsed] = useState(false);
+  // Track viewport so the collapsed-narrow look only applies on real
+  // desktop sizes. On mobile the drawer is always full-width even if the
+  // user previously collapsed the sidebar on a laptop.
+  const [isDesktop, setIsDesktop] = useState(() =>
+    typeof window === 'undefined' ? true : window.matchMedia('(min-width: 1024px)').matches
+  );
+  useEffect(() => {
+    const mq = window.matchMedia('(min-width: 1024px)');
+    const handler = (e: MediaQueryListEvent) => setIsDesktop(e.matches);
+    mq.addEventListener('change', handler);
+    return () => mq.removeEventListener('change', handler);
+  }, []);
+  const collapsed = isDesktop && collapsedRaw;
   const [isManager, setIsManager] = useState(false);
   const [isProjectReviewer, setIsProjectReviewer] = useState(false);
   const { user } = useAuth();
@@ -170,9 +183,31 @@ export default function Sidebar() {
 
   const rolePill = ROLE_PILL[role] ?? ROLE_PILL.employee;
 
+  // Layout strategy
+  //  ≥ lg (1024+) → sidebar is part of the flex row; collapse toggle works
+  //                  as before. mobileOpen is ignored.
+  //  <  lg        → sidebar is position:fixed offscreen by default and
+  //                  slides in when mobileOpen is true. Backdrop covers the
+  //                  page and closes on click. Always expanded width (256)
+  //                  on mobile — the collapsed 72px state is desktop-only.
   return (
-    <aside
-      className={`${collapsed ? 'w-[72px]' : 'w-64'} transition-all duration-300 flex flex-col min-h-screen flex-shrink-0 relative isolate`}
+    <>
+      {/* Mobile backdrop. Only renders under lg AND when open. */}
+      {mobileOpen && (
+        <button
+          aria-label="Close menu"
+          onClick={onMobileClose}
+          className="lg:hidden fixed inset-0 z-40 bg-black/55 backdrop-blur-sm animate-fade-in"
+        />
+      )}
+      <aside
+        className={`
+          fixed lg:static lg:relative inset-y-0 left-0 z-50 min-h-screen flex flex-col flex-shrink-0 isolate
+          ${collapsed ? 'lg:w-[72px]' : 'lg:w-64'}
+          w-64
+          transition-transform duration-300
+          ${mobileOpen ? 'translate-x-0' : '-translate-x-full'} lg:translate-x-0
+        `}
       style={{
         background: 'linear-gradient(180deg, #0d122b 0%, #141c43 45%, #192250 100%)',
         borderRight: '1px solid rgba(255,255,255,0.06)',
@@ -232,11 +267,12 @@ export default function Sidebar() {
         ))}
       </nav>
 
-      {/* Bottom: collapse + version */}
+      {/* Bottom: collapse + version. Collapse button is desktop-only — on
+          mobile the drawer is meant to open / close fully, not shrink. */}
       <div className="px-2 pb-4 pt-3" style={{ borderTop: '1px solid rgba(255,255,255,0.07)' }}>
         <button
-          onClick={() => setCollapsed(!collapsed)}
-          className={`flex items-center gap-3 px-3 py-2 rounded-xl text-xs font-medium text-white/40 hover:text-white/70 hover:bg-white/5 transition-all w-full ${collapsed ? 'justify-center' : ''}`}>
+          onClick={() => setCollapsed(!collapsedRaw)}
+          className={`hidden lg:flex items-center gap-3 px-3 py-2 rounded-xl text-xs font-medium text-white/40 hover:text-white/70 hover:bg-white/5 transition-all w-full ${collapsed ? 'justify-center' : ''}`}>
           {collapsed ? <ChevronRight size={16} strokeWidth={1.75} /> : <><ChevronLeft size={16} strokeWidth={1.75} /><span>Collapse</span></>}
         </button>
         {!collapsed && (
@@ -244,6 +280,7 @@ export default function Sidebar() {
         )}
       </div>
     </aside>
+    </>
   );
 }
 

@@ -917,16 +917,17 @@ export default function MyPortal() {
 
   return (
     <div className="space-y-5">
-      {/* Profile Header */}
-      <div className="rounded-2xl p-6 text-white" style={{ background: 'linear-gradient(135deg, #192250 0%, #141c43 100%)' }}>
-        <div className="flex items-center gap-4">
-          <div className="w-16 h-16 rounded-2xl flex items-center justify-center text-2xl font-bold border-2"
+      {/* Profile Header — tighter padding + smaller avatar on phones so the
+          banner doesn't eat the whole above-the-fold on a small screen. */}
+      <div className="rounded-2xl p-4 sm:p-6 text-white" style={{ background: 'linear-gradient(135deg, #192250 0%, #141c43 100%)' }}>
+        <div className="flex items-center gap-3 sm:gap-4">
+          <div className="w-12 h-12 sm:w-16 sm:h-16 rounded-2xl flex items-center justify-center text-xl sm:text-2xl font-bold border-2 flex-shrink-0"
             style={{ background: 'rgba(255,255,255,0.15)', borderColor: 'rgba(255,255,255,0.25)' }}>
             {user?.avatar}
           </div>
-          <div>
-            <h2 className="text-xl font-bold">{user?.name}</h2>
-            <p className="text-sm mt-0.5" style={{ color: 'rgba(255,255,255,0.65)' }}>{user?.designation} · {user?.department}</p>
+          <div className="min-w-0">
+            <h2 className="text-lg sm:text-xl font-bold truncate">{user?.name}</h2>
+            <p className="text-xs sm:text-sm mt-0.5 truncate" style={{ color: 'rgba(255,255,255,0.65)' }}>{user?.designation} · {user?.department}</p>
             <p className="text-xs mt-1 font-semibold" style={{ color: '#EE2770' }}>{(user as any)?.employee_code ?? user?.employee_id_ref}</p>
           </div>
         </div>

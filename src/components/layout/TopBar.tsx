@@ -1,4 +1,4 @@
-import { Bell, ChevronDown, LogOut, CheckCircle, Calendar, TrendingUp, FileText, Target, XCircle, Award, Check, Trash2, AlertTriangle, ShieldAlert, KeyRound, Eye, EyeOff, Wrench, Clock as ClockIcon, Search, Megaphone, Sparkles } from 'lucide-react';
+import { Bell, ChevronDown, LogOut, CheckCircle, Calendar, TrendingUp, FileText, Target, XCircle, Award, Check, Trash2, AlertTriangle, ShieldAlert, KeyRound, Eye, EyeOff, Wrench, Clock as ClockIcon, Search, Megaphone, Sparkles, Menu } from 'lucide-react';
 import { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../../context/AuthContext';
@@ -166,6 +166,7 @@ export function getNotifRoute(type: string, role: string): string {
 
 interface Props {
   title: string;
+  onMenuClick?: () => void;
 }
 
 export const TYPE_CONFIG: Record<string, { icon: any; color: string; bg: string }> = {
@@ -245,7 +246,7 @@ function timeAgo(dateStr: string) {
   return `${Math.floor(hrs / 24)}d ago`;
 }
 
-export default function TopBar({ title }: Props) {
+export default function TopBar({ title, onMenuClick }: Props) {
   const { user, logout } = useAuth();
   const navigate = useNavigate();
   const [showMenu, setShowMenu] = useState(false);
@@ -355,10 +356,19 @@ export default function TopBar({ title }: Props) {
 
   return (
     <>
-    <header className="h-16 bg-surface border-b border-outline flex items-center px-6 gap-4 sticky top-0 z-10 shadow-elev-1">
-      <h1 className="font-display text-lg font-bold tracking-tight text-on-surface flex-shrink-0">{title}</h1>
+    <header className="h-16 bg-surface border-b border-outline flex items-center px-3 sm:px-6 gap-2 sm:gap-4 sticky top-0 z-30 shadow-elev-1">
+      {/* Mobile hamburger — flips the parent Layout's mobileSidebarOpen */}
+      {onMenuClick && (
+        <button onClick={onMenuClick}
+          className="lg:hidden p-2 -ml-1 rounded-lg hover:bg-surface-2 text-on-surface flex-shrink-0"
+          aria-label="Open menu">
+          <Menu size={20} />
+        </button>
+      )}
+      <h1 className="font-display text-base sm:text-lg font-bold tracking-tight text-on-surface flex-shrink-0 truncate">{title}</h1>
 
-      {/* Command palette trigger — synthesizes ⌘K so CommandPalette picks it up */}
+      {/* Command palette trigger — synthesizes ⌘K so CommandPalette picks
+          it up. Full pill on sm+, icon-only on phones to save space. */}
       <button
         onClick={() => {
           const key = navigator.platform.toLowerCase().includes('mac') ? { metaKey: true } : { ctrlKey: true };
