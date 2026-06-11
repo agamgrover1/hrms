@@ -1,7 +1,9 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { Search, ChevronRight, BookOpen, BarChart3, Users, Clock, ClipboardCheck, Activity, Sparkles, Calendar, DollarSign, User } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 import { Link } from 'react-router-dom';
+import { useAuth } from '../context/AuthContext';
+import { api } from '../services/api';
 
 // Single source of truth for what every card / widget in the HRMS means.
 // Linked from the sidebar so anyone confused about a number can look it up
@@ -498,27 +500,64 @@ const SECTIONS: Section[] = [
 ];
 
 export default function HowItWorks() {
+  const { user } = useAuth();
   const [query, setQuery] = useState('');
-  const [openSection, setOpenSection] = useState<string>(SECTIONS[0].id);
+  // Manager / reviewer flags follow the same gates Sidebar uses, so the
+  // page shows the same scope of cards as the rest of the nav. Without
+  // these, an employee with direct reports wouldn't see the My Team
+  // explainers even though they actually use that page.
+  const [isManager, setIsManager] = useState(false);
+  const [isProjectReviewer, setIsProjectReviewer] = useState(false);
+  useEffect(() => {
+    if (!user?.employee_id_ref) return;
+    api.getEmployees()
+      .then(emps => {
+        const me = (emps as any[]).find(e => e.employee_id === user.employee_id_ref);
+        if (!me) return;
+        api.getTeamMembers(me.id).then((mem: any[]) => setIsManager(mem.length > 0)).catch(() => {});
+        api.getProjects({ status: 'active' })
+          .then((projs: any[]) => setIsProjectReviewer(projs.some(p => p.project_reporting_id === me.id)))
+          .catch(() => {});
+      })
+      .catch(() => {});
+  }, [user?.employee_id_ref]);
 
-  // Filter cards by case-insensitive substring across title + shows. We
-  // also auto-expand any section that has a match so the user doesn't have
-  // to expand each one manually after searching.
+  // Build the set of role pills the current viewer "is". A card is shown
+  // when ANY of its whoSees entries is in this set. 'employee' is always
+  // included because it's the "everyone" tag.
+  const myRoles = useMemo<Set<RolePill>>(() => {
+    const set = new Set<RolePill>(['employee']);
+    if (user?.role === 'admin') set.add('admin');
+    if (user?.role === 'hr_manager') set.add('hr');
+    if (user?.role === 'project_coordinator') set.add('coord');
+    if (isManager) set.add('manager');
+    if (isProjectReviewer) set.add('reviewer');
+    return set;
+  }, [user?.role, isManager, isProjectReviewer]);
+
+  // Filter cards by role first (so a regular employee never sees admin /
+  // coord cards), then by the optional search string. Sections with zero
+  // matching cards drop out entirely.
   const filteredSections = useMemo(() => {
     const q = query.trim().toLowerCase();
-    if (!q) return SECTIONS;
     return SECTIONS
       .map(s => ({
         ...s,
-        cards: s.cards.filter(c =>
-          c.title.toLowerCase().includes(q) ||
-          c.shows.toLowerCase().includes(q) ||
-          c.page.toLowerCase().includes(q) ||
-          c.howItWorks.some(h => h.toLowerCase().includes(q))
-        ),
+        cards: s.cards.filter(c => {
+          if (!c.whoSees.some(r => myRoles.has(r))) return false;
+          if (!q) return true;
+          return (
+            c.title.toLowerCase().includes(q) ||
+            c.shows.toLowerCase().includes(q) ||
+            c.page.toLowerCase().includes(q) ||
+            c.howItWorks.some(h => h.toLowerCase().includes(q))
+          );
+        }),
       }))
       .filter(s => s.cards.length > 0);
-  }, [query]);
+  }, [query, myRoles]);
+
+  const [openSection, setOpenSection] = useState<string>(SECTIONS[0].id);
 
   return (
     <div className="space-y-6 max-w-5xl">
@@ -546,10 +585,10 @@ export default function HowItWorks() {
         />
       </div>
 
-      {/* Quick jump nav (no search) */}
-      {!query.trim() && (
+      {/* Quick jump nav — only the sections the viewer can actually see */}
+      {!query.trim() && filteredSections.length > 1 && (
         <div className="flex flex-wrap gap-2">
-          {SECTIONS.map(s => {
+          {filteredSections.map(s => {
             const Icon = s.icon;
             return (
               <button key={s.id} onClick={() => {
