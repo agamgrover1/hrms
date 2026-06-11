@@ -693,6 +693,21 @@ async function runStartupMigrations() {
     )`;
   await sql`CREATE INDEX IF NOT EXISTS idx_hour_log_audit_log_id ON hour_log_audit(hour_log_id)`.catch(()=>{});
 
+  // Threaded comments on a weekly hour-log. Reviewer can ask the employee
+  // for justification on a specific DSR task; employee + admin/HR can reply.
+  // Plain TEXT body keeps it simple — no markdown, no attachments yet.
+  await sql`
+    CREATE TABLE IF NOT EXISTS hour_log_comments (
+      id TEXT PRIMARY KEY,
+      hour_log_id TEXT NOT NULL,
+      author_id TEXT,
+      author_name TEXT,
+      author_role TEXT,
+      body TEXT NOT NULL,
+      created_at TIMESTAMPTZ DEFAULT NOW()
+    )`;
+  await sql`CREATE INDEX IF NOT EXISTS idx_hl_comments_log ON hour_log_comments(hour_log_id, created_at)`.catch(()=>{});
+
   await sql`
     CREATE TABLE IF NOT EXISTS hour_logs (
       id TEXT PRIMARY KEY,
@@ -5949,7 +5964,10 @@ app.get('/api/hour-logs', async (req, res) => {
                FROM hour_log_days d
                WHERE d.assignment_id = hl.assignment_id
                  AND d.week_num = hl.week_num
-             ) AS day_notes
+             ) AS day_notes,
+             -- Comment thread depth so the UI can badge "has discussion" rows
+             -- without an extra round-trip per row.
+             (SELECT COUNT(*) FROM hour_log_comments c WHERE c.hour_log_id = hl.id)::int AS comment_count
       FROM hour_logs hl
       JOIN projects p ON p.id = hl.project_id
       LEFT JOIN project_assignments pa ON pa.id = hl.assignment_id
@@ -6300,6 +6318,102 @@ app.delete('/api/hour-logs/:id', async (req, res) => {
       } catch {}
     }
     res.json({ success: true });
+  } catch (err: any) { res.status(500).json({ error: err.message || 'Server error' }); }
+});
+
+// PATCH /api/hour-logs/:id/hold — middle state between Pending and
+// Approved/Rejected. Reviewer parks the log while they wait on the
+// employee's justification or clarification. A required `note` becomes
+// the first comment on the thread so the employee instantly sees what's
+// being asked. Reviewer can later flip on_hold → approved or → rejected
+// using the existing approve/reject endpoints (no special handling needed,
+// since they just overwrite status). Reason is stored on rejection_reason
+// for parity with the existing "reason on the row" pattern.
+app.patch('/api/hour-logs/:id/hold', async (req, res) => {
+  try {
+    const { reviewer_id, reviewer_name, reviewer_role, note } = req.body ?? {};
+    if (!note?.trim()) return res.status(400).json({ error: 'A note explaining the hold is required' });
+    const pre = await sql`SELECT hours_logged, status, work_description FROM hour_logs WHERE id=${req.params.id}`;
+    const cur = (pre as any[])[0];
+    if (!cur) return res.status(404).json({ error: 'Log not found' });
+    const rows = await sql`
+      UPDATE hour_logs SET status='on_hold',
+        rejection_reason=${note.trim()},
+        reviewed_by_id=${reviewer_id ?? null}, reviewed_by_name=${reviewer_name ?? null},
+        reviewed_at=NOW(), updated_at=NOW()
+      WHERE id=${req.params.id} RETURNING *`;
+    const r = rows[0];
+    // Add the hold note as the first message on the comment thread.
+    await sql`INSERT INTO hour_log_comments (id, hour_log_id, author_id, author_name, author_role, body)
+              VALUES (${`hlc_${Date.now()}`}, ${r.id}, ${reviewer_id ?? null}, ${reviewer_name ?? null},
+                      ${reviewer_role ?? 'reviewer'}, ${note.trim()})`;
+    await recordHourLogAudit({
+      hour_log_id: r.id,
+      action: 'on_hold',
+      actor_id: reviewer_id ?? null,
+      actor_name: reviewer_name ?? null,
+      actor_role: 'reviewer',
+      before: cur ? { hours_logged: cur.hours_logged, status: cur.status, work_description: cur.work_description } : null,
+      after:  { hours_logged: r.hours_logged, status: r.status, work_description: r.work_description },
+      reason: note.trim(),
+    });
+    try {
+      const proj = await sql`SELECT name FROM projects WHERE id=${r.project_id}`;
+      const projectName = (proj as any[])[0]?.name || 'a project';
+      notifyEmployeeUser(r.employee_id, 'hours_on_hold',
+        'Hours Held — clarification needed',
+        `${reviewer_name || 'Your reviewer'} put your ${r.hours_logged}h on ${projectName} (W${r.week_num}) on hold: ${note.trim().slice(0, 140)}`).catch(()=>{});
+    } catch {}
+    res.json(r);
+  } catch (err: any) { res.status(500).json({ error: err.message || 'Server error' }); }
+});
+
+// GET /api/hour-logs/:id/comments — list comments in chronological order.
+// Returned shape mirrors what the UI renders directly so no client-side
+// reshaping is needed.
+app.get('/api/hour-logs/:id/comments', async (req, res) => {
+  try {
+    const rows = await sql`SELECT id, author_id, author_name, author_role, body, created_at
+                           FROM hour_log_comments
+                           WHERE hour_log_id=${req.params.id}
+                           ORDER BY created_at ASC`;
+    res.json(rows);
+  } catch (err: any) { res.status(500).json({ error: err.message || 'Server error' }); }
+});
+
+// POST /api/hour-logs/:id/comments — anyone signed in can comment. We
+// notify "the other side" of the conversation so the thread doesn't go
+// silent: if the employee replied, ping the reviewer; if anyone else
+// replied, ping the employee. This keeps the back-and-forth moving without
+// requiring polling.
+app.post('/api/hour-logs/:id/comments', async (req, res) => {
+  try {
+    const { author_id, author_name, author_role, body } = req.body ?? {};
+    if (!body?.trim()) return res.status(400).json({ error: 'Body is required' });
+    const log = (await sql`SELECT employee_id, employee_name, project_id, week_num, reviewed_by_id, hours_logged FROM hour_logs WHERE id=${req.params.id}`)[0] as any;
+    if (!log) return res.status(404).json({ error: 'Log not found' });
+    const id = `hlc_${Date.now()}`;
+    const row = (await sql`
+      INSERT INTO hour_log_comments (id, hour_log_id, author_id, author_name, author_role, body)
+      VALUES (${id}, ${req.params.id}, ${author_id ?? null}, ${author_name ?? null}, ${author_role ?? null}, ${body.trim()})
+      RETURNING *`)[0];
+    try {
+      const proj = await sql`SELECT name FROM projects WHERE id=${log.project_id}`;
+      const projectName = (proj as any[])[0]?.name || 'a project';
+      const fromEmployee = author_id && author_id === log.employee_id;
+      if (fromEmployee && log.reviewed_by_id) {
+        // Employee replied — ping the reviewer who held / reviewed it.
+        notifyEmployeeUser(log.reviewed_by_id, 'hours_comment',
+          `${log.employee_name || 'Employee'} replied on hours`,
+          `${log.employee_name || 'Employee'} commented on ${projectName} (W${log.week_num}): ${body.trim().slice(0, 140)}`).catch(()=>{});
+      } else if (!fromEmployee) {
+        // Reviewer/admin/HR commented — ping the employee.
+        notifyEmployeeUser(log.employee_id, 'hours_comment',
+          `New comment on your hours`,
+          `${author_name || 'Reviewer'} commented on your ${projectName} (W${log.week_num}) log: ${body.trim().slice(0, 140)}`).catch(()=>{});
+      }
+    } catch {}
+    res.status(201).json(row);
   } catch (err: any) { res.status(500).json({ error: err.message || 'Server error' }); }
 });
 

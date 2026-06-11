@@ -458,6 +458,12 @@ export const api = {
     request<any>(`/hour-logs/${id}/approve`, { method: 'PATCH', body: JSON.stringify(data) }),
   rejectHourLog: (id: string, data: { reviewer_id?: string; reviewer_name?: string; rejection_reason: string }) =>
     request<any>(`/hour-logs/${id}/reject`, { method: 'PATCH', body: JSON.stringify(data) }),
+  holdHourLog: (id: string, data: { reviewer_id?: string; reviewer_name?: string; reviewer_role?: string; note: string }) =>
+    request<any>(`/hour-logs/${id}/hold`, { method: 'PATCH', body: JSON.stringify(data) }),
+  getHourLogComments: (id: string) =>
+    request<Array<{ id: string; author_id: string | null; author_name: string | null; author_role: string | null; body: string; created_at: string }>>(`/hour-logs/${id}/comments`),
+  addHourLogComment: (id: string, data: { author_id?: string; author_name?: string; author_role?: string; body: string }) =>
+    request<any>(`/hour-logs/${id}/comments`, { method: 'POST', body: JSON.stringify(data) }),
 
   getHoursSummary: (month: number, year: number) =>
     request<{

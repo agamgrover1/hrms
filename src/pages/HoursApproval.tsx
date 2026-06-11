@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useMemo } from 'react';
-import { CheckCircle, XCircle, AlertTriangle, X, Filter, ClipboardCheck, ArrowUpDown, Clock } from 'lucide-react';
+import { CheckCircle, XCircle, AlertTriangle, X, Filter, ClipboardCheck, ArrowUpDown, Clock, PauseCircle, MessageSquare, Send } from 'lucide-react';
 import { api } from '../services/api';
 import { useAuth } from '../context/AuthContext';
 
@@ -47,6 +47,16 @@ interface HourLog {
   project_reporting_id?: string | null;
   project_reporting_name?: string | null;
   w1_hours?: number; w2_hours?: number; w3_hours?: number; w4_hours?: number; w5_hours?: number;
+  comment_count?: number;
+}
+
+interface HourLogComment {
+  id: string;
+  author_id: string | null;
+  author_name: string | null;
+  author_role: string | null;
+  body: string;
+  created_at: string;
 }
 
 const MONTHS = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
@@ -65,10 +75,12 @@ export default function HoursApproval() {
   const [reviewerEmpId, setReviewerEmpId] = useState<string | null>(null);
   const [logs, setLogs] = useState<HourLog[]>([]);
   const [loading, setLoading] = useState(true);
-  const [filterStatus, setFilterStatus] = useState<'pending' | 'approved' | 'rejected' | 'all'>('pending');
+  const [filterStatus, setFilterStatus] = useState<'pending' | 'on_hold' | 'approved' | 'rejected' | 'all'>('pending');
   const [scope, setScope] = useState<'mine' | 'all'>(isAdmin ? 'all' : 'mine');
   const [sortBy, setSortBy] = useState<SortKey>('oldest');
   const [rejecting, setRejecting] = useState<HourLog | null>(null);
+  const [holding, setHolding]   = useState<HourLog | null>(null);
+  const [commentingOn, setCommentingOn] = useState<HourLog | null>(null);
 
   // Resolve current user's employee.id once
   useEffect(() => {
@@ -115,6 +127,17 @@ export default function HoursApproval() {
     load();
   };
 
+  const hold = async (log: HourLog, note: string) => {
+    await api.holdHourLog(log.id, {
+      reviewer_id: reviewerEmpId ?? user?.id,
+      reviewer_name: user?.name,
+      reviewer_role: user?.role,
+      note,
+    }).catch((err: any) => alert(err.message ?? 'Hold failed.'));
+    setHolding(null);
+    load();
+  };
+
   // Apply sort BEFORE grouping so groups inherit the order — for "oldest"
   // sort, the project/week with the oldest submission floats to the top.
   const sortedLogs = useMemo(() => {
@@ -153,6 +176,7 @@ export default function HoursApproval() {
 
   const counts = {
     pending:  logs.filter(l => l.status === 'pending').length,
+    on_hold:  logs.filter(l => l.status === 'on_hold').length,
     approved: logs.filter(l => l.status === 'approved').length,
     rejected: logs.filter(l => l.status === 'rejected').length,
   };
@@ -160,7 +184,7 @@ export default function HoursApproval() {
   return (
     <div className="space-y-5">
       {/* Summary */}
-      <div className="grid grid-cols-2 sm:grid-cols-3 gap-4">
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
         <div className="group relative bg-surface rounded-xl-2 p-4 border border-outline shadow-elev-1 overflow-hidden animate-fade-up stagger-1">
           <div className="absolute -top-8 -right-8 w-28 h-28 rounded-full bg-warning-container blur-2xl opacity-50" />
           <div className="relative">
@@ -169,13 +193,20 @@ export default function HoursApproval() {
           </div>
         </div>
         <div className="group relative bg-surface rounded-xl-2 p-4 border border-outline shadow-elev-1 overflow-hidden animate-fade-up stagger-2">
+          <div className="absolute -top-8 -right-8 w-28 h-28 rounded-full bg-accent/15 blur-2xl opacity-50" />
+          <div className="relative">
+            <p className="num-mono text-2xl font-bold text-accent">{counts.on_hold}</p>
+            <p className="text-xs text-on-surface-muted mt-0.5">On hold</p>
+          </div>
+        </div>
+        <div className="group relative bg-surface rounded-xl-2 p-4 border border-outline shadow-elev-1 overflow-hidden animate-fade-up stagger-3">
           <div className="absolute -top-8 -right-8 w-28 h-28 rounded-full bg-success-container blur-2xl opacity-50" />
           <div className="relative">
             <p className="num-mono text-2xl font-bold text-success">{counts.approved}</p>
             <p className="text-xs text-on-surface-muted mt-0.5">Approved</p>
           </div>
         </div>
-        <div className="group relative bg-surface rounded-xl-2 p-4 border border-outline shadow-elev-1 overflow-hidden animate-fade-up stagger-3">
+        <div className="group relative bg-surface rounded-xl-2 p-4 border border-outline shadow-elev-1 overflow-hidden animate-fade-up stagger-4">
           <div className="absolute -top-8 -right-8 w-28 h-28 rounded-full bg-danger-container blur-2xl opacity-50" />
           <div className="relative">
             <p className="num-mono text-2xl font-bold text-danger">{counts.rejected}</p>
@@ -187,10 +218,10 @@ export default function HoursApproval() {
       {/* Filters */}
       <div className="flex flex-wrap items-center gap-3">
         <div className="inline-flex items-center gap-1.5 bg-surface rounded-lg border border-outline p-1">
-          {(['pending','approved','rejected','all'] as const).map(s => (
+          {(['pending','on_hold','approved','rejected','all'] as const).map(s => (
             <button key={s} onClick={() => setFilterStatus(s)}
               className={`px-3 py-1.5 rounded-md text-xs font-semibold capitalize ${filterStatus === s ? 'bg-accent text-on-accent' : 'text-on-surface-muted hover:text-on-surface'}`}>
-              {s}
+              {s === 'on_hold' ? 'On hold' : s}
             </button>
           ))}
         </div>
@@ -309,16 +340,40 @@ export default function HoursApproval() {
                               <XCircle size={11} /> {log.rejection_reason}
                             </p>
                           )}
+                          {log.status === 'on_hold' && log.rejection_reason && (
+                            <p className="text-accent mt-1 flex items-center gap-1">
+                              <PauseCircle size={11} /> {log.rejection_reason}
+                            </p>
+                          )}
+                          {!!log.comment_count && log.comment_count > 0 && (
+                            <button onClick={() => setCommentingOn(log)}
+                              className="mt-1 inline-flex items-center gap-1 text-[11px] font-semibold text-accent hover:underline">
+                              <MessageSquare size={11} /> {log.comment_count} {log.comment_count === 1 ? 'comment' : 'comments'}
+                            </button>
+                          )}
                         </td>
                         <td className="px-4 py-3">
                           <StatusPill status={log.status} />
                         </td>
                         <td className="px-4 py-3 text-right">
-                          {log.status === 'pending' ? (
-                            <div className="inline-flex items-center gap-1">
+                          {(log.status === 'pending' || log.status === 'on_hold') ? (
+                            <div className="inline-flex items-center gap-1 flex-wrap justify-end">
                               <button onClick={() => approve(log)}
-                                className="px-2.5 py-1.5 rounded-md text-xs font-semibold text-white bg-success hover:bg-success/90 transition-colors">
+                                className="px-2.5 py-1.5 rounded-md text-xs font-semibold text-white bg-success hover:bg-success/90 transition-colors"
+                                title="Approve these hours">
                                 <CheckCircle size={12} className="inline mr-1" />Approve
+                              </button>
+                              {log.status === 'pending' && (
+                                <button onClick={() => setHolding(log)}
+                                  className="px-2.5 py-1.5 rounded-md text-xs font-semibold text-accent border border-accent/40 hover:bg-accent/10 transition-colors"
+                                  title="Park this log and ask the employee for clarification">
+                                  <PauseCircle size={12} className="inline mr-1" />Hold
+                                </button>
+                              )}
+                              <button onClick={() => setCommentingOn(log)}
+                                className="px-2.5 py-1.5 rounded-md text-xs font-semibold text-on-surface-muted border border-outline hover:bg-surface-2 transition-colors"
+                                title="Open the comments thread">
+                                <MessageSquare size={12} className="inline mr-1" />Discuss
                               </button>
                               <button onClick={() => setRejecting(log)}
                                 className="px-2.5 py-1.5 rounded-md text-xs font-semibold text-danger border border-danger/30 hover:bg-danger-container transition-colors">
@@ -326,7 +381,14 @@ export default function HoursApproval() {
                               </button>
                             </div>
                           ) : (
-                            <span className="text-xs text-on-surface-subtle">{log.reviewed_by_name || '—'}</span>
+                            <div className="inline-flex items-center gap-2">
+                              <button onClick={() => setCommentingOn(log)}
+                                className="px-2 py-1 rounded-md text-[11px] font-semibold text-on-surface-muted border border-outline hover:bg-surface-2 transition-colors"
+                                title="Open the comments thread">
+                                <MessageSquare size={11} className="inline mr-1" />Discuss
+                              </button>
+                              <span className="text-xs text-on-surface-subtle">{log.reviewed_by_name || '—'}</span>
+                            </div>
                           )}
                         </td>
                       </tr>
@@ -344,6 +406,23 @@ export default function HoursApproval() {
           log={rejecting}
           onClose={() => setRejecting(null)}
           onConfirm={reason => reject(rejecting, reason)}
+        />
+      )}
+
+      {holding && (
+        <HoldModal
+          log={holding}
+          onClose={() => setHolding(null)}
+          onConfirm={note => hold(holding, note)}
+        />
+      )}
+
+      {commentingOn && (
+        <CommentsModal
+          log={commentingOn}
+          currentUser={{ id: reviewerEmpId ?? user?.id ?? '', name: user?.name ?? '', role: user?.role ?? '' }}
+          onClose={() => setCommentingOn(null)}
+          onAfterPost={load}
         />
       )}
     </div>
@@ -383,11 +462,151 @@ function StatusPill({ status }: { status: string }) {
     ? { label: 'Approved', className: 'bg-success-container text-success' }
     : status === 'rejected'
     ? { label: 'Rejected', className: 'bg-danger-container text-danger' }
-    : { label: 'Pending', className: 'bg-warning-container text-warning' };
+    : status === 'on_hold'
+    ? { label: 'On hold',  className: 'bg-accent/15 text-accent' }
+    : { label: 'Pending',  className: 'bg-warning-container text-warning' };
   return (
     <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium ${cfg.className}`}>
       {cfg.label}
     </span>
+  );
+}
+
+// Hold modal — reviewer parks the log instead of approving or rejecting
+// outright. The note becomes the first comment on the thread so the
+// employee sees exactly what's being asked. Keep the language soft —
+// "ask for clarification", not "reject" — since on_hold is recoverable.
+function HoldModal({ log, onClose, onConfirm }: { log: HourLog; onClose: () => void; onConfirm: (note: string) => void }) {
+  const [note, setNote] = useState('');
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-bg/55 backdrop-blur-sm p-4">
+      <div className="bg-surface rounded-2xl shadow-elev-4 border border-outline w-full max-w-md">
+        <div className="flex items-center justify-between px-6 py-5 border-b border-outline">
+          <h3 className="font-display text-lg font-semibold text-on-surface inline-flex items-center gap-2">
+            <PauseCircle size={18} className="text-accent" /> Put on hold
+          </h3>
+          <button onClick={onClose} className="p-1.5 hover:bg-surface-2 rounded-lg"><X size={16} className="text-on-surface-muted" /></button>
+        </div>
+        <div className="p-6 space-y-3">
+          <p className="text-sm text-on-surface-muted">
+            Parking <span className="num-mono font-medium text-on-surface">{log.hours_logged}h</span> from{' '}
+            <span className="font-medium text-on-surface">{log.employee_name}</span> on{' '}
+            <span className="font-medium text-on-surface">{log.project_name}</span> (W{log.week_num}).
+            They'll get notified and can reply on the thread.
+          </p>
+          <div>
+            <label className="text-xs font-medium text-on-surface-muted mb-1.5 block">What do you need clarified? *</label>
+            <textarea value={note} onChange={e => setNote(e.target.value)} rows={4}
+              placeholder="e.g. The post on Wednesday — can you share the link and which client it was for?"
+              className="w-full bg-surface border border-outline rounded-lg px-3 py-2.5 text-sm text-on-surface focus:outline-none focus:ring-2 focus:ring-accent/30 resize-none" />
+          </div>
+        </div>
+        <div className="px-6 py-4 border-t border-outline flex justify-end gap-2">
+          <button onClick={onClose} className="px-4 py-2 text-sm font-medium text-on-surface-muted hover:bg-surface-2 rounded-lg transition-colors">Cancel</button>
+          <button onClick={() => note.trim() && onConfirm(note.trim())} disabled={!note.trim()}
+            className="px-4 py-2 text-sm font-semibold text-white rounded-lg disabled:opacity-50 bg-accent hover:opacity-90 transition-colors">
+            Put on hold
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// Comments thread modal — loads the full back-and-forth for one log and
+// lets the viewer add a reply. Used by reviewer (to ask for justification
+// without flipping status), employee (to respond), or anyone else with
+// access. Each side gets pinged on the other's reply via the POST
+// endpoint's notification logic, so this is the entire conversation.
+function CommentsModal({ log, currentUser, onClose, onAfterPost }: {
+  log: HourLog;
+  currentUser: { id: string; name: string; role: string };
+  onClose: () => void;
+  onAfterPost: () => void;
+}) {
+  const [comments, setComments] = useState<HourLogComment[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [draft, setDraft] = useState('');
+  const [posting, setPosting] = useState(false);
+
+  const refresh = useCallback(() => {
+    setLoading(true);
+    api.getHourLogComments(log.id)
+      .then(setComments)
+      .catch(() => {})
+      .finally(() => setLoading(false));
+  }, [log.id]);
+  useEffect(refresh, [refresh]);
+
+  const post = async () => {
+    if (!draft.trim()) return;
+    setPosting(true);
+    try {
+      await api.addHourLogComment(log.id, {
+        author_id: currentUser.id,
+        author_name: currentUser.name,
+        author_role: currentUser.role,
+        body: draft.trim(),
+      });
+      setDraft('');
+      refresh();
+      onAfterPost();
+    } catch (e: any) { alert(e?.message ?? 'Failed to post comment'); }
+    finally { setPosting(false); }
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-bg/55 backdrop-blur-sm p-4">
+      <div className="bg-surface rounded-2xl shadow-elev-4 border border-outline w-full max-w-lg flex flex-col max-h-[85vh]">
+        <div className="flex items-center justify-between px-6 py-5 border-b border-outline">
+          <div>
+            <h3 className="font-display text-lg font-semibold text-on-surface inline-flex items-center gap-2">
+              <MessageSquare size={18} className="text-accent" /> Discussion
+            </h3>
+            <p className="text-xs text-on-surface-muted mt-0.5">
+              {log.employee_name} · {log.project_name} · W{log.week_num} · <span className="num-mono">{log.hours_logged}h</span>
+            </p>
+          </div>
+          <button onClick={onClose} className="p-1.5 hover:bg-surface-2 rounded-lg"><X size={16} className="text-on-surface-muted" /></button>
+        </div>
+        <div className="p-6 space-y-3 overflow-y-auto flex-1 bg-surface-2/30">
+          {loading ? (
+            <p className="text-sm text-on-surface-subtle text-center py-8">Loading…</p>
+          ) : comments.length === 0 ? (
+            <p className="text-sm text-on-surface-subtle text-center py-8">
+              No comments yet. Start the conversation below — useful when a specific DSR task needs justification.
+            </p>
+          ) : (
+            comments.map(c => {
+              const isMe = !!c.author_id && c.author_id === currentUser.id;
+              return (
+                <div key={c.id} className={`flex ${isMe ? 'justify-end' : 'justify-start'}`}>
+                  <div className={`max-w-[80%] rounded-2xl px-3.5 py-2 text-sm ${isMe ? 'bg-accent text-on-accent' : 'bg-surface border border-outline text-on-surface'}`}>
+                    <div className={`text-[10px] font-semibold mb-0.5 ${isMe ? 'text-on-accent/80' : 'text-on-surface-muted'}`}>
+                      {c.author_name || 'Unknown'}{c.author_role ? ` · ${c.author_role}` : ''} · {ago(c.created_at)}
+                    </div>
+                    <div className="whitespace-pre-line leading-snug">{c.body}</div>
+                  </div>
+                </div>
+              );
+            })
+          )}
+        </div>
+        <div className="px-6 py-4 border-t border-outline">
+          <div className="flex items-end gap-2">
+            <textarea value={draft} onChange={e => setDraft(e.target.value)} rows={2}
+              placeholder="Add a comment…"
+              onKeyDown={e => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) post(); }}
+              className="flex-1 bg-surface border border-outline rounded-lg px-3 py-2 text-sm text-on-surface focus:outline-none focus:ring-2 focus:ring-accent/30 resize-none" />
+            <button onClick={post} disabled={!draft.trim() || posting}
+              className="px-3 py-2 rounded-lg text-sm font-semibold text-white bg-accent hover:opacity-90 disabled:opacity-50 transition-colors inline-flex items-center gap-1">
+              <Send size={13} /> {posting ? '…' : 'Send'}
+            </button>
+          </div>
+          <p className="text-[10px] text-on-surface-subtle mt-1.5">Tip: ⌘/Ctrl + Enter to send.</p>
+        </div>
+      </div>
+    </div>
   );
 }
 
