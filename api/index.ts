@@ -1268,6 +1268,10 @@ async function runStartupMigrations() {
     // approver_note tracks the final HR decision.
     await sql`ALTER TABLE leave_requests ADD COLUMN IF NOT EXISTS approver_note TEXT`;
     await sql`ALTER TABLE leave_requests ADD COLUMN IF NOT EXISTS manager_approver_note TEXT`;
+    // Sub-slot for half-day / short-leave so the manager knows WHEN inside
+    // the day. half_day → 'morning' | 'evening'. short_leave → 'q1'..'q4'.
+    // Null for full_day / unpaid where it's not meaningful.
+    await sql`ALTER TABLE leave_requests ADD COLUMN IF NOT EXISTS slot TEXT`;
     await sql`ALTER TABLE upsell_requests ALTER COLUMN requested_amount DROP NOT NULL`.catch(()=>{});
     // Optional total-hours cap per project (one-time / fixed-budget projects).
     // Null = uncapped / recurring.
@@ -4167,7 +4171,20 @@ app.get('/api/leave/requests', async (req, res) => {
 
 app.post('/api/leave/requests', async (req, res) => {
   try {
-    let { employee_id, employee_name, type, from_date, to_date, days, reason } = req.body;
+    let { employee_id, employee_name, type, from_date, to_date, days, reason, slot } = req.body;
+    // Slot validation: required for half_day / short_leave so the reviewer
+    // knows WHEN in the day; ignored for full-day types.
+    if (type === 'half_day') {
+      if (!['morning', 'evening'].includes(slot)) {
+        return res.status(400).json({ error: 'Pick which half — Morning or Evening.' });
+      }
+    } else if (type === 'short_leave') {
+      if (!['q1', 'q2', 'q3', 'q4'].includes(slot)) {
+        return res.status(400).json({ error: 'Pick which quarter of the day this short leave covers.' });
+      }
+    } else {
+      slot = null; // not meaningful for full_day / unpaid / optional
+    }
     // Same defensive resolution as WFH POST — prevents orphan rows with
     // empty employee_id that no manager can ever see.
     if (!employee_id || String(employee_id).trim() === '') {
@@ -4237,15 +4254,22 @@ app.post('/api/leave/requests', async (req, res) => {
 
     const id = `l_${Date.now()}`;
     const rows = await sql`
-      INSERT INTO leave_requests (id, employee_id, employee_name, type, from_date, to_date, days, reason, status, manager_status)
-      VALUES (${id}, ${employee_id}, ${employee_name}, ${type}, ${from_date}, ${to_date}, ${days}, ${reason}, 'pending', 'pending')
+      INSERT INTO leave_requests (id, employee_id, employee_name, type, from_date, to_date, days, reason, slot, status, manager_status)
+      VALUES (${id}, ${employee_id}, ${employee_name}, ${type}, ${from_date}, ${to_date}, ${days}, ${reason}, ${slot ?? null}, 'pending', 'pending')
       RETURNING *`;
     const from = new Date(from_date).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' });
     const to   = new Date(to_date).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' });
+    // Friendly slot suffix for the reviewer's notification ("half day · morning",
+    // "short leave · Q2") so they get context without opening the request.
+    const slotLabel = slot === 'morning' ? 'morning'
+      : slot === 'evening' ? 'evening'
+      : slot === 'q1' ? 'Q1' : slot === 'q2' ? 'Q2' : slot === 'q3' ? 'Q3' : slot === 'q4' ? 'Q4'
+      : null;
+    const typeLabel = `${type.replace('_',' ')}${slotLabel ? ` · ${slotLabel}` : ''}`;
     if (emp.reporting_manager_id) {
-      notifyEmployeeUser(emp.reporting_manager_id, 'leave_applied', 'New Leave Request', `${employee_name} applied for ${type.replace('_',' ')} leave (${from} – ${to})`).catch(()=>{});
+      notifyEmployeeUser(emp.reporting_manager_id, 'leave_applied', 'New Leave Request', `${employee_name} applied for ${typeLabel} leave (${from} – ${to})`).catch(()=>{});
     } else {
-      notifyAdminsAndHR('leave_applied', 'New Leave Request', `${employee_name} applied for ${type.replace('_',' ')} leave (${from} – ${to})`).catch(()=>{});
+      notifyAdminsAndHR('leave_applied', 'New Leave Request', `${employee_name} applied for ${typeLabel} leave (${from} – ${to})`).catch(()=>{});
     }
     res.status(201).json(rows[0]);
   } catch (err) { res.status(500).json({ error: 'Server error' }); }

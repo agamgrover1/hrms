@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import { Plus, Check, X, Clock, Calendar, User, ChevronDown, Edit3 } from 'lucide-react';
 import { api } from '../services/api';
+import { slotLabel } from '../utils/leaveLabel';
 import { useAuth } from '../context/AuthContext';
 
 function parseLocalDate(dateStr: string): Date {
@@ -204,10 +205,13 @@ function RejectReasonModal({
 }
 
 function ApplyModal({ onClose, onSubmit }: { onClose: () => void; onSubmit: (data: any) => void }) {
-  const [form, setForm] = useState({ type: 'full_day', from: '', to: '', reason: '' });
+  const defaultSlot = (t: string) => t === 'half_day' ? 'morning' : t === 'short_leave' ? 'q1' : '';
+  const [form, setForm] = useState({ type: 'full_day', slot: defaultSlot('full_day'), from: '', to: '', reason: '' });
+  const isSingleDay = form.type === 'half_day' || form.type === 'short_leave';
+  const needsSlot = isSingleDay;
   const handleSubmit = () => {
     if (!form.from || !form.to || !form.reason?.trim()) return;
-    const isSingleDay = form.type === 'half_day' || form.type === 'short_leave';
+    if (needsSlot && !form.slot) return;
     const countWorkingDays = (from: string, to: string) => {
       let count = 0, cur = from;
       while (cur <= to) {
@@ -219,11 +223,10 @@ function ApplyModal({ onClose, onSubmit }: { onClose: () => void; onSubmit: (dat
       return Math.max(1, count);
     };
     const days = isSingleDay ? 1 : countWorkingDays(form.from, form.to);
-    onSubmit({ ...form, days, from_date: form.from, to_date: form.to });
+    onSubmit({ ...form, days, from_date: form.from, to_date: form.to, slot: needsSlot ? form.slot : undefined });
     onClose();
   };
   const newTypes = leaveTypes.filter(t => !['casual', 'sick', 'earned'].includes(t.key));
-  const isSingleDay = form.type === 'half_day' || form.type === 'short_leave';
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 backdrop-blur-sm p-4">
       <div className="bg-surface rounded-xl-2 shadow-elev-3 w-full max-w-md p-6 border border-outline">
@@ -234,7 +237,10 @@ function ApplyModal({ onClose, onSubmit }: { onClose: () => void; onSubmit: (dat
         <div className="space-y-4">
           <div>
             <label className="text-xs font-medium text-on-surface-muted mb-1.5 block">Leave Type</label>
-            <select value={form.type} onChange={e => setForm(f => ({ ...f, type: e.target.value }))}
+            <select value={form.type} onChange={e => {
+                const t = e.target.value;
+                setForm(f => ({ ...f, type: t, slot: defaultSlot(t) }));
+              }}
               className="w-full border border-outline rounded-lg px-3 py-2.5 text-sm text-on-surface focus:outline-none focus:ring-2 focus:ring-brand/20 bg-surface">
               {newTypes.map(t => <option key={t.key} value={t.key}>{t.label}</option>)}
             </select>
@@ -243,6 +249,47 @@ function ApplyModal({ onClose, onSubmit }: { onClose: () => void; onSubmit: (dat
             {form.type === 'full_day' && <p className="text-xs text-on-brand-container mt-1">Uses 1 full day credit — carries forward if unused</p>}
             {form.type === 'unpaid' && <p className="text-xs text-danger mt-1">No credits deducted — attendance marked as Unpaid Leave</p>}
           </div>
+
+          {form.type === 'half_day' && (
+            <div>
+              <label className="text-xs font-medium text-on-surface-muted mb-1.5 block">Which half?</label>
+              <div className="grid grid-cols-2 gap-2">
+                {[{ k: 'morning', label: 'Morning' }, { k: 'evening', label: 'Evening' }].map(o => (
+                  <button key={o.k} type="button" onClick={() => setForm(f => ({ ...f, slot: o.k }))}
+                    className={`py-2 rounded-lg text-sm font-semibold border transition-colors ${
+                      form.slot === o.k
+                        ? 'bg-brand text-on-brand border-brand'
+                        : 'bg-surface text-on-surface-muted border-outline hover:bg-surface-2'
+                    }`}>
+                    {o.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+          {form.type === 'short_leave' && (
+            <div>
+              <label className="text-xs font-medium text-on-surface-muted mb-1.5 block">Which quarter of the day?</label>
+              <div className="grid grid-cols-4 gap-2">
+                {[
+                  { k: 'q1', label: 'Q1', sub: 'start' },
+                  { k: 'q2', label: 'Q2', sub: 'late AM' },
+                  { k: 'q3', label: 'Q3', sub: 'early PM' },
+                  { k: 'q4', label: 'Q4', sub: 'end' },
+                ].map(o => (
+                  <button key={o.k} type="button" onClick={() => setForm(f => ({ ...f, slot: o.k }))}
+                    className={`py-1.5 rounded-lg text-xs font-semibold border transition-colors flex flex-col items-center ${
+                      form.slot === o.k
+                        ? 'bg-brand text-on-brand border-brand'
+                        : 'bg-surface text-on-surface-muted border-outline hover:bg-surface-2'
+                    }`}>
+                    <span>{o.label}</span>
+                    <span className={`text-[9px] font-medium ${form.slot === o.k ? 'opacity-80' : 'opacity-60'}`}>{o.sub}</span>
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
           <div className={isSingleDay ? '' : 'grid grid-cols-2 gap-3'}>
             <div>
               <label className="text-xs font-medium text-on-surface-muted mb-1.5 block">{isSingleDay ? 'Date' : 'From'}</label>
@@ -883,7 +930,9 @@ export default function Leave() {
                         </div>
                       </td>
                       <td className="px-4 py-3">
-                        <span className={`text-xs px-2 py-1 rounded-full font-medium ${typeConfig?.color}`}>{typeConfig?.label}</span>
+                        <span className={`text-xs px-2 py-1 rounded-full font-medium ${typeConfig?.color}`}>
+                          {typeConfig?.label}{slotLabel(req.slot) ? ` · ${slotLabel(req.slot)}` : ''}
+                        </span>
                       </td>
                       <td className="px-4 py-3 text-sm text-on-surface-muted whitespace-nowrap">
                         <div className="flex items-center gap-1">

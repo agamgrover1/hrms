@@ -3,6 +3,7 @@ import {
   AreaChart, Area, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, PieChart, Pie, Cell
 } from 'recharts';
 import { Users, Calendar, DollarSign, TrendingUp, AlertCircle, CheckCircle2, UserCheck, Clock as ClockIcon, Wrench } from 'lucide-react';
+import { leaveTypeLabel } from '../utils/leaveLabel';
 import { Link } from 'react-router-dom';
 import { api } from '../services/api';
 import { useAuth } from '../context/AuthContext';
@@ -454,7 +455,7 @@ export default function Dashboard() {
                         </div>
                         <div className="min-w-0">
                           <p className="text-sm font-semibold text-on-surface truncate">{(l.employee_name ?? 'Employee').split(' ')[0]}</p>
-                          <p className="text-xs text-on-surface-muted capitalize truncate">{(l.type ?? '').replace(/_/g, ' ')} · {l.days}d</p>
+                          <p className="text-xs text-on-surface-muted capitalize truncate">{leaveTypeLabel(l.type, l.slot)} · {l.days}d</p>
                         </div>
                       </div>
                       <div className="flex gap-1.5 flex-shrink-0">

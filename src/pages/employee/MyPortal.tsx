@@ -4,6 +4,7 @@ import { Clock, Calendar, DollarSign, User, CheckCircle, XCircle, AlertCircle, P
 import MyRoleTab from '../../components/MyRoleTab';
 import TodoTab from '../../components/TodoTab';
 import MonthSelector, { monthLabel } from '../../components/MonthSelector';
+import { leaveTypeLabel } from '../../utils/leaveLabel';
 import HourLogCommentsModal from '../../components/HourLogCommentsModal';
 import { useAuth } from '../../context/AuthContext';
 import { api } from '../../services/api';
@@ -330,11 +331,16 @@ function ApplyLeaveModal({ onClose, onSubmit, balance, reportingManager }: { onC
     ? [{ key: 'half_day', label: 'Half Day' }, { key: 'short_leave', label: 'Short Leave' }, { key: 'unpaid', label: 'Unpaid Leave' }]
     : [{ key: 'full_day', label: 'Full Day' }, { key: 'half_day', label: 'Half Day' }, { key: 'short_leave', label: 'Short Leave' }, { key: 'unpaid', label: 'Unpaid Leave' }];
 
-  const [form, setForm] = useState({ type: availableTypes[0].key, from: '', to: '', reason: '' });
+  // Default slot per type so the form is valid the moment Half Day or Short
+  // Leave is picked — saves the user one extra click on the common case.
+  const defaultSlot = (t: string) => t === 'half_day' ? 'morning' : t === 'short_leave' ? 'q1' : '';
+  const [form, setForm] = useState({ type: availableTypes[0].key, slot: defaultSlot(availableTypes[0].key), from: '', to: '', reason: '' });
   const isSingleDay = form.type === 'half_day' || form.type === 'short_leave';
+  const needsSlot = isSingleDay;
 
   const handleSubmit = () => {
     if (!form.from || !form.reason?.trim()) return;
+    if (needsSlot && !form.slot) return;
     const countWorkingDays = (from: string, to: string) => {
       let count = 0, cur = from;
       while (cur <= to) {
@@ -346,7 +352,7 @@ function ApplyLeaveModal({ onClose, onSubmit, balance, reportingManager }: { onC
       return Math.max(1, count);
     };
     const days = isSingleDay ? 1 : countWorkingDays(form.from, form.to);
-    onSubmit({ ...form, days, from_date: form.from, to_date: isSingleDay ? form.from : form.to });
+    onSubmit({ ...form, days, from_date: form.from, to_date: isSingleDay ? form.from : form.to, slot: needsSlot ? form.slot : undefined });
     onClose();
   };
 
@@ -366,7 +372,13 @@ function ApplyLeaveModal({ onClose, onSubmit, balance, reportingManager }: { onC
         <div className="space-y-3">
           <div>
             <label className="text-xs font-medium text-on-surface-subtle mb-1.5 block">Leave Type</label>
-            <select value={form.type} onChange={e => setForm(f => ({ ...f, type: e.target.value }))}
+            <select value={form.type} onChange={e => {
+                const t = e.target.value;
+                // Reset slot to the new type's default so an old value
+                // (e.g. 'q3' lingering after switching from short_leave to
+                // half_day) doesn't get sent and trip the backend validator.
+                setForm(f => ({ ...f, type: t, slot: defaultSlot(t) }));
+              }}
               className="w-full border border-outline rounded-lg px-3 py-2.5 text-sm focus:outline-none bg-surface">
               {availableTypes.map(t => <option key={t.key} value={t.key}>{t.label}</option>)}
             </select>
@@ -375,6 +387,50 @@ function ApplyLeaveModal({ onClose, onSubmit, balance, reportingManager }: { onC
             {form.type === 'short_leave' && <p className="text-xs text-warning mt-1">Costs 1 short leave credit — this month: {balance?.short_leave ?? 0} remaining</p>}
             {form.type === 'unpaid' && <p className="text-xs text-danger mt-1">No credits deducted — attendance will be marked as Unpaid Leave</p>}
           </div>
+
+          {/* Slot selector — only meaningful for half-day / short-leave so it
+              renders conditionally. Pill buttons make the choice obvious at
+              a glance vs. another dropdown. */}
+          {form.type === 'half_day' && (
+            <div>
+              <label className="text-xs font-medium text-on-surface-subtle mb-1.5 block">Which half?</label>
+              <div className="grid grid-cols-2 gap-2">
+                {[{ k: 'morning', label: 'Morning' }, { k: 'evening', label: 'Evening' }].map(o => (
+                  <button key={o.k} type="button" onClick={() => setForm(f => ({ ...f, slot: o.k }))}
+                    className={`py-2 rounded-lg text-sm font-semibold border transition-colors ${
+                      form.slot === o.k
+                        ? 'bg-accent text-on-accent border-accent'
+                        : 'bg-surface text-on-surface-muted border-outline hover:bg-surface-2'
+                    }`}>
+                    {o.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+          {form.type === 'short_leave' && (
+            <div>
+              <label className="text-xs font-medium text-on-surface-subtle mb-1.5 block">Which quarter of the day?</label>
+              <div className="grid grid-cols-4 gap-2">
+                {[
+                  { k: 'q1', label: 'Q1', sub: 'start' },
+                  { k: 'q2', label: 'Q2', sub: 'late AM' },
+                  { k: 'q3', label: 'Q3', sub: 'early PM' },
+                  { k: 'q4', label: 'Q4', sub: 'end' },
+                ].map(o => (
+                  <button key={o.k} type="button" onClick={() => setForm(f => ({ ...f, slot: o.k }))}
+                    className={`py-1.5 rounded-lg text-xs font-semibold border transition-colors flex flex-col items-center ${
+                      form.slot === o.k
+                        ? 'bg-accent text-on-accent border-accent'
+                        : 'bg-surface text-on-surface-muted border-outline hover:bg-surface-2'
+                    }`}>
+                    <span>{o.label}</span>
+                    <span className={`text-[9px] font-medium ${form.slot === o.k ? 'opacity-80' : 'opacity-60'}`}>{o.sub}</span>
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
           <div className={isSingleDay ? '' : 'grid grid-cols-2 gap-3'}>
             <div>
               <label className="text-xs font-medium text-on-surface-subtle mb-1.5 block">{isSingleDay ? 'Date' : 'From'}</label>
@@ -2646,7 +2702,7 @@ export default function MyPortal() {
                       <div>
                         <p className="text-sm font-semibold text-on-surface">{l.employee_name}</p>
                         <p className="text-xs text-on-surface-subtle mt-0.5 capitalize">
-                          {l.type.replace('_', ' ')} leave · {l.days}d ·{' '}
+                          {leaveTypeLabel(l.type, l.slot)} leave · {l.days}d ·{' '}
                           {parseLocalDate(l.from_date).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' })}
                           {l.from_date !== l.to_date && ` – ${parseLocalDate(l.to_date).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' })}`}
                         </p>
@@ -2801,7 +2857,7 @@ export default function MyPortal() {
                                         : '—';
                                       return (
                                         <tr key={l.id} className="border-b border-gray-50 last:border-0">
-                                          <td className="px-3 py-2.5 capitalize text-on-surface-muted font-medium">{l.type.replace('_', ' ')}</td>
+                                          <td className="px-3 py-2.5 capitalize text-on-surface-muted font-medium">{leaveTypeLabel(l.type, l.slot)}</td>
                                           <td className="px-3 py-2.5 text-on-surface-muted whitespace-nowrap">
                                             {parseLocalDate(l.from_date).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' })}
                                             {l.from_date !== l.to_date && ` – ${parseLocalDate(l.to_date).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' })}`}
