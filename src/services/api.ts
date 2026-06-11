@@ -704,6 +704,24 @@ export const api = {
   ackFeature: (id: string) =>
     request(`/features/${id}/ack`, { method: 'POST' }),
 
+  // ── Granular permissions ─────────────────────────────────────────────
+  getPermissionModules: () =>
+    request<Array<{ id: string; label: string; group_label: string | null; has_approve: boolean; display_order: number; description: string | null }>>(`/permissions/modules`),
+  getUserPermissions: (userId: string) =>
+    request<{
+      user: { id: string; name: string; email: string; role: string };
+      grid: Array<{
+        module_id: string; label: string; group_label: string | null; has_approve: boolean;
+        can_read: boolean; can_create: boolean; can_modify: boolean; can_delete: boolean; can_approve: boolean;
+        is_override: boolean;
+        default_can_read: boolean; default_can_create: boolean; default_can_modify: boolean; default_can_delete: boolean; default_can_approve: boolean;
+      }>;
+    }>(`/permissions/user/${userId}`),
+  saveUserPermissions: (userId: string, overrides: Array<{ module_id: string; can_read?: boolean; can_create?: boolean; can_modify?: boolean; can_delete?: boolean; can_approve?: boolean; clear?: boolean }>) =>
+    request<{ ok: boolean }>(`/permissions/user/${userId}`, { method: 'PUT', body: JSON.stringify({ overrides }) }),
+  getMyPermissions: () =>
+    request<{ admin: true } | { admin: false; permissions: Record<string, { read: boolean; create: boolean; modify: boolean; delete: boolean; approve: boolean }> }>(`/permissions/me`),
+
   // ── Allocation change requests ───────────────────────────────────────
   getAllocationRequests: (params: { status?: string; project_id?: string } = {}) => {
     const qs = new URLSearchParams();

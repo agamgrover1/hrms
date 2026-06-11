@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { Plus, Edit2, Trash2, X, Eye, EyeOff, Shield, Users, UserCheck, Search, ToggleLeft, ToggleRight, Briefcase } from 'lucide-react';
+import { Plus, Edit2, Trash2, X, Eye, EyeOff, Shield, Users, UserCheck, Search, ToggleLeft, ToggleRight, Briefcase, KeyRound, Check } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import type { AppUser, Role } from '../context/AuthContext';
 import { departments } from '../data/mockData';
@@ -159,6 +159,8 @@ export default function UserManagement() {
   const [roleFilter, setRoleFilter] = useState<Role | 'all'>('all');
   const [modal, setModal] = useState<{ mode: 'create' | 'edit'; user?: AppUser } | null>(null);
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
+  // Permissions editor — target user id whose grid is being edited.
+  const [permsTargetId, setPermsTargetId] = useState<string | null>(null);
   const [toast, setToast] = useState('');
 
   const showToast = (msg: string) => {
@@ -323,13 +325,22 @@ export default function UserManagement() {
                       <button
                         onClick={() => setModal({ mode: 'edit', user: u })}
                         className="p-1.5 text-on-surface-muted hover:text-on-surface hover:bg-surface-2 rounded-lg transition-colors"
+                        title="Edit user"
                       >
                         <Edit2 size={14} />
+                      </button>
+                      <button
+                        onClick={() => setPermsTargetId(u.id)}
+                        className="p-1.5 text-on-surface-muted hover:text-accent hover:bg-surface-2 rounded-lg transition-colors"
+                        title="Manage permissions"
+                      >
+                        <KeyRound size={14} />
                       </button>
                       {u.id !== currentUser?.id && (
                         <button
                           onClick={() => setConfirmDelete(u.id)}
                           className="p-1.5 text-on-surface-muted hover:text-danger hover:bg-surface-2 rounded-lg transition-colors"
+                          title="Delete user"
                         >
                           <Trash2 size={14} />
                         </button>
@@ -371,6 +382,230 @@ export default function UserManagement() {
           </div>
         </div>
       )}
+
+      {permsTargetId && (
+        <PermissionsModal
+          userId={permsTargetId}
+          onClose={() => setPermsTargetId(null)}
+        />
+      )}
+    </div>
+  );
+}
+
+// Per-user permission grid editor. Loads the current effective grid from
+// the server (which folds role defaults + any existing overrides), lets
+// the admin tick/untick verbs per module, and PUTs back a list of
+// overrides. Sending a row with `clear: true` removes the override so
+// the user falls back to the role default for that module.
+function PermissionsModal({ userId, onClose }: { userId: string; onClose: () => void }) {
+  const [data, setData] = useState<Awaited<ReturnType<typeof api.getUserPermissions>> | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState('');
+  const [search, setSearch] = useState('');
+
+  useEffect(() => {
+    setLoading(true);
+    api.getUserPermissions(userId)
+      .then(setData)
+      .catch(e => setError(e?.message ?? 'Failed to load permissions'))
+      .finally(() => setLoading(false));
+  }, [userId]);
+
+  const toggle = (moduleId: string, verb: 'can_read' | 'can_create' | 'can_modify' | 'can_delete' | 'can_approve') => {
+    setData(prev => {
+      if (!prev) return prev;
+      return {
+        ...prev,
+        grid: prev.grid.map(row =>
+          row.module_id === moduleId
+            ? { ...row, [verb]: !row[verb], is_override: true }
+            : row
+        ),
+      };
+    });
+  };
+
+  // "Reset to role default" — restores the row to defaults AND marks it
+  // for deletion on save so the override row is removed server-side.
+  const resetRow = (moduleId: string) => {
+    setData(prev => {
+      if (!prev) return prev;
+      return {
+        ...prev,
+        grid: prev.grid.map(row =>
+          row.module_id === moduleId
+            ? {
+                ...row,
+                can_read:    row.default_can_read,
+                can_create:  row.default_can_create,
+                can_modify:  row.default_can_modify,
+                can_delete:  row.default_can_delete,
+                can_approve: row.default_can_approve,
+                is_override: false,
+              }
+            : row
+        ),
+      };
+    });
+  };
+
+  const save = async () => {
+    if (!data) return;
+    setSaving(true); setError('');
+    try {
+      // Build the overrides payload. For each row:
+      //  - If it now matches the defaults exactly → clear the override.
+      //  - Otherwise → persist as an override.
+      const overrides = data.grid.map(r => {
+        const matchesDefault =
+          r.can_read    === r.default_can_read &&
+          r.can_create  === r.default_can_create &&
+          r.can_modify  === r.default_can_modify &&
+          r.can_delete  === r.default_can_delete &&
+          r.can_approve === r.default_can_approve;
+        if (matchesDefault) return { module_id: r.module_id, clear: true };
+        return {
+          module_id: r.module_id,
+          can_read: r.can_read, can_create: r.can_create, can_modify: r.can_modify,
+          can_delete: r.can_delete, can_approve: r.can_approve,
+        };
+      });
+      await api.saveUserPermissions(userId, overrides);
+      onClose();
+    } catch (e: any) { setError(e?.message ?? 'Failed to save'); }
+    finally { setSaving(false); }
+  };
+
+  // Group rows by group_label for readability — admin scans by area
+  // ("HR", "Projects") rather than alphabetical module list.
+  const grouped = data?.grid.reduce<Record<string, typeof data.grid>>((acc, row) => {
+    const g = row.group_label ?? 'Other';
+    if (!acc[g]) acc[g] = [];
+    if (!search.trim() || row.label.toLowerCase().includes(search.toLowerCase().trim())) {
+      acc[g].push(row);
+    }
+    return acc;
+  }, {});
+  const groupOrder = ['Overview', 'People', 'HR', 'Projects', 'Finance', 'IT', 'Admin', 'Personal', 'Other'];
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm p-4">
+      <div className="bg-surface rounded-2xl shadow-2xl w-full max-w-4xl max-h-[92vh] flex flex-col border border-outline">
+        <div className="flex items-center justify-between px-6 py-4 border-b border-outline">
+          <div>
+            <h2 className="font-display text-lg font-bold text-on-surface inline-flex items-center gap-2">
+              <Shield size={18} className="text-accent" /> Permissions
+            </h2>
+            {data && (
+              <p className="text-[11px] text-on-surface-muted mt-0.5">
+                <span className="font-semibold text-on-surface">{data.user.name}</span> · {data.user.email} · role: <span className="font-semibold">{data.user.role}</span>
+                <span className="ml-3 text-on-surface-subtle">Tick the verbs this person should be able to do per module. Empty row = no access.</span>
+              </p>
+            )}
+          </div>
+          <button onClick={onClose}><X size={16} className="text-on-surface-subtle" /></button>
+        </div>
+
+        <div className="px-6 py-3 border-b border-outline">
+          <div className="relative max-w-xs">
+            <Search size={13} className="absolute left-3 top-1/2 -translate-y-1/2 text-on-surface-subtle" />
+            <input value={search} onChange={e => setSearch(e.target.value)}
+              placeholder="Filter modules…"
+              className="w-full pl-9 pr-3 py-2 text-sm bg-surface border border-outline rounded-lg focus:outline-none focus:ring-2 focus:ring-accent/30" />
+          </div>
+        </div>
+
+        <div className="flex-1 overflow-y-auto px-2">
+          {loading ? (
+            <p className="text-center text-sm text-on-surface-subtle py-12">Loading permissions…</p>
+          ) : !data ? (
+            <p className="text-center text-sm text-danger py-12">Failed to load.</p>
+          ) : (
+            <table className="w-full text-sm">
+              <thead className="sticky top-0 bg-surface z-10">
+                <tr className="text-[10px] uppercase tracking-wider text-on-surface-subtle">
+                  <th className="px-4 py-2 text-left font-bold">Module</th>
+                  <th className="px-2 py-2 text-center font-bold w-16">Read</th>
+                  <th className="px-2 py-2 text-center font-bold w-16">Create</th>
+                  <th className="px-2 py-2 text-center font-bold w-16">Modify</th>
+                  <th className="px-2 py-2 text-center font-bold w-16">Delete</th>
+                  <th className="px-2 py-2 text-center font-bold w-16">Approve</th>
+                  <th className="px-4 py-2 text-right font-bold w-24">{/* reset */}</th>
+                </tr>
+              </thead>
+              <tbody>
+                {groupOrder.map(g => {
+                  const rows = grouped?.[g];
+                  if (!rows || rows.length === 0) return null;
+                  return (
+                    <tbody key={g}>
+                      <tr>
+                        <td colSpan={7} className="px-4 pt-4 pb-1 text-[10px] uppercase tracking-[0.16em] font-bold text-on-surface-subtle bg-surface-2/40">
+                          {g}
+                        </td>
+                      </tr>
+                      {rows.map(row => (
+                        <tr key={row.module_id} className={`border-b border-outline ${row.is_override ? 'bg-accent/5' : ''} hover:bg-surface-2/40`}>
+                          <td className="px-4 py-2">
+                            <p className="font-semibold text-on-surface text-sm">{row.label}</p>
+                            {row.is_override && (
+                              <p className="text-[10px] text-accent">Customized — overriding role default</p>
+                            )}
+                          </td>
+                          {(['can_read','can_create','can_modify','can_delete','can_approve'] as const).map(verb => {
+                            const disabled = verb === 'can_approve' && !row.has_approve;
+                            return (
+                              <td key={verb} className="px-2 py-2 text-center">
+                                {disabled ? (
+                                  <span className="text-on-surface-subtle text-xs">—</span>
+                                ) : (
+                                  <button onClick={() => toggle(row.module_id, verb)}
+                                    className={`w-6 h-6 inline-flex items-center justify-center rounded-md border transition-colors ${
+                                      row[verb]
+                                        ? 'bg-accent border-accent text-on-accent'
+                                        : 'bg-surface border-outline text-on-surface-subtle hover:border-accent'
+                                    }`}>
+                                    {row[verb] && <Check size={12} strokeWidth={3} />}
+                                  </button>
+                                )}
+                              </td>
+                            );
+                          })}
+                          <td className="px-4 py-2 text-right">
+                            {row.is_override && (
+                              <button onClick={() => resetRow(row.module_id)}
+                                className="text-[10px] font-semibold text-on-surface-muted hover:text-accent hover:underline">
+                                Reset
+                              </button>
+                            )}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  );
+                })}
+              </tbody>
+            </table>
+          )}
+        </div>
+
+        <div className="px-6 py-3 border-t border-outline flex items-center justify-between gap-2">
+          <p className="text-[10px] text-on-surface-subtle">
+            Tip: rows tinted accent are customized. Hit Reset on a row to fall back to <span className="font-semibold">{data?.user.role}</span>'s defaults.
+          </p>
+          {error && <p className="text-xs text-danger flex-shrink-0">{error}</p>}
+          <div className="flex gap-2">
+            <button onClick={onClose} disabled={saving}
+              className="px-4 py-2 text-sm font-medium text-on-surface-muted hover:bg-surface-2 rounded-lg disabled:opacity-50">Cancel</button>
+            <button onClick={save} disabled={saving || loading}
+              className="px-4 py-2 text-sm font-semibold bg-accent text-on-accent rounded-lg disabled:opacity-50">
+              {saving ? 'Saving…' : 'Save changes'}
+            </button>
+          </div>
+        </div>
+      </div>
     </div>
   );
 }

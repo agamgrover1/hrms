@@ -1044,6 +1044,153 @@ async function runStartupMigrations() {
   await sql`CREATE INDEX IF NOT EXISTS idx_todo_assignee_status ON todo_tasks(assignee_id, status, due_date)`.catch(()=>{});
   await sql`CREATE INDEX IF NOT EXISTS idx_todo_created_by ON todo_tasks(created_by_id, status)`.catch(()=>{});
 
+  // ─── Granular permissions ──────────────────────────────────────────────
+  // Roles (admin/hr_manager/project_coordinator/employee) stay as presets;
+  // permission_modules is the catalog of feature areas, role_default_perms
+  // is the matrix that each role gets out of the box, and
+  // user_permission_overrides lets an admin tweak a specific user's grid
+  // without touching the role default. The effective permission for a user
+  // on a module is: override (if exists) ELSE role default ELSE all false.
+  await sql`
+    CREATE TABLE IF NOT EXISTS permission_modules (
+      id TEXT PRIMARY KEY,
+      label TEXT NOT NULL,
+      group_label TEXT,
+      description TEXT,
+      has_approve BOOLEAN NOT NULL DEFAULT FALSE,
+      display_order INTEGER NOT NULL DEFAULT 0
+    )`;
+  await sql`
+    CREATE TABLE IF NOT EXISTS role_default_permissions (
+      role TEXT NOT NULL,
+      module_id TEXT NOT NULL,
+      can_read BOOLEAN NOT NULL DEFAULT FALSE,
+      can_create BOOLEAN NOT NULL DEFAULT FALSE,
+      can_modify BOOLEAN NOT NULL DEFAULT FALSE,
+      can_delete BOOLEAN NOT NULL DEFAULT FALSE,
+      can_approve BOOLEAN NOT NULL DEFAULT FALSE,
+      PRIMARY KEY (role, module_id)
+    )`;
+  await sql`
+    CREATE TABLE IF NOT EXISTS user_permission_overrides (
+      user_id TEXT NOT NULL,
+      module_id TEXT NOT NULL,
+      can_read BOOLEAN NOT NULL DEFAULT FALSE,
+      can_create BOOLEAN NOT NULL DEFAULT FALSE,
+      can_modify BOOLEAN NOT NULL DEFAULT FALSE,
+      can_delete BOOLEAN NOT NULL DEFAULT FALSE,
+      can_approve BOOLEAN NOT NULL DEFAULT FALSE,
+      updated_at TIMESTAMPTZ DEFAULT NOW(),
+      updated_by TEXT,
+      PRIMARY KEY (user_id, module_id)
+    )`;
+  // Seed the module catalog once. Idempotent via ON CONFLICT — re-runs
+  // won't duplicate or clobber labels admins might want to rename later.
+  const SEED_MODULES = [
+    { id: 'dashboard',       label: 'Dashboard',           group: 'Overview',  approve: false },
+    { id: 'employees',       label: 'Employee Directory',  group: 'People',    approve: false },
+    { id: 'users',           label: 'User Management',     group: 'People',    approve: false },
+    { id: 'attendance',      label: 'Attendance',          group: 'HR',        approve: false },
+    { id: 'leaves',          label: 'Leaves',              group: 'HR',        approve: true  },
+    { id: 'wfh',             label: 'Work From Home',      group: 'HR',        approve: true  },
+    { id: 'payroll',         label: 'Payroll',             group: 'HR',        approve: false },
+    { id: 'performance',     label: 'Performance & Pulse', group: 'HR',        approve: false },
+    { id: 'projects',        label: 'Projects',            group: 'Projects',  approve: false },
+    { id: 'hours',           label: 'Project Hours',       group: 'Projects',  approve: false },
+    { id: 'hour-approvals',  label: 'Hour Approvals',      group: 'Projects',  approve: true  },
+    { id: 'finance',         label: 'Profitability',       group: 'Finance',   approve: false },
+    { id: 'invoices',        label: 'Invoices',            group: 'Finance',   approve: true  },
+    { id: 'expenses',        label: 'Expense Claims',      group: 'Finance',   approve: true  },
+    { id: 'incentives',      label: 'Incentives',          group: 'Finance',   approve: true  },
+    { id: 'assets',          label: 'Assets & Repairs',    group: 'IT',        approve: false },
+    { id: 'features',        label: 'Feature Announcements', group: 'Admin',   approve: true  },
+    { id: 'todos',           label: 'To-Do',               group: 'Personal',  approve: false },
+    { id: 'configuration',   label: 'Configuration',       group: 'Admin',     approve: false },
+  ];
+  for (let i = 0; i < SEED_MODULES.length; i++) {
+    const m = SEED_MODULES[i];
+    await sql`
+      INSERT INTO permission_modules (id, label, group_label, has_approve, display_order)
+      VALUES (${m.id}, ${m.label}, ${m.group}, ${m.approve}, ${i})
+      ON CONFLICT (id) DO NOTHING`;
+  }
+  // Seed role defaults. Idempotent. The matrix is generous on purpose so
+  // existing users keep working exactly as before — fine-grained restriction
+  // happens via per-user overrides. Admin gets everything. Employee gets
+  // self-service only (todos R/C/M/D; read on directory/projects).
+  const _T = true, _F = false;
+  type Row = [string, string, boolean, boolean, boolean, boolean, boolean];
+  const SEED_DEFAULTS: Row[] = [
+    // admin — everything
+    ...SEED_MODULES.map(m => ['admin', m.id, _T, _T, _T, _T, _T] as Row),
+    // hr_manager — full on people/HR + read on the rest
+    ['hr_manager', 'dashboard',      _T, _F, _F, _F, _F],
+    ['hr_manager', 'employees',      _T, _T, _T, _T, _F],
+    ['hr_manager', 'users',          _T, _T, _T, _T, _F],
+    ['hr_manager', 'attendance',     _T, _T, _T, _T, _F],
+    ['hr_manager', 'leaves',         _T, _T, _T, _T, _T],
+    ['hr_manager', 'wfh',            _T, _T, _T, _T, _T],
+    ['hr_manager', 'payroll',        _T, _T, _T, _T, _F],
+    ['hr_manager', 'performance',    _T, _T, _T, _T, _F],
+    ['hr_manager', 'projects',       _T, _F, _F, _F, _F],
+    ['hr_manager', 'hours',          _T, _F, _F, _F, _F],
+    ['hr_manager', 'hour-approvals', _T, _F, _F, _F, _F],
+    ['hr_manager', 'finance',        _F, _F, _F, _F, _F],
+    ['hr_manager', 'invoices',       _F, _F, _F, _F, _F],
+    ['hr_manager', 'expenses',       _T, _T, _T, _T, _T],
+    ['hr_manager', 'incentives',     _T, _T, _T, _T, _T],
+    ['hr_manager', 'assets',         _T, _T, _T, _F, _F],
+    ['hr_manager', 'features',       _T, _T, _T, _F, _F],
+    ['hr_manager', 'todos',          _T, _T, _T, _T, _F],
+    ['hr_manager', 'configuration',  _T, _F, _T, _F, _F],
+    // project_coordinator — owns projects + hours + invoices, reads rest
+    ['project_coordinator', 'dashboard',      _F, _F, _F, _F, _F],
+    ['project_coordinator', 'employees',      _T, _F, _F, _F, _F],
+    ['project_coordinator', 'users',          _F, _F, _F, _F, _F],
+    ['project_coordinator', 'attendance',     _T, _F, _F, _F, _F],
+    ['project_coordinator', 'leaves',         _T, _F, _F, _F, _F],
+    ['project_coordinator', 'wfh',            _T, _F, _F, _F, _F],
+    ['project_coordinator', 'payroll',        _F, _F, _F, _F, _F],
+    ['project_coordinator', 'performance',    _T, _F, _F, _F, _F],
+    ['project_coordinator', 'projects',       _T, _T, _T, _T, _F],
+    ['project_coordinator', 'hours',          _T, _T, _T, _T, _F],
+    ['project_coordinator', 'hour-approvals', _T, _T, _T, _T, _T],
+    ['project_coordinator', 'finance',        _F, _F, _F, _F, _F],
+    ['project_coordinator', 'invoices',       _T, _T, _T, _F, _F],
+    ['project_coordinator', 'expenses',       _T, _T, _F, _F, _F],
+    ['project_coordinator', 'incentives',     _T, _T, _F, _F, _F],
+    ['project_coordinator', 'assets',         _T, _F, _F, _F, _F],
+    ['project_coordinator', 'features',       _F, _F, _F, _F, _F],
+    ['project_coordinator', 'todos',          _T, _T, _T, _T, _F],
+    ['project_coordinator', 'configuration',  _F, _F, _F, _F, _F],
+    // employee — self-service only
+    ['employee', 'dashboard',      _F, _F, _F, _F, _F],
+    ['employee', 'employees',      _T, _F, _F, _F, _F],
+    ['employee', 'users',          _F, _F, _F, _F, _F],
+    ['employee', 'attendance',     _T, _T, _F, _F, _F],
+    ['employee', 'leaves',         _T, _T, _T, _T, _F],
+    ['employee', 'wfh',            _T, _T, _T, _T, _F],
+    ['employee', 'payroll',        _T, _F, _F, _F, _F],
+    ['employee', 'performance',    _T, _F, _F, _F, _F],
+    ['employee', 'projects',       _T, _F, _F, _F, _F],
+    ['employee', 'hours',          _T, _T, _T, _T, _F],
+    ['employee', 'hour-approvals', _F, _F, _F, _F, _F],
+    ['employee', 'finance',        _F, _F, _F, _F, _F],
+    ['employee', 'invoices',       _F, _F, _F, _F, _F],
+    ['employee', 'expenses',       _T, _T, _T, _T, _F],
+    ['employee', 'incentives',     _T, _T, _F, _F, _F],
+    ['employee', 'assets',         _T, _F, _F, _F, _F],
+    ['employee', 'features',       _F, _F, _F, _F, _F],
+    ['employee', 'todos',          _T, _T, _T, _T, _F],
+    ['employee', 'configuration',  _F, _F, _F, _F, _F],
+  ];
+  for (const [role, m, r, c, u, d, a] of SEED_DEFAULTS) {
+    await sql`
+      INSERT INTO role_default_permissions (role, module_id, can_read, can_create, can_modify, can_delete, can_approve)
+      VALUES (${role}, ${m}, ${r}, ${c}, ${u}, ${d}, ${a})
+      ON CONFLICT (role, module_id) DO NOTHING`;
+  }
+
   // ── Feature announcements ───────────────────────────────────────────────
   // Lightweight "What's new" mechanism. Anyone with admin/HR draft access
   // can write an announcement (title + body + optional image). Admin
@@ -3566,6 +3713,181 @@ app.post('/api/features/:id/ack', async (req, res) => {
       VALUES (${uid}, ${req.params.id})
       ON CONFLICT (user_id, feature_id) DO NOTHING`;
     res.json({ ok: true });
+  } catch (err: any) { res.status(500).json({ error: err.message ?? 'Server error' }); }
+});
+
+// ─────────────────────────────────────────────────────────────────────────
+// Granular per-user permissions
+// Roles stay as presets; this is the fine-grained layer on top.
+//   Effective(user, module, verb) =
+//     override_row(user_id, module_id).can_<verb>   IF exists
+//     ELSE role_default(user.role, module_id).can_<verb>
+//     ELSE false
+// userCan() implements the same logic so backend endpoints can gate on it
+// without each endpoint having to JOIN three tables.
+// ─────────────────────────────────────────────────────────────────────────
+
+type PermVerb = 'read' | 'create' | 'modify' | 'delete' | 'approve';
+
+async function userCan(userId: string, moduleId: string, verb: PermVerb): Promise<boolean> {
+  if (!userId) return false;
+  const u = (await sql`SELECT role FROM app_users WHERE id=${userId}`)[0] as any;
+  if (!u) return false;
+  // Admin always allowed — defensive backstop so a misconfigured override
+  // can't lock the org out of itself.
+  if (u.role === 'admin') return true;
+  const col = `can_${verb}`;
+  const override = (await sql`
+    SELECT can_read, can_create, can_modify, can_delete, can_approve
+    FROM user_permission_overrides
+    WHERE user_id=${userId} AND module_id=${moduleId}`)[0] as any;
+  if (override) return !!override[col];
+  const def = (await sql`
+    SELECT can_read, can_create, can_modify, can_delete, can_approve
+    FROM role_default_permissions
+    WHERE role=${u.role} AND module_id=${moduleId}`)[0] as any;
+  if (def) return !!def[col];
+  return false;
+}
+
+// GET /api/permissions/modules — list the catalog. Admin-only since this
+// is the basis for the permissions admin UI; mortals don't need to see it.
+app.get('/api/permissions/modules', async (req, res) => {
+  try {
+    await runStartupMigrations();
+    const uid = req.header('x-user-id');
+    if (!uid) return res.status(401).json({ error: 'Sign in required' });
+    const u = (await sql`SELECT role FROM app_users WHERE id=${uid}`)[0] as any;
+    if (u?.role !== 'admin') return res.status(403).json({ error: 'Admin only' });
+    const rows = await sql`SELECT * FROM permission_modules ORDER BY display_order, label`;
+    res.json(rows);
+  } catch (err: any) { res.status(500).json({ error: err.message ?? 'Server error' }); }
+});
+
+// GET /api/permissions/user/:id — return the effective grid for one user,
+// plus a flag per row indicating whether it's a role default or an
+// override (so the UI can show which cells were customized).
+app.get('/api/permissions/user/:id', async (req, res) => {
+  try {
+    await runStartupMigrations();
+    const uid = req.header('x-user-id');
+    if (!uid) return res.status(401).json({ error: 'Sign in required' });
+    const me = (await sql`SELECT role FROM app_users WHERE id=${uid}`)[0] as any;
+    // Allow admin to read anyone; anyone else can read only their own grid
+    // (so an HR can see what they have access to, just can't edit it).
+    if (me?.role !== 'admin' && uid !== req.params.id) {
+      return res.status(403).json({ error: 'Not permitted' });
+    }
+    const target = (await sql`SELECT id, name, email, role FROM app_users WHERE id=${req.params.id}`)[0] as any;
+    if (!target) return res.status(404).json({ error: 'User not found' });
+    const modules = await sql`SELECT * FROM permission_modules ORDER BY display_order, label`;
+    const defaults = await sql`SELECT * FROM role_default_permissions WHERE role=${target.role}`;
+    const overrides = await sql`SELECT * FROM user_permission_overrides WHERE user_id=${req.params.id}`;
+    const defByMod: Record<string, any> = {};
+    (defaults as any[]).forEach(d => { defByMod[d.module_id] = d; });
+    const ovrByMod: Record<string, any> = {};
+    (overrides as any[]).forEach(o => { ovrByMod[o.module_id] = o; });
+    const grid = (modules as any[]).map(m => {
+      const o = ovrByMod[m.id];
+      const d = defByMod[m.id] ?? {};
+      const pick = (k: string) => (o ? o[k] : d[k]) ?? false;
+      return {
+        module_id: m.id, label: m.label, group_label: m.group_label, has_approve: m.has_approve,
+        can_read:    !!pick('can_read'),
+        can_create:  !!pick('can_create'),
+        can_modify:  !!pick('can_modify'),
+        can_delete:  !!pick('can_delete'),
+        can_approve: !!pick('can_approve'),
+        is_override: !!o,
+        // Expose the role defaults too so the UI can show "back to defaults"
+        // and highlight which cells deviated.
+        default_can_read:    !!d.can_read,
+        default_can_create:  !!d.can_create,
+        default_can_modify:  !!d.can_modify,
+        default_can_delete:  !!d.can_delete,
+        default_can_approve: !!d.can_approve,
+      };
+    });
+    res.json({ user: target, grid });
+  } catch (err: any) { res.status(500).json({ error: err.message ?? 'Server error' }); }
+});
+
+// PUT /api/permissions/user/:id — admin only. Body shape:
+//   { overrides: [ { module_id, can_read, can_create, can_modify, can_delete, can_approve, clear? }, ... ] }
+// `clear: true` deletes the override row so the user falls back to the
+// role default for that module. Anything else inserts/updates the override.
+app.put('/api/permissions/user/:id', async (req, res) => {
+  try {
+    const uid = req.header('x-user-id');
+    if (!uid) return res.status(401).json({ error: 'Sign in required' });
+    const me = (await sql`SELECT role, name FROM app_users WHERE id=${uid}`)[0] as any;
+    if (me?.role !== 'admin') return res.status(403).json({ error: 'Admin only' });
+    const target = (await sql`SELECT id FROM app_users WHERE id=${req.params.id}`)[0] as any;
+    if (!target) return res.status(404).json({ error: 'User not found' });
+    const overrides = (req.body?.overrides ?? []) as Array<any>;
+    if (!Array.isArray(overrides)) return res.status(400).json({ error: 'overrides must be an array' });
+
+    for (const o of overrides) {
+      const mid = String(o.module_id);
+      if (o.clear) {
+        await sql`DELETE FROM user_permission_overrides WHERE user_id=${req.params.id} AND module_id=${mid}`;
+        continue;
+      }
+      await sql`
+        INSERT INTO user_permission_overrides
+          (user_id, module_id, can_read, can_create, can_modify, can_delete, can_approve, updated_by)
+        VALUES (${req.params.id}, ${mid}, ${!!o.can_read}, ${!!o.can_create}, ${!!o.can_modify}, ${!!o.can_delete}, ${!!o.can_approve}, ${me.name ?? uid})
+        ON CONFLICT (user_id, module_id) DO UPDATE SET
+          can_read = EXCLUDED.can_read,
+          can_create = EXCLUDED.can_create,
+          can_modify = EXCLUDED.can_modify,
+          can_delete = EXCLUDED.can_delete,
+          can_approve = EXCLUDED.can_approve,
+          updated_at = NOW(),
+          updated_by = EXCLUDED.updated_by`;
+    }
+    res.json({ ok: true });
+  } catch (err: any) { res.status(500).json({ error: err.message ?? 'Server error' }); }
+});
+
+// GET /api/permissions/me — short-circuit for the frontend: returns the
+// CURRENT user's effective grid as a flat { moduleId: { read, ... } } map
+// the client can cache and gate UI on. Doesn't require admin.
+app.get('/api/permissions/me', async (req, res) => {
+  try {
+    await runStartupMigrations();
+    const uid = req.header('x-user-id');
+    if (!uid) return res.status(401).json({ error: 'Sign in required' });
+    const u = (await sql`SELECT role FROM app_users WHERE id=${uid}`)[0] as any;
+    if (!u) return res.status(401).json({ error: 'Unknown user' });
+    // Admin shortcut — return a sentinel the client can detect to skip
+    // the per-module check entirely.
+    if (u.role === 'admin') return res.json({ admin: true });
+    const modules = await sql`SELECT id FROM permission_modules`;
+    const defaults = await sql`SELECT module_id, can_read, can_create, can_modify, can_delete, can_approve
+                               FROM role_default_permissions WHERE role=${u.role}`;
+    const overrides = await sql`SELECT module_id, can_read, can_create, can_modify, can_delete, can_approve
+                                FROM user_permission_overrides WHERE user_id=${uid}`;
+    const map: Record<string, any> = {};
+    (defaults as any[]).forEach(d => {
+      map[d.module_id] = {
+        read: !!d.can_read, create: !!d.can_create, modify: !!d.can_modify,
+        delete: !!d.can_delete, approve: !!d.can_approve,
+      };
+    });
+    (overrides as any[]).forEach(o => {
+      map[o.module_id] = {
+        read: !!o.can_read, create: !!o.can_create, modify: !!o.can_modify,
+        delete: !!o.can_delete, approve: !!o.can_approve,
+      };
+    });
+    // Make sure every module has an entry even if neither default nor
+    // override was set (e.g. brand-new module added to the catalog and
+    // role defaults haven't been seeded for it yet).
+    (modules as any[]).forEach(m => {
+      if (!map[m.id]) map[m.id] = { read: false, create: false, modify: false, delete: false, approve: false };
+    });
+    res.json({ admin: false, permissions: map });
   } catch (err: any) { res.status(500).json({ error: err.message ?? 'Server error' }); }
 });
 
