@@ -14,6 +14,11 @@ const STATUS_CFG: Record<string, { label: string; bg: string; color: string; ico
   reported:           { label: 'Needs action',       bg: 'rgb(var(--warning-container))', color: 'rgb(var(--warning))',            icon: AlertTriangle },
   picked_up:          { label: 'Picked Up',         bg: 'rgb(var(--brand-container))',   color: 'rgb(var(--on-brand-container))', icon: Wrench },
   returned:           { label: 'Returned',          bg: 'rgb(var(--success-container))', color: 'rgb(var(--success))',            icon: CheckCircle },
+  // New step between Returned and Awaiting Approval. "Returned" means the
+  // device physically came back from the vendor; "Repair Done" means the
+  // person logging the ticket verified with the employee that the device
+  // actually works. Gives HR a paper trail before cost approval.
+  repair_done:        { label: 'Repair Done',       bg: 'rgb(var(--accent) / 0.12)',     color: 'rgb(var(--accent))',             icon: CheckCircle },
   awaiting_approval:  { label: 'Awaiting Approval', bg: 'rgb(var(--danger-container))',  color: 'rgb(var(--danger))',             icon: AlertTriangle },
   paid:               { label: 'Paid',              bg: 'rgb(var(--brand-container))',   color: 'rgb(var(--on-brand-container))', icon: DollarSign },
   cancelled:          { label: 'Cancelled',         bg: 'rgb(var(--surface-3))',         color: 'rgb(var(--on-surface-muted))',   icon: XCircle },
@@ -85,7 +90,7 @@ export default function AssetRepairs() {
 
   // ── Stats ───────────────────────────────────────────────────────────────
   const stats = useMemo(() => {
-    const inRepair = tickets.filter(t => ['picked_up', 'returned'].includes(t.status)).length;
+    const inRepair = tickets.filter(t => ['picked_up', 'returned', 'repair_done'].includes(t.status)).length;
     const unpaid   = tickets.filter(t => t.status !== 'paid' && t.status !== 'cancelled')
       .reduce((s, t) => s + Number(t.final_cost ?? t.quoted_cost ?? 0), 0);
     const awaiting = tickets.filter(t => t.status === 'awaiting_approval').length;
@@ -292,6 +297,7 @@ function TicketsTab({ tickets, vendors, assets, employees, vendorById, assetById
     reported: tickets.filter((t: any) => t.status === 'reported').length,
     picked_up: tickets.filter((t: any) => t.status === 'picked_up').length,
     returned: tickets.filter((t: any) => t.status === 'returned').length,
+    repair_done: tickets.filter((t: any) => t.status === 'repair_done').length,
     awaiting_approval: tickets.filter((t: any) => t.status === 'awaiting_approval').length,
     paid: tickets.filter((t: any) => t.status === 'paid').length,
   };
@@ -306,6 +312,7 @@ function TicketsTab({ tickets, vendors, assets, employees, vendorById, assetById
             { k: 'reported', label: 'Reported' },
             { k: 'picked_up', label: 'Picked Up' },
             { k: 'returned', label: 'Returned' },
+            { k: 'repair_done', label: 'Repair Done' },
             { k: 'awaiting_approval', label: 'Approval' },
             { k: 'paid', label: 'Paid' },
           ].map(({ k, label }) => (
@@ -415,6 +422,9 @@ function TicketsTab({ tickets, vendors, assets, employees, vendorById, assetById
                             <button onClick={() => onAction(t, 'returned')} className="text-[10px] font-bold px-2 py-1 rounded-lg bg-success-container text-success hover:opacity-80 transition-opacity">Mark Returned</button>
                           )}
                           {t.status === 'returned' && (
+                            <button onClick={() => onAction(t, 'repair_done')} className="text-[10px] font-bold px-2 py-1 rounded-lg" style={{ background: 'rgb(var(--accent) / 0.12)', color: 'rgb(var(--accent))' }}>Mark Repair Done</button>
+                          )}
+                          {t.status === 'repair_done' && (
                             <button onClick={() => onEdit(t)} className="text-[10px] font-bold px-2 py-1 rounded-lg bg-accent text-on-accent hover:opacity-90 transition-opacity">Pay</button>
                           )}
                           {t.status === 'awaiting_approval' && isAdmin && (
@@ -1105,7 +1115,7 @@ function TicketFormModal({ initial, employees, vendors, assets, currentUser, onC
           </div>
         </div>
 
-        {initial && initial.status === 'returned' && (
+        {initial && (initial.status === 'returned' || initial.status === 'repair_done') && (
           <>
             <div className="grid grid-cols-2 gap-3">
               <div>
@@ -1150,6 +1160,7 @@ function TicketFormModal({ initial, employees, vendors, assets, currentUser, onC
               <option value="reported">Reported</option>
               <option value="picked_up">Picked up</option>
               <option value="returned">Returned</option>
+              <option value="repair_done">Repair done</option>
               <option value="awaiting_approval">Awaiting approval</option>
               <option value="paid">Paid</option>
               <option value="cancelled">Cancelled</option>

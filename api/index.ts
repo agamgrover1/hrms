@@ -5786,6 +5786,11 @@ async function ensureRepairTables() {
   await sql`CREATE TABLE IF NOT EXISTS asset_categories (id TEXT PRIMARY KEY, name TEXT NOT NULL UNIQUE, created_at TIMESTAMPTZ DEFAULT NOW())`.catch(()=>{});
   await sql`ALTER TABLE assets ADD COLUMN IF NOT EXISTS category_id TEXT`.catch(()=>{});
   await sql`CREATE TABLE IF NOT EXISTS repair_tickets (id TEXT PRIMARY KEY, asset_id TEXT, laptop_info TEXT, employee_id TEXT, employee_name TEXT, vendor_id TEXT, issue TEXT NOT NULL, status TEXT DEFAULT 'reported', quoted_cost NUMERIC, final_cost NUMERIC, requires_approval BOOLEAN DEFAULT FALSE, approved_by TEXT, approved_at TIMESTAMPTZ, rejected_by TEXT, rejected_at TIMESTAMPTZ, rejection_reason TEXT, payment_status TEXT DEFAULT 'unpaid', payment_mode TEXT, payment_date DATE, notes TEXT, reported_at TIMESTAMPTZ DEFAULT NOW(), picked_up_at TIMESTAMPTZ, returned_at TIMESTAMPTZ, paid_at TIMESTAMPTZ, cancelled_at TIMESTAMPTZ, created_by TEXT, updated_at TIMESTAMPTZ DEFAULT NOW())`.catch(()=>{});
+  // New status `repair_done` slots between `returned` (laptop physically
+  // back from vendor) and `awaiting_approval` (cost about to be paid).
+  // Track when HR marked it verified-with-employee so the service trail
+  // shows the gap between "vendor returned" and "we confirmed it works".
+  await sql`ALTER TABLE repair_tickets ADD COLUMN IF NOT EXISTS repair_done_at TIMESTAMPTZ`.catch(()=>{});
   // Backfill: NULL reported_at on legacy tickets (POST used to insert literal
   // NULL which overrode the DEFAULT). Use updated_at as the best proxy we
   // have — slightly later than the actual report time but better than NULL.
@@ -6130,12 +6135,14 @@ app.patch('/api/repair-tickets/:id', async (req, res) => {
     // Status transitions — track timestamp on each move
     let newStatus = status ?? t.status;
     let pickedUpAt = t.picked_up_at, returnedAt = t.returned_at, paidAt = t.paid_at, cancelledAt = t.cancelled_at;
+    let repairDoneAt = t.repair_done_at;
     let requiresApproval = t.requires_approval;
 
     if (status && status !== t.status) {
       const now = new Date().toISOString();
       if (status === 'picked_up')        pickedUpAt = now;
       else if (status === 'returned')    returnedAt = now;
+      else if (status === 'repair_done') repairDoneAt = now;
       else if (status === 'cancelled')   cancelledAt = now;
       else if (status === 'paid') {
         // Approval check — admin can pay anything; HR needs admin approval above threshold
@@ -6162,6 +6169,7 @@ app.patch('/api/repair-tickets/:id', async (req, res) => {
         requires_approval=${requiresApproval},
         payment_status=${newStatus === 'paid' ? 'paid' : t.payment_status},
         picked_up_at=${pickedUpAt}, returned_at=${returnedAt},
+        repair_done_at=${repairDoneAt},
         paid_at=${paidAt}, cancelled_at=${cancelledAt},
         updated_at=NOW()
       WHERE id=${req.params.id} RETURNING *
@@ -6219,9 +6227,11 @@ app.patch('/api/repair-tickets/:id', async (req, res) => {
       });
     }
 
-    // Mark asset status accordingly
+    // Mark asset status accordingly. repair_done is bucketed with returned/
+    // paid — the device is physically usable again, the ticket just hasn't
+    // closed its payment stage.
     if (updated.asset_id) {
-      if (newStatus === 'returned' || newStatus === 'paid')
+      if (newStatus === 'returned' || newStatus === 'repair_done' || newStatus === 'paid')
         await sql`UPDATE assets SET status='active' WHERE id=${updated.asset_id}`.catch(()=>{});
       else if (newStatus === 'picked_up')
         await sql`UPDATE assets SET status='in_repair' WHERE id=${updated.asset_id}`.catch(()=>{});
@@ -6234,6 +6244,7 @@ app.patch('/api/repair-tickets/:id', async (req, res) => {
       const msgs: Record<string, string> = {
         picked_up: 'Your laptop has been picked up by the vendor for repair.',
         returned:  'Your laptop has been returned. Please verify it.',
+        repair_done: 'Your laptop repair has been verified as complete.',
         paid:      'Your laptop repair has been marked as paid. All done!',
         cancelled: 'Your repair ticket has been cancelled.',
         awaiting_approval: 'Your repair payment is awaiting admin approval due to high cost.',
