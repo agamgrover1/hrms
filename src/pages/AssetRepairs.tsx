@@ -354,7 +354,19 @@ function TicketsTab({ tickets, vendors, assets, employees, vendorById, assetById
                   return (
                     <tr key={t.id} className="border-t border-outline hover:bg-surface-2/60 align-top">
                       <td className="px-4 py-3">
-                        <p className="text-sm font-medium text-on-surface">{t.employee_name ?? '—'}</p>
+                        {t.employee_name ? (
+                          <p className="text-sm font-medium text-on-surface">{t.employee_name}</p>
+                        ) : t.asset_id ? (
+                          // Asset-only ticket — no employee. Use the asset's
+                          // identity as the row label so the table doesn't
+                          // read as an orphan "—".
+                          <p className="text-sm font-medium text-on-surface inline-flex items-center gap-1.5">
+                            <span className="text-[10px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded-md bg-surface-2 text-on-surface-muted border border-outline">📦 Asset</span>
+                            {asset?.asset_tag ?? 'Unassigned'}
+                          </p>
+                        ) : (
+                          <p className="text-sm font-medium text-on-surface">—</p>
+                        )}
                         {(() => {
                           const rel = fmtRelative(t.reported_at);
                           return (
@@ -859,6 +871,15 @@ function AssetFormModal({ initial, employees, onClose, onSaved }: any) {
 
 // ── Ticket form modal ─────────────────────────────────────────────────────
 function TicketFormModal({ initial, employees, vendors, assets, currentUser, onClose, onSaved }: any) {
+  // Subject of repair. 'employee' = an employee's currently assigned asset
+  // (existing flow). 'asset' = an unassigned asset — sitting in inventory,
+  // returned by someone who left, spare laptop in storage, etc. — that
+  // needs repair without a person being involved. When editing, derive
+  // from the row: if there's an asset but no employee, it's an asset ticket.
+  const initialSubject: 'employee' | 'asset' = initial
+    ? (initial.employee_id ? 'employee' : 'asset')
+    : 'employee';
+  const [subject, setSubject] = useState<'employee' | 'asset'>(initialSubject);
   const [form, setForm] = useState({
     employee_id: initial?.employee_id ?? '',
     asset_id:    initial?.asset_id ?? '',
@@ -907,17 +928,29 @@ function TicketFormModal({ initial, employees, vendors, assets, currentUser, onC
     [form.employee_id, assets]
   );
 
+  // Assets that aren't currently assigned to anyone. The "Unassigned asset"
+  // mode picks from this list — these are inventory / spare units / assets
+  // returned by people who left.
+  const unassignedAssets = useMemo(
+    () => assets.filter((a: any) => !a.assigned_to_id),
+    [assets]
+  );
+
   const handleSave = async () => {
-    if (!form.employee_id) { setError('Select an employee'); return; }
+    if (subject === 'employee' && !form.employee_id) { setError('Select an employee'); return; }
+    if (subject === 'asset' && !form.asset_id) { setError('Select an asset'); return; }
     if (!form.issue.trim()) { setError('Issue description is required'); return; }
     if (form.quoted_cost && Number(form.quoted_cost) < 0) { setError('Quoted cost cannot be negative'); return; }
     if (form.final_cost && Number(form.final_cost) < 0)   { setError('Final cost cannot be negative');   return; }
     setSaving(true); setError('');
     try {
-      const emp = employees.find((e: any) => e.id === form.employee_id);
+      const emp = subject === 'employee' ? employees.find((e: any) => e.id === form.employee_id) : null;
       const payload: any = {
-        employee_id: form.employee_id,
-        employee_name: emp?.name,
+        // Asset-mode tickets have no employee — server already accepts null
+        // here (employee_id is nullable on repair_tickets). We pass an empty
+        // string explicitly so the backend's null coalescing kicks in.
+        employee_id: subject === 'employee' ? form.employee_id : null,
+        employee_name: emp?.name ?? null,
         asset_id: form.asset_id || null,
         laptop_info: form.laptop_info || null,
         vendor_id: form.vendor_id || null,
@@ -948,21 +981,73 @@ function TicketFormModal({ initial, employees, vendors, assets, currentUser, onC
   const needsApproval = finalCostNum > APPROVAL_THRESHOLD;
 
   return (
-    <Modal title={initial ? `Edit Ticket — ${initial.employee_name ?? ''}` : 'New Repair Ticket'} onClose={onClose}>
+    <Modal title={initial ? `Edit Ticket — ${initial.employee_name ?? (initial.asset_id ? 'Unassigned asset' : '')}` : 'New Repair Ticket'} onClose={onClose}>
       <div className="space-y-3">
+        {/* Subject of repair toggle. Disabled when editing — switching mode
+            on an existing ticket would silently change what it's about. */}
         <div>
-          <label className="text-xs font-semibold text-on-surface-subtle block mb-1">Employee *</label>
-          <select value={form.employee_id} onChange={e => setForm({ ...form, employee_id: e.target.value, asset_id: '' })}
-            disabled={!!initial}
-            className="w-full text-sm border border-outline rounded-lg px-3 py-2 focus:outline-none focus:border-accent focus:ring-2 focus:ring-accent/20 bg-surface text-on-surface disabled:bg-surface-2 disabled:text-on-surface-subtle">
-            <option value="">— Select employee —</option>
-            {employees.filter((e: any) => e.status === 'active').map((e: any) => (
-              <option key={e.id} value={e.id}>{e.name} ({e.employee_id})</option>
-            ))}
-          </select>
+          <label className="text-xs font-semibold text-on-surface-subtle block mb-1.5">Subject of repair</label>
+          <div className="grid grid-cols-2 gap-2">
+            <button type="button" onClick={() => { setSubject('employee'); setForm(f => ({ ...f, asset_id: '' })); }}
+              disabled={!!initial}
+              className={`py-2 rounded-lg text-xs font-semibold border transition-colors ${
+                subject === 'employee'
+                  ? 'bg-accent text-on-accent border-accent'
+                  : 'bg-surface text-on-surface-muted border-outline hover:bg-surface-2'
+              } disabled:opacity-50 disabled:cursor-not-allowed`}>
+              👤 Employee's asset
+            </button>
+            <button type="button" onClick={() => { setSubject('asset'); setForm(f => ({ ...f, employee_id: '', asset_id: '' })); }}
+              disabled={!!initial}
+              className={`py-2 rounded-lg text-xs font-semibold border transition-colors ${
+                subject === 'asset'
+                  ? 'bg-accent text-on-accent border-accent'
+                  : 'bg-surface text-on-surface-muted border-outline hover:bg-surface-2'
+              } disabled:opacity-50 disabled:cursor-not-allowed`}>
+              📦 Unassigned asset
+            </button>
+          </div>
+          <p className="text-[10px] text-on-surface-subtle mt-1.5">
+            {subject === 'employee'
+              ? 'A device an employee is currently using — laptop, mouse, keyboard, etc.'
+              : 'A device sitting in inventory, returned by a former employee, or a spare unit that needs repair.'}
+          </p>
         </div>
 
-        {form.employee_id && employeeAssets.length > 0 && (
+        {subject === 'employee' && (
+          <div>
+            <label className="text-xs font-semibold text-on-surface-subtle block mb-1">Employee *</label>
+            <select value={form.employee_id} onChange={e => setForm({ ...form, employee_id: e.target.value, asset_id: '' })}
+              disabled={!!initial}
+              className="w-full text-sm border border-outline rounded-lg px-3 py-2 focus:outline-none focus:border-accent focus:ring-2 focus:ring-accent/20 bg-surface text-on-surface disabled:bg-surface-2 disabled:text-on-surface-subtle">
+              <option value="">— Select employee —</option>
+              {employees.filter((e: any) => e.status === 'active').map((e: any) => (
+                <option key={e.id} value={e.id}>{e.name} ({e.employee_id})</option>
+              ))}
+            </select>
+          </div>
+        )}
+
+        {subject === 'asset' && (
+          <div>
+            <label className="text-xs font-semibold text-on-surface-subtle block mb-1">Asset *</label>
+            <select value={form.asset_id} onChange={e => setForm({ ...form, asset_id: e.target.value })}
+              disabled={!!initial}
+              className="w-full text-sm border border-outline rounded-lg px-3 py-2 focus:outline-none focus:border-accent focus:ring-2 focus:ring-accent/20 bg-surface text-on-surface disabled:bg-surface-2 disabled:text-on-surface-subtle">
+              <option value="">— Select an unassigned asset —</option>
+              {unassignedAssets.map((a: any) => (
+                <option key={a.id} value={a.id}>{a.asset_tag} — {a.model ?? 'Unknown model'}</option>
+              ))}
+            </select>
+            {unassignedAssets.length === 0 && (
+              <p className="text-[10px] text-warning mt-1.5">
+                No unassigned assets in the registry. Add one in the Asset Registry tab first, or leave its "Assigned to" field empty.
+              </p>
+            )}
+          </div>
+        )}
+
+        {subject === 'employee' && form.employee_id && employeeAssets.length > 0 && (
           <div>
             <label className="text-xs font-semibold text-on-surface-subtle block mb-1">Laptop (from asset registry)</label>
             <select value={form.asset_id} onChange={e => setForm({ ...form, asset_id: e.target.value })}

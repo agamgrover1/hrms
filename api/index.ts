@@ -5942,7 +5942,12 @@ app.post('/api/repair-tickets', async (req, res) => {
       reported_at, status, payment_status, payment_date,
     } = req.body;
     if (!issue?.trim()) return res.status(400).json({ error: 'Issue description is required' });
-    if (!employee_id) return res.status(400).json({ error: 'Employee is required' });
+    // Either an employee OR an asset must identify the ticket. Asset-only
+    // tickets cover inventory / spare / returned-by-former-employee cases
+    // where there's no person to attribute the repair to.
+    if (!employee_id && !asset_id) {
+      return res.status(400).json({ error: 'Either an employee or an asset must be selected.' });
+    }
     if (quoted_cost != null && quoted_cost !== '' && Number(quoted_cost) < 0) {
       return res.status(400).json({ error: 'Cost cannot be negative' });
     }
@@ -5986,8 +5991,14 @@ app.post('/api/repair-tickets', async (req, res) => {
       actor_role: 'employee',
       description: `Ticket opened: ${issue.trim()}${quoted_cost != null && quoted_cost !== '' ? ` · quoted ₹${Number(quoted_cost).toLocaleString('en-IN')}` : ''}`,
     });
-    // Notifications
-    notifyAdminsAndHR('repair_ticket_created', 'New Repair Ticket', `${employee_name ?? 'An employee'}'s laptop reported for repair: ${issue.trim().slice(0, 60)}${issue.length > 60 ? '…' : ''}`).catch(()=>{});
+    // Notifications. Asset-only tickets read differently: there's no person
+    // to credit, so the notification focuses on the asset itself.
+    let assetTag: string | null = null;
+    if (asset_id) {
+      try { assetTag = ((await sql`SELECT asset_tag FROM assets WHERE id=${asset_id}`)[0] as any)?.asset_tag ?? null; } catch {}
+    }
+    const subject = employee_name ? `${employee_name}'s asset` : assetTag ? `Asset ${assetTag}` : 'An asset';
+    notifyAdminsAndHR('repair_ticket_created', 'New Repair Ticket', `${subject} reported for repair: ${issue.trim().slice(0, 60)}${issue.length > 60 ? '…' : ''}`).catch(()=>{});
     if (employee_id) notifyEmployeeUser(employee_id, 'repair_ticket_created', 'Repair Ticket Logged', `Your laptop has been logged for repair. Issue: ${issue.trim().slice(0, 60)}${issue.length > 60 ? '…' : ''}`).catch(()=>{});
     res.status(201).json(ticket);
   } catch (e: any) { res.status(500).json({ error: e.message }); }
