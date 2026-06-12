@@ -7,6 +7,7 @@ import MonthSelector, { monthLabel } from '../../components/MonthSelector';
 import { leaveTypeLabel } from '../../utils/leaveLabel';
 import HourLogCommentsModal from '../../components/HourLogCommentsModal';
 import { toast } from '../../components/Toaster';
+import AttendanceNoteModal from '../../components/AttendanceNoteModal';
 import { useAuth } from '../../context/AuthContext';
 import { api } from '../../services/api';
 import { financeApi } from '../../services/financeApi';
