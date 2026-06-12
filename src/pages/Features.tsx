@@ -209,6 +209,29 @@ function FeatureCard({ item, isAdmin, onEdit, onPublish, onUnpublish, onDelete }
               system features, not authored by a person on the team. The
               backend still records the author for audit purposes, just
               not surfaced in the UI. */}
+          {/* Audience badge — explicit "Everyone" so the admin doesn't
+              wonder why there's no audience info; otherwise list the tags. */}
+          {(!item.target_roles || item.target_roles.length === 0) ? (
+            <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md bg-surface-2 text-on-surface-muted border border-outline text-[10px] font-bold uppercase tracking-wider">
+              👥 Everyone
+            </span>
+          ) : (
+            <span className="inline-flex items-center gap-1 flex-wrap">
+              {item.target_roles.map(t => {
+                const label =
+                  t === 'admin' ? 'Admin' :
+                  t === 'hr_manager' ? 'HR' :
+                  t === 'project_coordinator' ? 'Coordinator' :
+                  t === 'manager' ? 'Managers' :
+                  t === 'employee' ? 'Employees' : t;
+                return (
+                  <span key={t} className="px-1.5 py-0.5 rounded-md bg-accent/10 text-accent border border-accent/20 text-[10px] font-bold uppercase tracking-wider">
+                    {label}
+                  </span>
+                );
+              })}
+            </span>
+          )}
           {item.published_at && (
             <span className="text-success-fg">
               <CheckCircle size={9} className="inline mr-1" />
@@ -262,8 +285,20 @@ function FeatureFormModal({ item, onClose, onSaved }: {
   const [imageUrl, setImageUrl] = useState(item?.image_url ?? '');
   const [ctaLabel, setCtaLabel] = useState(item?.cta_label ?? '');
   const [ctaUrl, setCtaUrl] = useState(item?.cta_url ?? '');
+  // Audience state. An empty Set = "Everyone" (no targeting). Otherwise
+  // contains any of the tags below. The submit flow translates this to
+  // target_roles: string[] | null on the wire.
+  const [audience, setAudience] = useState<Set<string>>(() => new Set(item?.target_roles ?? []));
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
+
+  const toggleAudience = (tag: string) => {
+    setAudience(prev => {
+      const next = new Set(prev);
+      if (next.has(tag)) next.delete(tag); else next.add(tag);
+      return next;
+    });
+  };
 
   const submit = async () => {
     if (!title.trim() || !body.trim()) { setError('Title and body are required'); return; }
@@ -275,6 +310,8 @@ function FeatureFormModal({ item, onClose, onSaved }: {
         image_url: imageUrl.trim() || undefined,
         cta_label: ctaLabel.trim() || undefined,
         cta_url: ctaUrl.trim() || undefined,
+        // Empty set → null = everyone. Otherwise array of tags.
+        target_roles: audience.size === 0 ? null : Array.from(audience),
       };
       if (item) await api.updateFeature(item.id, data);
       else      await api.createFeature(data);
@@ -305,6 +342,42 @@ function FeatureFormModal({ item, onClose, onSaved }: {
               placeholder="What's new, who it helps, and where to find it. Plain text, line breaks preserved."
               className="w-full text-sm border border-outline rounded-lg px-3 py-2 bg-surface resize-none focus:outline-none focus:ring-2 focus:ring-accent/30" />
           </div>
+          {/* Audience picker. Empty selection = Everyone. Multi-select OR
+              semantics — checking "HR Manager" + "Reporting Manager" reaches
+              both groups. "Reporting Manager" is a pseudo-tag: matches anyone
+              with at least one direct report regardless of system role. */}
+          <div>
+            <label className="text-[10px] uppercase tracking-wide font-semibold text-on-surface-subtle mb-1 block">
+              Audience {audience.size === 0 && <span className="text-on-surface-subtle/70 normal-case">(everyone — default)</span>}
+            </label>
+            <div className="grid grid-cols-2 gap-2">
+              {[
+                { tag: 'admin',               label: 'Admin' },
+                { tag: 'hr_manager',          label: 'HR Manager' },
+                { tag: 'project_coordinator', label: 'Project Coordinator' },
+                { tag: 'manager',             label: 'Reporting Managers' },
+                { tag: 'employee',            label: 'Other Employees' },
+              ].map(({ tag, label }) => {
+                const on = audience.has(tag);
+                return (
+                  <button key={tag} type="button" onClick={() => toggleAudience(tag)}
+                    className={`text-left text-xs font-semibold py-2 px-3 rounded-lg border transition-colors ${
+                      on
+                        ? 'bg-accent text-on-accent border-accent'
+                        : 'bg-surface text-on-surface-muted border-outline hover:bg-surface-2'
+                    }`}>
+                    {on ? '✓ ' : ''}{label}
+                  </button>
+                );
+              })}
+            </div>
+            <p className="text-[10px] text-on-surface-subtle mt-1.5">
+              {audience.size === 0
+                ? 'Leave blank to show to everyone on publish.'
+                : 'Only matching roles see the popup and the bell ping. "Reporting Managers" = anyone with direct reports, regardless of system role.'}
+            </p>
+          </div>
+
           <div>
             <label className="text-[10px] uppercase tracking-wide font-semibold text-on-surface-subtle mb-1 block">Image URL <span className="text-on-surface-subtle/70 normal-case">(optional)</span></label>
             <input value={imageUrl} onChange={e => setImageUrl(e.target.value)}

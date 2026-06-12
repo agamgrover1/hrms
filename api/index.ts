@@ -1215,6 +1215,12 @@ async function runStartupMigrations() {
       updated_at TIMESTAMPTZ DEFAULT NOW()
     )`;
   await sql`CREATE INDEX IF NOT EXISTS idx_feature_status ON feature_announcements(status, published_at DESC)`.catch(()=>{});
+  // Audience targeting. NULL or [] = everyone. Otherwise JSONB array of
+  // any of: 'admin', 'hr_manager', 'project_coordinator', 'employee',
+  // 'manager' (pseudo — anyone with direct reports regardless of role).
+  // Matching is OR — a feature tagged ['hr_manager','manager'] reaches
+  // HR plus anyone with reports.
+  await sql`ALTER TABLE feature_announcements ADD COLUMN IF NOT EXISTS target_roles JSONB`.catch(()=>{});
 
   // Per-user ack so each user only sees each published feature popup once.
   // Composite PK keeps the row count bounded and idempotent on duplicate
@@ -3562,6 +3568,36 @@ app.delete('/api/todos/:id', async (req, res) => {
 // - Drafts and unpublished items are not visible to anyone outside admin/HR.
 // ─────────────────────────────────────────────────────────────────────────
 
+// Audience tags allowed on a feature announcement's target_roles. 'manager'
+// is a pseudo-tag — matches any user who has at least one direct report,
+// regardless of system role.
+const FEATURE_AUDIENCE_TAGS = new Set(['admin', 'hr_manager', 'project_coordinator', 'employee', 'manager']);
+
+// Resolve whether a user matches an announcement's target_roles. Empty /
+// null target_roles = everyone. Otherwise OR semantics across the tags.
+async function userMatchesFeatureAudience(u: any, targetRoles: string[] | null | undefined): Promise<boolean> {
+  if (!u) return false;
+  if (!targetRoles || targetRoles.length === 0) return true;
+  if (targetRoles.includes(u.role)) return true;
+  if (targetRoles.includes('manager')) {
+    // Has direct reports? Walk employees.reporting_manager_id once.
+    const empId = await resolveUserToEmployee(u);
+    if (!empId) return false;
+    const reports = await sql`SELECT 1 FROM employees WHERE reporting_manager_id=${empId} LIMIT 1`;
+    if ((reports as any[]).length) return true;
+  }
+  return false;
+}
+
+// Normalize the array coming from the client — drop bad tags, dedupe, and
+// return null when the array would be empty so DB stores NULL (= everyone)
+// instead of an empty array (which would render badly in the admin UI).
+function normalizeAudience(input: any): any {
+  if (!Array.isArray(input)) return null;
+  const filtered = Array.from(new Set(input.filter((t: any) => typeof t === 'string' && FEATURE_AUDIENCE_TAGS.has(t))));
+  return filtered.length === 0 ? null : filtered;
+}
+
 // GET /api/features — returns the list, scoped by role.
 //   admin / hr_manager → drafts + published (everything)
 //   everyone else      → only published items, plus a "seen" flag per item
@@ -3588,7 +3624,13 @@ app.get('/api/features', async (req, res) => {
       LEFT JOIN feature_acks a ON a.feature_id = f.id AND a.user_id = ${uid}
       WHERE f.status = 'published'
       ORDER BY f.published_at DESC`;
-    res.json(rows);
+    // Audience filter — non-admin viewers only see announcements they
+    // actually match. Done in JS for the same reason as /unseen above.
+    const filtered = [];
+    for (const r of (rows as any[])) {
+      if (await userMatchesFeatureAudience(u, r.target_roles)) filtered.push(r);
+    }
+    res.json(filtered);
   } catch (err: any) { res.status(500).json({ error: err.message ?? 'Server error' }); }
 });
 
@@ -3601,6 +3643,12 @@ app.get('/api/features/unseen', async (req, res) => {
     await runStartupMigrations();
     const uid = req.header('x-user-id');
     if (!uid) return res.status(401).json({ error: 'Sign in required' });
+    const u = (await sql`SELECT id, role, employee_id_ref FROM app_users WHERE id=${uid}`)[0] as any;
+    if (!u) return res.status(401).json({ error: 'Unknown user' });
+    // Pull all unseen published features for this user — we then filter
+    // by audience in JS so the JSONB containment + manager-pseudo logic
+    // stays out of SQL. Limit a bit higher than 1 to keep the query
+    // efficient while leaving headroom for skipped non-matches.
     const rows = await sql`
       SELECT f.* FROM feature_announcements f
       WHERE f.status = 'published'
@@ -3609,8 +3657,13 @@ app.get('/api/features/unseen', async (req, res) => {
           WHERE a.feature_id = f.id AND a.user_id = ${uid}
         )
       ORDER BY f.published_at ASC
-      LIMIT 1`;
-    res.json(rows[0] ?? null);
+      LIMIT 20`;
+    for (const r of (rows as any[])) {
+      if (await userMatchesFeatureAudience(u, r.target_roles)) {
+        return res.json(r);
+      }
+    }
+    res.json(null);
   } catch (err: any) { res.status(500).json({ error: err.message ?? 'Server error' }); }
 });
 
@@ -3622,12 +3675,15 @@ app.post('/api/features', async (req, res) => {
     const u = (await sql`SELECT id, name, role FROM app_users WHERE id=${uid}`)[0] as any;
     if (!u) return res.status(401).json({ error: 'Unknown user' });
     if (u.role !== 'admin' && u.role !== 'hr_manager') return res.status(403).json({ error: 'Admin or HR only' });
-    const { title, body, image_url, cta_label, cta_url } = req.body ?? {};
+    const { title, body, image_url, cta_label, cta_url, target_roles } = req.body ?? {};
     if (!title?.trim() || !body?.trim()) return res.status(400).json({ error: 'Title and body are required' });
+    const audience = normalizeAudience(target_roles);
     const id = `feat_${Date.now()}`;
     const row = (await sql`
-      INSERT INTO feature_announcements (id, title, body, image_url, cta_label, cta_url, drafted_by_id, drafted_by_name)
-      VALUES (${id}, ${title.trim()}, ${body.trim()}, ${image_url || null}, ${cta_label || null}, ${cta_url || null}, ${u.id}, ${u.name})
+      INSERT INTO feature_announcements (id, title, body, image_url, cta_label, cta_url, target_roles, drafted_by_id, drafted_by_name)
+      VALUES (${id}, ${title.trim()}, ${body.trim()}, ${image_url || null}, ${cta_label || null}, ${cta_url || null},
+              ${audience === null ? null : JSON.stringify(audience)}::jsonb,
+              ${u.id}, ${u.name})
       RETURNING *`)[0];
     // Ping admins so they know a new draft is waiting for review.
     notifyAdminsAndHR('feature_draft', 'New feature draft awaiting approval',
@@ -3651,7 +3707,7 @@ app.patch('/api/features/:id', async (req, res) => {
     if (!isAdmin && !isHR) return res.status(403).json({ error: 'Admin or HR only' });
     const cur = (await sql`SELECT * FROM feature_announcements WHERE id=${req.params.id}`)[0] as any;
     if (!cur) return res.status(404).json({ error: 'Feature not found' });
-    const { title, body, image_url, cta_label, cta_url, status } = req.body ?? {};
+    const { title, body, image_url, cta_label, cta_url, status, target_roles } = req.body ?? {};
     const goingLive   = status === 'published' && cur.status !== 'published';
     const goingDraft  = status === 'draft' && cur.status === 'published';
     if ((goingLive || goingDraft) && !isAdmin) {
@@ -3661,6 +3717,11 @@ app.patch('/api/features/:id', async (req, res) => {
       return res.status(403).json({ error: 'Only admin can edit a published announcement' });
     }
     const finalStatus = status ?? cur.status;
+    // Audience is optional on the PATCH — only overwrite if the caller
+    // actually sent the field. Lets a publish flip happen without
+    // re-asserting the audience.
+    const audienceUpdated = target_roles !== undefined;
+    const audience = audienceUpdated ? normalizeAudience(target_roles) : null;
     const row = (await sql`
       UPDATE feature_announcements SET
         title       = ${title?.trim() ?? cur.title},
@@ -3668,6 +3729,7 @@ app.patch('/api/features/:id', async (req, res) => {
         image_url   = ${image_url !== undefined ? (image_url || null) : cur.image_url},
         cta_label   = ${cta_label !== undefined ? (cta_label || null) : cur.cta_label},
         cta_url     = ${cta_url !== undefined ? (cta_url || null) : cur.cta_url},
+        target_roles= ${audienceUpdated ? (audience === null ? null : JSON.stringify(audience)) : null}::jsonb,
         status      = ${finalStatus},
         approved_by_id   = ${goingLive ? u.id : cur.approved_by_id},
         approved_by_name = ${goingLive ? u.name : cur.approved_by_name},
@@ -3676,16 +3738,27 @@ app.patch('/api/features/:id', async (req, res) => {
         updated_at       = NOW()
       WHERE id=${req.params.id}
       RETURNING *`)[0];
+    // Special-case the COALESCE pattern: when audience isn't being
+    // updated, keep the old value. Done as a separate UPDATE because the
+    // tagged-template + ::jsonb cast trick above can't easily express
+    // "keep existing JSONB". Quick second hop is fine.
+    if (!audienceUpdated) {
+      await sql`UPDATE feature_announcements SET target_roles=${cur.target_roles === null ? null : JSON.stringify(cur.target_roles)}::jsonb WHERE id=${req.params.id}`;
+      row.target_roles = cur.target_roles;
+    }
 
     if (goingLive) {
-      // Broadcast — every active user gets a notification AND the modal
-      // will pop next time they load any page. We DON'T pre-create acks;
-      // absence of an ack row is what triggers the popup, so leaving it
-      // empty means everyone sees it once.
+      // Broadcast the bell ping to users who match the audience. Use
+      // notifyUser (writes to app_users.id directly) — the earlier code
+      // called notifyEmployeeUser with app_users.id which mismatched its
+      // expected employee.id parameter and silently no-op'd. Modal still
+      // relies on absence-of-ack so /unseen audience-filters in real time.
       try {
-        const users = (await sql`SELECT id FROM app_users WHERE active = TRUE`) as any[];
+        const users = (await sql`SELECT id, role, employee_id_ref, name, email FROM app_users WHERE active = TRUE`) as any[];
         for (const usr of users) {
-          notifyEmployeeUser(usr.id, 'feature_published', `New feature: ${row.title.slice(0, 80)}`,
+          const matches = await userMatchesFeatureAudience(usr, row.target_roles);
+          if (!matches) continue;
+          notifyUser(usr.id, 'feature_published', `New feature: ${row.title.slice(0, 80)}`,
             row.body.slice(0, 200)).catch(()=>{});
         }
       } catch {}

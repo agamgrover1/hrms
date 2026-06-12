@@ -7,6 +7,9 @@ export interface FeatureAnnouncement {
   image_url: string | null;
   cta_label: string | null; cta_url: string | null;
   status: 'draft' | 'published';
+  // Audience targeting. null/[] = everyone. Otherwise any of:
+  // 'admin', 'hr_manager', 'project_coordinator', 'employee', 'manager'.
+  target_roles: string[] | null;
   drafted_by_id: string | null; drafted_by_name: string | null;
   approved_by_id: string | null; approved_by_name: string | null;
   approved_at: string | null;
@@ -695,9 +698,9 @@ export const api = {
   // ── Feature announcements ────────────────────────────────────────────
   getFeatures: () => request<FeatureAnnouncement[]>(`/features`),
   getUnseenFeature: () => request<FeatureAnnouncement | null>(`/features/unseen`),
-  createFeature: (data: { title: string; body: string; image_url?: string; cta_label?: string; cta_url?: string }) =>
+  createFeature: (data: { title: string; body: string; image_url?: string; cta_label?: string; cta_url?: string; target_roles?: string[] | null }) =>
     request<FeatureAnnouncement>(`/features`, { method: 'POST', body: JSON.stringify(data) }),
-  updateFeature: (id: string, data: Partial<{ title: string; body: string; image_url: string | null; cta_label: string | null; cta_url: string | null; status: 'draft' | 'published' }>) =>
+  updateFeature: (id: string, data: Partial<{ title: string; body: string; image_url: string | null; cta_label: string | null; cta_url: string | null; status: 'draft' | 'published'; target_roles: string[] | null }>) =>
     request<FeatureAnnouncement>(`/features/${id}`, { method: 'PATCH', body: JSON.stringify(data) }),
   deleteFeature: (id: string) =>
     request(`/features/${id}`, { method: 'DELETE' }),
