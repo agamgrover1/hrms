@@ -1197,6 +1197,19 @@ async function runStartupMigrations() {
   // publishes it. On publish, every user sees a one-time modal popup
   // until they ack it (one row in feature_acks per user per feature).
   await sql`
+    CREATE TABLE IF NOT EXISTS company_announcements (
+      id TEXT PRIMARY KEY,
+      title TEXT NOT NULL,
+      body TEXT NOT NULL,
+      pinned BOOLEAN NOT NULL DEFAULT FALSE,
+      expires_at TIMESTAMPTZ,
+      posted_by_id TEXT, posted_by_name TEXT,
+      created_at TIMESTAMPTZ DEFAULT NOW(),
+      updated_at TIMESTAMPTZ DEFAULT NOW()
+    )`;
+  await sql`CREATE INDEX IF NOT EXISTS idx_company_announcements_active ON company_announcements(pinned DESC, created_at DESC)`.catch(()=>{});
+
+  await sql`
     CREATE TABLE IF NOT EXISTS feature_announcements (
       id TEXT PRIMARY KEY,
       title TEXT NOT NULL,
@@ -3816,6 +3829,169 @@ app.post('/api/features/:id/ack', async (req, res) => {
       VALUES (${uid}, ${req.params.id})
       ON CONFLICT (user_id, feature_id) DO NOTHING`;
     res.json({ ok: true });
+  } catch (err: any) { res.status(500).json({ error: err.message ?? 'Server error' }); }
+});
+
+// ─────────────────────────────────────────────────────────────────────────
+// Company announcements — general news / updates / policy reminders that
+// appear on the Dashboard widget for anyone signed in. Separate from
+// feature_announcements which is for HRMS product changes only.
+// Admin / HR can create, edit, delete. Everyone can read.
+// ─────────────────────────────────────────────────────────────────────────
+
+app.get('/api/announcements', async (req, res) => {
+  try {
+    await runStartupMigrations();
+    const uid = req.header('x-user-id');
+    if (!uid) return res.status(401).json({ error: 'Sign in required' });
+    // Active = not expired (expires_at is null or in the future). Pinned
+    // sorts first, then newest first.
+    const rows = await sql`
+      SELECT * FROM company_announcements
+      WHERE expires_at IS NULL OR expires_at > NOW()
+      ORDER BY pinned DESC, created_at DESC
+      LIMIT 30`;
+    res.json(rows);
+  } catch (err: any) { res.status(500).json({ error: err.message ?? 'Server error' }); }
+});
+
+app.post('/api/announcements', async (req, res) => {
+  try {
+    const uid = req.header('x-user-id');
+    if (!uid) return res.status(401).json({ error: 'Sign in required' });
+    const u = (await sql`SELECT id, name, role FROM app_users WHERE id=${uid}`)[0] as any;
+    if (!u) return res.status(401).json({ error: 'Unknown user' });
+    if (u.role !== 'admin' && u.role !== 'hr_manager') return res.status(403).json({ error: 'Admin or HR only' });
+    const { title, body, pinned, expires_at } = req.body ?? {};
+    if (!title?.trim() || !body?.trim()) return res.status(400).json({ error: 'Title and body are required' });
+    const id = `ann_${Date.now()}`;
+    const row = (await sql`
+      INSERT INTO company_announcements (id, title, body, pinned, expires_at, posted_by_id, posted_by_name)
+      VALUES (${id}, ${title.trim()}, ${body.trim()}, ${!!pinned}, ${expires_at || null}, ${u.id}, ${u.name})
+      RETURNING *`)[0];
+    // Broadcast bell ping — every active user gets a notification.
+    try {
+      const users = (await sql`SELECT id FROM app_users WHERE active = TRUE`) as any[];
+      const userIds = users.map(x => x.id);
+      if (userIds.length > 0) {
+        await sql`
+          INSERT INTO notifications (user_id, type, title, body)
+          SELECT u, 'company_announcement', ${`📢 ${title.trim().slice(0, 80)}`}, ${body.trim().slice(0, 200)}
+          FROM UNNEST(${userIds}::text[]) AS u`;
+      }
+    } catch {}
+    res.status(201).json(row);
+  } catch (err: any) { res.status(500).json({ error: err.message ?? 'Server error' }); }
+});
+
+app.patch('/api/announcements/:id', async (req, res) => {
+  try {
+    const uid = req.header('x-user-id');
+    if (!uid) return res.status(401).json({ error: 'Sign in required' });
+    const u = (await sql`SELECT role FROM app_users WHERE id=${uid}`)[0] as any;
+    if (!u || (u.role !== 'admin' && u.role !== 'hr_manager')) return res.status(403).json({ error: 'Admin or HR only' });
+    const cur = (await sql`SELECT * FROM company_announcements WHERE id=${req.params.id}`)[0] as any;
+    if (!cur) return res.status(404).json({ error: 'Announcement not found' });
+    const { title, body, pinned, expires_at } = req.body ?? {};
+    const row = (await sql`
+      UPDATE company_announcements SET
+        title      = ${title?.trim() ?? cur.title},
+        body       = ${body?.trim() ?? cur.body},
+        pinned     = ${pinned !== undefined ? !!pinned : cur.pinned},
+        expires_at = ${expires_at !== undefined ? (expires_at || null) : cur.expires_at},
+        updated_at = NOW()
+      WHERE id=${req.params.id}
+      RETURNING *`)[0];
+    res.json(row);
+  } catch (err: any) { res.status(500).json({ error: err.message ?? 'Server error' }); }
+});
+
+app.delete('/api/announcements/:id', async (req, res) => {
+  try {
+    const uid = req.header('x-user-id');
+    if (!uid) return res.status(401).json({ error: 'Sign in required' });
+    const u = (await sql`SELECT role FROM app_users WHERE id=${uid}`)[0] as any;
+    if (!u || (u.role !== 'admin' && u.role !== 'hr_manager')) return res.status(403).json({ error: 'Admin or HR only' });
+    await sql`DELETE FROM company_announcements WHERE id=${req.params.id}`;
+    res.json({ ok: true });
+  } catch (err: any) { res.status(500).json({ error: err.message ?? 'Server error' }); }
+});
+
+// GET /api/upcoming-events — single endpoint that returns the next ~30 days
+// of holidays + employee birthdays + work anniversaries combined into one
+// chronological list. Saves the client three round-trips and lets the date
+// math happen on the server (postgres handles month/day matching cleanly).
+app.get('/api/upcoming-events', async (req, res) => {
+  try {
+    await runStartupMigrations();
+    const uid = req.header('x-user-id');
+    if (!uid) return res.status(401).json({ error: 'Sign in required' });
+    const horizonDays = Math.min(60, Math.max(7, Number(req.query.days) || 30));
+    // Holidays — straight date filter.
+    const holidayRows = await sql`
+      SELECT id, name, date::text AS event_date, 'holiday' AS kind
+      FROM holidays
+      WHERE date::date BETWEEN CURRENT_DATE AND CURRENT_DATE + ${horizonDays}::int
+      ORDER BY date`;
+    // Birthdays + anniversaries are month/day matches — the year stored is
+    // the original birth/join year, but the "event" occurs every year.
+    // Compute the next occurrence within the horizon using a CASE: if
+    // (this-year-anniversary) is still ahead, use it, else next year.
+    const birthdayRows = await sql`
+      SELECT e.id, e.name, e.designation, e.department, e.avatar,
+        e.date_of_birth::text AS source_date,
+        TO_CHAR(
+          CASE WHEN TO_DATE(EXTRACT(YEAR FROM CURRENT_DATE) || TO_CHAR(e.date_of_birth, '-MM-DD'), 'YYYY-MM-DD') >= CURRENT_DATE
+               THEN TO_DATE(EXTRACT(YEAR FROM CURRENT_DATE) || TO_CHAR(e.date_of_birth, '-MM-DD'), 'YYYY-MM-DD')
+               ELSE TO_DATE((EXTRACT(YEAR FROM CURRENT_DATE) + 1) || TO_CHAR(e.date_of_birth, '-MM-DD'), 'YYYY-MM-DD')
+          END, 'YYYY-MM-DD'
+        ) AS event_date
+      FROM employees e
+      WHERE e.status = 'active' AND e.date_of_birth IS NOT NULL
+      ORDER BY event_date`;
+    const anniversaryRows = await sql`
+      SELECT e.id, e.name, e.designation, e.department, e.avatar,
+        e.join_date::text AS source_date,
+        TO_CHAR(
+          CASE WHEN TO_DATE(EXTRACT(YEAR FROM CURRENT_DATE) || TO_CHAR(e.join_date, '-MM-DD'), 'YYYY-MM-DD') >= CURRENT_DATE
+               THEN TO_DATE(EXTRACT(YEAR FROM CURRENT_DATE) || TO_CHAR(e.join_date, '-MM-DD'), 'YYYY-MM-DD')
+               ELSE TO_DATE((EXTRACT(YEAR FROM CURRENT_DATE) + 1) || TO_CHAR(e.join_date, '-MM-DD'), 'YYYY-MM-DD')
+          END, 'YYYY-MM-DD'
+        ) AS event_date,
+        (EXTRACT(YEAR FROM CURRENT_DATE) - EXTRACT(YEAR FROM e.join_date))::int AS years_completed
+      FROM employees e
+      WHERE e.status = 'active' AND e.join_date IS NOT NULL
+        AND EXTRACT(YEAR FROM CURRENT_DATE) > EXTRACT(YEAR FROM e.join_date)
+      ORDER BY event_date`;
+    const horizonStr = new Date(Date.now() + horizonDays * 86400_000).toISOString().slice(0, 10);
+    const todayStr = new Date().toISOString().slice(0, 10);
+
+    const events = [
+      ...(holidayRows as any[]).map(r => ({
+        kind: 'holiday' as const,
+        event_date: r.event_date,
+        label: r.name,
+      })),
+      ...(birthdayRows as any[])
+        .filter(r => r.event_date >= todayStr && r.event_date <= horizonStr)
+        .map(r => ({
+          kind: 'birthday' as const,
+          event_date: r.event_date,
+          label: `${r.name}'s birthday`,
+          employee: { id: r.id, name: r.name, designation: r.designation, department: r.department, avatar: r.avatar },
+        })),
+      ...(anniversaryRows as any[])
+        .filter(r => r.event_date >= todayStr && r.event_date <= horizonStr)
+        .map(r => ({
+          kind: 'anniversary' as const,
+          event_date: r.event_date,
+          label: `${r.name} · ${r.years_completed} year${r.years_completed === 1 ? '' : 's'}`,
+          years: r.years_completed,
+          employee: { id: r.id, name: r.name, designation: r.designation, department: r.department, avatar: r.avatar },
+        })),
+    ].sort((a, b) => a.event_date.localeCompare(b.event_date));
+
+    res.json(events);
   } catch (err: any) { res.status(500).json({ error: err.message ?? 'Server error' }); }
 });
 

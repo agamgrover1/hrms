@@ -707,6 +707,31 @@ export const api = {
   ackFeature: (id: string) =>
     request(`/features/${id}/ack`, { method: 'POST' }),
 
+  // ── Company announcements (Dashboard news widget) ────────────────────
+  getAnnouncements: () =>
+    request<Array<{
+      id: string; title: string; body: string; pinned: boolean;
+      expires_at: string | null;
+      posted_by_id: string | null; posted_by_name: string | null;
+      created_at: string; updated_at: string;
+    }>>(`/announcements`),
+  createAnnouncement: (data: { title: string; body: string; pinned?: boolean; expires_at?: string | null }) =>
+    request<any>(`/announcements`, { method: 'POST', body: JSON.stringify(data) }),
+  updateAnnouncement: (id: string, data: Partial<{ title: string; body: string; pinned: boolean; expires_at: string | null }>) =>
+    request<any>(`/announcements/${id}`, { method: 'PATCH', body: JSON.stringify(data) }),
+  deleteAnnouncement: (id: string) =>
+    request<any>(`/announcements/${id}`, { method: 'DELETE' }),
+
+  // ── Upcoming events (holidays + birthdays + anniversaries) ───────────
+  getUpcomingEvents: (days = 30) =>
+    request<Array<{
+      kind: 'holiday' | 'birthday' | 'anniversary';
+      event_date: string;
+      label: string;
+      years?: number;
+      employee?: { id: string; name: string; designation: string | null; department: string | null; avatar: string | null };
+    }>>(`/upcoming-events?days=${days}`),
+
   // ── Granular permissions ─────────────────────────────────────────────
   getPermissionModules: () =>
     request<Array<{ id: string; label: string; group_label: string | null; has_approve: boolean; display_order: number; description: string | null }>>(`/permissions/modules`),

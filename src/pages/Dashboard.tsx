@@ -69,7 +69,19 @@ export default function Dashboard() {
   useLiveRefresh(() => {
     api.getLeaveRequests().then(setLeaveRequests).catch(() => {});
     api.getAttendance({ month: currentMonth, year: currentYear }).then(setAttendance).catch(() => {});
+    api.getAnnouncements().then(setAnnouncements).catch(() => {});
+    api.getUpcomingEvents(30).then(setUpcomingEvents).catch(() => {});
   }, { intervalMs: 15000 });
+
+  // Company news widget state + upcoming events
+  const [announcements, setAnnouncements] = useState<Array<any>>([]);
+  const [upcomingEvents, setUpcomingEvents] = useState<Array<any>>([]);
+  const [showManageAnnouncements, setShowManageAnnouncements] = useState(false);
+  useEffect(() => {
+    api.getAnnouncements().then(setAnnouncements).catch(() => setAnnouncements([]));
+    api.getUpcomingEvents(30).then(setUpcomingEvents).catch(() => setUpcomingEvents([]));
+  }, []);
+  const isAdminOrHR = user?.role === 'admin' || user?.role === 'hr_manager';
 
   useEffect(() => {
     Promise.all([
@@ -529,6 +541,248 @@ export default function Dashboard() {
                     <div className="min-w-0">
                       <p className="text-sm text-on-surface leading-snug">{item.text}</p>
                       <p className="text-[11px] text-on-surface-muted mt-0.5 font-mono">{item.time}</p>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+
+      {/* Company news + Upcoming events */}
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-5">
+        {/* Announcements — spans 2 columns */}
+        <div className="lg:col-span-2 relative bg-surface rounded-xl-3 p-6 border border-outline shadow-elev-2 overflow-hidden group hover:shadow-elev-3 transition-shadow animate-fade-up">
+          <div className="absolute -top-10 -left-10 w-40 h-40 rounded-full bg-brand/15 blur-2xl opacity-50 group-hover:opacity-80 transition-opacity duration-500" />
+          <div className="relative">
+            <div className="flex items-center justify-between mb-4 gap-3 flex-wrap">
+              <div>
+                <h3 className="font-display text-xl font-bold text-on-surface tracking-tight inline-flex items-center gap-2">
+                  📢 Company Announcements
+                </h3>
+                <p className="text-xs text-on-surface-muted mt-0.5">News, updates, and reminders</p>
+              </div>
+              {isAdminOrHR && (
+                <button onClick={() => setShowManageAnnouncements(true)}
+                  className="text-xs font-semibold px-3 py-1.5 rounded-lg bg-accent text-on-accent hover:opacity-90">
+                  Manage
+                </button>
+              )}
+            </div>
+            {announcements.length === 0 ? (
+              <div className="text-center py-8 text-sm text-on-surface-subtle">
+                {isAdminOrHR ? 'Nothing posted yet. Click Manage to add the first announcement.' : 'No announcements right now.'}
+              </div>
+            ) : (
+              <div className="space-y-3 max-h-[320px] overflow-y-auto pr-1 -mr-1">
+                {announcements.map((a: any) => (
+                  <article key={a.id} className={`rounded-xl-2 border ${a.pinned ? 'border-accent/40 bg-accent/5' : 'border-outline bg-surface-2/30'} px-4 py-3`}>
+                    <div className="flex items-start justify-between gap-2 mb-1 flex-wrap">
+                      <div className="flex items-center gap-2 min-w-0">
+                        {a.pinned && <span className="text-[10px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded-md bg-accent text-on-accent">📌 Pinned</span>}
+                        <p className="font-display text-base font-bold text-on-surface tracking-tight truncate">{a.title}</p>
+                      </div>
+                      <p className="text-[10px] text-on-surface-subtle whitespace-nowrap">
+                        {new Date(a.created_at).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' })}
+                      </p>
+                    </div>
+                    <p className="text-sm text-on-surface-muted whitespace-pre-line leading-snug">{a.body}</p>
+                    {a.posted_by_name && (
+                      <p className="text-[10px] text-on-surface-subtle mt-1.5">— {a.posted_by_name}</p>
+                    )}
+                  </article>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+
+        {/* Upcoming events — 1 column */}
+        <div className="relative bg-surface rounded-xl-3 p-6 border border-outline shadow-elev-2 overflow-hidden group hover:shadow-elev-3 transition-shadow animate-fade-up">
+          <div className="absolute -bottom-10 -right-10 w-32 h-32 rounded-full bg-accent/15 blur-2xl opacity-50 group-hover:opacity-80 transition-opacity duration-500" />
+          <div className="relative">
+            <h3 className="font-display text-xl font-bold text-on-surface tracking-tight mb-1 inline-flex items-center gap-2">
+              📅 Coming up
+            </h3>
+            <p className="text-xs text-on-surface-muted mb-4">Next 30 days — holidays, birthdays, anniversaries</p>
+            {upcomingEvents.length === 0 ? (
+              <p className="text-sm text-on-surface-subtle text-center py-8">Nothing on the horizon this month.</p>
+            ) : (
+              <div className="space-y-2 max-h-[320px] overflow-y-auto pr-1 -mr-1">
+                {upcomingEvents.map((e: any, i: number) => {
+                  const today = new Date();
+                  today.setHours(0, 0, 0, 0);
+                  const eventDate = new Date(e.event_date + 'T12:00:00');
+                  const daysAway = Math.round((eventDate.getTime() - today.getTime()) / 86400_000);
+                  const dayLabel = daysAway === 0 ? 'Today' : daysAway === 1 ? 'Tomorrow' : `in ${daysAway}d`;
+                  const dateLabel = eventDate.toLocaleDateString('en-IN', { day: 'numeric', month: 'short' });
+                  const cfg = e.kind === 'holiday'
+                    ? { emoji: '🎉', tone: 'bg-warning-container text-warning border-warning/30' }
+                    : e.kind === 'birthday'
+                    ? { emoji: '🎂', tone: 'bg-brand-container text-on-brand-container border-brand/30' }
+                    : { emoji: '🎯', tone: 'bg-accent/10 text-accent border-accent/30' };
+                  return (
+                    <div key={i} className={`flex items-center gap-3 rounded-lg border ${cfg.tone} px-3 py-2`}>
+                      <span className="text-lg flex-shrink-0">{cfg.emoji}</span>
+                      <div className="flex-1 min-w-0">
+                        <p className="text-sm font-semibold text-on-surface truncate">{e.label}</p>
+                        <p className="text-[10px] text-on-surface-subtle">{dateLabel}{e.employee?.designation ? ` · ${e.employee.designation}` : ''}</p>
+                      </div>
+                      <span className={`text-[10px] font-bold uppercase tracking-wider whitespace-nowrap ${daysAway <= 1 ? 'text-on-surface' : 'text-on-surface-muted'}`}>
+                        {dayLabel}
+                      </span>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+
+      {showManageAnnouncements && (
+        <ManageAnnouncementsModal
+          isAdminOrHR={isAdminOrHR}
+          currentItems={announcements}
+          onClose={() => setShowManageAnnouncements(false)}
+          onChanged={() => api.getAnnouncements().then(setAnnouncements).catch(() => {})}
+        />
+      )}
+    </div>
+  );
+}
+
+// Admin / HR modal for managing the company announcements list. Create a
+// new post inline, edit existing posts, toggle pinned, delete. Designed
+// to live inside the Dashboard widget so HR doesn't need to navigate to
+// a separate page just to post a quick note.
+function ManageAnnouncementsModal({ isAdminOrHR, currentItems, onClose, onChanged }: {
+  isAdminOrHR: boolean;
+  currentItems: any[];
+  onClose: () => void;
+  onChanged: () => void;
+}) {
+  const [items, setItems] = useState<any[]>(currentItems);
+  const [editing, setEditing] = useState<any | null>(null);
+  const [draftTitle, setDraftTitle] = useState('');
+  const [draftBody, setDraftBody] = useState('');
+  const [draftPinned, setDraftPinned] = useState(false);
+  const [draftExpires, setDraftExpires] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+
+  const resetForm = () => {
+    setEditing(null);
+    setDraftTitle('');
+    setDraftBody('');
+    setDraftPinned(false);
+    setDraftExpires('');
+    setError('');
+  };
+
+  const startEdit = (a: any) => {
+    setEditing(a);
+    setDraftTitle(a.title);
+    setDraftBody(a.body);
+    setDraftPinned(!!a.pinned);
+    setDraftExpires(a.expires_at ? a.expires_at.slice(0, 10) : '');
+    setError('');
+  };
+
+  const submit = async () => {
+    if (!draftTitle.trim() || !draftBody.trim()) { setError('Title and body are required'); return; }
+    setBusy(true); setError('');
+    try {
+      const payload = {
+        title: draftTitle.trim(),
+        body: draftBody.trim(),
+        pinned: draftPinned,
+        expires_at: draftExpires || null,
+      };
+      if (editing) await api.updateAnnouncement(editing.id, payload);
+      else         await api.createAnnouncement(payload);
+      const fresh = await api.getAnnouncements();
+      setItems(fresh);
+      onChanged();
+      resetForm();
+    } catch (e: any) { setError(e?.message ?? 'Failed to save'); }
+    finally { setBusy(false); }
+  };
+
+  const remove = async (a: any) => {
+    if (!confirm(`Delete "${a.title}"?`)) return;
+    try {
+      await api.deleteAnnouncement(a.id);
+      const fresh = await api.getAnnouncements();
+      setItems(fresh);
+      onChanged();
+    } catch (e: any) { alert(e?.message ?? 'Failed to delete'); }
+  };
+
+  if (!isAdminOrHR) return null;
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm p-4">
+      <div className="bg-surface rounded-2xl shadow-2xl w-full max-w-2xl max-h-[90vh] flex flex-col overflow-hidden">
+        <div className="flex items-center justify-between px-6 py-4 border-b border-outline">
+          <h2 className="font-display text-lg font-bold text-on-surface inline-flex items-center gap-2">
+            📢 Manage Company Announcements
+          </h2>
+          <button onClick={onClose}><XCircle size={18} className="text-on-surface-subtle" /></button>
+        </div>
+
+        <div className="p-6 space-y-4 overflow-y-auto">
+          <div className="space-y-3 border-b border-outline pb-5">
+            <p className="text-xs font-bold uppercase tracking-wider text-on-surface-subtle">
+              {editing ? `Editing — ${editing.title}` : 'New Announcement'}
+            </p>
+            <input value={draftTitle} onChange={e => setDraftTitle(e.target.value)} placeholder="Title (e.g. New holiday policy)"
+              className="w-full text-sm border border-outline rounded-lg px-3 py-2 bg-surface focus:outline-none focus:ring-2 focus:ring-accent/30" />
+            <textarea value={draftBody} onChange={e => setDraftBody(e.target.value)} rows={4}
+              placeholder="What's the announcement? Plain text, line breaks preserved."
+              className="w-full text-sm border border-outline rounded-lg px-3 py-2 bg-surface resize-none focus:outline-none focus:ring-2 focus:ring-accent/30" />
+            <div className="grid grid-cols-2 gap-3">
+              <label className="text-xs text-on-surface-muted inline-flex items-center gap-2">
+                <input type="checkbox" checked={draftPinned} onChange={e => setDraftPinned(e.target.checked)} />
+                📌 Pin to top
+              </label>
+              <div>
+                <label className="text-[10px] uppercase tracking-wide font-semibold text-on-surface-subtle mb-1 block">Auto-expire (optional)</label>
+                <input type="date" value={draftExpires} onChange={e => setDraftExpires(e.target.value)}
+                  className="w-full text-sm border border-outline rounded-lg px-3 py-1.5 bg-surface focus:outline-none focus:ring-2 focus:ring-accent/30" />
+              </div>
+            </div>
+            {error && <p className="text-xs text-danger bg-danger-container/40 border border-danger/20 rounded-lg px-3 py-2">{error}</p>}
+            <div className="flex justify-end gap-2">
+              {editing && (
+                <button onClick={resetForm} className="px-3 py-1.5 text-xs font-semibold text-on-surface-muted border border-outline rounded-lg hover:bg-surface-2">Cancel edit</button>
+              )}
+              <button onClick={submit} disabled={busy}
+                className="px-4 py-1.5 text-xs font-semibold bg-accent text-on-accent rounded-lg disabled:opacity-50">
+                {busy ? 'Saving…' : editing ? 'Save changes' : 'Post announcement'}
+              </button>
+            </div>
+          </div>
+
+          <div>
+            <p className="text-xs font-bold uppercase tracking-wider text-on-surface-subtle mb-3">Active announcements ({items.length})</p>
+            {items.length === 0 ? (
+              <p className="text-sm text-on-surface-subtle text-center py-6">Nothing posted yet.</p>
+            ) : (
+              <div className="space-y-2">
+                {items.map(a => (
+                  <div key={a.id} className={`rounded-lg border ${a.pinned ? 'border-accent/40 bg-accent/5' : 'border-outline'} px-3 py-2 flex items-start justify-between gap-3`}>
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-center gap-2 mb-0.5">
+                        {a.pinned && <span className="text-[10px] font-bold uppercase tracking-wider px-1 py-0.5 rounded bg-accent text-on-accent">📌</span>}
+                        <p className="text-sm font-bold text-on-surface truncate">{a.title}</p>
+                      </div>
+                      <p className="text-xs text-on-surface-muted truncate">{a.body}</p>
+                    </div>
+                    <div className="flex flex-shrink-0 gap-1">
+                      <button onClick={() => startEdit(a)} className="text-[11px] font-semibold text-on-surface-muted hover:text-accent px-2 py-1">Edit</button>
+                      <button onClick={() => remove(a)} className="text-[11px] font-semibold text-danger hover:underline px-2 py-1">Delete</button>
                     </div>
                   </div>
                 ))}
