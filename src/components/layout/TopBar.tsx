@@ -300,8 +300,21 @@ export default function TopBar({ title, onMenuClick }: Props) {
 
   useEffect(() => {
     fetchNotifications();
-    pollRef.current = setInterval(fetchNotifications, 30000);
-    return () => { if (pollRef.current) clearInterval(pollRef.current); };
+    // 30s was "feels stale" — comments / approvals / leave requests took
+    // half a minute to surface. 8s feels live without burning bandwidth.
+    pollRef.current = setInterval(fetchNotifications, 8000);
+    // Bonus: refetch the moment the tab regains focus. If the user was
+    // away from the tab for 5 minutes, they don't have to wait another
+    // poll cycle — they get fresh state immediately on return.
+    const onFocus = () => fetchNotifications();
+    const onVisible = () => { if (document.visibilityState === 'visible') fetchNotifications(); };
+    window.addEventListener('focus', onFocus);
+    document.addEventListener('visibilitychange', onVisible);
+    return () => {
+      if (pollRef.current) clearInterval(pollRef.current);
+      window.removeEventListener('focus', onFocus);
+      document.removeEventListener('visibilitychange', onVisible);
+    };
   }, [user?.id]);
 
   // Per-toast dismiss + auto-dismiss after 7s. Click-to-navigate uses the

@@ -21,9 +21,25 @@ export default function FeaturePopup() {
 
   const fetchNext = () => {
     if (!user) { setFeature(null); return; }
+    // Only fetch when the modal isn't already showing one. Otherwise a
+    // poll that comes in during a popup would replace the title under
+    // the user's nose.
+    if (feature) return;
     api.getUnseenFeature().then(setFeature).catch(() => setFeature(null));
   };
-  useEffect(fetchNext, [user?.id]);
+  useEffect(() => {
+    fetchNext();
+    // 15s poll so a freshly-published announcement pops within seconds
+    // of admin clicking Publish — no page refresh required.
+    const id = setInterval(fetchNext, 15000);
+    const onFocus = () => fetchNext();
+    window.addEventListener('focus', onFocus);
+    return () => {
+      clearInterval(id);
+      window.removeEventListener('focus', onFocus);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [user?.id, !!feature]);
 
   const dismiss = async () => {
     if (!feature) return;

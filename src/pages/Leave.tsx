@@ -3,6 +3,7 @@ import { Plus, Check, X, Clock, Calendar, User, ChevronDown, Edit3 } from 'lucid
 import { api } from '../services/api';
 import { slotLabel } from '../utils/leaveLabel';
 import { toast } from '../components/Toaster';
+import { useLiveRefresh } from '../hooks/useLiveRefresh';
 import { useAuth } from '../context/AuthContext';
 
 function parseLocalDate(dateStr: string): Date {
@@ -593,6 +594,11 @@ export default function Leave() {
 
   const loadRequests = (empId?: string) =>
     api.getLeaveRequests(empId ? { employee_id: empId } : undefined).then(setRequests);
+
+  // Live refresh — pulls fresh leave requests every 12s + on tab focus.
+  // Employee applies a leave → HR sees it pop into the pending list
+  // without refreshing. Manager rejects → HR sees the rejection live.
+  useLiveRefresh(() => { loadRequests(selectedEmpId || undefined); });
 
   useEffect(() => {
     Promise.all([

@@ -8,6 +8,7 @@ import { leaveTypeLabel } from '../../utils/leaveLabel';
 import HourLogCommentsModal from '../../components/HourLogCommentsModal';
 import { toast } from '../../components/Toaster';
 import AttendanceNoteModal from '../../components/AttendanceNoteModal';
+import { useLiveRefresh } from '../../hooks/useLiveRefresh';
 import { useAuth } from '../../context/AuthContext';
 import { api } from '../../services/api';
 import { financeApi } from '../../services/financeApi';
@@ -763,6 +764,20 @@ export default function MyPortal() {
     a => a.month === currentMonth && a.year === currentYear
   );
   const isSubmitted = currentAppraisal?.submitted === true;
+
+  // Live data — refresh whichever surface the user is looking at every
+  // ~12s + immediately when the tab regains focus. Means: applied a leave
+  // from another device → it shows up here. Manager approved → status
+  // flips here. No manual refresh needed.
+  useLiveRefresh(() => {
+    if (!empDbId) return;
+    if (tab === 'leave')         api.getLeaveRequests({ employee_id: empDbId }).then(setLeaves).catch(()=>{});
+    else if (tab === 'wfh')      api.getWfhRequests({ employee_id: empDbId }).then(r => setWfhRequests(Array.isArray(r) ? r : [])).catch(()=>{});
+    else if (tab === 'attendance') api.getAttendance({ employee_id: empDbId, month: attMonth, year: attYear }).then(setAttendance).catch(()=>{});
+    else if (tab === 'myteam')   api.getLeaveRequests().then(rs => {
+      setTeamPendingLeaves((rs as any[]).filter((l: any) => l.status === 'pending' && l.manager_status === 'pending' && teamMembers.some((m: any) => m.id === l.employee_id)));
+    }).catch(()=>{});
+  });
 
   // Past appraisals = everything that is NOT the current open window
   const pastAppraisals = allAppraisals.filter(

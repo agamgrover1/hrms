@@ -5,6 +5,7 @@ import {
 import { Users, Calendar, DollarSign, TrendingUp, AlertCircle, CheckCircle2, UserCheck, Clock as ClockIcon, Wrench } from 'lucide-react';
 import { leaveTypeLabel } from '../utils/leaveLabel';
 import { toast } from '../components/Toaster';
+import { useLiveRefresh } from '../hooks/useLiveRefresh';
 import { Link } from 'react-router-dom';
 import { api } from '../services/api';
 import { useAuth } from '../context/AuthContext';
@@ -61,6 +62,14 @@ export default function Dashboard() {
   const currentYear = now.getFullYear();
   const currentMonthName = MONTH_FULL[now.getMonth()];
   const todayStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+
+  // Refetch leaves + attendance live so the "Pending leaves" widget,
+  // "Today's Attendance" tile, and "Recent activity" track current state
+  // without manual refresh.
+  useLiveRefresh(() => {
+    api.getLeaveRequests().then(setLeaveRequests).catch(() => {});
+    api.getAttendance({ month: currentMonth, year: currentYear }).then(setAttendance).catch(() => {});
+  }, { intervalMs: 15000 });
 
   useEffect(() => {
     Promise.all([

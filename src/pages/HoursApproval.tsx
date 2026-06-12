@@ -4,6 +4,7 @@ import { api } from '../services/api';
 import { useAuth } from '../context/AuthContext';
 import HourLogCommentsModal from '../components/HourLogCommentsModal';
 import { toast } from '../components/Toaster';
+import { useLiveRefresh } from '../hooks/useLiveRefresh';
 
 type SortKey = 'oldest' | 'newest' | 'project' | 'hours_desc' | 'over_alloc';
 
@@ -106,6 +107,11 @@ export default function HoursApproval() {
     if (scope === 'mine' && !reviewerEmpId) return; // wait until we know who I am
     load();
   }, [load, scope, reviewerEmpId]);
+
+  // Live refresh on the queue. Manager / coordinator sees new submissions
+  // pop into Pending automatically, comments accrue on the rows without
+  // needing to refresh.
+  useLiveRefresh(load);
 
   // Deep-link auto-open: a notification can land here with ?logId=…&discuss=1
   // (e.g. an employee replied on a held log) and we open the modal once the
