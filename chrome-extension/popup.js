@@ -98,16 +98,24 @@ function render(data, employee) {
   badge.textContent = data.wfh_today ? '🏠 WFH' : '🏢 Office';
   badge.className   = 'badge ' + (data.wfh_today ? 'badge-wfh' : 'badge-office');
 
+  // "Biometric is locking the extension" only applies while the biometric
+  // session is still OPEN. Once the employee biometric-clocks-out, the
+  // check_out field is set and the day is unsealed for an extension session
+  // (e.g. they went home and want to continue working). The bug before this
+  // fix was that any day with a biometric record killed the entire UI for
+  // the rest of the day.
+  const bioActive = data.has_biometric && !data.check_out;
+
   // Notices
-  $('wfhNotice').classList.toggle('hidden', !data.wfh_today || sessions.length > 0 || data.has_biometric);
-  $('bioNotice').classList.toggle('hidden', !data.has_biometric);
+  $('wfhNotice').classList.toggle('hidden', !data.wfh_today || sessions.length > 0 || bioActive);
+  $('bioNotice').classList.toggle('hidden', !bioActive);
   $('shiftInfo').textContent = (data.shift === 'night' ? '🌙 Night Shift' : '☀️ Day Shift') + ` · ${fmt12(data.shift_start)} – ${fmt12(data.shift_end)}`;
-  $('shiftInfo').classList.toggle('hidden', data.has_biometric);
+  $('shiftInfo').classList.toggle('hidden', bioActive);
 
   // Total hours bar
   const hasSessions = sessions.length > 0 || active;
-  $('totalBar').classList.toggle('hidden', !hasSessions && !data.has_biometric);
-  if (hasSessions || data.has_biometric) {
+  $('totalBar').classList.toggle('hidden', !hasSessions && !bioActive);
+  if (hasSessions || bioActive) {
     renderTotalBar(data, active);
   }
 
@@ -128,8 +136,11 @@ function render(data, employee) {
   // Session list
   renderSessionList(sessions, active);
 
-  // Sub-view
-  if (data.has_biometric) {
+  // Sub-view. Only block the extension UI while the biometric session is
+  // STILL OPEN. After biometric-clock-out (check_out is set), the bottom
+  // section should show "Start Work" so the employee can begin a second
+  // (extension-tracked) block from home — what the user described.
+  if (bioActive) {
     $('sessionsWrap').classList.add('hidden');
     showSub('notClockedView'); // hide buttons, show nothing useful
     $('notClockedView').classList.add('hidden'); // actually hide all

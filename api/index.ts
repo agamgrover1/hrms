@@ -1892,10 +1892,17 @@ app.post('/api/attendance/clock-in', async (req, res) => {
     const { date: today, time } = istNow();
     if (isWeekendV(today)) return res.status(400).json({ error: 'Weekends are non-working days' });
 
-    // Block if biometric already recorded
-    const existingRec = await sql`SELECT source FROM attendance_records WHERE employee_id=${employee_id} AND date::date=${today}::date`;
-    if ((existingRec as any[]).length && (existingRec[0] as any).source === 'biometric') {
-      return res.status(409).json({ error: 'Biometric attendance already recorded for today.' });
+    // Block extension clock-in ONLY while the biometric session is still
+    // open (check_out is null) — i.e. the employee hasn't biometric-clocked-
+    // out yet. After biometric clock-out, the office portion is sealed and
+    // the extension can take over for any remaining work (e.g. went home
+    // and continued from there). Without this, an employee who biometric'd
+    // in at 9, biometric'd out at 6, and wanted to continue WFH at 8pm
+    // got a hard 409 from the extension and couldn't log the second block.
+    const existingRec = await sql`SELECT source, check_out FROM attendance_records WHERE employee_id=${employee_id} AND date::date=${today}::date`;
+    const recRow = (existingRec as any[])[0];
+    if (recRow && recRow.source === 'biometric' && !recRow.check_out) {
+      return res.status(409).json({ error: 'Biometric session still open — please biometric-clock-out at the office first.' });
     }
 
     // Block if there is already an open session
