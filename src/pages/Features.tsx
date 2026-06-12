@@ -20,14 +20,20 @@ export default function Features() {
   const [editing, setEditing] = useState<FeatureAnnouncement | null>(null);
   const [creating, setCreating] = useState(false);
 
-  const load = () => {
-    setLoading(true);
+  // Initial load shows the "Loading…" skeleton. Refreshes after a
+  // publish / edit / delete swap data in-place without resetting
+  // loading=true — otherwise the page flashed blank for the duration
+  // of the GET, which Vansh reported as "screen got blank for a few
+  // seconds and then reloaded".
+  const load = (opts?: { silent?: boolean }) => {
+    if (!opts?.silent) setLoading(true);
     api.getFeatures()
       .then(setItems)
-      .catch(() => setItems([]))
+      .catch(() => { if (!opts?.silent) setItems([]); })
       .finally(() => setLoading(false));
   };
-  useEffect(load, []);
+  useEffect(() => { load(); }, []);
+  const refresh = () => load({ silent: true });
 
   const { drafts, published } = useMemo(() => ({
     drafts:    items.filter(i => i.status === 'draft'),
@@ -39,7 +45,7 @@ export default function Features() {
     try {
       await api.updateFeature(it.id, { status: 'published' });
       toast.success('Feature published', `"${it.title}" is now live for everyone.`);
-      load();
+      refresh();
     } catch (e: any) { toast.error('Failed to publish', e?.message); }
   };
 
@@ -48,7 +54,7 @@ export default function Features() {
     try {
       await api.updateFeature(it.id, { status: 'draft' });
       toast.success('Feature unpublished', 'Moved back to drafts.');
-      load();
+      refresh();
     } catch (e: any) { toast.error('Failed to unpublish', e?.message); }
   };
 
@@ -57,7 +63,7 @@ export default function Features() {
     try {
       await api.deleteFeature(it.id);
       toast.success('Feature deleted', `"${it.title}" removed.`);
-      load();
+      refresh();
     } catch (e: any) { toast.error('Failed to delete', e?.message); }
   };
 
@@ -127,14 +133,14 @@ export default function Features() {
       {creating && (
         <FeatureFormModal
           onClose={() => setCreating(false)}
-          onSaved={() => { setCreating(false); load(); }}
+          onSaved={() => { setCreating(false); refresh(); }}
         />
       )}
       {editing && (
         <FeatureFormModal
           item={editing}
           onClose={() => setEditing(null)}
-          onSaved={() => { setEditing(null); load(); }}
+          onSaved={() => { setEditing(null); refresh(); }}
         />
       )}
     </div>
