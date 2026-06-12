@@ -1,5 +1,7 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { X, ChevronLeft, ChevronRight, Clock } from 'lucide-react';
+import { api } from '../services/api';
+import AttendanceNoteModal from './AttendanceNoteModal';
 
 interface AttendanceRow {
   date: string;          // YYYY-MM-DD
@@ -46,14 +48,33 @@ function dayLabel(status: string | undefined): { label: string; cls: string; dot
   return { label: status, cls: 'bg-surface-2 text-on-surface-muted' };
 }
 
-export default function MemberCalendarModal({ member, attendance, leaves, onClose }: {
+export default function MemberCalendarModal({ member, attendance, leaves, onClose, currentUser }: {
   member: { id: string; name: string; designation?: string };
   attendance: AttendanceRow[];
   leaves: LeaveRow[];
   onClose: () => void;
+  // Optional — when provided, day cells become clickable and the manager
+  // can add a personal note for that date. Backend already permits anyone
+  // up the reporting chain (canTouchAttendanceNote), so the affordance is
+  // safe to expose to whoever opened this modal — the API call enforces.
+  currentUser?: { name?: string | null; role?: string | null };
 }) {
   const today = new Date();
   const [cursor, setCursor] = useState<{ m: number; y: number }>({ m: today.getMonth() + 1, y: today.getFullYear() });
+  // Attendance notes for the visible month. Loaded lazily on month change
+  // so flipping back/forward doesn't refetch the entire history.
+  const [notesByDate, setNotesByDate] = useState<Record<string, { note: string; author_name: string | null; author_role: string | null; updated_at: string }>>({});
+  const [editingNoteDate, setEditingNoteDate] = useState<string | null>(null);
+  useEffect(() => {
+    if (!member.id) return;
+    api.getAttendanceNotes(member.id, cursor.m, cursor.y)
+      .then(rows => {
+        const byDate: Record<string, any> = {};
+        (rows as any[]).forEach(n => { byDate[n.date] = n; });
+        setNotesByDate(byDate);
+      })
+      .catch(() => setNotesByDate({}));
+  }, [member.id, cursor.m, cursor.y]);
 
   // Build a date → row map. Slice to first 10 chars to handle full-ISO timestamps.
   const byDate = useMemo(() => {
@@ -164,15 +185,21 @@ export default function MemberCalendarModal({ member, attendance, leaves, onClos
               const status = leaveRow ? 'leave_full' : rec?.status;
               const info = dayLabel(status);
               const isToday = c.date === today.toISOString().slice(0, 10);
+              const note = notesByDate[c.date];
+              const isFuture = c.date > today.toISOString().slice(0, 10);
+              const clickable = !!currentUser && !isFuture;
               return (
-                <div key={i}
-                  className={`aspect-square rounded-lg border ${info.cls || 'bg-surface-2/30 text-on-surface-muted'} ${isToday ? 'border-accent ring-2 ring-accent/30' : 'border-outline/40'} relative flex flex-col items-center justify-center p-1 transition-colors hover:shadow-elev-1`}
+                <button key={i} type="button"
+                  disabled={!clickable}
+                  onClick={() => clickable && setEditingNoteDate(c.date)}
+                  className={`aspect-square rounded-lg border ${info.cls || 'bg-surface-2/30 text-on-surface-muted'} ${isToday ? 'border-accent ring-2 ring-accent/30' : 'border-outline/40'} relative flex flex-col items-center justify-center p-1 transition-all ${clickable ? 'cursor-pointer hover:shadow-elev-1 hover:scale-[1.02]' : 'cursor-default'}`}
                   title={[
                     `${MONTHS[cursor.m-1]} ${c.day}`,
                     rec?.holiday_name ? `Holiday: ${rec.holiday_name}` : info.label,
                     rec?.check_in ? `Check-in: ${rec.check_in}` : null,
                     rec?.check_out ? `Check-out: ${rec.check_out}` : null,
                     leaveRow ? `Leave: ${leaveRow.type}${leaveRow.reason ? ` · ${leaveRow.reason}` : ''}` : null,
+                    note ? `Note: ${note.note}` : (clickable ? 'Click to add a note' : null),
                   ].filter(Boolean).join(' · ')}>
                   <span className="num-mono text-xs font-bold">{c.day}</span>
                   {info.dotCls && <span className={`w-1.5 h-1.5 rounded-full mt-0.5 ${info.dotCls}`} />}
@@ -182,7 +209,12 @@ export default function MemberCalendarModal({ member, attendance, leaves, onClos
                   {rec?.check_out && !isLeaveStatus(rec.status) && !rec.status?.startsWith('leave') && (
                     <span className="text-[8px] num-mono opacity-60">{rec.check_out?.slice(0, 5)}</span>
                   )}
-                </div>
+                  {/* Note indicator — small 📝 in the corner so the manager
+                      can see at a glance which days have an existing note. */}
+                  {note && (
+                    <span className="absolute top-0.5 right-0.5 text-[9px] leading-none">📝</span>
+                  )}
+                </button>
               );
             })}
           </div>
@@ -215,9 +247,48 @@ export default function MemberCalendarModal({ member, attendance, leaves, onClos
 
         <div className="px-5 py-2.5 border-t border-outline bg-surface-2/30 text-[11px] text-on-surface-subtle inline-flex items-center gap-2">
           <Clock size={11} />
-          Today highlighted with accent ring. Each working day shows check-in/check-out times below the date; hover for full details.
+          {currentUser
+            ? <>Click any past day to add a personal note for {member.name.split(' ')[0]}. Days with notes show a 📝.</>
+            : 'Today highlighted with accent ring. Each working day shows check-in/check-out times; hover for full details.'}
         </div>
       </div>
+
+      {/* Note editor — opens when the manager clicks a day cell. After save
+          we re-fetch the visible month's notes so the 📝 indicator shows up
+          immediately without closing the calendar. */}
+      {editingNoteDate && (
+        <AttendanceNoteModal
+          employeeId={member.id}
+          date={editingNoteDate}
+          existing={notesByDate[editingNoteDate]?.note ?? ''}
+          authorName={currentUser?.name ?? null}
+          authorRole={currentUser?.role ?? null}
+          onClose={() => setEditingNoteDate(null)}
+          onSaved={(noteText) => {
+            setEditingNoteDate(null);
+            // Optimistic local update — backend already persisted, but the
+            // refetch on month change is the safety net if author info
+            // doesn't match what the server stamped.
+            if (!noteText) {
+              setNotesByDate(prev => {
+                const next = { ...prev };
+                delete next[editingNoteDate];
+                return next;
+              });
+            } else {
+              setNotesByDate(prev => ({
+                ...prev,
+                [editingNoteDate]: {
+                  note: noteText,
+                  author_name: currentUser?.name ?? null,
+                  author_role: currentUser?.role ?? null,
+                  updated_at: new Date().toISOString(),
+                },
+              }));
+            }
+          }}
+        />
+      )}
     </div>
   );
 }

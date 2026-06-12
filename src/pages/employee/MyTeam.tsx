@@ -869,6 +869,7 @@ export default function MyTeam() {
           member={calendarFor}
           attendance={teamAttendance[calendarFor.id] ?? []}
           leaves={teamAllLeaves.filter((l: any) => l.employee_id === calendarFor.id)}
+          currentUser={{ name: user?.name, role: user?.role }}
           onClose={() => setCalendarFor(null)}
         />
       )}
