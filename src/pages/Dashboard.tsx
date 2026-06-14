@@ -573,35 +573,22 @@ export default function Dashboard() {
                 </h3>
                 <p className="text-xs text-on-surface-muted mt-0.5">News, updates, and reminders</p>
               </div>
-              {isAdminOrHR && (
-                <button onClick={() => setShowManageAnnouncements(true)}
-                  className="text-xs font-semibold px-3 py-1.5 rounded-lg bg-accent text-on-accent hover:opacity-90">
-                  Manage
-                </button>
-              )}
+              <button onClick={() => setShowManageAnnouncements(true)}
+                className="text-xs font-semibold px-3 py-1.5 rounded-lg bg-accent text-on-accent hover:opacity-90">
+                + Post
+              </button>
             </div>
             {announcements.length === 0 ? (
               <div className="text-center py-8 text-sm text-on-surface-subtle">
-                {isAdminOrHR ? 'Nothing posted yet. Click Manage to add the first announcement.' : 'No announcements right now.'}
+                Nothing posted yet. Click + Post to add the first announcement.
               </div>
             ) : (
               <div className="space-y-3 max-h-[320px] overflow-y-auto pr-1 -mr-1">
                 {announcements.map((a: any) => (
-                  <article key={a.id} className={`rounded-xl-2 border ${a.pinned ? 'border-accent/40 bg-accent/5' : 'border-outline bg-surface-2/30'} px-4 py-3`}>
-                    <div className="flex items-start justify-between gap-2 mb-1 flex-wrap">
-                      <div className="flex items-center gap-2 min-w-0">
-                        {a.pinned && <span className="text-[10px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded-md bg-accent text-on-accent">📌 Pinned</span>}
-                        <p className="font-display text-base font-bold text-on-surface tracking-tight truncate">{a.title}</p>
-                      </div>
-                      <p className="text-[10px] text-on-surface-subtle whitespace-nowrap">
-                        {new Date(a.created_at).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' })}
-                      </p>
-                    </div>
-                    <p className="text-sm text-on-surface-muted whitespace-pre-line leading-snug">{a.body}</p>
-                    {a.posted_by_name && (
-                      <p className="text-[10px] text-on-surface-subtle mt-1.5">— {a.posted_by_name}</p>
-                    )}
-                  </article>
+                  <AnnouncementCard key={a.id} a={a}
+                    canDelete={isAdminOrHR || a.posted_by_id === user?.id}
+                    onChanged={() => api.getAnnouncements().then(setAnnouncements).catch(() => {})}
+                  />
                 ))}
               </div>
             )}
@@ -667,12 +654,84 @@ export default function Dashboard() {
 // new post inline, edit existing posts, toggle pinned, delete. Designed
 // to live inside the Dashboard widget so HR doesn't need to navigate to
 // a separate page just to post a quick note.
+// Shared card for one announcement on the dashboard widgets. Renders role
+// chips when a human posted it, a HRMS badge + accented border when the
+// post was auto-generated for a birthday or anniversary, and an inline
+// Delete affordance when the viewer is allowed to remove it (own post or
+// admin/HR).
+function AnnouncementCard({ a, canDelete, onChanged }: {
+  a: any;
+  canDelete: boolean;
+  onChanged: () => void;
+}) {
+  const isAuto = a.kind === 'birthday' || a.kind === 'anniversary';
+  const tone = isAuto
+    ? a.kind === 'birthday'
+      ? 'border-brand/30 bg-brand-container/40'
+      : 'border-accent/40 bg-accent/5'
+    : a.pinned ? 'border-accent/40 bg-accent/5' : 'border-outline bg-surface-2/30';
+  const roleLabel =
+    a.posted_by_role === 'admin' ? 'Admin' :
+    a.posted_by_role === 'hr_manager' ? 'HR' :
+    a.posted_by_role === 'project_coordinator' ? 'Coord' :
+    a.posted_by_role === 'employee' ? 'Employee' : null;
+  const remove = async () => {
+    if (!confirm(`Delete "${a.title}"?`)) return;
+    try {
+      await api.deleteAnnouncement(a.id);
+      toast.success('Announcement deleted', a.title);
+      onChanged();
+    } catch (e: any) { toast.error('Failed to delete', e?.message); }
+  };
+  return (
+    <article className={`rounded-xl-2 border ${tone} px-4 py-3 relative group`}>
+      <div className="flex items-start justify-between gap-2 mb-1 flex-wrap">
+        <div className="flex items-center gap-2 min-w-0 flex-wrap">
+          {a.pinned && <span className="text-[10px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded-md bg-accent text-on-accent">📌 Pinned</span>}
+          {a.kind === 'birthday' && <span className="text-[10px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded-md bg-brand text-on-brand">🎂 Birthday</span>}
+          {a.kind === 'anniversary' && <span className="text-[10px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded-md bg-accent text-on-accent">🎯 Anniversary</span>}
+          <p className="font-display text-base font-bold text-on-surface tracking-tight truncate">{a.title}</p>
+        </div>
+        <div className="flex items-center gap-2 flex-shrink-0">
+          <p className="text-[10px] text-on-surface-subtle whitespace-nowrap">
+            {new Date(a.created_at).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' })}
+          </p>
+          {canDelete && (
+            <button onClick={remove}
+              title="Delete"
+              className="opacity-0 group-hover:opacity-100 text-[11px] font-semibold text-danger hover:underline transition-opacity">
+              Delete
+            </button>
+          )}
+        </div>
+      </div>
+      <p className="text-sm text-on-surface-muted whitespace-pre-line leading-snug">{a.body}</p>
+      {(a.posted_by_name || isAuto) && (
+        <div className="flex items-center gap-1.5 mt-1.5 text-[10px] text-on-surface-subtle">
+          <span>— {a.posted_by_name ?? 'Digital Leap HRMS'}</span>
+          {roleLabel && (
+            <span className="font-bold uppercase tracking-wider px-1 py-0.5 rounded bg-surface-2 text-on-surface-muted border border-outline">
+              {roleLabel}
+            </span>
+          )}
+          {isAuto && (
+            <span className="font-bold uppercase tracking-wider px-1 py-0.5 rounded bg-accent/10 text-accent border border-accent/20">
+              Auto
+            </span>
+          )}
+        </div>
+      )}
+    </article>
+  );
+}
+
 function ManageAnnouncementsModal({ isAdminOrHR, currentItems, onClose, onChanged }: {
   isAdminOrHR: boolean;
   currentItems: any[];
   onClose: () => void;
   onChanged: () => void;
 }) {
+  const { user } = useAuth();
   const [items, setItems] = useState<any[]>(currentItems);
   const [editing, setEditing] = useState<any | null>(null);
   const [draftTitle, setDraftTitle] = useState('');
@@ -730,14 +789,16 @@ function ManageAnnouncementsModal({ isAdminOrHR, currentItems, onClose, onChange
     } catch (e: any) { alert(e?.message ?? 'Failed to delete'); }
   };
 
-  if (!isAdminOrHR) return null;
+  // Modal is open to every signed-in user now — anyone can post. Pin /
+  // Expiry controls + per-row Edit/Delete on others' posts stay gated to
+  // admin/HR (handled inline above).
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm p-4">
       <div className="bg-surface rounded-2xl shadow-2xl w-full max-w-2xl max-h-[90vh] flex flex-col overflow-hidden">
         <div className="flex items-center justify-between px-6 py-4 border-b border-outline">
           <h2 className="font-display text-lg font-bold text-on-surface inline-flex items-center gap-2">
-            📢 Manage Company Announcements
+            📢 {isAdminOrHR ? 'Manage Company Announcements' : 'Share an update'}
           </h2>
           <button onClick={onClose}><XCircle size={18} className="text-on-surface-subtle" /></button>
         </div>
@@ -752,17 +813,22 @@ function ManageAnnouncementsModal({ isAdminOrHR, currentItems, onClose, onChange
             <textarea value={draftBody} onChange={e => setDraftBody(e.target.value)} rows={4}
               placeholder="What's the announcement? Plain text, line breaks preserved."
               className="w-full text-sm border border-outline rounded-lg px-3 py-2 bg-surface resize-none focus:outline-none focus:ring-2 focus:ring-accent/30" />
-            <div className="grid grid-cols-2 gap-3">
-              <label className="text-xs text-on-surface-muted inline-flex items-center gap-2">
-                <input type="checkbox" checked={draftPinned} onChange={e => setDraftPinned(e.target.checked)} />
-                📌 Pin to top
-              </label>
-              <div>
-                <label className="text-[10px] uppercase tracking-wide font-semibold text-on-surface-subtle mb-1 block">Auto-expire (optional)</label>
-                <input type="date" value={draftExpires} onChange={e => setDraftExpires(e.target.value)}
-                  className="w-full text-sm border border-outline rounded-lg px-3 py-1.5 bg-surface focus:outline-none focus:ring-2 focus:ring-accent/30" />
+            {/* Pin + Expiry are admin/HR controls — gate them so an
+                employee posting a quick update can't pin their own post
+                to the top of the company feed indefinitely. */}
+            {isAdminOrHR && (
+              <div className="grid grid-cols-2 gap-3">
+                <label className="text-xs text-on-surface-muted inline-flex items-center gap-2">
+                  <input type="checkbox" checked={draftPinned} onChange={e => setDraftPinned(e.target.checked)} />
+                  📌 Pin to top
+                </label>
+                <div>
+                  <label className="text-[10px] uppercase tracking-wide font-semibold text-on-surface-subtle mb-1 block">Auto-expire (optional)</label>
+                  <input type="date" value={draftExpires} onChange={e => setDraftExpires(e.target.value)}
+                    className="w-full text-sm border border-outline rounded-lg px-3 py-1.5 bg-surface focus:outline-none focus:ring-2 focus:ring-accent/30" />
+                </div>
               </div>
-            </div>
+            )}
             {error && <p className="text-xs text-danger bg-danger-container/40 border border-danger/20 rounded-lg px-3 py-2">{error}</p>}
             <div className="flex justify-end gap-2">
               {editing && (
@@ -781,21 +847,33 @@ function ManageAnnouncementsModal({ isAdminOrHR, currentItems, onClose, onChange
               <p className="text-sm text-on-surface-subtle text-center py-6">Nothing posted yet.</p>
             ) : (
               <div className="space-y-2">
-                {items.map(a => (
-                  <div key={a.id} className={`rounded-lg border ${a.pinned ? 'border-accent/40 bg-accent/5' : 'border-outline'} px-3 py-2 flex items-start justify-between gap-3`}>
-                    <div className="min-w-0 flex-1">
-                      <div className="flex items-center gap-2 mb-0.5">
-                        {a.pinned && <span className="text-[10px] font-bold uppercase tracking-wider px-1 py-0.5 rounded bg-accent text-on-accent">📌</span>}
-                        <p className="text-sm font-bold text-on-surface truncate">{a.title}</p>
+                {items.map(a => {
+                  const isOwn = a.posted_by_id === user?.id;
+                  const canEdit = isAdminOrHR || isOwn;
+                  const canRemove = canEdit;
+                  return (
+                    <div key={a.id} className={`rounded-lg border ${a.pinned ? 'border-accent/40 bg-accent/5' : 'border-outline'} px-3 py-2 flex items-start justify-between gap-3`}>
+                      <div className="min-w-0 flex-1">
+                        <div className="flex items-center gap-2 mb-0.5 flex-wrap">
+                          {a.pinned && <span className="text-[10px] font-bold uppercase tracking-wider px-1 py-0.5 rounded bg-accent text-on-accent">📌</span>}
+                          {a.kind === 'birthday' && <span className="text-[10px]">🎂</span>}
+                          {a.kind === 'anniversary' && <span className="text-[10px]">🎯</span>}
+                          <p className="text-sm font-bold text-on-surface truncate">{a.title}</p>
+                          {a.posted_by_role && (
+                            <span className="text-[9px] font-bold uppercase tracking-wider px-1 py-0.5 rounded bg-surface-2 text-on-surface-muted border border-outline">
+                              {a.posted_by_role === 'admin' ? 'Admin' : a.posted_by_role === 'hr_manager' ? 'HR' : a.posted_by_role === 'project_coordinator' ? 'Coord' : 'Employee'}
+                            </span>
+                          )}
+                        </div>
+                        <p className="text-xs text-on-surface-muted truncate">{a.body}</p>
                       </div>
-                      <p className="text-xs text-on-surface-muted truncate">{a.body}</p>
+                      <div className="flex flex-shrink-0 gap-1">
+                        {canEdit && <button onClick={() => startEdit(a)} className="text-[11px] font-semibold text-on-surface-muted hover:text-accent px-2 py-1">Edit</button>}
+                        {canRemove && <button onClick={() => remove(a)} className="text-[11px] font-semibold text-danger hover:underline px-2 py-1">Delete</button>}
+                      </div>
                     </div>
-                    <div className="flex flex-shrink-0 gap-1">
-                      <button onClick={() => startEdit(a)} className="text-[11px] font-semibold text-on-surface-muted hover:text-accent px-2 py-1">Edit</button>
-                      <button onClick={() => remove(a)} className="text-[11px] font-semibold text-danger hover:underline px-2 py-1">Delete</button>
-                    </div>
-                  </div>
-                ))}
+                  );
+                })}
               </div>
             )}
           </div>
@@ -816,10 +894,21 @@ function EmployeeDashboardView({ announcements, upcomingEvents }: {
   announcements: any[]; upcomingEvents: any[];
 }) {
   const { user } = useAuth();
+  const isAdminOrHR = user?.role === 'admin' || user?.role === 'hr_manager';
   const [empRow, setEmpRow] = useState<any>(null);
   const [balance, setBalance] = useState<any>({ full_day: 0, short_leave: 0 });
   const [myAttendance, setMyAttendance] = useState<any[]>([]);
   const [myLeaves, setMyLeaves] = useState<any[]>([]);
+  // Open the post modal on the employee dashboard too — anyone can share now.
+  const [showPostModal, setShowPostModal] = useState(false);
+  // Local copy of announcements so the optimistic refresh after a post
+  // shows up here. The parent fetches every 15s anyway; this just makes
+  // it instant.
+  const [localAnnouncements, setLocalAnnouncements] = useState<any[]>(announcements);
+  useEffect(() => { setLocalAnnouncements(announcements); }, [announcements]);
+  const refreshAnnouncements = () => {
+    api.getAnnouncements().then(setLocalAnnouncements).catch(() => {});
+  };
   const [reportingManager, setReportingManager] = useState<any | null>(null);
 
   // Resolve the user's own employee record + personal counters. This runs
@@ -969,30 +1058,27 @@ function EmployeeDashboardView({ announcements, upcomingEvents }: {
         <div className="lg:col-span-2 relative bg-surface rounded-xl-3 p-6 border border-outline shadow-elev-2 overflow-hidden">
           <div className="absolute -top-10 -left-10 w-40 h-40 rounded-full bg-brand/15 blur-2xl opacity-50" />
           <div className="relative">
-            <h3 className="font-display text-xl font-bold text-on-surface tracking-tight inline-flex items-center gap-2 mb-1">
-              📢 Company Announcements
-            </h3>
-            <p className="text-xs text-on-surface-muted mb-4">News, updates, and reminders from HR / admin</p>
-            {announcements.length === 0 ? (
-              <div className="text-center py-8 text-sm text-on-surface-subtle">No announcements right now.</div>
+            <div className="flex items-center justify-between mb-4 gap-3 flex-wrap">
+              <div>
+                <h3 className="font-display text-xl font-bold text-on-surface tracking-tight inline-flex items-center gap-2">
+                  📢 Company Announcements
+                </h3>
+                <p className="text-xs text-on-surface-muted mt-0.5">Anyone can share news, updates, or a quick shout-out.</p>
+              </div>
+              <button onClick={() => setShowPostModal(true)}
+                className="text-xs font-semibold px-3 py-1.5 rounded-lg bg-accent text-on-accent hover:opacity-90">
+                + Post
+              </button>
+            </div>
+            {localAnnouncements.length === 0 ? (
+              <div className="text-center py-8 text-sm text-on-surface-subtle">Nothing posted yet. Click + Post to share something with the team.</div>
             ) : (
               <div className="space-y-3 max-h-[320px] overflow-y-auto pr-1 -mr-1">
-                {announcements.map((a: any) => (
-                  <article key={a.id} className={`rounded-xl-2 border ${a.pinned ? 'border-accent/40 bg-accent/5' : 'border-outline bg-surface-2/30'} px-4 py-3`}>
-                    <div className="flex items-start justify-between gap-2 mb-1 flex-wrap">
-                      <div className="flex items-center gap-2 min-w-0">
-                        {a.pinned && <span className="text-[10px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded-md bg-accent text-on-accent">📌 Pinned</span>}
-                        <p className="font-display text-base font-bold text-on-surface tracking-tight truncate">{a.title}</p>
-                      </div>
-                      <p className="text-[10px] text-on-surface-subtle whitespace-nowrap">
-                        {new Date(a.created_at).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' })}
-                      </p>
-                    </div>
-                    <p className="text-sm text-on-surface-muted whitespace-pre-line leading-snug">{a.body}</p>
-                    {a.posted_by_name && (
-                      <p className="text-[10px] text-on-surface-subtle mt-1.5">— {a.posted_by_name}</p>
-                    )}
-                  </article>
+                {localAnnouncements.map((a: any) => (
+                  <AnnouncementCard key={a.id} a={a}
+                    canDelete={isAdminOrHR || a.posted_by_id === user?.id}
+                    onChanged={refreshAnnouncements}
+                  />
                 ))}
               </div>
             )}
@@ -1047,6 +1133,15 @@ function EmployeeDashboardView({ announcements, upcomingEvents }: {
           Open the full My Portal → all your tabs (leaves, hours, payslips, performance…)
         </Link>
       </div>
+
+      {showPostModal && (
+        <ManageAnnouncementsModal
+          isAdminOrHR={isAdminOrHR}
+          currentItems={localAnnouncements}
+          onClose={() => setShowPostModal(false)}
+          onChanged={refreshAnnouncements}
+        />
+      )}
     </div>
   );
 }

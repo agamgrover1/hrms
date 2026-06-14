@@ -1207,6 +1207,13 @@ async function runStartupMigrations() {
       created_at TIMESTAMPTZ DEFAULT NOW(),
       updated_at TIMESTAMPTZ DEFAULT NOW()
     )`;
+  // Posted-by role so the UI can render "HR Manager" / "Coordinator" /
+  // "Employee" chips on each post. NULL for auto-generated rows.
+  await sql`ALTER TABLE company_announcements ADD COLUMN IF NOT EXISTS posted_by_role TEXT`.catch(()=>{});
+  // Kind discriminates user posts from system-generated occasion posts
+  // (birthdays / anniversaries). The Dashboard widget uses it for the
+  // 🎂 / 🎯 affordance vs the regular post layout.
+  await sql`ALTER TABLE company_announcements ADD COLUMN IF NOT EXISTS kind TEXT DEFAULT 'user'`.catch(()=>{});
   await sql`CREATE INDEX IF NOT EXISTS idx_company_announcements_active ON company_announcements(pinned DESC, created_at DESC)`.catch(()=>{});
 
   await sql`
@@ -3844,13 +3851,56 @@ app.get('/api/announcements', async (req, res) => {
     await runStartupMigrations();
     const uid = req.header('x-user-id');
     if (!uid) return res.status(401).json({ error: 'Sign in required' });
+    // Lazy auto-post pass — runs every fetch but is fully idempotent. The
+    // ON CONFLICT (id) DO NOTHING covers the no-cron case on Vercel Hobby:
+    // first read of the day creates today's birthday + anniversary cards;
+    // subsequent reads are no-ops. Deterministic id keys per (employee,
+    // date) prevent duplicates even across multiple concurrent fetches.
+    // Wrapped in try/catch so a malformed employees row never breaks the
+    // main list response.
+    try {
+      // Birthdays
+      await sql`
+        INSERT INTO company_announcements (id, title, body, kind, posted_by_name)
+        SELECT
+          'auto_bday_' || e.id || '_' || TO_CHAR(CURRENT_DATE, 'YYYYMMDD'),
+          '🎂 Happy birthday, ' || split_part(e.name, ' ', 1) || '!',
+          'Wishing ' || e.name || COALESCE(' (' || e.designation || ')', '') || ' a wonderful birthday today. Drop a 🎉 in the comments and make their day!',
+          'birthday',
+          'Digital Leap HRMS'
+        FROM employees e
+        WHERE e.status = 'active'
+          AND e.date_of_birth IS NOT NULL
+          AND EXTRACT(MONTH FROM e.date_of_birth) = EXTRACT(MONTH FROM CURRENT_DATE)
+          AND EXTRACT(DAY FROM e.date_of_birth)   = EXTRACT(DAY FROM CURRENT_DATE)
+        ON CONFLICT (id) DO NOTHING`.catch(()=>{});
+      // Work anniversaries — only after the first year so the joining day
+      // itself doesn't fire as "0 years".
+      await sql`
+        INSERT INTO company_announcements (id, title, body, kind, posted_by_name)
+        SELECT
+          'auto_anniv_' || e.id || '_' || TO_CHAR(CURRENT_DATE, 'YYYYMMDD'),
+          '🎯 ' || e.name || ' completes ' || (EXTRACT(YEAR FROM CURRENT_DATE) - EXTRACT(YEAR FROM e.join_date))::int || ' year' ||
+            CASE WHEN (EXTRACT(YEAR FROM CURRENT_DATE) - EXTRACT(YEAR FROM e.join_date))::int = 1 THEN '' ELSE 's' END || ' today!',
+          'Celebrating ' || e.name || COALESCE(' (' || e.designation || ')', '') || ' for being part of the team since ' || TO_CHAR(e.join_date, 'Mon YYYY') || '. Cheers to the journey 🥂',
+          'anniversary',
+          'Digital Leap HRMS'
+        FROM employees e
+        WHERE e.status = 'active'
+          AND e.join_date IS NOT NULL
+          AND EXTRACT(MONTH FROM e.join_date) = EXTRACT(MONTH FROM CURRENT_DATE)
+          AND EXTRACT(DAY FROM e.join_date)   = EXTRACT(DAY FROM CURRENT_DATE)
+          AND EXTRACT(YEAR FROM CURRENT_DATE) > EXTRACT(YEAR FROM e.join_date)
+        ON CONFLICT (id) DO NOTHING`.catch(()=>{});
+    } catch {}
+
     // Active = not expired (expires_at is null or in the future). Pinned
     // sorts first, then newest first.
     const rows = await sql`
       SELECT * FROM company_announcements
       WHERE expires_at IS NULL OR expires_at > NOW()
       ORDER BY pinned DESC, created_at DESC
-      LIMIT 30`;
+      LIMIT 50`;
     res.json(rows);
   } catch (err: any) { res.status(500).json({ error: err.message ?? 'Server error' }); }
 });
@@ -3861,13 +3911,16 @@ app.post('/api/announcements', async (req, res) => {
     if (!uid) return res.status(401).json({ error: 'Sign in required' });
     const u = (await sql`SELECT id, name, role FROM app_users WHERE id=${uid}`)[0] as any;
     if (!u) return res.status(401).json({ error: 'Unknown user' });
-    if (u.role !== 'admin' && u.role !== 'hr_manager') return res.status(403).json({ error: 'Admin or HR only' });
+    // Posting is open to every signed-in user. Pinning + expiry stay
+    // restricted to admin/HR so an employee can't pin their own post to
+    // the top of the org feed indefinitely.
+    const isAdminOrHR = u.role === 'admin' || u.role === 'hr_manager';
     const { title, body, pinned, expires_at } = req.body ?? {};
     if (!title?.trim() || !body?.trim()) return res.status(400).json({ error: 'Title and body are required' });
     const id = `ann_${Date.now()}`;
     const row = (await sql`
-      INSERT INTO company_announcements (id, title, body, pinned, expires_at, posted_by_id, posted_by_name)
-      VALUES (${id}, ${title.trim()}, ${body.trim()}, ${!!pinned}, ${expires_at || null}, ${u.id}, ${u.name})
+      INSERT INTO company_announcements (id, title, body, pinned, expires_at, posted_by_id, posted_by_name, posted_by_role, kind)
+      VALUES (${id}, ${title.trim()}, ${body.trim()}, ${isAdminOrHR ? !!pinned : false}, ${isAdminOrHR ? (expires_at || null) : null}, ${u.id}, ${u.name}, ${u.role}, 'user')
       RETURNING *`)[0];
     // Broadcast bell ping — every active user gets a notification.
     try {
@@ -3888,17 +3941,22 @@ app.patch('/api/announcements/:id', async (req, res) => {
   try {
     const uid = req.header('x-user-id');
     if (!uid) return res.status(401).json({ error: 'Sign in required' });
-    const u = (await sql`SELECT role FROM app_users WHERE id=${uid}`)[0] as any;
-    if (!u || (u.role !== 'admin' && u.role !== 'hr_manager')) return res.status(403).json({ error: 'Admin or HR only' });
+    const u = (await sql`SELECT id, role FROM app_users WHERE id=${uid}`)[0] as any;
+    if (!u) return res.status(401).json({ error: 'Unknown user' });
     const cur = (await sql`SELECT * FROM company_announcements WHERE id=${req.params.id}`)[0] as any;
     if (!cur) return res.status(404).json({ error: 'Announcement not found' });
+    const isAdminOrHR = u.role === 'admin' || u.role === 'hr_manager';
+    const isOwnPost   = cur.posted_by_id === uid;
+    if (!isAdminOrHR && !isOwnPost) return res.status(403).json({ error: 'You can only edit your own posts.' });
     const { title, body, pinned, expires_at } = req.body ?? {};
+    // Pin / expiry remain admin/HR-only. Non-admin posters editing their
+    // own posts can change title + body, but pin/expiry stay as they were.
     const row = (await sql`
       UPDATE company_announcements SET
         title      = ${title?.trim() ?? cur.title},
         body       = ${body?.trim() ?? cur.body},
-        pinned     = ${pinned !== undefined ? !!pinned : cur.pinned},
-        expires_at = ${expires_at !== undefined ? (expires_at || null) : cur.expires_at},
+        pinned     = ${isAdminOrHR && pinned !== undefined ? !!pinned : cur.pinned},
+        expires_at = ${isAdminOrHR && expires_at !== undefined ? (expires_at || null) : cur.expires_at},
         updated_at = NOW()
       WHERE id=${req.params.id}
       RETURNING *`)[0];
@@ -3910,8 +3968,17 @@ app.delete('/api/announcements/:id', async (req, res) => {
   try {
     const uid = req.header('x-user-id');
     if (!uid) return res.status(401).json({ error: 'Sign in required' });
-    const u = (await sql`SELECT role FROM app_users WHERE id=${uid}`)[0] as any;
-    if (!u || (u.role !== 'admin' && u.role !== 'hr_manager')) return res.status(403).json({ error: 'Admin or HR only' });
+    const u = (await sql`SELECT id, role FROM app_users WHERE id=${uid}`)[0] as any;
+    if (!u) return res.status(401).json({ error: 'Unknown user' });
+    const cur = (await sql`SELECT posted_by_id, kind FROM company_announcements WHERE id=${req.params.id}`)[0] as any;
+    if (!cur) return res.status(404).json({ error: 'Announcement not found' });
+    const isAdminOrHR = u.role === 'admin' || u.role === 'hr_manager';
+    const isOwnPost   = cur.posted_by_id === uid;
+    // Anyone can delete their own post. Admin/HR can delete anyone's,
+    // including auto-generated ones (e.g. if the celebrant prefers
+    // privacy). Auto-posts have posted_by_id=NULL so the ownership check
+    // alone excludes employees from removing system posts.
+    if (!isAdminOrHR && !isOwnPost) return res.status(403).json({ error: 'You can only delete your own posts.' });
     await sql`DELETE FROM company_announcements WHERE id=${req.params.id}`;
     res.json({ ok: true });
   } catch (err: any) { res.status(500).json({ error: err.message ?? 'Server error' }); }
