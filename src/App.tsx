@@ -28,8 +28,11 @@ import Features from './pages/Features';
 import HowItWorks from './pages/HowItWorks';
 import Finance from './pages/finance/Finance';
 
-function landingFor(role: string): string {
-  if (role === 'employee' || role === 'project_coordinator') return '/my';
+function landingFor(_role: string): string {
+  // Everyone lands on the unified dashboard. The page renders role-aware
+  // content — admin/HR see org KPIs, employees see personal info + quick
+  // actions. Both groups see Company Announcements + Coming up. My Portal
+  // (/my) remains the deeper personal area accessible from the sidebar.
   return '/';
 }
 
@@ -48,8 +51,9 @@ function AppRoutes() {
       <Route path="/login" element={user ? <Navigate to={landingFor(user.role)} replace /> : <Login />} />
 
       <Route path="/" element={<ProtectedRoute><Layout /></ProtectedRoute>}>
-        {/* Admin & HR Manager routes */}
-        <Route index element={<ProtectedRoute roles={['admin', 'hr_manager']}><Dashboard /></ProtectedRoute>} />
+        {/* Unified dashboard — landing page for every signed-in user.
+            Dashboard.tsx renders role-aware content internally. */}
+        <Route index element={<ProtectedRoute><Dashboard /></ProtectedRoute>} />
         <Route path="employees" element={<ProtectedRoute roles={['admin', 'hr_manager']}><Employees /></ProtectedRoute>} />
         <Route path="employees/:id" element={<ProtectedRoute roles={['admin', 'hr_manager']}><EmployeeProfile /></ProtectedRoute>} />
         <Route path="attendance" element={<ProtectedRoute roles={['admin', 'hr_manager']}><Attendance /></ProtectedRoute>} />

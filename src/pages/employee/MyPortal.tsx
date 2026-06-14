@@ -610,16 +610,8 @@ export default function MyPortal() {
   const [teamMembers, setTeamMembers] = useState<any[]>([]);
   // All employees — for the Todo assignment picker when admin/HR.
   const [allEmployeesForTodo, setAllEmployeesForTodo] = useState<any[]>([]);
-  // Company announcements + upcoming events for the Hub view. Read-only for
-  // employees — admin/HR manage these from the main Dashboard. Everyone in
-  // the org sees the same content here so My Portal becomes a real
-  // landing page, not just a personal admin surface.
-  const [hubAnnouncements, setHubAnnouncements] = useState<any[]>([]);
-  const [hubUpcomingEvents, setHubUpcomingEvents] = useState<any[]>([]);
-  useEffect(() => {
-    api.getAnnouncements().then(setHubAnnouncements).catch(() => setHubAnnouncements([]));
-    api.getUpcomingEvents(30).then(setHubUpcomingEvents).catch(() => setHubUpcomingEvents([]));
-  }, []);
+  // Announcements + upcoming events live on /dashboard now — removed from
+  // here to keep My Portal focused on personal-admin tabs.
   // Quick-add To-Do popup moved to GlobalQuickActionsFab; no local state.
   const [teamPendingLeaves, setTeamPendingLeaves] = useState<any[]>([]);
   const [teamPerf, setTeamPerf] = useState<Record<string, any[]>>({});
@@ -787,12 +779,6 @@ export default function MyPortal() {
     else if (tab === 'myteam')   api.getLeaveRequests().then(rs => {
       setTeamPendingLeaves((rs as any[]).filter((l: any) => l.status === 'pending' && l.manager_status === 'pending' && teamMembers.some((m: any) => m.id === l.employee_id)));
     }).catch(()=>{});
-    // Hub-only: keep announcements + upcoming events fresh so an HR post
-    // shows up within seconds of being made, no refresh required.
-    if (tab === 'hub') {
-      api.getAnnouncements().then(setHubAnnouncements).catch(()=>{});
-      api.getUpcomingEvents(30).then(setHubUpcomingEvents).catch(()=>{});
-    }
   });
 
   // Past appraisals = everything that is NOT the current open window
@@ -1253,81 +1239,9 @@ export default function MyPortal() {
               </div>
             </div>
 
-            {/* Company news + Coming up — every employee gets the same feed
-                so My Portal becomes a real landing page, not just a
-                personal-admin surface. Admin / HR manage these from the
-                main Dashboard. */}
-            <div className="grid grid-cols-1 lg:grid-cols-3 gap-3 mt-5">
-              {/* Announcements — 2/3 wide */}
-              <div className="lg:col-span-2 bg-surface rounded-xl-2 border border-outline shadow-elev-1 p-5">
-                <h3 className="font-display text-base font-bold text-on-surface inline-flex items-center gap-2 mb-1">
-                  📢 Company Announcements
-                </h3>
-                <p className="text-[11px] text-on-surface-muted mb-3">News, updates, and reminders from HR / admin</p>
-                {hubAnnouncements.length === 0 ? (
-                  <div className="text-center py-6 text-sm text-on-surface-subtle">No announcements right now.</div>
-                ) : (
-                  <div className="space-y-2 max-h-[280px] overflow-y-auto pr-1 -mr-1">
-                    {hubAnnouncements.map((a: any) => (
-                      <article key={a.id} className={`rounded-lg border ${a.pinned ? 'border-accent/40 bg-accent/5' : 'border-outline bg-surface-2/40'} px-3 py-2.5`}>
-                        <div className="flex items-start justify-between gap-2 mb-0.5 flex-wrap">
-                          <div className="flex items-center gap-1.5 min-w-0">
-                            {a.pinned && <span className="text-[9px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded bg-accent text-on-accent">📌 PINNED</span>}
-                            <p className="font-display text-sm font-bold text-on-surface tracking-tight truncate">{a.title}</p>
-                          </div>
-                          <p className="text-[10px] text-on-surface-subtle whitespace-nowrap">
-                            {new Date(a.created_at).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' })}
-                          </p>
-                        </div>
-                        <p className="text-xs text-on-surface-muted whitespace-pre-line leading-snug">{a.body}</p>
-                        {a.posted_by_name && (
-                          <p className="text-[10px] text-on-surface-subtle mt-1">— {a.posted_by_name}</p>
-                        )}
-                      </article>
-                    ))}
-                  </div>
-                )}
-              </div>
-
-              {/* Upcoming events — 1/3 wide */}
-              <div className="bg-surface rounded-xl-2 border border-outline shadow-elev-1 p-5">
-                <h3 className="font-display text-base font-bold text-on-surface inline-flex items-center gap-2 mb-1">
-                  📅 Coming up
-                </h3>
-                <p className="text-[11px] text-on-surface-muted mb-3">Holidays, birthdays, anniversaries (next 30 days)</p>
-                {hubUpcomingEvents.length === 0 ? (
-                  <p className="text-sm text-on-surface-subtle text-center py-6">Nothing on the horizon.</p>
-                ) : (
-                  <div className="space-y-1.5 max-h-[280px] overflow-y-auto pr-1 -mr-1">
-                    {hubUpcomingEvents.map((e: any, i: number) => {
-                      const todayDate = new Date();
-                      todayDate.setHours(0, 0, 0, 0);
-                      const eventDate = new Date(e.event_date + 'T12:00:00');
-                      const daysAway = Math.round((eventDate.getTime() - todayDate.getTime()) / 86400_000);
-                      const dayLabel = daysAway === 0 ? 'Today' : daysAway === 1 ? 'Tomorrow' : `in ${daysAway}d`;
-                      const dateLabel = eventDate.toLocaleDateString('en-IN', { day: 'numeric', month: 'short' });
-                      const cfg = e.kind === 'holiday'
-                        ? { emoji: '🎉', tone: 'bg-warning-container/60 border-warning/30' }
-                        : e.kind === 'birthday'
-                        ? { emoji: '🎂', tone: 'bg-brand-container/60 border-brand/30' }
-                        : { emoji: '🎯', tone: 'bg-accent/10 border-accent/30' };
-                      return (
-                        <div key={i} className={`flex items-center gap-2 rounded-md border ${cfg.tone} px-2.5 py-1.5`}>
-                          <span className="text-base flex-shrink-0">{cfg.emoji}</span>
-                          <div className="flex-1 min-w-0">
-                            <p className="text-xs font-semibold text-on-surface truncate">{e.label}</p>
-                            <p className="text-[10px] text-on-surface-subtle">{dateLabel}</p>
-                          </div>
-                          <span className={`text-[10px] font-bold uppercase tracking-wider whitespace-nowrap ${daysAway <= 1 ? 'text-on-surface' : 'text-on-surface-muted'}`}>
-                            {dayLabel}
-                          </span>
-                        </div>
-                      );
-                    })}
-                  </div>
-                )}
-              </div>
-            </div>
+            {/* Company announcements + upcoming events moved to the unified
+                /dashboard page. My Portal stays focused on personal-admin
+                tabs so the two pages don't duplicate each other. */}
           </div>
         );
       })()}

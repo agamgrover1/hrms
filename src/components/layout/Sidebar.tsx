@@ -167,6 +167,10 @@ export default function Sidebar({ mobileOpen = false, onMobileClose }: { mobileO
     id: 'personal',
     label: 'You',
     items: [
+      // Home is the unified Dashboard landing — only show in the You group
+      // for non-admin/HR (admin/HR already see it under Workspace as
+      // "Overview"). Keeps the nav from duplicating the same link twice.
+      ...(isEmployee || isCoord ? [{ to: '/', icon: LayoutDashboard, label: 'Home', end: true } as NavItem] : []),
       { to: '/my', icon: User, label: 'My portal', end: true },
       ...(isManager ? [{ to: '/my-team', icon: Users, label: 'My team' } as NavItem] : []),
       // Team leads (project_reporting OR project_lead on any project) need to see

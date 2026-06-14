@@ -219,6 +219,16 @@ export default function Dashboard() {
     </div>
   );
 
+  // Employees / coordinators get a personal-flavored landing dashboard
+  // instead of the org-wide KPIs. Same Announcements + Coming up appear
+  // for both groups so company news reaches everyone uniformly.
+  if (!isAdminOrHR) return (
+    <EmployeeDashboardView
+      announcements={announcements}
+      upcomingEvents={upcomingEvents}
+    />
+  );
+
   return (
     <div className="space-y-6">
       {/* ── Hero band ───────────────────────────────────────────────────────── */}
@@ -790,6 +800,252 @@ function ManageAnnouncementsModal({ isAdminOrHR, currentItems, onClose, onChange
             )}
           </div>
         </div>
+      </div>
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Employee / Coordinator Dashboard
+// Same `/` URL, different layout. Shows the user's own snapshot — basic
+// info, today's status, leave balance, quick action shortcuts — then the
+// same Company Announcements + Coming up widgets the admin Dashboard has.
+// ─────────────────────────────────────────────────────────────────────────
+
+function EmployeeDashboardView({ announcements, upcomingEvents }: {
+  announcements: any[]; upcomingEvents: any[];
+}) {
+  const { user } = useAuth();
+  const [empRow, setEmpRow] = useState<any>(null);
+  const [balance, setBalance] = useState<any>({ full_day: 0, short_leave: 0 });
+  const [myAttendance, setMyAttendance] = useState<any[]>([]);
+  const [myLeaves, setMyLeaves] = useState<any[]>([]);
+  const [reportingManager, setReportingManager] = useState<any | null>(null);
+
+  // Resolve the user's own employee record + personal counters. This runs
+  // once on mount — the parent Dashboard already polls announcements +
+  // events on a live timer.
+  useEffect(() => {
+    if (!user?.employee_id_ref) return;
+    api.getEmployees().then((emps: any[]) => {
+      const me = emps.find(e => e.employee_id === user.employee_id_ref);
+      if (!me) return;
+      setEmpRow(me);
+      const mgr = me.reporting_manager_id ? emps.find(e => e.id === me.reporting_manager_id) : null;
+      setReportingManager(mgr ? { name: mgr.name, designation: mgr.designation } : null);
+      api.getLeaveBalance(me.id).then(setBalance).catch(() => {});
+      api.getAttendance({ employee_id: me.id, month: new Date().getMonth() + 1, year: new Date().getFullYear() })
+        .then(setMyAttendance).catch(() => {});
+      api.getLeaveRequests({ employee_id: me.id }).then(setMyLeaves).catch(() => {});
+    }).catch(() => {});
+  }, [user?.employee_id_ref]);
+
+  const now = new Date();
+  const todayStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+  const greeting = (() => {
+    const h = now.getHours();
+    return h < 12 ? 'Good morning' : h < 17 ? 'Good afternoon' : 'Good evening';
+  })();
+  const firstName = user?.name?.split(' ')[0] ?? 'there';
+  // Attendance % for current month so far.
+  const workingDays = myAttendance.filter((r: any) => r.status !== 'weekend' && r.status !== 'holiday').length;
+  const presentDays = myAttendance.filter((r: any) => ['present', 'late', 'wfh', 'wfh_half'].includes(r.status)).length;
+  const attendancePct = workingDays > 0 ? Math.round((presentDays / workingDays) * 100) : 0;
+  const todayRec = myAttendance.find((r: any) => (r.date ?? '').slice(0, 10) === todayStr);
+  const pendingLeaveCount = myLeaves.filter((l: any) => l.status === 'pending').length;
+
+  return (
+    <div className="space-y-6">
+      {/* ── Welcome banner ──────────────────────────────────────────────────── */}
+      <section className="relative aurora-bg grain-overlay rounded-xl-4 overflow-hidden text-white animate-fade-in">
+        <div className="relative grid grid-cols-1 lg:grid-cols-[1.4fr_1fr] gap-6 p-6 sm:p-8">
+          <div className="min-w-0">
+            <p className="text-[11px] font-semibold text-white/70 uppercase tracking-[0.22em]">
+              {now.toLocaleDateString('en-IN', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' })}
+            </p>
+            <h1 className="font-display text-3xl sm:text-4xl xl:text-5xl font-semibold leading-[1.05] tracking-tight mt-2">
+              {greeting},
+              <span className="block bg-gradient-to-r from-white via-white to-white/70 bg-clip-text text-transparent">
+                {firstName}.
+              </span>
+            </h1>
+            <p className="text-sm text-white/70 mt-3 max-w-md leading-relaxed">
+              {todayRec?.check_in
+                ? `Clocked in at ${todayRec.check_in}. ${pendingLeaveCount > 0 ? `You have ${pendingLeaveCount} leave request${pendingLeaveCount === 1 ? '' : 's'} waiting on approval.` : "You're all set for today."}`
+                : pendingLeaveCount > 0
+                  ? `You haven't clocked in yet. ${pendingLeaveCount} leave request${pendingLeaveCount === 1 ? '' : 's'} pending.`
+                  : "You haven't clocked in yet. Ready when you are."}
+            </p>
+            {/* Quick actions */}
+            <div className="flex flex-wrap gap-2 mt-5">
+              <Link to="/my?tab=leave&apply=1" className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-full text-xs font-semibold bg-white text-[#192250] hover:bg-white/90 transition-colors">
+                <Calendar size={13} strokeWidth={2.25} /> Apply Leave
+              </Link>
+              <Link to="/my?tab=my-hours" className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-full text-xs font-semibold bg-white/12 backdrop-blur-sm border border-white/15 text-white hover:bg-white/20 transition-colors">
+                <ClockIcon size={13} strokeWidth={2.25} /> Log Hours
+              </Link>
+              <Link to="/my?tab=wfh&apply=1" className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-full text-xs font-semibold bg-white/12 backdrop-blur-sm border border-white/15 text-white hover:bg-white/20 transition-colors">
+                <UserCheck size={13} strokeWidth={2.25} /> Apply WFH
+              </Link>
+              <Link to="/my?tab=attendance" className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-full text-xs font-semibold bg-white/12 backdrop-blur-sm border border-white/15 text-white hover:bg-white/20 transition-colors">
+                <TrendingUp size={13} strokeWidth={2.25} /> My Attendance
+              </Link>
+            </div>
+          </div>
+          {/* Right side: avatar + identity card */}
+          <div className="flex items-center justify-center lg:justify-end">
+            <div className="bg-white/10 backdrop-blur-sm rounded-2xl border border-white/15 p-4 max-w-xs w-full">
+              <div className="flex items-center gap-3 mb-3">
+                <div className="w-14 h-14 rounded-2xl bg-white/20 flex items-center justify-center text-xl font-bold flex-shrink-0">
+                  {user?.avatar || firstName[0]?.toUpperCase()}
+                </div>
+                <div className="min-w-0">
+                  <p className="font-display text-base font-bold truncate">{user?.name}</p>
+                  <p className="text-[11px] text-white/70 truncate">{user?.designation ?? '—'}</p>
+                  <p className="text-[10px] mt-0.5" style={{ color: '#FF80A8' }}>
+                    {(user as any)?.employee_code ?? user?.employee_id_ref}
+                  </p>
+                </div>
+              </div>
+              <div className="grid grid-cols-2 gap-2 text-xs">
+                <div>
+                  <p className="text-[9px] uppercase tracking-wider text-white/60">Dept.</p>
+                  <p className="font-semibold truncate">{user?.department ?? '—'}</p>
+                </div>
+                <div>
+                  <p className="text-[9px] uppercase tracking-wider text-white/60">Manager</p>
+                  <p className="font-semibold truncate">{reportingManager?.name ?? '—'}</p>
+                </div>
+                <div>
+                  <p className="text-[9px] uppercase tracking-wider text-white/60">Joined</p>
+                  <p className="font-semibold truncate">{empRow?.join_date ? new Date(empRow.join_date).toLocaleDateString('en-IN', { month: 'short', year: 'numeric' }) : '—'}</p>
+                </div>
+                <div>
+                  <p className="text-[9px] uppercase tracking-wider text-white/60">Today</p>
+                  <p className="font-semibold truncate">
+                    {todayRec?.check_in ? `In ${todayRec.check_in}` : 'Not in yet'}
+                  </p>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      {/* ── Personal KPI tiles ──────────────────────────────────────────────── */}
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
+        <div className="relative bg-surface rounded-xl-2 p-4 border border-outline shadow-elev-1 overflow-hidden">
+          <div className="absolute -top-8 -right-8 w-28 h-28 rounded-full bg-success-container blur-2xl opacity-50" />
+          <div className="relative">
+            <p className="num-mono text-2xl font-bold text-success">{attendancePct}<span className="text-sm">%</span></p>
+            <p className="text-xs text-on-surface-muted mt-0.5">Attendance this month</p>
+          </div>
+        </div>
+        <div className="relative bg-surface rounded-xl-2 p-4 border border-outline shadow-elev-1 overflow-hidden">
+          <div className="absolute -top-8 -right-8 w-28 h-28 rounded-full bg-brand-container blur-2xl opacity-50" />
+          <div className="relative">
+            <p className="num-mono text-2xl font-bold text-on-brand-container">{balance?.full_day ?? 0}</p>
+            <p className="text-xs text-on-surface-muted mt-0.5">Full day leave balance</p>
+          </div>
+        </div>
+        <div className="relative bg-surface rounded-xl-2 p-4 border border-outline shadow-elev-1 overflow-hidden">
+          <div className="absolute -top-8 -right-8 w-28 h-28 rounded-full bg-accent/15 blur-2xl opacity-50" />
+          <div className="relative">
+            <p className="num-mono text-2xl font-bold text-accent">{balance?.short_leave ?? 0}</p>
+            <p className="text-xs text-on-surface-muted mt-0.5">Short leave credits</p>
+          </div>
+        </div>
+        <div className="relative bg-surface rounded-xl-2 p-4 border border-outline shadow-elev-1 overflow-hidden">
+          <div className="absolute -top-8 -right-8 w-28 h-28 rounded-full bg-warning-container blur-2xl opacity-50" />
+          <div className="relative">
+            <p className="num-mono text-2xl font-bold text-warning">{pendingLeaveCount}</p>
+            <p className="text-xs text-on-surface-muted mt-0.5">Pending leave requests</p>
+          </div>
+        </div>
+      </div>
+
+      {/* ── Announcements + Coming up (same shape as admin Dashboard) ───────── */}
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-5">
+        <div className="lg:col-span-2 relative bg-surface rounded-xl-3 p-6 border border-outline shadow-elev-2 overflow-hidden">
+          <div className="absolute -top-10 -left-10 w-40 h-40 rounded-full bg-brand/15 blur-2xl opacity-50" />
+          <div className="relative">
+            <h3 className="font-display text-xl font-bold text-on-surface tracking-tight inline-flex items-center gap-2 mb-1">
+              📢 Company Announcements
+            </h3>
+            <p className="text-xs text-on-surface-muted mb-4">News, updates, and reminders from HR / admin</p>
+            {announcements.length === 0 ? (
+              <div className="text-center py-8 text-sm text-on-surface-subtle">No announcements right now.</div>
+            ) : (
+              <div className="space-y-3 max-h-[320px] overflow-y-auto pr-1 -mr-1">
+                {announcements.map((a: any) => (
+                  <article key={a.id} className={`rounded-xl-2 border ${a.pinned ? 'border-accent/40 bg-accent/5' : 'border-outline bg-surface-2/30'} px-4 py-3`}>
+                    <div className="flex items-start justify-between gap-2 mb-1 flex-wrap">
+                      <div className="flex items-center gap-2 min-w-0">
+                        {a.pinned && <span className="text-[10px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded-md bg-accent text-on-accent">📌 Pinned</span>}
+                        <p className="font-display text-base font-bold text-on-surface tracking-tight truncate">{a.title}</p>
+                      </div>
+                      <p className="text-[10px] text-on-surface-subtle whitespace-nowrap">
+                        {new Date(a.created_at).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' })}
+                      </p>
+                    </div>
+                    <p className="text-sm text-on-surface-muted whitespace-pre-line leading-snug">{a.body}</p>
+                    {a.posted_by_name && (
+                      <p className="text-[10px] text-on-surface-subtle mt-1.5">— {a.posted_by_name}</p>
+                    )}
+                  </article>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+
+        <div className="relative bg-surface rounded-xl-3 p-6 border border-outline shadow-elev-2 overflow-hidden">
+          <div className="absolute -bottom-10 -right-10 w-32 h-32 rounded-full bg-accent/15 blur-2xl opacity-50" />
+          <div className="relative">
+            <h3 className="font-display text-xl font-bold text-on-surface tracking-tight inline-flex items-center gap-2 mb-1">
+              📅 Coming up
+            </h3>
+            <p className="text-xs text-on-surface-muted mb-4">Next 30 days — holidays, birthdays, anniversaries</p>
+            {upcomingEvents.length === 0 ? (
+              <p className="text-sm text-on-surface-subtle text-center py-8">Nothing on the horizon this month.</p>
+            ) : (
+              <div className="space-y-2 max-h-[320px] overflow-y-auto pr-1 -mr-1">
+                {upcomingEvents.map((e: any, i: number) => {
+                  const today = new Date();
+                  today.setHours(0, 0, 0, 0);
+                  const eventDate = new Date(e.event_date + 'T12:00:00');
+                  const daysAway = Math.round((eventDate.getTime() - today.getTime()) / 86400_000);
+                  const dayLabel = daysAway === 0 ? 'Today' : daysAway === 1 ? 'Tomorrow' : `in ${daysAway}d`;
+                  const dateLabel = eventDate.toLocaleDateString('en-IN', { day: 'numeric', month: 'short' });
+                  const cfg = e.kind === 'holiday'
+                    ? { emoji: '🎉', tone: 'bg-warning-container text-warning border-warning/30' }
+                    : e.kind === 'birthday'
+                    ? { emoji: '🎂', tone: 'bg-brand-container text-on-brand-container border-brand/30' }
+                    : { emoji: '🎯', tone: 'bg-accent/10 text-accent border-accent/30' };
+                  return (
+                    <div key={i} className={`flex items-center gap-3 rounded-lg border ${cfg.tone} px-3 py-2`}>
+                      <span className="text-lg flex-shrink-0">{cfg.emoji}</span>
+                      <div className="flex-1 min-w-0">
+                        <p className="text-sm font-semibold text-on-surface truncate">{e.label}</p>
+                        <p className="text-[10px] text-on-surface-subtle">{dateLabel}{e.employee?.designation ? ` · ${e.employee.designation}` : ''}</p>
+                      </div>
+                      <span className={`text-[10px] font-bold uppercase tracking-wider whitespace-nowrap ${daysAway <= 1 ? 'text-on-surface' : 'text-on-surface-muted'}`}>
+                        {dayLabel}
+                      </span>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+
+      {/* Footer link to deeper personal portal */}
+      <div className="text-center">
+        <Link to="/my" className="text-xs font-semibold text-on-surface-muted hover:text-accent transition-colors">
+          Open the full My Portal → all your tabs (leaves, hours, payslips, performance…)
+        </Link>
       </div>
     </div>
   );
