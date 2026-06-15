@@ -2161,10 +2161,23 @@ async function runBiometricSyncV(trigger: string, triggeredBy?: string, fromDate
   const label = from === to ? from : `${from} to ${to}`;
   const toEt  = (d: string) => { const [y,m,dy]=d.split('-'); return `${dy}/${m}/${y}`; };
 
+  // Hard timeout on the upstream call. Without this, a slow eTimeOffice
+  // server can hang the whole sync past Vercel's function timeout, taking
+  // down the cron without leaving an error row in attendance_sync_log
+  // (the catch only runs once the promise rejects).
+  const fetchCtl = AbortSignal.timeout(20_000);
   const fetchRes = await fetch(
     `${apiUrl}?Empcode=ALL&FromDate=${toEt(from)}&ToDate=${toEt(to)}`,
-    { headers: { 'Authorization': `Basic ${apiKey}`, 'Content-Type': 'application/json' } }
-  );
+    {
+      headers: { 'Authorization': `Basic ${apiKey}`, 'Content-Type': 'application/json' },
+      signal: fetchCtl,
+    }
+  ).catch((e: any) => {
+    if (e?.name === 'TimeoutError' || e?.name === 'AbortError') {
+      throw new Error('eTimeOffice API timed out after 20s');
+    }
+    throw e;
+  });
   if (!fetchRes.ok) throw new Error(`eTimeOffice API ${fetchRes.status}`);
   const body = await fetchRes.json() as any;
   if (body.Error === true) throw new Error(`eTimeOffice: ${body.Msg ?? 'Unknown'}`);
@@ -2196,19 +2209,26 @@ async function runBiometricSyncV(trigger: string, triggeredBy?: string, fromDate
   const shiftLateAfter = Object.fromEntries(shiftCfgRows.map((r: any) => [r.id, r.late_after]));
 
   const syncId = crypto.randomUUID();
-  let updated = 0, created = 0;
+
+  // Bulk pre-load: every row we need to read is fetched in two queries
+  // (one for existing attendance, one for approved WFH overrides). The
+  // previous version issued ~3 SQL round-trips per biometric record,
+  // which for ~30 employees × 2 days of data routinely exceeded
+  // Vercel's 10s function budget and silently killed the cron.
+  const recipientIds = new Set<string>();
+  const recipientDates = new Set<string>();
+  const cleaned: Array<{ iid: string; recDate: string; inTime: string|null; outTime: string|null; status: string; hours: number|null }> = [];
 
   for (const rec of records) {
     const empCode = String(rec.Empcode ?? '').trim();
     if (!empCode) continue;
-    // Try exact match first, then strip leading zeros as a final fallback
-    const iid = empMap.get(empCode)
-              ?? empMap.get(empCode.replace(/^0+/, '') || '0');
+    const iid = empMap.get(empCode) ?? empMap.get(empCode.replace(/^0+/, '') || '0');
     if (!iid) continue;
-    // Parse DateString DD/MM/YYYY → YYYY-MM-DD
     const rawDs = String(rec.DateString ?? '').trim();
     let recDate = today;
     if (rawDs.includes('/')) { const [rdd,rmm,ry]=rawDs.split('/'); recDate=`${ry}-${rmm}-${rdd}`; }
+    if (recDate > today) continue;
+    if (isWeekendV(recDate)) continue;
     const inTime  = parseEtTimeV(rec.INTime);
     const outTime = parseEtTimeV(rec.OUTTime);
     const empShift = shiftMap.get(iid) ?? 'day';
@@ -2216,25 +2236,97 @@ async function runBiometricSyncV(trigger: string, triggeredBy?: string, fromDate
     const status  = inTime
       ? (isLateByTime(inTime, lateAfter) ? 'late' : 'present')
       : (ET_STATUS_MAP[(rec.Status??'A').toUpperCase()] ?? 'absent');
-    if (recDate > today) continue; // never store future-date attendance
-    if (isWeekendV(recDate)) continue; // Sat/Sun are non-working days
     if (status === 'holiday' && !inTime) continue;
-    // Preserve approved WFH — don't let biometric override
-    const wfhCheck = await sql`SELECT id FROM wfh_requests WHERE employee_id=${iid} AND date::date=${recDate}::date AND status='approved'`.catch(() => []);
-    if ((wfhCheck as any[]).length > 0) continue;
     const hours = parseEtWorkTimeV(rec.WorkTime);
-    const ex  = await sql`SELECT * FROM attendance_records WHERE employee_id=${iid} AND date=${recDate}` as any[];
-    const had = ex.length > 0; const old = ex[0] ?? {};
-    await sql`INSERT INTO attendance_sync_snapshot (sync_id,employee_id,date,had_record,status_before,check_in_before,check_out_before,total_hours_before)
-      VALUES(${syncId},${iid},${recDate},${had},${old.status??null},${old.check_in??null},${old.check_out??null},${old.total_hours??null})`;
-    const r = await sql`
-      INSERT INTO attendance_records (employee_id,date,check_in,check_out,status,total_hours,source,biometric_sync_id)
-      VALUES(${iid},${recDate},${inTime},${outTime},${status},${hours},'biometric',${syncId})
-      ON CONFLICT(employee_id,date) DO UPDATE SET check_in=EXCLUDED.check_in,check_out=EXCLUDED.check_out,
-        status=EXCLUDED.status,total_hours=EXCLUDED.total_hours,source='biometric',biometric_sync_id=${syncId}
-      RETURNING (xmax=0) AS was_inserted` as any[];
-    if (r[0]?.was_inserted) created++; else updated++;
+    cleaned.push({ iid, recDate, inTime, outTime, status, hours });
+    recipientIds.add(iid);
+    recipientDates.add(recDate);
   }
+
+  if (cleaned.length === 0) {
+    await sql`INSERT INTO attendance_sync_log (sync_id,triggered,triggered_by,date_range,records_updated,records_created,status)
+      VALUES(${syncId},${trigger},${triggeredBy??null},${label},0,0,'success')`;
+    return { sync_id: syncId, records_updated: 0, records_created: 0, synced_at: new Date().toISOString(), date_range: label };
+  }
+
+  // One bulk SELECT for everything we need to dedupe against.
+  const idsArr = Array.from(recipientIds);
+  const datesArr = Array.from(recipientDates);
+  const [wfhRows, existingRows] = await Promise.all([
+    sql`SELECT employee_id, date::text AS date FROM wfh_requests
+        WHERE employee_id = ANY(${idsArr}::text[])
+          AND date::date = ANY(${datesArr}::date[])
+          AND status='approved'` as Promise<any[]>,
+    sql`SELECT employee_id, date::text AS date, status, check_in, check_out, total_hours
+        FROM attendance_records
+        WHERE employee_id = ANY(${idsArr}::text[])
+          AND date = ANY(${datesArr}::date[])` as Promise<any[]>,
+  ]);
+  const wfhKey = (eid: string, d: string) => `${eid}|${d}`;
+  const wfhSet = new Set<string>(wfhRows.map((r: any) => wfhKey(r.employee_id, r.date)));
+  const existingMap = new Map<string, any>(existingRows.map((r: any) => [wfhKey(r.employee_id, r.date), r]));
+
+  // Materialize the rows we'll actually insert/upsert, dropping anything
+  // the WFH override claims.
+  const finalRows = cleaned.filter(r => !wfhSet.has(wfhKey(r.iid, r.recDate)));
+  if (finalRows.length === 0) {
+    await sql`INSERT INTO attendance_sync_log (sync_id,triggered,triggered_by,date_range,records_updated,records_created,status)
+      VALUES(${syncId},${trigger},${triggeredBy??null},${label},0,0,'success')`;
+    return { sync_id: syncId, records_updated: 0, records_created: 0, synced_at: new Date().toISOString(), date_range: label };
+  }
+
+  // Bulk INSERT the snapshots in one round-trip via UNNEST. Each row's
+  // status_before / *_before columns come from the existingMap pre-load.
+  const snapEmps    = finalRows.map(r => r.iid);
+  const snapDates   = finalRows.map(r => r.recDate);
+  const snapHad     = finalRows.map(r => existingMap.has(wfhKey(r.iid, r.recDate)));
+  const snapStatusB = finalRows.map(r => existingMap.get(wfhKey(r.iid, r.recDate))?.status ?? null);
+  const snapInB     = finalRows.map(r => existingMap.get(wfhKey(r.iid, r.recDate))?.check_in ?? null);
+  const snapOutB    = finalRows.map(r => existingMap.get(wfhKey(r.iid, r.recDate))?.check_out ?? null);
+  const snapHrsB    = finalRows.map(r => existingMap.get(wfhKey(r.iid, r.recDate))?.total_hours ?? null);
+  await sql`
+    INSERT INTO attendance_sync_snapshot (sync_id,employee_id,date,had_record,status_before,check_in_before,check_out_before,total_hours_before)
+    SELECT ${syncId}, e, d::date, had, sb, ib, ob, hb
+    FROM UNNEST(
+      ${snapEmps}::text[],
+      ${snapDates}::text[],
+      ${snapHad}::boolean[],
+      ${snapStatusB}::text[],
+      ${snapInB}::text[],
+      ${snapOutB}::text[],
+      ${snapHrsB}::numeric[]
+    ) AS t(e, d, had, sb, ib, ob, hb)`;
+
+  // Bulk UPSERT attendance_records. Counts are derived afterwards by
+  // diffing finalRows against existingMap so we don't need the
+  // (xmax=0) RETURNING trick which doesn't work well with UNNEST.
+  const upEmps   = finalRows.map(r => r.iid);
+  const upDates  = finalRows.map(r => r.recDate);
+  const upIn     = finalRows.map(r => r.inTime);
+  const upOut    = finalRows.map(r => r.outTime);
+  const upStatus = finalRows.map(r => r.status);
+  const upHours  = finalRows.map(r => r.hours);
+  await sql`
+    INSERT INTO attendance_records (employee_id, date, check_in, check_out, status, total_hours, source, biometric_sync_id)
+    SELECT e, d::date, ci, co, st, hr, 'biometric', ${syncId}
+    FROM UNNEST(
+      ${upEmps}::text[],
+      ${upDates}::text[],
+      ${upIn}::text[],
+      ${upOut}::text[],
+      ${upStatus}::text[],
+      ${upHours}::numeric[]
+    ) AS t(e, d, ci, co, st, hr)
+    ON CONFLICT (employee_id, date) DO UPDATE SET
+      check_in = EXCLUDED.check_in,
+      check_out = EXCLUDED.check_out,
+      status = EXCLUDED.status,
+      total_hours = EXCLUDED.total_hours,
+      source = 'biometric',
+      biometric_sync_id = EXCLUDED.biometric_sync_id`;
+  const created = finalRows.filter(r => !existingMap.has(wfhKey(r.iid, r.recDate))).length;
+  const updated = finalRows.length - created;
+
   await sql`INSERT INTO attendance_sync_log (sync_id,triggered,triggered_by,date_range,records_updated,records_created,status)
     VALUES(${syncId},${trigger},${triggeredBy??null},${label},${updated},${created},'success')`;
   return { sync_id: syncId, records_updated: updated, records_created: created, synced_at: new Date().toISOString(), date_range: label };
