@@ -4829,6 +4829,41 @@ app.patch('/api/attendance-notes/approve', (req, res) => handleAttendanceNoteRev
 app.patch('/api/attendance-notes/reject',  (req, res) => handleAttendanceNoteReview('reject',  req, res));
 
 // ── Internal hour logs (self-reported, no approval) ────────────────────
+// Read-permission helper for internal hour logs. Wider than the direct
+// reporting manager check because the "Mine" tab in ProjectHours
+// surfaces teammates via TWO paths — descendants in the reporting tree
+// AND people allocated to a project where you're the reviewer or lead.
+// Internal-hour visibility should mirror both, otherwise a project
+// reviewer who can see a teammate's project hours hits an empty
+// Internal Activities section for no obvious reason.
+async function canViewInternalHoursOf(u: any, actorEmpId: string | null, targetEmpId: string, actorEmpCode: string | null): Promise<boolean> {
+  if (!u) return false;
+  if (u.role === 'admin' || u.role === 'hr_manager') return true;
+  if (actorEmpId && actorEmpId === targetEmpId) return true;
+  if (!actorEmpId) return false;
+  // 1. Reporting chain walk (cap 10 levels). reporting_manager_id can
+  //    hold either the internal id or the human code in legacy data,
+  //    so we accept either.
+  let cur = targetEmpId;
+  for (let i = 0; i < 10; i++) {
+    const row = (await sql`SELECT reporting_manager_id FROM employees WHERE id=${cur}`)[0] as any;
+    if (!row?.reporting_manager_id) break;
+    if (row.reporting_manager_id === actorEmpId || row.reporting_manager_id === actorEmpCode) return true;
+    cur = row.reporting_manager_id;
+  }
+  // 2. Project reviewer / lead path: any project the target is allocated
+  //    to where the actor sits as project_reporting_id or project_lead_id.
+  //    Single LIMIT 1 query; small assignment-per-employee set.
+  const proj = (await sql`
+    SELECT 1
+    FROM project_assignments pa
+    JOIN projects p ON p.id = pa.project_id
+    WHERE pa.employee_id = ${targetEmpId}
+      AND (p.project_reporting_id = ${actorEmpId} OR p.project_lead_id = ${actorEmpId})
+    LIMIT 1`)[0] as any;
+  return !!proj;
+}
+
 app.get('/api/internal-hour-logs', async (req, res) => {
   try {
     await runStartupMigrations();
@@ -4837,7 +4872,6 @@ app.get('/api/internal-hour-logs', async (req, res) => {
     const u = (await sql`SELECT id, role, employee_id_ref FROM app_users WHERE id=${uid}`)[0] as any;
     if (!u) return res.status(401).json({ error: 'Unknown user' });
     const { employee_id, from, to } = req.query as any;
-    const isAdminish = u.role === 'admin' || u.role === 'hr_manager';
     // Resolve self to the internal employees.id (stored format on
     // internal_hour_logs.employee_id after the backfill). Tolerate
     // both forms on app_users.employee_id_ref so legacy rows that
@@ -4852,18 +4886,8 @@ app.get('/api/internal-hour-logs', async (req, res) => {
     // employees.id (that's what emp.id is on the client).
     const targetEmpId = employee_id || selfId;
     if (!targetEmpId) return res.json([]);
-    // Permission: self always; admin/HR always; otherwise must be the
-    // direct reporting manager. reporting_manager_id can be stored as
-    // either the internal id or the human code (legacy data), so we
-    // widen the comparison.
-    if (targetEmpId !== selfId && !isAdminish) {
-      const tgt = (await sql`SELECT reporting_manager_id FROM employees WHERE id=${targetEmpId}`)[0] as any;
-      const okManager = tgt && (
-        tgt.reporting_manager_id === selfId ||
-        tgt.reporting_manager_id === self?.employee_id
-      );
-      if (!okManager) return res.status(403).json({ error: 'Not permitted' });
-    }
+    const allowed = await canViewInternalHoursOf(u, selfId, targetEmpId, self?.employee_id ?? null);
+    if (!allowed) return res.status(403).json({ error: 'Not permitted' });
     const fromD = from || new Date(Date.now() - 30 * 86400000).toISOString().slice(0, 10);
     const toD = to || new Date().toISOString().slice(0, 10);
     const rows = await sql`
