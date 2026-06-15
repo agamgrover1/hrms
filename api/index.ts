@@ -4614,11 +4614,14 @@ app.put('/api/attendance-notes', async (req, res) => {
   } catch (err: any) { res.status(500).json({ error: err.message ?? 'Server error' }); }
 });
 
-// PATCH /api/attendance-notes/:status — approve or reject a pending note.
+// PATCH /api/attendance-notes/approve  |  /api/attendance-notes/reject
 // Body: { employee_id, date, rejection_reason? }
 // Permission: any reviewer the employee can route to (canTouchAttendanceNote).
 // Self-employee can NOT approve their own note (would defeat the workflow).
-app.patch('/api/attendance-notes/:status(approve|reject)', async (req, res) => {
+// Two explicit routes because Express 5 / path-to-regexp v8 no longer
+// supports the `:param(regex)` syntax — registering it throws at module
+// load and brings down the whole serverless function.
+async function handleAttendanceNoteReview(action: 'approve' | 'reject', req: any, res: any) {
   try {
     const uid = req.header('x-user-id');
     if (!uid) return res.status(401).json({ error: 'Sign in required' });
@@ -4626,7 +4629,6 @@ app.patch('/api/attendance-notes/:status(approve|reject)', async (req, res) => {
     if (!u) return res.status(401).json({ error: 'Unknown user' });
     const { employee_id, date, rejection_reason } = req.body ?? {};
     if (!employee_id || !date) return res.status(400).json({ error: 'employee_id and date are required' });
-    const action = req.params.status as 'approve' | 'reject';
     if (action === 'reject' && !rejection_reason?.trim()) {
       return res.status(400).json({ error: 'A reason is required when rejecting a note.' });
     }
@@ -4663,7 +4665,9 @@ app.patch('/api/attendance-notes/:status(approve|reject)', async (req, res) => {
     ).catch(()=>{});
     res.json(row);
   } catch (err: any) { res.status(500).json({ error: err.message ?? 'Server error' }); }
-});
+}
+app.patch('/api/attendance-notes/approve', (req, res) => handleAttendanceNoteReview('approve', req, res));
+app.patch('/api/attendance-notes/reject',  (req, res) => handleAttendanceNoteReview('reject',  req, res));
 
 // ── Internal hour logs (self-reported, no approval) ────────────────────
 app.get('/api/internal-hour-logs', async (req, res) => {
