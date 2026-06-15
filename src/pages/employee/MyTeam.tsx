@@ -391,10 +391,15 @@ export default function MyTeam() {
       if (!emp) { setLoading(false); return; }
       const eid = emp.id;
       setEmpDbId(eid);
-      // includeDescendants=true so a 2nd/3rd-level manager sees their entire
-      // sub-tree, not just direct reports — they have the same responsibilities
-      // for the whole branch.
-      api.getTeamMembers(eid, true).then(members => {
+      // Direct reports only. We previously walked the full sub-tree
+      // (descendants=true) so a 2nd/3rd-level manager could see
+      // everyone beneath them, but for top-level managers like
+      // Manpreet that meant seeing nearly the whole org — a
+      // top-of-tree manager's "team" effectively became "everyone."
+      // Sub-managers can drill into their own reports' profiles to
+      // get the recursive picture; My Team should mirror who YOU
+      // directly manage, not your whole branch.
+      api.getTeamMembers(eid, false).then(members => {
         setTeamMembers(members);
         setLoading(false);
         if (!members.length) return;
