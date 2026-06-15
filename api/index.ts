@@ -1272,6 +1272,14 @@ async function runStartupMigrations() {
       updated_at TIMESTAMPTZ DEFAULT NOW(),
       PRIMARY KEY (employee_id, date)
     )`;
+  // Status workflow: employee-authored notes start as 'pending', manager/
+  // HR/admin-authored notes auto-approve. Manager / HR can transition
+  // pending → approved or pending → rejected with an optional reason.
+  await sql`ALTER TABLE attendance_notes ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'approved'`.catch(()=>{});
+  await sql`ALTER TABLE attendance_notes ADD COLUMN IF NOT EXISTS approved_by_id TEXT`.catch(()=>{});
+  await sql`ALTER TABLE attendance_notes ADD COLUMN IF NOT EXISTS approved_by_name TEXT`.catch(()=>{});
+  await sql`ALTER TABLE attendance_notes ADD COLUMN IF NOT EXISTS approved_at TIMESTAMPTZ`.catch(()=>{});
+  await sql`ALTER TABLE attendance_notes ADD COLUMN IF NOT EXISTS rejection_reason TEXT`.catch(()=>{});
 
   // ── Allocation change requests ──────────────────────────────────────────
   // Managers / project reviewers can propose changes to an employee's
@@ -4530,6 +4538,7 @@ app.get('/api/attendance-notes', async (req, res) => {
 
     const rows = await sql`
       SELECT employee_id, date::text AS date, note, author_id, author_name, author_role,
+             status, approved_by_id, approved_by_name, approved_at, rejection_reason,
              created_at, updated_at
       FROM attendance_notes
       WHERE employee_id=${employee_id}
@@ -4541,6 +4550,11 @@ app.get('/api/attendance-notes', async (req, res) => {
 });
 
 // PUT /api/attendance-notes — upsert one note. Empty body = delete.
+// Status rules:
+//   - admin / hr_manager / project_coordinator / manager-in-chain → 'approved'
+//     immediately on save (they're trusted to vouch for their own annotations).
+//   - employee (self-reporting) → 'pending' — needs a reviewer to approve
+//     before HR / reporting flows treat it as a verified explanation.
 app.put('/api/attendance-notes', async (req, res) => {
   try {
     await runStartupMigrations();
@@ -4560,16 +4574,93 @@ app.put('/api/attendance-notes', async (req, res) => {
       return res.json({ ok: true, deleted: true });
     }
 
+    // Self-author? Only an employee writing their OWN note needs approval.
+    // Anyone with management authority (admin/HR, or actor != target) is
+    // recording a verified observation.
+    const isSelfEmployeeAuthor = u.role === 'employee' && actorEmpId === employee_id;
+    const newStatus = isSelfEmployeeAuthor ? 'pending' : 'approved';
+    const approvedById   = isSelfEmployeeAuthor ? null : u.id;
+    const approvedByName = isSelfEmployeeAuthor ? null : u.name;
+    const approvedAt     = isSelfEmployeeAuthor ? null : new Date().toISOString();
+
     const row = (await sql`
-      INSERT INTO attendance_notes (employee_id, date, note, author_id, author_name, author_role)
-      VALUES (${employee_id}, ${date}, ${note.trim()}, ${u.id}, ${u.name}, ${u.role})
+      INSERT INTO attendance_notes (employee_id, date, note, author_id, author_name, author_role,
+                                    status, approved_by_id, approved_by_name, approved_at, rejection_reason)
+      VALUES (${employee_id}, ${date}, ${note.trim()}, ${u.id}, ${u.name}, ${u.role},
+              ${newStatus}, ${approvedById}, ${approvedByName}, ${approvedAt}, ${null})
       ON CONFLICT (employee_id, date) DO UPDATE SET
-        note = EXCLUDED.note,
-        author_id = EXCLUDED.author_id,
-        author_name = EXCLUDED.author_name,
-        author_role = EXCLUDED.author_role,
-        updated_at = NOW()
-      RETURNING employee_id, date::text AS date, note, author_id, author_name, author_role, created_at, updated_at`)[0];
+        note              = EXCLUDED.note,
+        author_id         = EXCLUDED.author_id,
+        author_name       = EXCLUDED.author_name,
+        author_role       = EXCLUDED.author_role,
+        status            = EXCLUDED.status,
+        approved_by_id    = EXCLUDED.approved_by_id,
+        approved_by_name  = EXCLUDED.approved_by_name,
+        approved_at       = EXCLUDED.approved_at,
+        rejection_reason  = NULL,
+        updated_at        = NOW()
+      RETURNING employee_id, date::text AS date, note, author_id, author_name, author_role,
+                status, approved_by_id, approved_by_name, approved_at, rejection_reason,
+                created_at, updated_at`)[0];
+    // Ping the reporting manager when an employee submits a pending note so
+    // they know there's something to approve.
+    if (isSelfEmployeeAuthor) {
+      try {
+        notifyManagerOfEmployee(employee_id, 'attendance_note_pending', 'Attendance note awaiting approval',
+          `${u.name} added a note on ${date} that needs your review: ${note.trim().slice(0, 140)}`).catch(()=>{});
+      } catch {}
+    }
+    res.json(row);
+  } catch (err: any) { res.status(500).json({ error: err.message ?? 'Server error' }); }
+});
+
+// PATCH /api/attendance-notes/:status — approve or reject a pending note.
+// Body: { employee_id, date, rejection_reason? }
+// Permission: any reviewer the employee can route to (canTouchAttendanceNote).
+// Self-employee can NOT approve their own note (would defeat the workflow).
+app.patch('/api/attendance-notes/:status(approve|reject)', async (req, res) => {
+  try {
+    const uid = req.header('x-user-id');
+    if (!uid) return res.status(401).json({ error: 'Sign in required' });
+    const u = (await sql`SELECT id, name, role FROM app_users WHERE id=${uid}`)[0] as any;
+    if (!u) return res.status(401).json({ error: 'Unknown user' });
+    const { employee_id, date, rejection_reason } = req.body ?? {};
+    if (!employee_id || !date) return res.status(400).json({ error: 'employee_id and date are required' });
+    const action = req.params.status as 'approve' | 'reject';
+    if (action === 'reject' && !rejection_reason?.trim()) {
+      return res.status(400).json({ error: 'A reason is required when rejecting a note.' });
+    }
+    const actorEmpId = await resolveUserToEmployee(u);
+    // Block self-approval — an employee approving their own note would
+    // sidestep the entire workflow.
+    if (actorEmpId === employee_id && u.role === 'employee') {
+      return res.status(403).json({ error: "You can't approve your own attendance note." });
+    }
+    const ok = await canTouchAttendanceNote(u, actorEmpId, employee_id);
+    if (!ok) return res.status(403).json({ error: 'Not permitted to review notes for this employee.' });
+    const cur = (await sql`SELECT note, author_name FROM attendance_notes WHERE employee_id=${employee_id} AND date=${date}`)[0] as any;
+    if (!cur) return res.status(404).json({ error: 'Note not found' });
+
+    const row = (await sql`
+      UPDATE attendance_notes SET
+        status            = ${action === 'approve' ? 'approved' : 'rejected'},
+        approved_by_id    = ${u.id},
+        approved_by_name  = ${u.name},
+        approved_at       = NOW(),
+        rejection_reason  = ${action === 'reject' ? rejection_reason.trim() : null},
+        updated_at        = NOW()
+      WHERE employee_id=${employee_id} AND date=${date}
+      RETURNING employee_id, date::text AS date, note, author_id, author_name, author_role,
+                status, approved_by_id, approved_by_name, approved_at, rejection_reason,
+                created_at, updated_at`)[0];
+    // Tell the employee what happened on their note.
+    notifyEmployeeUser(employee_id,
+      action === 'approve' ? 'attendance_note_approved' : 'attendance_note_rejected',
+      action === 'approve' ? 'Attendance note approved' : 'Attendance note needs revision',
+      action === 'approve'
+        ? `${u.name} approved your note on ${date}.`
+        : `${u.name} rejected your note on ${date}: ${rejection_reason.trim().slice(0, 140)}`
+    ).catch(()=>{});
     res.json(row);
   } catch (err: any) { res.status(500).json({ error: err.message ?? 'Server error' }); }
 });

@@ -815,12 +815,16 @@ export default function Attendance() {
                     ) : <span className="text-xs text-on-surface-subtle">—</span>}
                   </div>
                   {noteRow && (
-                    <div className="mt-1 ml-1 text-xs bg-accent/5 border border-accent/20 rounded-md px-3 py-1.5 mb-2">
-                      <p className="text-on-surface whitespace-pre-line">{noteRow.note}</p>
-                      <p className="text-[10px] text-on-surface-subtle mt-0.5">
-                        — {noteRow.author_name ?? 'Unknown'}{noteRow.author_role ? ` (${noteRow.author_role})` : ''} · {new Date(noteRow.updated_at).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' })}
-                      </p>
-                    </div>
+                    <AttendanceNoteRow note={noteRow} employeeId={selectedEmpId} date={r.date}
+                      onChanged={(next) => {
+                        if (!next) {
+                          setAttendanceNotes(prev => {
+                            const c = { ...prev }; delete c[r.date]; return c;
+                          });
+                        } else {
+                          setAttendanceNotes(prev => ({ ...prev, [r.date]: next }));
+                        }
+                      }} />
                   )}
                   </div>
                 );
@@ -1145,6 +1149,96 @@ export default function Attendance() {
             }
           }}
         />
+      )}
+    </div>
+  );
+}
+
+// Per-row card for an attendance note on the HR Attendance page. Shows the
+// note + author + status badges, and exposes Approve / Reject buttons on
+// pending notes so the reviewer can action them inline without leaving the
+// page. Manager / HR-authored notes are visually highlighted so the user
+// can spot non-employee additions at a glance.
+function AttendanceNoteRow({ note, employeeId, date, onChanged }: {
+  note: any;
+  employeeId: string;
+  date: string;
+  onChanged: (next: any | null) => void;
+}) {
+  const status = note.status ?? 'approved';
+  const isManagerAuthored = note.author_role && note.author_role !== 'employee';
+  const tone = status === 'pending'
+    ? 'border-warning/40 bg-warning-container/30'
+    : status === 'rejected'
+    ? 'border-danger/40 bg-danger-container/30'
+    : isManagerAuthored
+      ? 'border-accent/50 bg-accent/10 ring-1 ring-accent/30'
+      : 'border-accent/20 bg-accent/5';
+
+  const [busy, setBusy] = useState(false);
+  const approve = async () => {
+    setBusy(true);
+    try {
+      const row = await api.approveAttendanceNote({ employee_id: employeeId, date });
+      onChanged(row);
+      toast.success('Note approved', 'The employee has been notified.');
+    } catch (e: any) { toast.error('Failed to approve', e?.message); }
+    finally { setBusy(false); }
+  };
+  const reject = async () => {
+    const reason = window.prompt('Reason for rejection (the employee sees this):');
+    if (!reason?.trim()) return;
+    setBusy(true);
+    try {
+      const row = await api.rejectAttendanceNote({ employee_id: employeeId, date, rejection_reason: reason.trim() });
+      onChanged(row);
+      toast.success('Note rejected', 'The employee has been notified with your reason.');
+    } catch (e: any) { toast.error('Failed to reject', e?.message); }
+    finally { setBusy(false); }
+  };
+
+  return (
+    <div className={`mt-1 ml-1 text-xs border rounded-md px-3 py-2 mb-2 ${tone}`}>
+      {isManagerAuthored && (
+        <p className="text-[10px] font-bold uppercase tracking-wider text-accent mb-1 inline-flex items-center gap-1">
+          🛡 Added by {note.author_role === 'hr_manager' ? 'HR' : note.author_role === 'admin' ? 'Admin' : 'Reporting Manager'}
+        </p>
+      )}
+      <p className="text-on-surface whitespace-pre-line">{note.note}</p>
+      <div className="flex items-center gap-2 mt-1 flex-wrap">
+        <p className="text-[10px] text-on-surface-subtle">
+          — {note.author_name ?? 'Unknown'}{note.author_role ? ` (${note.author_role})` : ''} · {new Date(note.updated_at).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' })}
+        </p>
+        {status === 'pending' && (
+          <span className="text-[10px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded bg-warning text-on-accent">
+            ⏳ Awaiting your approval
+          </span>
+        )}
+        {status === 'approved' && note.approved_by_name && (
+          <span className="text-[10px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded bg-success text-on-accent">
+            ✓ Approved by {note.approved_by_name}
+          </span>
+        )}
+        {status === 'rejected' && (
+          <span className="text-[10px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded bg-danger text-on-accent">
+            ✕ Rejected{note.approved_by_name ? ` by ${note.approved_by_name}` : ''}
+          </span>
+        )}
+      </div>
+      {status === 'rejected' && note.rejection_reason && (
+        <p className="text-[10px] text-danger italic mt-1">"{note.rejection_reason}"</p>
+      )}
+      {status === 'pending' && (
+        <div className="flex gap-1.5 mt-2">
+          <button onClick={approve} disabled={busy}
+            className="text-[10px] font-bold px-2 py-1 rounded bg-success text-on-accent hover:opacity-90 disabled:opacity-50">
+            ✓ Approve note
+          </button>
+          <button onClick={reject} disabled={busy}
+            className="text-[10px] font-bold px-2 py-1 rounded text-danger border border-danger/30 hover:bg-danger-container disabled:opacity-50">
+            ✕ Reject
+          </button>
+        </div>
       )}
     </div>
   );

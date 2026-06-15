@@ -271,6 +271,57 @@ function hubHints(ctx: { key: string; pendingLeaves: number; pendingWfh: number;
   }
 }
 
+// Shared note rendering. Uses author_role + status to differentiate:
+//   - Employee-authored pending → soft amber border + ⏳ Pending chip
+//   - Employee-authored approved → accent border + ✓ chip showing approver
+//   - Employee-authored rejected → red border + rejection reason
+//   - Manager / HR-authored → accent-strong border + 🛡 chip with author role
+//   This makes manager/HR additions or edits stand out vs employee self-notes.
+function NoteCard({ note }: { note: any }) {
+  const isManagerAuthored = note.author_role && note.author_role !== 'employee';
+  const status = note.status ?? 'approved';
+  const tone = status === 'pending'
+    ? 'border-warning/40 bg-warning-container/30'
+    : status === 'rejected'
+    ? 'border-danger/40 bg-danger-container/30'
+    : isManagerAuthored
+      ? 'border-accent/50 bg-accent/10 ring-1 ring-accent/30'
+      : 'border-accent/20 bg-accent/5';
+  return (
+    <div className={`mt-2 ml-5 text-xs border rounded-md px-3 py-2 ${tone}`}>
+      {isManagerAuthored && (
+        <p className="text-[10px] font-bold uppercase tracking-wider text-accent mb-1 inline-flex items-center gap-1">
+          🛡 Added by {note.author_role === 'hr_manager' ? 'HR' : note.author_role === 'admin' ? 'Admin' : 'Reporting Manager'}
+        </p>
+      )}
+      <p className="text-on-surface whitespace-pre-line">{note.note}</p>
+      <div className="flex items-center gap-2 mt-1 flex-wrap">
+        <p className="text-[10px] text-on-surface-subtle">
+          — {note.author_name ?? 'Unknown'}{note.author_role ? ` (${note.author_role})` : ''} · {new Date(note.updated_at).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' })}
+        </p>
+        {status === 'pending' && (
+          <span className="text-[10px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded bg-warning text-on-accent">
+            ⏳ Awaiting approval
+          </span>
+        )}
+        {status === 'approved' && note.approved_by_name && (
+          <span className="text-[10px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded bg-success text-on-accent">
+            ✓ Approved by {note.approved_by_name}
+          </span>
+        )}
+        {status === 'rejected' && (
+          <span className="text-[10px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded bg-danger text-on-accent">
+            ✕ Rejected{note.approved_by_name ? ` by ${note.approved_by_name}` : ''}
+          </span>
+        )}
+      </div>
+      {status === 'rejected' && note.rejection_reason && (
+        <p className="text-[10px] text-danger italic mt-1">"{note.rejection_reason}"</p>
+      )}
+    </div>
+  );
+}
+
 const baseTabs = [
   { key: 'overview',     label: 'Overview',     icon: User },
   { key: 'todos',        label: 'To-Do',        icon: ListChecks },
@@ -1374,14 +1425,7 @@ export default function MyPortal() {
                       {r.check_in ? `${r.check_in} – ${r.check_out ?? '—'} (${fmtHours(r.total_hours)})` : '—'}
                     </span>
                   </div>
-                  {note && (
-                    <div className="mt-2 ml-5 text-xs bg-accent/5 border border-accent/20 rounded-md px-3 py-2">
-                      <p className="text-on-surface whitespace-pre-line">{note.note}</p>
-                      <p className="text-[10px] text-on-surface-subtle mt-1">
-                        — {note.author_name ?? 'Unknown'}{note.author_role ? ` (${note.author_role})` : ''} · {new Date(note.updated_at).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' })}
-                      </p>
-                    </div>
-                  )}
+                  {note && <NoteCard note={note} />}
                 </div>
               );
             })}

@@ -124,10 +124,21 @@ export const api = {
   },
   getAttendanceNotes: (employee_id: string, month: number, year: number) => {
     const qs = new URLSearchParams({ employee_id, month: String(month), year: String(year) });
-    return request<Array<{ employee_id: string; date: string; note: string; author_id: string | null; author_name: string | null; author_role: string | null; created_at: string; updated_at: string }>>(`/attendance-notes?${qs}`);
+    return request<Array<{
+      employee_id: string; date: string; note: string;
+      author_id: string | null; author_name: string | null; author_role: string | null;
+      status?: 'pending' | 'approved' | 'rejected';
+      approved_by_id: string | null; approved_by_name: string | null;
+      approved_at: string | null; rejection_reason: string | null;
+      created_at: string; updated_at: string;
+    }>>(`/attendance-notes?${qs}`);
   },
   upsertAttendanceNote: (data: { employee_id: string; date: string; note: string }) =>
     request<any>(`/attendance-notes`, { method: 'PUT', body: JSON.stringify(data) }),
+  approveAttendanceNote: (data: { employee_id: string; date: string }) =>
+    request<any>(`/attendance-notes/approve`, { method: 'PATCH', body: JSON.stringify(data) }),
+  rejectAttendanceNote: (data: { employee_id: string; date: string; rejection_reason: string }) =>
+    request<any>(`/attendance-notes/reject`, { method: 'PATCH', body: JSON.stringify(data) }),
   clockIn: (employee_id: string) => request<any>('/attendance/clock-in', { method: 'POST', body: JSON.stringify({ employee_id }) }),
   clockOut: (employee_id: string) => request<any>('/attendance/clock-out', { method: 'POST', body: JSON.stringify({ employee_id }) }),
   markAttendance: (data: { employee_id: string; date: string; status: string; check_in?: string; check_out?: string }) =>

@@ -63,7 +63,17 @@ export default function MemberCalendarModal({ member, attendance, leaves, onClos
   const [cursor, setCursor] = useState<{ m: number; y: number }>({ m: today.getMonth() + 1, y: today.getFullYear() });
   // Attendance notes for the visible month. Loaded lazily on month change
   // so flipping back/forward doesn't refetch the entire history.
-  const [notesByDate, setNotesByDate] = useState<Record<string, { note: string; author_name: string | null; author_role: string | null; updated_at: string }>>({});
+  const [notesByDate, setNotesByDate] = useState<Record<string, {
+    note: string;
+    author_name: string | null;
+    author_role: string | null;
+    updated_at: string;
+    status?: string;
+    approved_by_name?: string | null;
+    rejection_reason?: string | null;
+  }>>({});
+  const [noteBusy, setNoteBusy] = useState<string | null>(null);
+  const canActOnNotes = !!currentUser?.role && currentUser.role !== 'employee';
   const [editingNoteDate, setEditingNoteDate] = useState<string | null>(null);
   useEffect(() => {
     if (!member.id) return;
@@ -218,6 +228,99 @@ export default function MemberCalendarModal({ member, attendance, leaves, onClos
               );
             })}
           </div>
+
+          {/* Notes this month — shows pending notes first so managers/HR
+              can action them inline. Approved/rejected notes are listed
+              below for context. */}
+          {Object.keys(notesByDate).length > 0 && (
+            <div>
+              <p className="text-[10px] uppercase tracking-[0.16em] font-bold text-on-surface-subtle mb-2">Attendance notes this month</p>
+              <div className="space-y-1.5">
+                {Object.entries(notesByDate)
+                  .sort(([a, na], [b, nb]) => {
+                    // Pending first, then by date desc.
+                    const sa = na.status ?? 'approved';
+                    const sb = nb.status ?? 'approved';
+                    if (sa === 'pending' && sb !== 'pending') return -1;
+                    if (sb === 'pending' && sa !== 'pending') return 1;
+                    return b.localeCompare(a);
+                  })
+                  .map(([date, n]) => {
+                    const status = n.status ?? 'approved';
+                    const isManagerAuthored = n.author_role && n.author_role !== 'employee';
+                    const tone = status === 'pending'
+                      ? 'border-warning/40 bg-warning-container/30'
+                      : status === 'rejected'
+                      ? 'border-danger/40 bg-danger-container/30'
+                      : isManagerAuthored
+                        ? 'border-accent/50 bg-accent/10 ring-1 ring-accent/30'
+                        : 'bg-surface-2/30 border-outline';
+                    const approve = async () => {
+                      setNoteBusy(date);
+                      try {
+                        const row = await api.approveAttendanceNote({ employee_id: member.id, date });
+                        setNotesByDate(prev => ({ ...prev, [date]: { ...prev[date], ...row } }));
+                      } catch {/* swallow — list refetches on month change */}
+                      finally { setNoteBusy(null); }
+                    };
+                    const reject = async () => {
+                      const reason = window.prompt('Reason for rejection (the employee sees this):');
+                      if (!reason?.trim()) return;
+                      setNoteBusy(date);
+                      try {
+                        const row = await api.rejectAttendanceNote({ employee_id: member.id, date, rejection_reason: reason.trim() });
+                        setNotesByDate(prev => ({ ...prev, [date]: { ...prev[date], ...row } }));
+                      } catch {/* swallow */}
+                      finally { setNoteBusy(null); }
+                    };
+                    return (
+                      <div key={date} className={`px-3 py-2 rounded-lg border text-xs ${tone}`}>
+                        <div className="flex items-center justify-between gap-2 mb-1">
+                          <p className="num-mono text-on-surface-muted text-[10px]">
+                            {new Date(date).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', weekday: 'short' })}
+                          </p>
+                          {status === 'pending' && (
+                            <span className="text-[9px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded bg-warning text-on-accent">⏳ Pending</span>
+                          )}
+                          {status === 'approved' && (
+                            <span className="text-[9px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded bg-success text-on-accent">
+                              ✓ {n.approved_by_name ? `by ${n.approved_by_name}` : 'Approved'}
+                            </span>
+                          )}
+                          {status === 'rejected' && (
+                            <span className="text-[9px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded bg-danger text-on-accent">✕ Rejected</span>
+                          )}
+                        </div>
+                        {isManagerAuthored && (
+                          <p className="text-[10px] font-bold uppercase tracking-wider text-accent mb-0.5 inline-flex items-center gap-1">
+                            🛡 Added by {n.author_role === 'hr_manager' ? 'HR' : n.author_role === 'admin' ? 'Admin' : 'Reporting Manager'}
+                          </p>
+                        )}
+                        <p className="text-on-surface whitespace-pre-line">{n.note}</p>
+                        <p className="text-[10px] text-on-surface-subtle mt-0.5">
+                          — {n.author_name ?? 'Unknown'}{n.author_role ? ` (${n.author_role})` : ''}
+                        </p>
+                        {status === 'rejected' && n.rejection_reason && (
+                          <p className="text-[10px] text-danger italic mt-1">"{n.rejection_reason}"</p>
+                        )}
+                        {status === 'pending' && canActOnNotes && (
+                          <div className="flex gap-1.5 mt-2">
+                            <button onClick={approve} disabled={noteBusy === date}
+                              className="text-[10px] font-bold px-2 py-1 rounded bg-success text-on-accent hover:opacity-90 disabled:opacity-50">
+                              ✓ Approve
+                            </button>
+                            <button onClick={reject} disabled={noteBusy === date}
+                              className="text-[10px] font-bold px-2 py-1 rounded text-danger border border-danger/30 hover:bg-danger-container disabled:opacity-50">
+                              ✕ Reject
+                            </button>
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+              </div>
+            </div>
+          )}
 
           {/* Leave list this month */}
           <div>
