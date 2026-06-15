@@ -1557,19 +1557,45 @@ app.get('/api/employees', async (req, res) => {
       // the internal id. Without this widening, a manager whose reports were
       // created with the "other" format saw zero team members.
       const mgrRow = (await sql`SELECT id, employee_id FROM employees WHERE id=${reporting_manager_id} OR employee_id=${reporting_manager_id} LIMIT 1`)[0] as any;
-      const cands = mgrRow ? [mgrRow.id, mgrRow.employee_id].filter(Boolean) : [reporting_manager_id];
+      const cands = mgrRow
+        // Filter Boolean drops null AND empty strings — critical, otherwise
+        // an empty string in cands matches every employee whose
+        // reporting_manager_id is also empty (= "no manager set").
+        ? [mgrRow.id, mgrRow.employee_id].filter((v: any) => v && String(v).trim() !== '')
+        : [reporting_manager_id].filter((v: any) => v && String(v).trim() !== '');
+      // Defensive: if we couldn't resolve the manager to any non-empty id,
+      // return zero rows rather than the whole table.
+      if (cands.length === 0) { res.json([]); return; }
       if (descendants === 'true' || descendants === '1') {
+        // Bug fix: NULLIF guards. Without these, the recursive step could
+        // join on empty-string === empty-string, which pulled the entire
+        // org into Manpreet's "team" because some legacy rows had blank
+        // reporting_manager_id values that matched blank id / employee_id
+        // values on intermediate rows. We also guard the matched edge
+        // (e.reporting_manager_id) so blanks on the child side never count
+        // as a real edge.
         const rows = await sql`
           WITH RECURSIVE team AS (
-            SELECT * FROM employees WHERE reporting_manager_id = ANY(${cands}::text[])
-            UNION ALL
+            SELECT * FROM employees
+            WHERE reporting_manager_id = ANY(${cands}::text[])
+              AND NULLIF(TRIM(reporting_manager_id), '') IS NOT NULL
+            UNION
             SELECT e.* FROM employees e
-            JOIN team t ON e.reporting_manager_id = t.id OR e.reporting_manager_id = t.employee_id
+            JOIN team t ON
+              (NULLIF(TRIM(e.reporting_manager_id), '') IS NOT NULL)
+              AND (
+                (NULLIF(TRIM(t.id), '') IS NOT NULL AND e.reporting_manager_id = t.id)
+                OR (NULLIF(TRIM(t.employee_id), '') IS NOT NULL AND e.reporting_manager_id = t.employee_id)
+              )
           )
           SELECT DISTINCT * FROM team ORDER BY name`;
         res.json(rows);
       } else {
-        res.json(await sql`SELECT * FROM employees WHERE reporting_manager_id = ANY(${cands}::text[]) ORDER BY name`);
+        res.json(await sql`
+          SELECT * FROM employees
+          WHERE reporting_manager_id = ANY(${cands}::text[])
+            AND NULLIF(TRIM(reporting_manager_id), '') IS NOT NULL
+          ORDER BY name`);
       }
     } else {
       res.json(await sql`SELECT * FROM employees ORDER BY name`);
