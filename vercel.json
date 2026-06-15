@@ -9,6 +9,10 @@
     {
       "path": "/api/attendance/biometric-sync/cron",
       "schedule": "30 2 * * *"
+    },
+    {
+      "path": "/api/performance/pulse/cron",
+      "schedule": "0 3 * * *"
     }
   ]
 }
