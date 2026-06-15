@@ -12,6 +12,7 @@ import { api } from '../services/api';
 import { useAuth } from '../context/AuthContext';
 import { EditEmployeeModal } from './Employees';
 import EmployeeResponsibilitiesPanel from '../components/EmployeeResponsibilitiesPanel';
+import EmployeeHoursDetailModal from '../components/EmployeeHoursDetailModal';
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 function toDateStr(val: any): string {
@@ -153,7 +154,7 @@ function ActionModal({ title, info, type, isIncentive, onClose, onConfirm }: {
 }
 
 // ── Tabs ──────────────────────────────────────────────────────────────────────
-const TABS = ['Overview','Attendance','Leave','Performance','Incentives','Expenses','Warnings','Responsibilities'] as const;
+const TABS = ['Overview','Attendance','Leave','Hours','Performance','Incentives','Expenses','Warnings','Responsibilities'] as const;
 type Tab = typeof TABS[number];
 
 // ── Main page ─────────────────────────────────────────────────────────────────
@@ -1269,6 +1270,11 @@ export default function EmployeeProfile() {
         <EmployeeResponsibilitiesPanel employeeId={emp.id} employeeName={emp.name} />
       )}
 
+      {/* ── Hours & Allocation ───────────────────────────────────────────── */}
+      {tab === 'Hours' && emp && (
+        <HoursTabPanel employeeId={emp.id} employeeName={emp.name} />
+      )}
+
       {/* ── Modals ─────────────────────────────────────────────────────────── */}
       {showEdit && (
         <EditEmployeeModal
@@ -1325,6 +1331,260 @@ export default function EmployeeProfile() {
           }}
         />
       )}
+    </div>
+  );
+}
+
+// ── Hours & Allocation panel ──────────────────────────────────────────────
+// Inline summary for an employee's monthly hours: project allocations,
+// approval status of logged hours, internal activities — and a button
+// to open the full EmployeeHoursDetailModal for line-by-line edits +
+// allocation-change requests. Designed for the admin / HR view so they
+// can answer "what's this person actually doing this month" without
+// navigating off the profile.
+function HoursTabPanel({ employeeId, employeeName }: { employeeId: string; employeeName: string }) {
+  const now = new Date();
+  const [month, setMonth] = useState(now.getMonth() + 1);
+  const [year, setYear] = useState(now.getFullYear());
+  const [assignments, setAssignments] = useState<any[]>([]);
+  const [logs, setLogs] = useState<any[]>([]);
+  const [internalLogs, setInternalLogs] = useState<any[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
+  const [showFull, setShowFull] = useState(false);
+
+  useEffect(() => {
+    setLoading(true); setError('');
+    const lastDay = new Date(year, month, 0).getDate();
+    const from = `${year}-${String(month).padStart(2, '0')}-01`;
+    const to   = `${year}-${String(month).padStart(2, '0')}-${String(lastDay).padStart(2, '0')}`;
+    Promise.all([
+      api.getProjectAssignments({ employee_id: employeeId, month, year }).catch(() => []),
+      api.getHourLogs({ employee_id: employeeId, month, year }).catch(() => []),
+      api.getInternalHourLogs({ employee_id: employeeId, from, to }).catch(() => []),
+    ]).then(([a, l, il]) => {
+      setAssignments(a ?? []);
+      setLogs(l ?? []);
+      setInternalLogs(il ?? []);
+    }).catch(() => setError('Failed to load hours data.'))
+      .finally(() => setLoading(false));
+  }, [employeeId, month, year]);
+
+  const totalAllocated = assignments.reduce((s, a) => s + Number(a.monthly_hours || 0), 0);
+  const approvedHours = logs.filter(l => l.status === 'approved').reduce((s, l) => s + Number(l.hours_logged || 0), 0);
+  const pendingHours  = logs.filter(l => l.status === 'pending' || l.status === 'submitted').reduce((s, l) => s + Number(l.hours_logged || 0), 0);
+  const rejectedHours = logs.filter(l => l.status === 'rejected').reduce((s, l) => s + Number(l.hours_logged || 0), 0);
+  const onHoldHours   = logs.filter(l => l.status === 'on_hold').reduce((s, l) => s + Number(l.hours_logged || 0), 0);
+  const internalTotal = internalLogs.reduce((s, l) => s + Number(l.hours || 0), 0);
+
+  return (
+    <div className="space-y-4">
+      {/* Toolbar */}
+      <div className="bg-surface rounded-2xl border border-outline shadow-elev-1 p-4 flex flex-wrap items-center justify-between gap-3">
+        <div className="flex items-center gap-2">
+          <select value={month} onChange={e => setMonth(Number(e.target.value))}
+            className="bg-surface-2 border border-outline rounded-lg px-3 py-1.5 text-sm font-medium text-on-surface">
+            {MONTH_FULL.map((m, i) => <option key={m} value={i + 1}>{m}</option>)}
+          </select>
+          <select value={year} onChange={e => setYear(Number(e.target.value))}
+            className="bg-surface-2 border border-outline rounded-lg px-3 py-1.5 text-sm font-medium text-on-surface num-mono">
+            {[year - 1, year, year + 1].map(y => <option key={y} value={y}>{y}</option>)}
+          </select>
+        </div>
+        <button onClick={() => setShowFull(true)}
+          className="px-3.5 py-1.5 rounded-lg text-sm font-semibold bg-accent text-on-accent hover:opacity-90">
+          Open full detail
+        </button>
+      </div>
+
+      {error && (
+        <div className="rounded-xl border border-danger/30 bg-danger-container/40 p-3 text-sm text-danger">{error}</div>
+      )}
+
+      {loading ? (
+        <div className="bg-surface rounded-2xl border border-outline shadow-elev-1 p-12 text-center text-sm text-on-surface-subtle">Loading…</div>
+      ) : (
+        <>
+          {/* KPI strip */}
+          <div className="grid grid-cols-2 sm:grid-cols-5 gap-3">
+            <KpiTile label="Allocated" value={`${totalAllocated}h`} sub={`${assignments.length} project${assignments.length === 1 ? '' : 's'}`} tone="text-on-surface" />
+            <KpiTile label="Approved" value={`${approvedHours}h`} sub="of logged hours" tone="text-success" />
+            <KpiTile label="Pending" value={`${pendingHours}h`} sub="awaiting review" tone={pendingHours > 0 ? 'text-warning' : 'text-on-surface-subtle'} />
+            <KpiTile label="Rejected / Hold" value={`${rejectedHours + onHoldHours}h`} sub={`${rejectedHours}h + ${onHoldHours}h`} tone={(rejectedHours + onHoldHours) > 0 ? 'text-danger' : 'text-on-surface-subtle'} />
+            <KpiTile label="Internal" value={`${internalTotal}h`} sub={`${internalLogs.length} entr${internalLogs.length === 1 ? 'y' : 'ies'}`} tone="text-accent" />
+          </div>
+
+          {/* Project allocations table */}
+          <div className="bg-surface rounded-2xl border border-outline shadow-elev-1 overflow-hidden">
+            <div className="px-5 py-3 border-b border-outline">
+              <h3 className="font-display text-sm font-bold text-on-surface tracking-tight">Project allocations</h3>
+            </div>
+            {assignments.length === 0 ? (
+              <div className="p-8 text-center">
+                <p className="text-sm text-on-surface-muted">No project allocations for {MONTH_FULL[month - 1]} {year}.</p>
+                <p className="text-xs text-on-surface-subtle mt-1">{employeeName.split(' ')[0]} may carry workload via internal activities only.</p>
+              </div>
+            ) : (
+              <div className="overflow-x-auto">
+                <table className="w-full text-sm">
+                  <thead className="bg-surface-2 text-[10px] uppercase tracking-wider text-on-surface-subtle">
+                    <tr>
+                      <th className="text-left px-4 py-2 font-semibold">Project</th>
+                      <th className="text-right px-3 py-2 font-semibold">M</th>
+                      <th className="text-right px-3 py-2 font-semibold">W1</th>
+                      <th className="text-right px-3 py-2 font-semibold">W2</th>
+                      <th className="text-right px-3 py-2 font-semibold">W3</th>
+                      <th className="text-right px-3 py-2 font-semibold">W4</th>
+                      <th className="text-right px-3 py-2 font-semibold">W5</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-outline">
+                    {assignments.map(a => (
+                      <tr key={a.id}>
+                        <td className="px-4 py-2.5">
+                          <p className="font-medium text-on-surface">{a.project_name}</p>
+                          {a.project_client_name && <p className="text-[11px] text-on-surface-subtle">{a.project_client_name}</p>}
+                        </td>
+                        <td className="px-3 py-2.5 text-right num-mono font-semibold text-on-surface bg-surface-2/40">{Number(a.monthly_hours) || 0}</td>
+                        <td className="px-3 py-2.5 text-right num-mono text-on-surface-muted">{Number(a.w1_hours) || 0}</td>
+                        <td className="px-3 py-2.5 text-right num-mono text-on-surface-muted">{Number(a.w2_hours) || 0}</td>
+                        <td className="px-3 py-2.5 text-right num-mono text-on-surface-muted">{Number(a.w3_hours) || 0}</td>
+                        <td className="px-3 py-2.5 text-right num-mono text-on-surface-muted">{Number(a.w4_hours) || 0}</td>
+                        <td className="px-3 py-2.5 text-right num-mono text-on-surface-muted">{Number(a.w5_hours) || 0}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+
+          {/* Logged hours table */}
+          <div className="bg-surface rounded-2xl border border-outline shadow-elev-1 overflow-hidden">
+            <div className="px-5 py-3 border-b border-outline">
+              <h3 className="font-display text-sm font-bold text-on-surface tracking-tight">Logged hours</h3>
+              <p className="text-[11px] text-on-surface-subtle mt-0.5">Weekly entries against allocated projects.</p>
+            </div>
+            {logs.length === 0 ? (
+              <div className="p-8 text-center text-sm text-on-surface-muted">No hour logs submitted for {MONTH_FULL[month - 1]} {year}.</div>
+            ) : (
+              <div className="overflow-x-auto">
+                <table className="w-full text-sm">
+                  <thead className="bg-surface-2 text-[10px] uppercase tracking-wider text-on-surface-subtle">
+                    <tr>
+                      <th className="text-left px-4 py-2 font-semibold">Project</th>
+                      <th className="text-left px-3 py-2 font-semibold">Week</th>
+                      <th className="text-right px-3 py-2 font-semibold">Hours</th>
+                      <th className="text-left px-3 py-2 font-semibold">Status</th>
+                      <th className="text-left px-3 py-2 font-semibold">Reviewed by</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-outline">
+                    {logs
+                      .slice()
+                      .sort((a, b) => (a.project_name ?? '').localeCompare(b.project_name ?? '') || Number(a.week_num) - Number(b.week_num))
+                      .map(l => (
+                        <tr key={l.id}>
+                          <td className="px-4 py-2.5">
+                            <p className="font-medium text-on-surface">{l.project_name ?? '—'}</p>
+                            {l.project_client_name && <p className="text-[11px] text-on-surface-subtle">{l.project_client_name}</p>}
+                          </td>
+                          <td className="px-3 py-2.5 text-on-surface-muted">W{l.week_num}</td>
+                          <td className="px-3 py-2.5 text-right num-mono font-semibold text-on-surface">{Number(l.hours_logged) || 0}h</td>
+                          <td className="px-3 py-2.5">
+                            <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-semibold uppercase ${
+                              l.status === 'approved' ? 'bg-success-container text-success' :
+                              l.status === 'rejected' ? 'bg-danger-container text-danger' :
+                              l.status === 'on_hold'  ? 'bg-warning-container text-warning' :
+                              'bg-surface-2 text-on-surface-muted'
+                            }`}>{l.status}</span>
+                          </td>
+                          <td className="px-3 py-2.5 text-[11px] text-on-surface-subtle">
+                            {l.reviewed_by_name ?? '—'}
+                            {l.reviewed_at && <span className="block num-mono">{new Date(l.reviewed_at).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' })}</span>}
+                          </td>
+                        </tr>
+                      ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+
+          {/* Internal activities — same pattern as the modal, just inline */}
+          <div className="bg-surface rounded-2xl border border-outline shadow-elev-1 overflow-hidden">
+            <div className="px-5 py-3 border-b border-outline flex items-center justify-between">
+              <div>
+                <h3 className="font-display text-sm font-bold text-on-surface tracking-tight">Internal activities</h3>
+                <p className="text-[11px] text-on-surface-subtle mt-0.5">Time not tied to a billable project.</p>
+              </div>
+              <span className="num-mono text-sm font-bold text-on-surface">{internalTotal}h</span>
+            </div>
+            {internalLogs.length === 0 ? (
+              <div className="p-8 text-center text-sm text-on-surface-muted">No internal-activity logs for {MONTH_FULL[month - 1]} {year}.</div>
+            ) : (
+              <div className="divide-y divide-outline">
+                {Array.from(internalLogs.reduce((m: Map<string, { name: string; total: number; entries: any[] }>, l: any) => {
+                  const key = l.activity_id ?? l.activity_name ?? 'other';
+                  const cur = m.get(key) ?? { name: l.activity_name ?? 'Other', total: 0, entries: [] as any[] };
+                  cur.total += Number(l.hours || 0);
+                  cur.entries.push(l);
+                  m.set(key, cur);
+                  return m;
+                }, new Map<string, { name: string; total: number; entries: any[] }>()).values())
+                  .sort((a, b) => b.total - a.total)
+                  .map(g => (
+                    <div key={g.name} className="px-5 py-3">
+                      <div className="flex items-center justify-between mb-1.5">
+                        <p className="text-sm font-semibold text-on-surface">{g.name}</p>
+                        <div className="flex items-center gap-3 text-right">
+                          <span className="num-mono text-sm font-bold text-on-surface">{g.total}h</span>
+                          <span className="text-[10px] text-on-surface-subtle">{g.entries.length} {g.entries.length === 1 ? 'entry' : 'entries'}</span>
+                        </div>
+                      </div>
+                      <div className="space-y-1">
+                        {g.entries
+                          .slice()
+                          .sort((a: any, b: any) => b.log_date.localeCompare(a.log_date))
+                          .map((e: any) => (
+                            <div key={e.id} className="flex items-start justify-between gap-3 text-xs">
+                              <div className="min-w-0 flex-1">
+                                <p className="text-on-surface-muted num-mono">
+                                  {new Date(e.log_date).toLocaleDateString('en-IN', { weekday: 'short', day: 'numeric', month: 'short' })}
+                                </p>
+                                {e.notes && <p className="text-on-surface mt-0.5 whitespace-pre-line">{e.notes}</p>}
+                              </div>
+                              <span className="num-mono font-semibold text-on-surface flex-shrink-0">{e.hours}h</span>
+                            </div>
+                          ))}
+                      </div>
+                    </div>
+                  ))}
+              </div>
+            )}
+          </div>
+        </>
+      )}
+
+      {showFull && (
+        <EmployeeHoursDetailModal
+          employeeId={employeeId}
+          employeeName={employeeName}
+          month={month}
+          year={year}
+          onClose={() => setShowFull(false)}
+        />
+      )}
+    </div>
+  );
+}
+
+function KpiTile({ label, value, sub, tone }: { label: string; value: string; sub: string; tone: string }) {
+  return (
+    <div className="bg-surface rounded-xl border border-outline px-4 py-3 shadow-elev-1">
+      <p className="text-[10px] uppercase tracking-wider font-bold text-on-surface-subtle">{label}</p>
+      <p className={`mt-1 text-xl font-bold tabular-nums num-mono ${tone}`}>{value}</p>
+      <p className="mt-0.5 text-[11px] text-on-surface-subtle">{sub}</p>
     </div>
   );
 }
