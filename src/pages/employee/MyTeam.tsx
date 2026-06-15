@@ -909,7 +909,7 @@ export default function MyTeam() {
                           {parseLocalDate(l.from_date).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' })}
                           {l.from_date !== l.to_date && ` – ${parseLocalDate(l.to_date).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' })}`}
                         </p>
-                        {l.reason && <p className="text-xs text-on-surface-muted mt-0.5 italic truncate">"{l.reason}"</p>}
+                        {l.reason && <p className="text-xs text-on-surface-muted mt-0.5 italic whitespace-pre-line break-words">"{l.reason}"</p>}
                         {l.created_at && (
                           <p className="text-xs text-on-surface-subtle mt-0.5">
                             Applied: {new Date(l.created_at).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' })}
@@ -1057,7 +1057,7 @@ export default function MyTeam() {
                                           {l.from_date !== l.to_date && ` – ${parseLocalDate(l.to_date).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' })}`}
                                         </td>
                                         <td className="px-3 py-2.5 text-on-surface-muted num-mono">{l.days}d</td>
-                                        <td className="px-3 py-2.5 text-on-surface-subtle max-w-[120px] truncate">{l.reason}</td>
+                                        <td className="px-3 py-2.5 text-on-surface-subtle max-w-[120px] truncate" title={l.reason ?? ''}>{l.reason}</td>
                                         <td className="px-3 py-2.5">
                                           <span className={`text-xs px-2 py-0.5 rounded-full border font-medium ${leaveStatusColors[l.status] ?? 'bg-surface-2 text-on-surface-subtle border-outline'}`}>
                                             {l.status.charAt(0).toUpperCase() + l.status.slice(1)}
