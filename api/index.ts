@@ -1022,6 +1022,22 @@ async function runStartupMigrations() {
     )`;
   await sql`CREATE INDEX IF NOT EXISTS idx_internal_logs_emp_date ON internal_hour_logs(employee_id, log_date DESC)`.catch(()=>{});
   await sql`CREATE INDEX IF NOT EXISTS idx_internal_logs_date ON internal_hour_logs(log_date DESC)`.catch(()=>{});
+  // Backfill (idempotent): legacy POST stored employee_id as the HUMAN
+  // code (e.g. "DL0092") because it grabbed u.employee_id_ref. But every
+  // reader — Pulse compute, the EmployeeHoursDetailModal, the new Hours
+  // tab on Employee Profile — queries by the internal employees.id. So
+  // internal hour logs were silently invisible to managers/HR/admin (and
+  // never counted into Pulse hours hygiene). Convert any row whose
+  // employee_id still matches employees.employee_id (the human code) to
+  // the internal id. Rows already in internal-id form are unaffected
+  // (their value doesn't match any employees.employee_id). Safe to
+  // re-run; once converted there's nothing left to update.
+  await sql`
+    UPDATE internal_hour_logs l
+    SET employee_id = e.id
+    FROM employees e
+    WHERE l.employee_id = e.employee_id
+      AND l.employee_id <> e.id`.catch(()=>{});
   // Seed the default activity list once — admin can prune/extend on the
   // Config page. Idempotent: only inserts if the table is empty.
   try {
@@ -4822,15 +4838,31 @@ app.get('/api/internal-hour-logs', async (req, res) => {
     if (!u) return res.status(401).json({ error: 'Unknown user' });
     const { employee_id, from, to } = req.query as any;
     const isAdminish = u.role === 'admin' || u.role === 'hr_manager';
-    // Scoping: self by default. Admin/HR can see anyone. Reporting managers
-    // can see their direct reports (cheap chain check inline).
-    let targetEmpId = employee_id || u.employee_id_ref;
+    // Resolve self to the internal employees.id (stored format on
+    // internal_hour_logs.employee_id after the backfill). Tolerate
+    // both forms on app_users.employee_id_ref so legacy rows that
+    // store the internal id directly still resolve.
+    const self = (await sql`
+      SELECT id, employee_id FROM employees
+      WHERE employee_id = ${u.employee_id_ref}
+         OR id = ${u.employee_id_ref}
+      LIMIT 1`)[0] as any;
+    const selfId = self?.id ?? null;
+    // Target = explicit OR self. Explicit ids from the UI are internal
+    // employees.id (that's what emp.id is on the client).
+    const targetEmpId = employee_id || selfId;
     if (!targetEmpId) return res.json([]);
-    if (targetEmpId !== u.employee_id_ref && !isAdminish) {
+    // Permission: self always; admin/HR always; otherwise must be the
+    // direct reporting manager. reporting_manager_id can be stored as
+    // either the internal id or the human code (legacy data), so we
+    // widen the comparison.
+    if (targetEmpId !== selfId && !isAdminish) {
       const tgt = (await sql`SELECT reporting_manager_id FROM employees WHERE id=${targetEmpId}`)[0] as any;
-      if (!tgt || tgt.reporting_manager_id !== u.employee_id_ref) {
-        return res.status(403).json({ error: 'Not permitted' });
-      }
+      const okManager = tgt && (
+        tgt.reporting_manager_id === selfId ||
+        tgt.reporting_manager_id === self?.employee_id
+      );
+      if (!okManager) return res.status(403).json({ error: 'Not permitted' });
     }
     const fromD = from || new Date(Date.now() - 30 * 86400000).toISOString().slice(0, 10);
     const toD = to || new Date().toISOString().slice(0, 10);
@@ -4851,6 +4883,17 @@ app.post('/api/internal-hour-logs', async (req, res) => {
     if (!uid) return res.status(401).json({ error: 'Sign in required' });
     const u = (await sql`SELECT id, employee_id_ref FROM app_users WHERE id=${uid}`)[0] as any;
     if (!u?.employee_id_ref) return res.status(400).json({ error: 'No employee profile linked to this user' });
+    // Resolve the user's employee_id_ref (human code) to the internal
+    // employees.id so the row matches the format every reader queries
+    // by. Tolerate either form on the input column in case some legacy
+    // app_users row stores the internal id instead of the human code.
+    const empRow = (await sql`
+      SELECT id FROM employees
+      WHERE employee_id = ${u.employee_id_ref}
+         OR id = ${u.employee_id_ref}
+      LIMIT 1`)[0] as any;
+    if (!empRow?.id) return res.status(400).json({ error: 'Could not resolve user to an employee record' });
+    const empDbId = empRow.id;
     const { activity_id, log_date, hours, notes } = req.body ?? {};
     if (!activity_id || !log_date) return res.status(400).json({ error: 'activity_id and log_date are required' });
     const h = Number(hours);
@@ -4861,7 +4904,7 @@ app.post('/api/internal-hour-logs', async (req, res) => {
     // instead of erroring with the unique constraint.
     const row = (await sql`
       INSERT INTO internal_hour_logs (id, employee_id, activity_id, log_date, hours, notes)
-      VALUES (${id}, ${u.employee_id_ref}, ${activity_id}, ${log_date}::date, ${h}, ${notes.trim()})
+      VALUES (${id}, ${empDbId}, ${activity_id}, ${log_date}::date, ${h}, ${notes.trim()})
       ON CONFLICT (employee_id, activity_id, log_date) DO UPDATE
         SET hours=EXCLUDED.hours, notes=EXCLUDED.notes, updated_at=NOW()
       RETURNING *`)[0];
@@ -4877,7 +4920,16 @@ app.delete('/api/internal-hour-logs/:id', async (req, res) => {
     const isAdminish = u.role === 'admin' || u.role === 'hr_manager';
     const row = (await sql`SELECT employee_id FROM internal_hour_logs WHERE id=${req.params.id}`)[0] as any;
     if (!row) return res.status(404).json({ error: 'Log not found' });
-    if (!isAdminish && row.employee_id !== u.employee_id_ref) {
+    // After the schema backfill, internal_hour_logs.employee_id holds
+    // the internal employees.id. Resolve the actor to the same form
+    // so a self-delete comparison actually matches.
+    const self = (await sql`
+      SELECT id, employee_id FROM employees
+      WHERE employee_id = ${u.employee_id_ref}
+         OR id = ${u.employee_id_ref}
+      LIMIT 1`)[0] as any;
+    const isSelf = self && (row.employee_id === self.id || row.employee_id === self.employee_id);
+    if (!isAdminish && !isSelf) {
       return res.status(403).json({ error: 'You can only delete your own logs' });
     }
     await sql`DELETE FROM internal_hour_logs WHERE id=${req.params.id}`;
