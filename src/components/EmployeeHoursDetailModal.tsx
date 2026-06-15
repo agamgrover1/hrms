@@ -70,6 +70,11 @@ export default function EmployeeHoursDetailModal({ employeeId, employeeName, mon
   const [logs, setLogs] = useState<LogRow[]>([]);
   const [days, setDays] = useState<DayRow[]>([]);
   const [assignments, setAssignments] = useState<AssignmentRow[]>([]);
+  // Internal activity logs surface alongside project hours so the manager
+  // (or admin / HR) viewing this drill-in can see the full picture —
+  // someone without project allocation may still be carrying meaningful
+  // load through training, recruiting, ops, doc work etc.
+  const [internalLogs, setInternalLogs] = useState<Array<{ id: string; employee_id: string; activity_id: string; activity_name: string; log_date: string; hours: number; notes: string | null }>>([]);
   const [loading, setLoading] = useState(true);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editDraft, setEditDraft] = useState<{ hours: string; desc: string; reason: string }>({ hours: '', desc: '', reason: '' });
@@ -93,6 +98,17 @@ export default function EmployeeHoursDetailModal({ employeeId, employeeName, mon
       api.getHourLogs({ employee_id: employeeId, month, year }).then(d => setLogs(d as LogRow[])).catch(() => {}),
       api.getHourLogDays({ employee_id: employeeId, month, year }).then(d => setDays(d as DayRow[])).catch(() => setDays([])),
       api.getProjectAssignments({ employee_id: employeeId, month, year }).then(d => setAssignments(d as AssignmentRow[])).catch(() => setAssignments([])),
+      // Same window as project hours — month boundaries. The backend
+      // returns empty for users without permission, so we can fire it
+      // unconditionally and not worry about a 403 banner.
+      (() => {
+        const from = `${year}-${String(month).padStart(2, '0')}-01`;
+        const lastDay = new Date(year, month, 0).getDate();
+        const to = `${year}-${String(month).padStart(2, '0')}-${String(lastDay).padStart(2, '0')}`;
+        return api.getInternalHourLogs({ employee_id: employeeId, from, to })
+          .then(d => setInternalLogs(d ?? []))
+          .catch(() => setInternalLogs([]));
+      })(),
       api.getAllocationRequests({ status: 'pending' }).then(rs => {
         // Build a quick lookup for "this assignment already has a pending
         // request". Filtered to the current employee so we don't carry a
@@ -638,6 +654,19 @@ export default function EmployeeHoursDetailModal({ employeeId, employeeName, mon
               })}
               </div>
               )}
+
+              {/* ── Internal activities for the month ─────────────────────────
+                  Surface internal hour logs alongside project hours so
+                  managers / HR / admin viewing this drill-in see the full
+                  picture of someone's time — especially valuable for people
+                  with little or no project allocation (HR, recruiters,
+                  ops) who otherwise look "idle" here. */}
+              <InternalLogsSection
+                logs={internalLogs}
+                month={month}
+                year={year}
+                employeeName={employeeName}
+              />
             </div>
           )}
         </div>
@@ -824,5 +853,74 @@ function StatusPill({ status }: { status: string }) {
     <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-semibold ${cfg.cls}`}>
       <Icon size={10} /> {cfg.label}
     </span>
+  );
+}
+
+// Renders the month's internal activity logs grouped by activity name,
+// with per-date entries and notes. Returns null when there are no logs
+// so we don't show an empty section for project-only employees.
+function InternalLogsSection({ logs, month, year, employeeName }: {
+  logs: Array<{ id: string; activity_id: string; activity_name: string; log_date: string; hours: number; notes: string | null }>;
+  month: number;
+  year: number;
+  employeeName: string;
+}) {
+  if (!logs || logs.length === 0) return null;
+  const totalHours = logs.reduce((s, l) => s + Number(l.hours || 0), 0);
+  const byActivity = new Map<string, { name: string; total: number; entries: typeof logs }>();
+  for (const l of logs) {
+    const key = l.activity_id ?? l.activity_name ?? 'other';
+    const cur = byActivity.get(key) ?? { name: l.activity_name ?? 'Other', total: 0, entries: [] as typeof logs };
+    cur.total += Number(l.hours || 0);
+    cur.entries.push(l);
+    byActivity.set(key, cur);
+  }
+  const groups = Array.from(byActivity.values()).sort((a, b) => b.total - a.total);
+  return (
+    <div className="mt-6">
+      <div className="flex items-center justify-between mb-3">
+        <div>
+          <h4 className="font-display text-sm font-bold text-on-surface tracking-tight">Internal activities</h4>
+          <p className="text-[11px] text-on-surface-subtle mt-0.5">
+            Logged by {employeeName.split(' ')[0]} — not tied to a billable project.
+          </p>
+        </div>
+        <div className="text-right">
+          <p className="num-mono text-lg font-bold text-on-surface">{totalHours}h</p>
+          <p className="text-[10px] uppercase tracking-wider text-on-surface-subtle">total · {MONTHS[month-1]} {year}</p>
+        </div>
+      </div>
+      <div className="space-y-2">
+        {groups.map(g => (
+          <div key={g.name} className="rounded-xl-2 border border-outline bg-surface overflow-hidden">
+            <div className="px-4 py-2.5 bg-surface-2/40 border-b border-outline flex items-center justify-between">
+              <p className="text-sm font-semibold text-on-surface">{g.name}</p>
+              <div className="flex items-center gap-3 text-right">
+                <span className="num-mono text-sm font-bold text-on-surface">{g.total}h</span>
+                <span className="text-[10px] text-on-surface-subtle">{g.entries.length} {g.entries.length === 1 ? 'entry' : 'entries'}</span>
+              </div>
+            </div>
+            <div className="divide-y divide-outline">
+              {g.entries
+                .slice()
+                .sort((a, b) => b.log_date.localeCompare(a.log_date))
+                .map(e => (
+                  <div key={e.id} className="px-4 py-2 flex items-start justify-between gap-3">
+                    <div className="min-w-0 flex-1">
+                      <p className="text-xs text-on-surface-muted num-mono">
+                        {new Date(e.log_date).toLocaleDateString('en-IN', { weekday: 'short', day: 'numeric', month: 'short' })}
+                      </p>
+                      {e.notes && (
+                        <p className="text-xs text-on-surface mt-0.5 whitespace-pre-line">{e.notes}</p>
+                      )}
+                    </div>
+                    <span className="num-mono text-sm font-semibold text-on-surface flex-shrink-0">{e.hours}h</span>
+                  </div>
+                ))}
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
   );
 }
