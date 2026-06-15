@@ -1,5 +1,5 @@
 import { Fragment, useState, useEffect, useMemo, useCallback } from 'react';
-import { Plus, Trash2, X, Search, Copy, ExternalLink, Flag, ClipboardCheck, LayoutGrid, Pencil, Users as UsersIcon, ChevronRight, AlertTriangle, CalendarDays, ArrowUpDown, ChevronUp, ChevronDown } from 'lucide-react';
+import { Plus, Trash2, X, Search, Copy, ExternalLink, Flag, ClipboardCheck, LayoutGrid, Pencil, Users as UsersIcon, ChevronRight, AlertTriangle, CalendarDays, ArrowUpDown, ChevronUp, ChevronDown, History, ArrowRight } from 'lucide-react';
 import { Link } from 'react-router-dom';
 import { api } from '../services/api';
 import { useAuth } from '../context/AuthContext';
@@ -93,7 +93,7 @@ export default function ProjectHours() {
   const [showAdd, setShowAdd] = useState(false);
   const [detail, setDetail] = useState<{ employeeId: string; employeeName: string; focusWeek?: number } | null>(null);
   const [savingCell, setSavingCell] = useState<string | null>(null);
-  const [view, setView] = useState<'capacity' | 'plan' | 'mine'>('capacity');
+  const [view, setView] = useState<'capacity' | 'plan' | 'mine' | 'activity'>('capacity');
 
   // Determine viewer's identity for the "Mine" tab — direct reports + projects they review
   const [me, setMe] = useState<{ id: string; name: string } | null>(null);
@@ -360,6 +360,10 @@ export default function ProjectHours() {
             sub="My team & projects"
             badge={(reportsTo.size > 0 || myProjects.length > 0) ? (reportsTo.size + myProjects.length) : undefined} />
         )}
+        {isAdminLike && (
+          <TabButton active={view === 'activity'} onClick={() => setView('activity')} icon={History} label="Activity"
+            sub="Who edited what" />
+        )}
       </div>
 
       {/* ── Capacity view: full-width per-employee weekly table ─────────────── */}
@@ -470,6 +474,11 @@ export default function ProjectHours() {
             setDetail({ employeeId, employeeName, focusWeek })
           }
         />
+      )}
+
+      {/* ── Activity view: edit audit log ──────────────────────────────────── */}
+      {view === 'activity' && isAdminLike && (
+        <ActivityView month={month} year={year} search={search} />
       )}
 
       {showAdd && (
@@ -1276,6 +1285,144 @@ function ProjectDrillModal({ project, month, year, summary, openDetail, onClose 
         <div className="px-5 py-3 border-t border-outline bg-surface-2/30 text-[11px] text-on-surface-subtle">
           Click any row to drill into that person's daily log for the month.
         </div>
+      </div>
+    </div>
+  );
+}
+
+// ── Activity view ──────────────────────────────────────────────────────────
+// Lists every edit to project_assignments for the visible month. Each row
+// shows who changed it, when, the project + person, and a per-week diff
+// so a reviewer can scan "what moved" without doing math. The `search`
+// prop is the page-level free-text filter (project / employee / actor).
+interface AuditRow {
+  id: number;
+  assignment_id: string;
+  project_id: string | null;
+  project_name: string | null;
+  employee_id: string | null;
+  employee_name: string | null;
+  month: number;
+  year: number;
+  w1_before: number; w2_before: number; w3_before: number; w4_before: number; w5_before: number; monthly_before: number;
+  w1_after:  number; w2_after:  number; w3_after:  number; w4_after:  number; w5_after:  number; monthly_after:  number;
+  notes_before: string | null;
+  notes_after:  string | null;
+  actor_id: string | null;
+  actor_name: string | null;
+  actor_role: string | null;
+  changed_at: string;
+}
+
+function ActivityView({ month, year, search }: { month: number; year: number; search: string }) {
+  const [rows, setRows] = useState<AuditRow[]>([]);
+  const [loading, setLoading] = useState(true);
+  useEffect(() => {
+    setLoading(true);
+    api.getAssignmentAudit({ month, year })
+      .then((r: any) => setRows(Array.isArray(r) ? r : []))
+      .catch(() => setRows([]))
+      .finally(() => setLoading(false));
+  }, [month, year]);
+
+  const filtered = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    if (!q) return rows;
+    return rows.filter(r =>
+      (r.project_name ?? '').toLowerCase().includes(q) ||
+      (r.employee_name ?? '').toLowerCase().includes(q) ||
+      (r.actor_name ?? '').toLowerCase().includes(q)
+    );
+  }, [rows, search]);
+
+  if (loading) {
+    return (
+      <div className="bg-surface rounded-xl-2 border border-outline shadow-elev-1 px-5 py-8 text-center text-on-surface-subtle text-sm">
+        Loading activity…
+      </div>
+    );
+  }
+  if (filtered.length === 0) {
+    return (
+      <div className="bg-surface rounded-xl-2 border border-outline shadow-elev-1 px-5 py-12 text-center">
+        <History size={28} className="mx-auto text-on-surface-subtle mb-2" />
+        <p className="text-sm text-on-surface-muted">No allocation edits recorded for {MONTHS[month - 1]} {year}.</p>
+        <p className="text-xs text-on-surface-subtle mt-0.5">Only changes to existing assignments are logged. Logging started after the latest deploy.</p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="bg-surface rounded-xl-2 border border-outline shadow-elev-1 overflow-hidden">
+      <div className="px-5 py-3 border-b border-outline bg-surface-2/30 flex items-center justify-between text-xs text-on-surface-muted">
+        <span><span className="font-semibold text-on-surface num-mono">{filtered.length}</span> edit{filtered.length === 1 ? '' : 's'} for {MONTHS[month-1]} {year}</span>
+        <span>Most recent first</span>
+      </div>
+      <div className="divide-y divide-outline">
+        {filtered.map(r => {
+          const dMonthly = num(r.monthly_after) - num(r.monthly_before);
+          const dMonthlyCls = dMonthly === 0 ? 'text-on-surface-subtle'
+            : dMonthly > 0 ? 'text-success' : 'text-danger';
+          const weeks = [
+            { k: 'W1', b: r.w1_before, a: r.w1_after },
+            { k: 'W2', b: r.w2_before, a: r.w2_after },
+            { k: 'W3', b: r.w3_before, a: r.w3_after },
+            { k: 'W4', b: r.w4_before, a: r.w4_after },
+            { k: 'W5', b: r.w5_before, a: r.w5_after },
+          ].filter(w => num(w.b) !== num(w.a));
+          const ts = new Date(r.changed_at);
+          return (
+            <div key={r.id} className="px-5 py-3.5 hover:bg-surface-2/40 transition-colors">
+              <div className="flex items-start justify-between gap-4 mb-1.5">
+                <div className="min-w-0">
+                  <p className="text-sm font-semibold text-on-surface truncate">
+                    {r.project_name ?? '—'}
+                    <span className="text-on-surface-subtle font-normal"> · </span>
+                    <span className="text-on-surface-muted font-medium">{r.employee_name ?? '—'}</span>
+                  </p>
+                  <p className="text-[11px] text-on-surface-subtle mt-0.5">
+                    edited by <span className="font-semibold text-on-surface">{r.actor_name ?? 'Unknown'}</span>
+                    {r.actor_role && <span className="text-on-surface-subtle"> ({r.actor_role})</span>}
+                    {' · '}{ts.toLocaleString('en-IN', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })}
+                    {' · '}<span className="num-mono">{formatAgo(r.changed_at)}</span>
+                  </p>
+                </div>
+                <div className="flex items-center gap-2 text-xs flex-shrink-0">
+                  <span className="text-on-surface-subtle num-mono">{num(r.monthly_before)}h</span>
+                  <ArrowRight size={11} className="text-on-surface-subtle" />
+                  <span className="num-mono font-bold text-on-surface">{num(r.monthly_after)}h</span>
+                  <span className={`num-mono text-[11px] font-semibold ${dMonthlyCls}`}>
+                    {dMonthly > 0 ? '+' : ''}{dMonthly}h
+                  </span>
+                </div>
+              </div>
+              {weeks.length > 0 && (
+                <div className="flex flex-wrap gap-1.5 mt-1">
+                  {weeks.map(w => {
+                    const d = num(w.a) - num(w.b);
+                    const cls = d > 0 ? 'text-success bg-success-container' : 'text-danger bg-danger-container';
+                    return (
+                      <span key={w.k} className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[11px] font-medium ${cls}`}>
+                        <span className="font-bold">{w.k}</span>
+                        <span className="num-mono opacity-75">{num(w.b)}</span>
+                        <ArrowRight size={9} />
+                        <span className="num-mono">{num(w.a)}</span>
+                        <span className="num-mono opacity-75">({d > 0 ? '+' : ''}{d})</span>
+                      </span>
+                    );
+                  })}
+                </div>
+              )}
+              {(r.notes_before ?? '') !== (r.notes_after ?? '') && (
+                <p className="text-[11px] text-on-surface-subtle mt-1.5 italic">
+                  Notes: <span className="line-through opacity-60">{r.notes_before || '∅'}</span>
+                  <ArrowRight size={9} className="inline mx-1" />
+                  <span className="text-on-surface-muted not-italic">{r.notes_after || '∅'}</span>
+                </p>
+              )}
+            </div>
+          );
+        })}
       </div>
     </div>
   );

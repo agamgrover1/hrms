@@ -423,6 +423,16 @@ export const api = {
   copyAssignmentsMonth: (data: { from_month: number; from_year: number; to_month: number; to_year: number; blank_hours?: boolean; created_by?: string }) =>
     request<{ success: boolean; copied: number }>('/project-assignments/copy-month', { method: 'POST', body: JSON.stringify(data) }),
 
+  getAssignmentAudit: (params?: { month?: number; year?: number; project_id?: string; employee_id?: string; limit?: number }) => {
+    const qs = new URLSearchParams();
+    if (params?.month) qs.set('month', String(params.month));
+    if (params?.year)  qs.set('year',  String(params.year));
+    if (params?.project_id)  qs.set('project_id',  params.project_id);
+    if (params?.employee_id) qs.set('employee_id', params.employee_id);
+    if (params?.limit) qs.set('limit', String(params.limit));
+    return request<any[]>(`/project-assignments/audit${qs.toString() ? `?${qs}` : ''}`);
+  },
+
   getHourLogs: (params?: { employee_id?: string; month?: number; year?: number; status?: string; reviewer_id?: string }) => {
     const qs = new URLSearchParams();
     if (params?.employee_id) qs.set('employee_id', params.employee_id);

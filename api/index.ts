@@ -1309,6 +1309,31 @@ async function runStartupMigrations() {
   await sql`CREATE INDEX IF NOT EXISTS idx_alloc_req_status ON allocation_change_requests(status, created_at DESC)`.catch(()=>{});
   await sql`CREATE INDEX IF NOT EXISTS idx_alloc_req_assignment ON allocation_change_requests(assignment_id)`.catch(()=>{});
 
+  // ── Project assignment edit audit ───────────────────────────────────────
+  // Records every PUT against project_assignments — i.e. every weekly-hour
+  // edit, whether from the Plan-tab inline cell editor or the assignment
+  // modal. Stores before/after snapshots so the Activity tab can render
+  // deltas without hitting any other tables. Inserts that don't change
+  // anything (re-save with identical values) are skipped at the application
+  // layer to keep the log signal-only.
+  await sql`
+    CREATE TABLE IF NOT EXISTS project_assignment_audit (
+      id SERIAL PRIMARY KEY,
+      assignment_id TEXT NOT NULL,
+      project_id TEXT, project_name TEXT,
+      employee_id TEXT, employee_name TEXT,
+      month INTEGER, year INTEGER,
+      w1_before NUMERIC, w2_before NUMERIC, w3_before NUMERIC, w4_before NUMERIC, w5_before NUMERIC, monthly_before NUMERIC,
+      w1_after  NUMERIC, w2_after  NUMERIC, w3_after  NUMERIC, w4_after  NUMERIC, w5_after  NUMERIC, monthly_after  NUMERIC,
+      notes_before TEXT, notes_after TEXT,
+      actor_id TEXT, actor_name TEXT, actor_role TEXT,
+      changed_at TIMESTAMPTZ DEFAULT NOW()
+    )`;
+  await sql`CREATE INDEX IF NOT EXISTS idx_pa_audit_period ON project_assignment_audit(year, month, changed_at DESC)`.catch(()=>{});
+  await sql`CREATE INDEX IF NOT EXISTS idx_pa_audit_assignment ON project_assignment_audit(assignment_id, changed_at DESC)`.catch(()=>{});
+  await sql`CREATE INDEX IF NOT EXISTS idx_pa_audit_project ON project_assignment_audit(project_id, changed_at DESC)`.catch(()=>{});
+  await sql`CREATE INDEX IF NOT EXISTS idx_pa_audit_employee ON project_assignment_audit(employee_id, changed_at DESC)`.catch(()=>{});
+
   // ── Performance Pulse: automated 30-day score, runs alongside the manual
   // monthly_performance reviews. snapshots = one row per employee per day,
   // pulse_ratings = weekly manager emoji input, weights = per-dept overrides
@@ -7271,6 +7296,10 @@ app.put('/api/project-assignments/:id', async (req, res) => {
     const w4 = Number(w4_hours) || 0;
     const w5 = Number(w5_hours) || 0;
     const monthly = w1 + w2 + w3 + w4 + w5;
+    // Snapshot the existing row BEFORE the update so the audit row can
+    // diff against it. Cheaper than RETURNING old/new in one statement
+    // (Postgres doesn't expose pre-image without triggers).
+    const before = (await sql`SELECT * FROM project_assignments WHERE id=${req.params.id}`)[0] as any;
     const rows = await sql`
       UPDATE project_assignments SET
         w1_hours=${w1}, w2_hours=${w2}, w3_hours=${w3}, w4_hours=${w4}, w5_hours=${w5},
@@ -7278,6 +7307,41 @@ app.put('/api/project-assignments/:id', async (req, res) => {
       WHERE id=${req.params.id} RETURNING *`;
     if (!rows.length) return res.status(404).json({ error: 'Assignment not found' });
     const r = rows[0];
+    // Audit only if a weekly value or notes actually changed. Skipping
+    // no-op saves (cell focus → tab away with same value) keeps the log
+    // signal-only so reviewers don't scroll through dead rows.
+    if (before) {
+      const changed =
+        Number(before.w1_hours) !== w1 || Number(before.w2_hours) !== w2 ||
+        Number(before.w3_hours) !== w3 || Number(before.w4_hours) !== w4 ||
+        Number(before.w5_hours) !== w5 ||
+        (before.notes ?? null) !== (notes ?? null);
+      if (changed) {
+        try {
+          const uid = req.header('x-user-id') || null;
+          const actor = uid
+            ? (await sql`SELECT id, name, role FROM app_users WHERE id=${uid}`)[0] as any
+            : null;
+          const proj = (await sql`SELECT name FROM projects WHERE id=${r.project_id}`)[0] as any;
+          await sql`
+            INSERT INTO project_assignment_audit (
+              assignment_id, project_id, project_name, employee_id, employee_name,
+              month, year,
+              w1_before, w2_before, w3_before, w4_before, w5_before, monthly_before,
+              w1_after,  w2_after,  w3_after,  w4_after,  w5_after,  monthly_after,
+              notes_before, notes_after,
+              actor_id, actor_name, actor_role
+            ) VALUES (
+              ${r.id}, ${r.project_id}, ${proj?.name ?? null}, ${r.employee_id}, ${r.employee_name ?? null},
+              ${r.month}, ${r.year},
+              ${Number(before.w1_hours)||0}, ${Number(before.w2_hours)||0}, ${Number(before.w3_hours)||0}, ${Number(before.w4_hours)||0}, ${Number(before.w5_hours)||0}, ${Number(before.monthly_hours)||0},
+              ${w1}, ${w2}, ${w3}, ${w4}, ${w5}, ${monthly},
+              ${before.notes ?? null}, ${notes ?? null},
+              ${actor?.id ?? null}, ${actor?.name ?? null}, ${actor?.role ?? null}
+            )`;
+        } catch {/* audit write must never block the actual update */}
+      }
+    }
     try {
       const proj = await sql`SELECT name FROM projects WHERE id=${r.project_id}`;
       const projectName = (proj as any[])[0]?.name || 'a project';
@@ -7286,6 +7350,37 @@ app.put('/api/project-assignments/:id', async (req, res) => {
         `${projectName} for ${r.month}/${r.year}: now ${monthly}h total`).catch(()=>{});
     } catch {}
     res.json(r);
+  } catch (err: any) { res.status(500).json({ error: err.message || 'Server error' }); }
+});
+
+// GET /api/project-assignments/audit — list edit-audit entries with filters.
+// Most recent first. Admin / HR / project_coordinator only — the activity
+// log exposes per-employee allocation changes which is sensitive for a
+// regular employee to browse.
+app.get('/api/project-assignments/audit', async (req, res) => {
+  try {
+    const uid = req.header('x-user-id');
+    if (!uid) return res.status(401).json({ error: 'Sign in required' });
+    const u = (await sql`SELECT id, role FROM app_users WHERE id=${uid}`)[0] as any;
+    if (!u) return res.status(401).json({ error: 'Unknown user' });
+    if (!['admin','hr_manager','project_coordinator'].includes(u.role)) {
+      return res.status(403).json({ error: 'Admin / HR / coordinator only' });
+    }
+    const month = req.query.month ? Number(req.query.month) : null;
+    const year  = req.query.year  ? Number(req.query.year)  : null;
+    const project_id  = (req.query.project_id  as string) || null;
+    const employee_id = (req.query.employee_id as string) || null;
+    const limit = Math.min(Number(req.query.limit) || 200, 500);
+    const rows = await sql`
+      SELECT *
+      FROM project_assignment_audit
+      WHERE (${month}::int  IS NULL OR month=${month})
+        AND (${year}::int   IS NULL OR year=${year})
+        AND (${project_id}::text  IS NULL OR project_id=${project_id})
+        AND (${employee_id}::text IS NULL OR employee_id=${employee_id})
+      ORDER BY changed_at DESC
+      LIMIT ${limit}`;
+    res.json(rows);
   } catch (err: any) { res.status(500).json({ error: err.message || 'Server error' }); }
 });
 
