@@ -279,6 +279,18 @@ export default function MyTeam() {
   const [empDbId, setEmpDbId] = useState('');
   const [teamMembers, setTeamMembers] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
+  // Team scope toggle. 'direct' = only people whose reporting_manager_id
+  // is you; 'branch' = recursive sub-tree (everyone below you in the
+  // org chart). Persisted to localStorage so the choice sticks across
+  // page reloads. Default is 'direct' — that's what the user expects
+  // for a top-of-tree manager whose full branch is most of the org.
+  const [teamScope, setTeamScope] = useState<'direct' | 'branch'>(() => {
+    try { return (localStorage.getItem('myTeamScope') as 'direct' | 'branch') || 'direct'; }
+    catch { return 'direct'; }
+  });
+  useEffect(() => {
+    try { localStorage.setItem('myTeamScope', teamScope); } catch {/* private mode */}
+  }, [teamScope]);
   // Per-member toggle for the Performance Score Trend lines. Clicking a
   // name in the legend (or the quick-action chips) flips that member's
   // line. Set tracks HIDDEN ids — empty set = all visible (default).
@@ -391,17 +403,19 @@ export default function MyTeam() {
       if (!emp) { setLoading(false); return; }
       const eid = emp.id;
       setEmpDbId(eid);
-      // Direct reports only. We previously walked the full sub-tree
-      // (descendants=true) so a 2nd/3rd-level manager could see
-      // everyone beneath them, but for top-level managers like
-      // Manpreet that meant seeing nearly the whole org — a
-      // top-of-tree manager's "team" effectively became "everyone."
-      // Sub-managers can drill into their own reports' profiles to
-      // get the recursive picture; My Team should mirror who YOU
-      // directly manage, not your whole branch.
-      api.getTeamMembers(eid, false).then(members => {
+      // Scope is user-controlled via the toggle near the tab bar.
+      //   'direct' → just people whose reporting_manager_id is you
+      //   'branch' → recursive sub-tree (your direct reports + theirs).
+      // For top-of-tree managers, 'direct' avoids the "I see the whole
+      // office" problem; 'branch' is there for HR-style managers who
+      // legitimately need the full picture.
+      api.getTeamMembers(eid, teamScope === 'branch').then(members => {
         setTeamMembers(members);
         setLoading(false);
+        // Reset per-member maps when team scope changes so stale data
+        // from the prior scope doesn't bleed in (someone in the branch
+        // view who isn't in the direct view would otherwise linger).
+        setTeamAttendance({}); setTeamPerf({}); setTeamAllLeaves([]); setAppraisals({});
         if (!members.length) return;
         api.getLeaveRequests({ reporting_manager_id: eid })
           .then(lv => setPendingLeaves(lv.filter((l: any) => l.manager_status === 'pending')));
@@ -419,7 +433,7 @@ export default function MyTeam() {
         });
       });
     });
-  }, [user?.employee_id_ref, currentYear]);
+  }, [user?.employee_id_ref, currentYear, teamScope]);
 
   // ── Leave handlers ──────────────────────────────────────────────────────────
   const handleApproveLeave = async (id: string, status: 'approved' | 'rejected', reason?: string) => {
@@ -601,21 +615,42 @@ export default function MyTeam() {
 
   return (
     <div className="space-y-5">
-      {/* Sub-tab switcher */}
-      <div className="flex gap-1 bg-surface rounded-xl-2 p-1 border border-outline shadow-elev-1 w-fit">
-        {([
-          { key: 'overview',    label: 'Overview',    icon: Users      },
-          { key: 'leaves',      label: 'Leaves',      icon: Calendar   },
-          { key: 'performance', label: 'Performance', icon: TrendingUp },
-          { key: 'pulse',       label: 'Pulse',       icon: TrendingUp },
-        ] as { key: SubTab; label: string; icon: any }[]).map(({ key, label, icon: Icon }) => (
-          <button key={key} onClick={() => navigate(`/my-team?tab=${key}`)}
-            className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-semibold transition-all ${
-              subTab === key ? 'bg-accent text-on-accent' : 'text-on-surface-muted hover:bg-surface-2'
-            }`}>
-            <Icon size={14} /> {label}
-          </button>
-        ))}
+      {/* Sub-tab switcher + scope toggle (right-aligned) */}
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div className="flex gap-1 bg-surface rounded-xl-2 p-1 border border-outline shadow-elev-1 w-fit">
+          {([
+            { key: 'overview',    label: 'Overview',    icon: Users      },
+            { key: 'leaves',      label: 'Leaves',      icon: Calendar   },
+            { key: 'performance', label: 'Performance', icon: TrendingUp },
+            { key: 'pulse',       label: 'Pulse',       icon: TrendingUp },
+          ] as { key: SubTab; label: string; icon: any }[]).map(({ key, label, icon: Icon }) => (
+            <button key={key} onClick={() => navigate(`/my-team?tab=${key}`)}
+              className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-semibold transition-all ${
+                subTab === key ? 'bg-accent text-on-accent' : 'text-on-surface-muted hover:bg-surface-2'
+              }`}>
+              <Icon size={14} /> {label}
+            </button>
+          ))}
+        </div>
+        {/* Scope toggle: direct reports vs. full reporting branch. Sticky
+            preference via localStorage — reads once on mount, writes on
+            every change. */}
+        <div className="flex items-center gap-2">
+          <span className="text-[11px] uppercase tracking-wider font-bold text-on-surface-subtle">Scope</span>
+          <div className="flex gap-0.5 bg-surface rounded-xl-2 p-1 border border-outline shadow-elev-1">
+            {([
+              { key: 'direct', label: 'Direct reports', hint: 'Only people who report to you' },
+              { key: 'branch', label: 'Full branch',    hint: 'Direct reports + everyone below them' },
+            ] as { key: 'direct' | 'branch'; label: string; hint: string }[]).map(({ key, label, hint }) => (
+              <button key={key} onClick={() => setTeamScope(key)} title={hint}
+                className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-all ${
+                  teamScope === key ? 'bg-accent text-on-accent' : 'text-on-surface-muted hover:bg-surface-2'
+                }`}>
+                {label}
+              </button>
+            ))}
+          </div>
+        </div>
       </div>
 
       {/* ── OVERVIEW / DASHBOARD TAB ─────────────────────────────────────── */}
