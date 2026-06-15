@@ -5,7 +5,7 @@ import { api } from '../../services/api';
 import { useAuth } from '../../context/AuthContext';
 import { MONTHS, money } from './format';
 
-type StatusFilter = 'all' | 'pending' | 'cleared';
+type StatusFilter = 'all' | 'pending' | 'cleared' | 'activity';
 
 const CURRENCIES = [
   { code: 'USD', label: '$ USD', symbol: '$' },
@@ -167,12 +167,12 @@ export default function InvoicesTab({ month, year, onChanged }: { month: number;
       {/* Toolbar */}
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="inline-flex items-center gap-1 bg-surface-2 border border-outline rounded-xl-2 p-1">
-          {(['all', 'pending', 'cleared'] as StatusFilter[]).map(s => (
+          {(['all', 'pending', 'cleared', ...(isAdmin ? ['activity' as StatusFilter] : [])] as StatusFilter[]).map(s => (
             <button key={s} onClick={() => setStatusFilter(s)}
               className={`px-3 py-1.5 rounded-lg text-xs font-semibold capitalize transition-colors ${
                 statusFilter === s ? 'bg-accent text-on-accent' : 'text-on-surface-muted hover:text-on-surface hover:bg-surface-3'
               }`}>
-              {s === 'all' ? 'All active' : s}
+              {s === 'all' ? 'All active' : s === 'activity' ? 'Activity log' : s}
               {s === 'pending' && totals.pendingCount > 0 && (
                 <span className={`ml-1.5 num-mono text-[10px] font-bold px-1.5 py-0.5 rounded-full ${statusFilter === s ? 'bg-on-accent text-accent' : 'bg-warning text-on-accent'}`}>
                   {totals.pendingCount}
@@ -189,8 +189,9 @@ export default function InvoicesTab({ month, year, onChanged }: { month: number;
 
       {/* KPI strip — hidden for project_coordinator since they shouldn't see
           aggregate totals. They only raise invoices; reconciliation totals are
-          admin's view. */}
-      {isAdmin && (
+          admin's view. Also hidden in the Activity view since those numbers
+          describe the current invoice set, not the audit log. */}
+      {isAdmin && statusFilter !== 'activity' && (
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
           <Tile label="Invoiced" value={money(totals.invoiced)} sub="accrual · what we billed" tone="text-on-surface" />
           <Tile label="Received" value={money(totals.received)} sub="cash · what landed in bank" tone="text-success" />
@@ -203,7 +204,14 @@ export default function InvoicesTab({ month, year, onChanged }: { month: number;
 
       {err && <div className="rounded-xl-2 border border-danger/30 bg-danger-container/40 p-3 text-sm text-danger">{err}</div>}
 
-      {/* Table */}
+      {/* Activity view replaces the invoice table when selected. Admin only —
+          gated by the chip strip filter above. */}
+      {statusFilter === 'activity' && isAdmin && (
+        <InvoiceActivityLog month={month} year={year} />
+      )}
+
+      {/* Invoice table */}
+      {statusFilter !== 'activity' && (
       <div className="rounded-xl-2 border border-outline bg-surface overflow-hidden">
         <div className="px-5 py-3 border-b border-outline flex items-center justify-between">
           <h3 className="text-sm font-semibold text-on-surface">Invoices · {MONTHS[month - 1]} {year}</h3>
@@ -310,6 +318,7 @@ export default function InvoicesTab({ month, year, onChanged }: { month: number;
           </div>
         )}
       </div>
+      )}
 
       {/* New invoice modal */}
       {showAdd && (
@@ -669,3 +678,187 @@ function formatDate(d: string | null): string {
     return new Date(d.slice(0, 10) + 'T12:00:00Z').toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' });
   } catch { return d; }
 }
+
+// ── Activity log ──────────────────────────────────────────────────────────
+// Surfaces every create / edit / clear / reopen / delete touching the
+// invoice table for the visible month so admin can answer "who added
+// this on what date" at a glance. Each row leads with the actor + role
+// chip; per-action coloured chip on the right; amount-before/after
+// diff only renders when it actually changed.
+interface InvoiceAuditRow {
+  id: number;
+  invoice_id: number | null;
+  action: 'created' | 'edited' | 'cleared' | 'reopened' | 'deleted';
+  invoice_number: string | null;
+  invoice_date: string | null;
+  project_id: string | null;
+  project_name: string | null;
+  month: number | null;
+  year: number | null;
+  currency: string | null;
+  amount_invoiced_before: number | null;
+  amount_invoiced_after: number | null;
+  amount_received_before: number | null;
+  amount_received_after: number | null;
+  status_before: string | null;
+  status_after: string | null;
+  notes_before: string | null;
+  notes_after: string | null;
+  actor_id: string | null;
+  actor_name: string | null;
+  actor_role: string | null;
+  changed_at: string;
+}
+
+function timeAgo(ts: string): string {
+  const ms = Date.now() - new Date(ts).getTime();
+  if (Number.isNaN(ms)) return '';
+  const mins = Math.floor(ms / 60000);
+  if (mins < 1) return 'just now';
+  if (mins < 60) return `${mins}m ago`;
+  const hrs = Math.floor(mins / 60);
+  if (hrs < 24) return `${hrs}h ago`;
+  const days = Math.floor(hrs / 24);
+  if (days < 30) return `${days}d ago`;
+  return new Date(ts).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' });
+}
+
+const ACTION_TONE: Record<string, string> = {
+  created:  'bg-success-container text-success',
+  edited:   'bg-warning-container text-warning',
+  cleared:  'bg-accent-container text-accent',
+  reopened: 'bg-surface-3 text-on-surface-muted',
+  deleted:  'bg-danger-container text-danger',
+};
+
+function InvoiceActivityLog({ month, year }: { month: number; year: number }) {
+  const [rows, setRows] = useState<InvoiceAuditRow[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [actionFilter, setActionFilter] = useState<string>('all');
+
+  useEffect(() => {
+    setLoading(true);
+    financeApi.getInvoiceAudit({ month, year })
+      .then((r: any) => setRows(Array.isArray(r) ? r : []))
+      .catch(() => setRows([]))
+      .finally(() => setLoading(false));
+  }, [month, year]);
+
+  const filtered = useMemo(() =>
+    actionFilter === 'all' ? rows : rows.filter(r => r.action === actionFilter)
+  , [rows, actionFilter]);
+
+  const counts = useMemo(() => {
+    const c: Record<string, number> = { all: rows.length, created: 0, edited: 0, cleared: 0, reopened: 0, deleted: 0 };
+    for (const r of rows) c[r.action] = (c[r.action] ?? 0) + 1;
+    return c;
+  }, [rows]);
+
+  return (
+    <div className="rounded-xl-2 border border-outline bg-surface overflow-hidden">
+      <div className="px-5 py-3 border-b border-outline flex items-center justify-between flex-wrap gap-2">
+        <div className="flex items-center gap-2">
+          <h3 className="text-sm font-semibold text-on-surface">Activity log · {MONTHS[month - 1]} {year}</h3>
+          <span className="text-xs text-on-surface-muted">{filtered.length} of {rows.length}</span>
+        </div>
+        <div className="inline-flex items-center gap-1">
+          {['all','created','edited','cleared','reopened','deleted'].map(a => (
+            <button key={a} onClick={() => setActionFilter(a)}
+              className={`px-2 py-1 rounded text-[11px] font-semibold capitalize transition-colors ${
+                actionFilter === a
+                  ? 'bg-accent text-on-accent'
+                  : 'text-on-surface-muted hover:text-on-surface hover:bg-surface-2'
+              }`}>
+              {a} {counts[a] > 0 && <span className="num-mono opacity-75">({counts[a]})</span>}
+            </button>
+          ))}
+        </div>
+      </div>
+      {loading ? (
+        <div className="p-12 text-center text-sm text-on-surface-muted">Loading activity…</div>
+      ) : filtered.length === 0 ? (
+        <div className="p-12 text-center">
+          <Clock size={28} className="mx-auto text-on-surface-subtle mb-2" />
+          <p className="text-sm text-on-surface-muted">No {actionFilter === 'all' ? '' : actionFilter} activity for {MONTHS[month - 1]} {year}.</p>
+          <p className="text-xs text-on-surface-subtle mt-1">Audit logging started on deploy — events before then are not shown.</p>
+        </div>
+      ) : (
+        <div className="divide-y divide-outline">
+          {filtered.map(r => {
+            const amtChanged = r.action === 'edited' && Number(r.amount_invoiced_before ?? 0) !== Number(r.amount_invoiced_after ?? 0);
+            const recvChanged = r.action === 'edited' && Number(r.amount_received_before ?? 0) !== Number(r.amount_received_after ?? 0);
+            const notesChanged = (r.notes_before ?? '') !== (r.notes_after ?? '') && r.action === 'edited';
+            const showAmount = (r.action === 'created' || r.action === 'deleted' || r.action === 'cleared' || amtChanged);
+            return (
+              <div key={r.id} className="px-5 py-3 hover:bg-surface-2/40 transition-colors">
+                <div className="flex items-start justify-between gap-4">
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <span className={`inline-flex items-center px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider ${ACTION_TONE[r.action] ?? 'bg-surface-3'}`}>
+                        {r.action}
+                      </span>
+                      <span className="text-sm font-semibold text-on-surface truncate">
+                        {r.project_name ?? '—'}
+                      </span>
+                      {r.invoice_number && (
+                        <span className="text-xs text-on-surface-muted num-mono">{r.invoice_number}</span>
+                      )}
+                    </div>
+                    <p className="text-[11px] text-on-surface-subtle mt-1">
+                      <span className="font-semibold text-on-surface">{r.actor_name ?? 'Unknown'}</span>
+                      {r.actor_role && <span className="text-on-surface-subtle"> ({r.actor_role})</span>}
+                      {' · '}
+                      <span title={new Date(r.changed_at).toLocaleString('en-IN')}>
+                        {new Date(r.changed_at).toLocaleString('en-IN', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })}
+                      </span>
+                      {' · '}<span className="num-mono">{timeAgo(r.changed_at)}</span>
+                      {r.invoice_date && <> · <span className="text-on-surface-subtle">invoice dated {formatDate(r.invoice_date)}</span></>}
+                    </p>
+                    {showAmount && (
+                      <div className="flex items-center gap-2 mt-1.5 text-xs flex-wrap">
+                        {r.action === 'edited' && amtChanged && (
+                          <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded bg-warning-container text-warning">
+                            Invoiced
+                            <span className="num-mono opacity-75 line-through">{fmtCcy(Number(r.amount_invoiced_before ?? 0), r.currency || 'INR')}</span>
+                            <span>→</span>
+                            <span className="num-mono font-semibold">{fmtCcy(Number(r.amount_invoiced_after ?? 0), r.currency || 'INR')}</span>
+                          </span>
+                        )}
+                        {r.action !== 'edited' && (
+                          <span className="text-on-surface-muted">
+                            Amount: <span className="num-mono font-semibold text-on-surface">{fmtCcy(Number(r.amount_invoiced_after ?? r.amount_invoiced_before ?? 0), r.currency || 'INR')}</span>
+                          </span>
+                        )}
+                        {recvChanged && (
+                          <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded bg-success-container text-success">
+                            Received
+                            <span className="num-mono opacity-75 line-through">{r.amount_received_before == null ? '—' : money(Number(r.amount_received_before))}</span>
+                            <span>→</span>
+                            <span className="num-mono font-semibold">{r.amount_received_after == null ? '—' : money(Number(r.amount_received_after))}</span>
+                          </span>
+                        )}
+                        {r.action === 'cleared' && r.amount_received_after != null && (
+                          <span className="text-on-surface-muted">
+                            Received: <span className="num-mono font-semibold text-success">{money(Number(r.amount_received_after))}</span>
+                          </span>
+                        )}
+                      </div>
+                    )}
+                    {notesChanged && (
+                      <p className="text-[11px] text-on-surface-subtle mt-1 italic">
+                        Notes: <span className="line-through opacity-60">{r.notes_before || '∅'}</span>
+                        {' → '}
+                        <span className="text-on-surface-muted not-italic">{r.notes_after || '∅'}</span>
+                      </p>
+                    )}
+                  </div>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+

@@ -856,6 +856,32 @@ async function runStartupMigrations() {
   await sql`CREATE INDEX IF NOT EXISTS idx_fin_invoices_project ON fin_project_invoices(project_id, year, month)`.catch(()=>{});
   await sql`CREATE INDEX IF NOT EXISTS idx_fin_invoices_status ON fin_project_invoices(status)`.catch(()=>{});
 
+  // Audit log for finance invoices — every create / edit / clear / reopen /
+  // delete writes a row here so admin can answer "who added this and when"
+  // (and trace anything that changed afterwards) without leaving Finance.
+  await sql`
+    CREATE TABLE IF NOT EXISTS fin_invoice_audit (
+      id SERIAL PRIMARY KEY,
+      invoice_id INTEGER,
+      action TEXT NOT NULL,
+      invoice_number TEXT,
+      invoice_date DATE,
+      project_id TEXT,
+      project_name TEXT,
+      month INTEGER,
+      year INTEGER,
+      currency TEXT,
+      amount_invoiced_before NUMERIC, amount_invoiced_after NUMERIC,
+      amount_received_before NUMERIC, amount_received_after NUMERIC,
+      status_before TEXT, status_after TEXT,
+      notes_before TEXT, notes_after TEXT,
+      actor_id TEXT, actor_name TEXT, actor_role TEXT,
+      changed_at TIMESTAMPTZ DEFAULT NOW()
+    )`;
+  await sql`CREATE INDEX IF NOT EXISTS idx_fin_inv_audit_when ON fin_invoice_audit(changed_at DESC)`.catch(()=>{});
+  await sql`CREATE INDEX IF NOT EXISTS idx_fin_inv_audit_invoice ON fin_invoice_audit(invoice_id, changed_at DESC)`.catch(()=>{});
+  await sql`CREATE INDEX IF NOT EXISTS idx_fin_inv_audit_actor ON fin_invoice_audit(actor_id, changed_at DESC)`.catch(()=>{});
+
   // Multi-currency support — most invoices are raised in USD but the bank
   // receives INR after FX conversion. We keep both: amount_invoiced is what
   // the coordinator typed (in `currency`), amount_invoiced_inr is the INR
@@ -9564,6 +9590,44 @@ const fmtMoneyCcy = (n: number, ccy: string) => {
   return `${ccy} ${v}`;
 };
 
+// One-stop audit writer for finance invoices. `before` and `after` are
+// the invoice rows (either may be null — null `before` on create, null
+// `after` on delete). Wrapped so a failed audit insert never blocks the
+// actual mutation; the GET endpoint will simply not see the entry.
+async function logInvoiceAudit(
+  action: 'created' | 'edited' | 'cleared' | 'reopened' | 'deleted',
+  before: any | null,
+  after: any | null,
+  actor: { id?: string | null; name?: string | null; role?: string | null } | null,
+  projectName?: string | null,
+) {
+  try {
+    const ref = after ?? before;
+    if (!ref) return;
+    await sql`
+      INSERT INTO fin_invoice_audit (
+        invoice_id, action,
+        invoice_number, invoice_date,
+        project_id, project_name, month, year, currency,
+        amount_invoiced_before, amount_invoiced_after,
+        amount_received_before, amount_received_after,
+        status_before, status_after,
+        notes_before, notes_after,
+        actor_id, actor_name, actor_role
+      ) VALUES (
+        ${ref.id ?? null}, ${action},
+        ${ref.invoice_number ?? null}, ${ref.invoice_date ?? null},
+        ${ref.project_id ?? null}, ${projectName ?? ref.project_name ?? null},
+        ${ref.month ?? null}, ${ref.year ?? null}, ${ref.currency ?? null},
+        ${before?.amount_invoiced ?? null}, ${after?.amount_invoiced ?? null},
+        ${before?.amount_received ?? null}, ${after?.amount_received ?? null},
+        ${before?.status ?? null}, ${after?.status ?? null},
+        ${before?.notes ?? null}, ${after?.notes ?? null},
+        ${actor?.id ?? null}, ${actor?.name ?? null}, ${actor?.role ?? null}
+      )`;
+  } catch {/* audit write must never fail the parent request */}
+}
+
 app.get('/api/finance/invoices', async (req, res) => {
   await runStartupMigrations();
   const gate = await requireAdminOrCoord(req, res);
@@ -9640,6 +9704,7 @@ app.post('/api/finance/invoices', async (req, res) => {
               ${gate.user?.id ?? null}, ${gate.user?.name ?? null}, ${gate.user?.role ?? null})
       RETURNING *`;
     const inv = rows[0];
+    logInvoiceAudit('created', null, inv, gate.user, proj[0].name);
     notifyAdminsAndHR(
       'invoice_raised',
       'Invoice Raised',
@@ -9713,11 +9778,13 @@ app.put('/api/finance/invoices/:id', async (req, res) => {
         updated_at=NOW()
       WHERE id=${id}
       RETURNING *`;
+    const updated = rows[0];
+    logInvoiceAudit('edited', inv, updated, gate.user);
     if (wasCleared && inv.created_by) {
       notifyUser(inv.created_by, 'invoice_adjusted', 'Invoice Adjusted',
         `Admin updated cleared invoice${inv.invoice_number ? ` ${inv.invoice_number}` : ''}.`).catch(()=>{});
     }
-    res.json(rows[0]);
+    res.json(updated);
   } catch (err: any) { res.status(500).json({ error: err.message || 'Server error' }); }
 });
 
@@ -9748,13 +9815,15 @@ app.patch('/api/finance/invoices/:id/clear', async (req, res) => {
         updated_at=NOW()
       WHERE id=${id}
       RETURNING *`;
+    const updated = rows[0];
+    logInvoiceAudit('cleared', inv, updated, { id: adminId, name: adminName, role: 'admin' }, inv.project_name);
     if (inv.created_by) {
       const variance = received - Number(inv.amount_invoiced);
       const varianceMsg = variance === 0 ? 'paid in full' : variance < 0 ? `short by ${fmtMoney(Math.abs(variance))}` : `extra ${fmtMoney(variance)}`;
       notifyUser(inv.created_by, 'invoice_cleared', 'Invoice Cleared ✅',
         `${inv.project_name} · ${fmtMoney(received)} received (${varianceMsg}).`).catch(()=>{});
     }
-    res.json(rows[0]);
+    res.json(updated);
   } catch (err: any) { res.status(500).json({ error: err.message || 'Server error' }); }
 });
 
@@ -9765,17 +9834,22 @@ app.patch('/api/finance/invoices/:id/reopen', async (req, res) => {
     const id = Number(req.params.id);
     const existing = (await sql`SELECT * FROM fin_project_invoices WHERE id=${id}`) as any[];
     if (!existing.length) return res.status(404).json({ error: 'Invoice not found' });
+    const inv = existing[0];
     const rows = await sql`
       UPDATE fin_project_invoices SET
         status='pending', amount_received=NULL, cleared_date=NULL,
         cleared_by=NULL, cleared_by_name=NULL, updated_at=NOW()
       WHERE id=${id}
       RETURNING *`;
-    if (existing[0].created_by) {
-      notifyUser(existing[0].created_by, 'invoice_reopened', 'Invoice Reopened',
-        `Admin reopened invoice${existing[0].invoice_number ? ` ${existing[0].invoice_number}` : ''} — marked pending again.`).catch(()=>{});
+    const updated = rows[0];
+    const uid = (req.headers['x-user-id'] as string) || '';
+    const actor = uid ? ((await sql`SELECT id, name, role FROM app_users WHERE id=${uid}`)[0] as any) : null;
+    logInvoiceAudit('reopened', inv, updated, actor);
+    if (inv.created_by) {
+      notifyUser(inv.created_by, 'invoice_reopened', 'Invoice Reopened',
+        `Admin reopened invoice${inv.invoice_number ? ` ${inv.invoice_number}` : ''} — marked pending again.`).catch(()=>{});
     }
-    res.json(rows[0]);
+    res.json(updated);
   } catch (err: any) { res.status(500).json({ error: err.message || 'Server error' }); }
 });
 
@@ -9794,7 +9868,34 @@ app.delete('/api/finance/invoices/:id', async (req, res) => {
       if (inv.created_by !== gate.user?.id) return res.status(403).json({ error: 'You can only delete invoices you created' });
     }
     await sql`DELETE FROM fin_project_invoices WHERE id=${id}`;
+    logInvoiceAudit('deleted', inv, null, gate.user);
     res.json({ success: true });
+  } catch (err: any) { res.status(500).json({ error: err.message || 'Server error' }); }
+});
+
+// GET /api/finance/invoices/audit — list audit entries. Admin only since
+// the log exposes who-did-what on revenue rows.
+app.get('/api/finance/invoices/audit', async (req, res) => {
+  await runStartupMigrations();
+  if (!(await requireAdmin(req, res))) return;
+  try {
+    const month = req.query.month ? Number(req.query.month) : null;
+    const year  = req.query.year  ? Number(req.query.year)  : null;
+    const project_id = (req.query.project_id as string) || null;
+    const actor_id  = (req.query.actor_id  as string) || null;
+    const action   = (req.query.action  as string) || null;
+    const limit = Math.min(Number(req.query.limit) || 200, 500);
+    const rows = await sql`
+      SELECT *
+      FROM fin_invoice_audit
+      WHERE (${month}::int IS NULL OR month=${month})
+        AND (${year}::int  IS NULL OR year=${year})
+        AND (${project_id}::text IS NULL OR project_id=${project_id})
+        AND (${actor_id}::text   IS NULL OR actor_id=${actor_id})
+        AND (${action}::text     IS NULL OR action=${action})
+      ORDER BY changed_at DESC
+      LIMIT ${limit}`;
+    res.json(rows);
   } catch (err: any) { res.status(500).json({ error: err.message || 'Server error' }); }
 });
 

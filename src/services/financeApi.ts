@@ -289,4 +289,14 @@ export const financeApi = {
   reopenInvoice: (id: number) =>
     request<FinInvoice>(`/invoices/${id}/reopen`, { method: 'PATCH', body: JSON.stringify({}) }),
   deleteInvoice: (id: number) => request<any>(`/invoices/${id}`, { method: 'DELETE' }),
+  getInvoiceAudit: (params?: { month?: number; year?: number; project_id?: string; actor_id?: string; action?: string; limit?: number }) => {
+    const qs = new URLSearchParams();
+    if (params?.month) qs.set('month', String(params.month));
+    if (params?.year)  qs.set('year',  String(params.year));
+    if (params?.project_id) qs.set('project_id', params.project_id);
+    if (params?.actor_id)   qs.set('actor_id',   params.actor_id);
+    if (params?.action)     qs.set('action',     params.action);
+    if (params?.limit) qs.set('limit', String(params.limit));
+    return request<any[]>(`/invoices/audit${qs.toString() ? `?${qs}` : ''}`);
+  },
 };
