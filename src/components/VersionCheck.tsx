@@ -26,16 +26,28 @@ export default function VersionCheck() {
   useEffect(() => {
     let cancelled = false;
     const baked = typeof __APP_VERSION__ !== 'undefined' ? __APP_VERSION__ : null;
-    if (!baked || baked === 'dev' || baked.startsWith('dev-')) return; // skip in dev
+    // Skip only TRUE local-dev runs where the build had no SHA / deploy
+    // ID to bake in. Anything else (real SHA, Vercel deployment ID) is
+    // a valid comparand. The previous "dev" / "dev-" skip was too eager
+    // — when /api/version returned 'dev' because env vars weren't
+    // exposed, the banner silently no-op'd instead of firing on the
+    // legitimate mismatch.
+    if (!baked || baked.startsWith('local-')) return;
 
     const check = async () => {
       try {
         const r = await fetch('/api/version', { cache: 'no-store' });
         if (!r.ok) return;
-        const j = await r.json() as { version?: string };
+        const j = await r.json() as { version?: string | null };
         if (cancelled) return;
         const live = j?.version;
-        if (!live || live === 'dev') return;
+        if (!live) {
+          // Surface this in the console so it's diagnosable without
+          // having to add logs. If you see this in production, the
+          // serverless function isn't getting the env vars it needs.
+          console.warn('[VersionCheck] /api/version returned no version — env vars likely unset');
+          return;
+        }
         if (live !== baked && live !== dismissedFor) setStale(true);
       } catch {/* network blip — try again next tick */}
     };
