@@ -746,6 +746,16 @@ export const api = {
     request<any>(`/announcements/${id}`, { method: 'PATCH', body: JSON.stringify(data) }),
   deleteAnnouncement: (id: string) =>
     request<any>(`/announcements/${id}`, { method: 'DELETE' }),
+  getAnnouncementComments: (id: string) =>
+    request<Array<{
+      id: string; announcement_id: string; body: string;
+      posted_by_id: string | null; posted_by_name: string | null;
+      posted_by_role: string | null; created_at: string;
+    }>>(`/announcements/${id}/comments`),
+  addAnnouncementComment: (id: string, body: string) =>
+    request<any>(`/announcements/${id}/comments`, { method: 'POST', body: JSON.stringify({ body }) }),
+  deleteAnnouncementComment: (id: string, commentId: string) =>
+    request<any>(`/announcements/${id}/comments/${commentId}`, { method: 'DELETE' }),
 
   // ── Upcoming events (holidays + birthdays + anniversaries) ───────────
   getUpcomingEvents: (days = 30) =>

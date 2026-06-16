@@ -144,6 +144,11 @@ export function getNotifRoute(type: string, role: string): string {
       // Both admin and coordinator land on the Invoices tab of /finance.
       return '/finance?tab=invoices';
 
+    case 'announcement_comment':
+      // Both admin/HR and employees land on their own dashboard which
+      // hosts the Company Announcements widget.
+      return isHR ? '/' : '/my';
+
     // ── Performance Pulse ──────────────────────────────────────────────────
     case 'pulse_weekly_digest':
       // Self digest — opens own breakdown drawer via Hub
@@ -223,6 +228,8 @@ export const TYPE_CONFIG: Record<string, { icon: any; color: string; bg: string 
   // Feature announcements
   feature_draft:           { icon: Megaphone,      color: '#b45309', bg: '#fffbeb' },
   feature_published:       { icon: Sparkles,       color: '#7c3aed', bg: '#f5f3ff' },
+  // Announcements
+  announcement_comment:    { icon: Megaphone,      color: '#7c3aed', bg: '#f5f3ff' },
   // Invoices
   invoice_raised:          { icon: FileText,       color: '#2563eb', bg: '#eff6ff' },
   invoice_cleared:         { icon: CheckCircle,    color: '#15803d', bg: '#f0fdf4' },

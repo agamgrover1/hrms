@@ -2,7 +2,7 @@ import { useEffect, useState, type ReactNode } from 'react';
 import {
   AreaChart, Area, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, PieChart, Pie, Cell
 } from 'recharts';
-import { Users, Calendar, DollarSign, TrendingUp, AlertCircle, CheckCircle2, UserCheck, Clock as ClockIcon, Wrench, XCircle } from 'lucide-react';
+import { Users, Calendar, DollarSign, TrendingUp, AlertCircle, CheckCircle2, UserCheck, Clock as ClockIcon, Wrench, XCircle, MessageCircle } from 'lucide-react';
 import { leaveTypeLabel } from '../utils/leaveLabel';
 import { toast } from '../components/Toaster';
 import { useLiveRefresh } from '../hooks/useLiveRefresh';
@@ -602,7 +602,7 @@ export default function Dashboard() {
             <h3 className="font-display text-xl font-bold text-on-surface tracking-tight mb-1 inline-flex items-center gap-2">
               📅 Coming up
             </h3>
-            <p className="text-xs text-on-surface-muted mb-4">Next 30 days — holidays, birthdays, anniversaries</p>
+            <p className="text-xs text-on-surface-muted mb-4">Recent days + next 30 — holidays, birthdays, anniversaries</p>
             {upcomingEvents.length === 0 ? (
               <p className="text-sm text-on-surface-subtle text-center py-8">Nothing on the horizon this month.</p>
             ) : (
@@ -612,7 +612,12 @@ export default function Dashboard() {
                   today.setHours(0, 0, 0, 0);
                   const eventDate = new Date(e.event_date + 'T12:00:00');
                   const daysAway = Math.round((eventDate.getTime() - today.getTime()) / 86400_000);
-                  const dayLabel = daysAway === 0 ? 'Today' : daysAway === 1 ? 'Tomorrow' : `in ${daysAway}d`;
+                  const dayLabel =
+                    daysAway === 0 ? 'Today' :
+                    daysAway === 1 ? 'Tomorrow' :
+                    daysAway === -1 ? 'Yesterday' :
+                    daysAway < 0 ? `${Math.abs(daysAway)}d ago` :
+                    `in ${daysAway}d`;
                   const dateLabel = eventDate.toLocaleDateString('en-IN', { day: 'numeric', month: 'short' });
                   const cfg = e.kind === 'holiday'
                     ? { emoji: '🎉', tone: 'bg-warning-container text-warning border-warning/30' }
@@ -664,6 +669,8 @@ function AnnouncementCard({ a, canDelete, onChanged }: {
   canDelete: boolean;
   onChanged: () => void;
 }) {
+  const { user } = useAuth();
+  const isAdminOrHR = user?.role === 'admin' || user?.role === 'hr_manager';
   const isAuto = a.kind === 'birthday' || a.kind === 'anniversary';
   const tone = isAuto
     ? a.kind === 'birthday'
@@ -681,6 +688,52 @@ function AnnouncementCard({ a, canDelete, onChanged }: {
       await api.deleteAnnouncement(a.id);
       toast.success('Announcement deleted', a.title);
       onChanged();
+    } catch (e: any) { toast.error('Failed to delete', e?.message); }
+  };
+  // Comment thread state. Lazy-loaded the first time the user clicks
+  // through to expand the thread — keeps the dashboard widget cheap.
+  const [comments, setComments] = useState<any[] | null>(null);
+  const [expanded, setExpanded] = useState(false);
+  const [draft, setDraft] = useState('');
+  const [posting, setPosting] = useState(false);
+  const [commentCount, setCommentCount] = useState<number | null>(null);
+  // Lightweight count fetch on mount so the "💬 N" pill renders without
+  // having to expand the thread first. One round-trip per card; the
+  // payload is short.
+  useEffect(() => {
+    let dropped = false;
+    api.getAnnouncementComments(a.id)
+      .then(c => { if (!dropped) setCommentCount(c.length); })
+      .catch(() => {/* leave null */});
+    return () => { dropped = true; };
+  }, [a.id]);
+  const loadComments = async () => {
+    try {
+      const c = await api.getAnnouncementComments(a.id);
+      setComments(c);
+      setCommentCount(c.length);
+    } catch { setComments([]); }
+  };
+  const toggle = async () => {
+    const next = !expanded;
+    setExpanded(next);
+    if (next && comments === null) await loadComments();
+  };
+  const postComment = async () => {
+    if (!draft.trim()) return;
+    setPosting(true);
+    try {
+      await api.addAnnouncementComment(a.id, draft.trim());
+      setDraft('');
+      await loadComments();
+    } catch (e: any) { toast.error('Failed to comment', e?.message); }
+    finally { setPosting(false); }
+  };
+  const removeComment = async (commentId: string) => {
+    if (!confirm('Delete this comment?')) return;
+    try {
+      await api.deleteAnnouncementComment(a.id, commentId);
+      await loadComments();
     } catch (e: any) { toast.error('Failed to delete', e?.message); }
   };
   return (
@@ -721,6 +774,67 @@ function AnnouncementCard({ a, canDelete, onChanged }: {
           )}
         </div>
       )}
+
+      {/* Comment thread — collapsed by default, lazy-loads on first open. */}
+      <div className="mt-2 pt-2 border-t border-outline/60">
+        <button onClick={toggle}
+          className="inline-flex items-center gap-1.5 text-[11px] font-semibold text-on-surface-muted hover:text-accent transition-colors">
+          <MessageCircle size={12} />
+          {commentCount === 0 || commentCount === null
+            ? (expanded ? 'Hide comments' : 'Reply')
+            : (expanded ? `Hide ${commentCount} comment${commentCount === 1 ? '' : 's'}` : `${commentCount} comment${commentCount === 1 ? '' : 's'}`)}
+        </button>
+        {expanded && (
+          <div className="mt-2 space-y-2">
+            {(comments ?? []).map(c => {
+              const canRemove = isAdminOrHR || c.posted_by_id === user?.id;
+              const cRole = c.posted_by_role === 'admin' ? 'Admin'
+                : c.posted_by_role === 'hr_manager' ? 'HR'
+                : c.posted_by_role === 'project_coordinator' ? 'Coord'
+                : c.posted_by_role === 'employee' ? 'Employee' : null;
+              return (
+                <div key={c.id} className="rounded-lg bg-surface px-3 py-2 border border-outline group/c">
+                  <div className="flex items-baseline justify-between gap-2 mb-0.5">
+                    <div className="flex items-center gap-1.5 min-w-0">
+                      <span className="text-[11px] font-bold text-on-surface truncate">{c.posted_by_name ?? 'Someone'}</span>
+                      {cRole && (
+                        <span className="text-[9px] font-bold uppercase tracking-wider px-1 py-0.5 rounded bg-surface-2 text-on-surface-muted border border-outline">
+                          {cRole}
+                        </span>
+                      )}
+                      <span className="text-[10px] text-on-surface-subtle whitespace-nowrap">
+                        · {new Date(c.created_at).toLocaleString('en-IN', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })}
+                      </span>
+                    </div>
+                    {canRemove && (
+                      <button onClick={() => removeComment(c.id)}
+                        className="opacity-0 group-hover/c:opacity-100 text-[10px] font-semibold text-danger hover:underline transition-opacity">
+                        Delete
+                      </button>
+                    )}
+                  </div>
+                  <p className="text-xs text-on-surface whitespace-pre-line leading-snug">{c.body}</p>
+                </div>
+              );
+            })}
+            {comments && comments.length === 0 && (
+              <p className="text-[11px] text-on-surface-subtle italic">No comments yet. Be the first to reply.</p>
+            )}
+            <div className="flex items-start gap-2">
+              <textarea value={draft} onChange={e => setDraft(e.target.value)} rows={1}
+                placeholder="Write a comment…"
+                onKeyDown={e => {
+                  if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); postComment(); }
+                }}
+                className="flex-1 text-xs border border-outline rounded-lg px-2.5 py-1.5 bg-surface resize-none focus:outline-none focus:ring-2 focus:ring-accent/30" />
+              <button onClick={postComment} disabled={posting || !draft.trim()}
+                className="px-3 py-1.5 text-[11px] font-semibold bg-accent text-on-accent rounded-lg disabled:opacity-40 whitespace-nowrap">
+                {posting ? 'Posting…' : 'Post'}
+              </button>
+            </div>
+          </div>
+        )}
+      </div>
     </article>
   );
 }
@@ -1091,7 +1205,7 @@ function EmployeeDashboardView({ announcements, upcomingEvents }: {
             <h3 className="font-display text-xl font-bold text-on-surface tracking-tight inline-flex items-center gap-2 mb-1">
               📅 Coming up
             </h3>
-            <p className="text-xs text-on-surface-muted mb-4">Next 30 days — holidays, birthdays, anniversaries</p>
+            <p className="text-xs text-on-surface-muted mb-4">Recent days + next 30 — holidays, birthdays, anniversaries</p>
             {upcomingEvents.length === 0 ? (
               <p className="text-sm text-on-surface-subtle text-center py-8">Nothing on the horizon this month.</p>
             ) : (
@@ -1101,7 +1215,12 @@ function EmployeeDashboardView({ announcements, upcomingEvents }: {
                   today.setHours(0, 0, 0, 0);
                   const eventDate = new Date(e.event_date + 'T12:00:00');
                   const daysAway = Math.round((eventDate.getTime() - today.getTime()) / 86400_000);
-                  const dayLabel = daysAway === 0 ? 'Today' : daysAway === 1 ? 'Tomorrow' : `in ${daysAway}d`;
+                  const dayLabel =
+                    daysAway === 0 ? 'Today' :
+                    daysAway === 1 ? 'Tomorrow' :
+                    daysAway === -1 ? 'Yesterday' :
+                    daysAway < 0 ? `${Math.abs(daysAway)}d ago` :
+                    `in ${daysAway}d`;
                   const dateLabel = eventDate.toLocaleDateString('en-IN', { day: 'numeric', month: 'short' });
                   const cfg = e.kind === 'holiday'
                     ? { emoji: '🎉', tone: 'bg-warning-container text-warning border-warning/30' }

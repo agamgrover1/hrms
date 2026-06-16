@@ -1258,6 +1258,21 @@ async function runStartupMigrations() {
   await sql`ALTER TABLE company_announcements ADD COLUMN IF NOT EXISTS kind TEXT DEFAULT 'user'`.catch(()=>{});
   await sql`CREATE INDEX IF NOT EXISTS idx_company_announcements_active ON company_announcements(pinned DESC, created_at DESC)`.catch(()=>{});
 
+  // Comments on company announcements. Anyone signed in can comment; admin /
+  // HR (and the comment author) can delete. Stored as a flat list — no
+  // threading — to keep the dashboard widget readable.
+  await sql`
+    CREATE TABLE IF NOT EXISTS announcement_comments (
+      id TEXT PRIMARY KEY,
+      announcement_id TEXT NOT NULL REFERENCES company_announcements(id) ON DELETE CASCADE,
+      body TEXT NOT NULL,
+      posted_by_id TEXT,
+      posted_by_name TEXT,
+      posted_by_role TEXT,
+      created_at TIMESTAMPTZ DEFAULT NOW()
+    )`;
+  await sql`CREATE INDEX IF NOT EXISTS idx_announcement_comments_post ON announcement_comments(announcement_id, created_at)`.catch(()=>{});
+
   await sql`
     CREATE TABLE IF NOT EXISTS feature_announcements (
       id TEXT PRIMARY KEY,
@@ -4177,6 +4192,73 @@ app.delete('/api/announcements/:id', async (req, res) => {
   } catch (err: any) { res.status(500).json({ error: err.message ?? 'Server error' }); }
 });
 
+// ── Announcement comments ────────────────────────────────────────────────
+// Flat thread under each announcement so the team can react / reply
+// inline. Anyone signed in can post; admin / HR (or the comment author)
+// can delete. No edit endpoint — keep the audit trail clean; if you
+// want to change a comment, delete + repost.
+
+// GET /api/announcements/:id/comments — chronological list.
+app.get('/api/announcements/:id/comments', async (req, res) => {
+  try {
+    await runStartupMigrations();
+    const uid = req.header('x-user-id');
+    if (!uid) return res.status(401).json({ error: 'Sign in required' });
+    const rows = await sql`
+      SELECT * FROM announcement_comments
+      WHERE announcement_id = ${req.params.id}
+      ORDER BY created_at ASC`;
+    res.json(rows);
+  } catch (err: any) { res.status(500).json({ error: err.message ?? 'Server error' }); }
+});
+
+// POST /api/announcements/:id/comments — add one. Body { body }.
+app.post('/api/announcements/:id/comments', async (req, res) => {
+  try {
+    await runStartupMigrations();
+    const uid = req.header('x-user-id');
+    if (!uid) return res.status(401).json({ error: 'Sign in required' });
+    const u = (await sql`SELECT id, name, role FROM app_users WHERE id=${uid}`)[0] as any;
+    if (!u) return res.status(401).json({ error: 'Unknown user' });
+    const ann = (await sql`SELECT id, title, posted_by_id FROM company_announcements WHERE id=${req.params.id}`)[0] as any;
+    if (!ann) return res.status(404).json({ error: 'Announcement not found' });
+    const { body } = req.body ?? {};
+    if (!body?.trim()) return res.status(400).json({ error: 'Comment body required' });
+    const id = `cmt_${Date.now()}`;
+    const row = (await sql`
+      INSERT INTO announcement_comments (id, announcement_id, body, posted_by_id, posted_by_name, posted_by_role)
+      VALUES (${id}, ${req.params.id}, ${body.trim()}, ${u.id}, ${u.name}, ${u.role})
+      RETURNING *`)[0];
+    // Ping the original poster (if a human posted it and isn't the
+    // commenter themselves). Auto-posts have posted_by_id=NULL so this
+    // skips automatically for birthday/anniversary cards.
+    if (ann.posted_by_id && ann.posted_by_id !== u.id) {
+      sql`INSERT INTO notifications (user_id, type, title, body)
+          VALUES (${ann.posted_by_id}, 'announcement_comment',
+                  ${`💬 New comment on "${(ann.title ?? '').slice(0, 60)}"`},
+                  ${`${u.name}: ${body.trim().slice(0, 140)}`})`.catch(()=>{});
+    }
+    res.status(201).json(row);
+  } catch (err: any) { res.status(500).json({ error: err.message ?? 'Server error' }); }
+});
+
+// DELETE /api/announcements/:id/comments/:commentId
+app.delete('/api/announcements/:id/comments/:commentId', async (req, res) => {
+  try {
+    const uid = req.header('x-user-id');
+    if (!uid) return res.status(401).json({ error: 'Sign in required' });
+    const u = (await sql`SELECT id, role FROM app_users WHERE id=${uid}`)[0] as any;
+    if (!u) return res.status(401).json({ error: 'Unknown user' });
+    const c = (await sql`SELECT posted_by_id FROM announcement_comments WHERE id=${req.params.commentId}`)[0] as any;
+    if (!c) return res.status(404).json({ error: 'Comment not found' });
+    const isAdminOrHR = u.role === 'admin' || u.role === 'hr_manager';
+    const isOwn = c.posted_by_id === uid;
+    if (!isAdminOrHR && !isOwn) return res.status(403).json({ error: 'You can only delete your own comments.' });
+    await sql`DELETE FROM announcement_comments WHERE id=${req.params.commentId}`;
+    res.json({ ok: true });
+  } catch (err: any) { res.status(500).json({ error: err.message ?? 'Server error' }); }
+});
+
 // GET /api/upcoming-events — single endpoint that returns the next ~30 days
 // of holidays + employee birthdays + work anniversaries combined into one
 // chronological list. Saves the client three round-trips and lets the date
@@ -4187,21 +4269,28 @@ app.get('/api/upcoming-events', async (req, res) => {
     const uid = req.header('x-user-id');
     if (!uid) return res.status(401).json({ error: 'Sign in required' });
     const horizonDays = Math.min(60, Math.max(7, Number(req.query.days) || 30));
-    // Holidays — straight date filter.
+    // Lookback window for "just happened" events so today's birthday
+    // doesn't vanish from the widget the moment the day rolls over.
+    // The user kept missing Sahil's birthday post-deploy because at
+    // 00:00 UTC the next-occurrence math jumped to 2027. Three days
+    // is enough catch-up without cluttering the widget with stale rows.
+    const lookbackDays = 3;
+    // Holidays — straight date filter, now including the small lookback.
     const holidayRows = await sql`
       SELECT id, name, date::text AS event_date, 'holiday' AS kind
       FROM holidays
-      WHERE date::date BETWEEN CURRENT_DATE AND CURRENT_DATE + ${horizonDays}::int
+      WHERE date::date BETWEEN CURRENT_DATE - ${lookbackDays}::int AND CURRENT_DATE + ${horizonDays}::int
       ORDER BY date`;
-    // Birthdays + anniversaries are month/day matches — the year stored is
-    // the original birth/join year, but the "event" occurs every year.
-    // Compute the next occurrence within the horizon using a CASE: if
-    // (this-year-anniversary) is still ahead, use it, else next year.
+    // Birthdays + anniversaries: the next occurrence is "this-year date"
+    // if that date is still within the lookback OR ahead, otherwise next
+    // year. The lookback addition is the key fix — previously the CASE
+    // used `>= CURRENT_DATE`, which immediately flipped to next year on
+    // the day after the birthday.
     const birthdayRows = await sql`
       SELECT e.id, e.name, e.designation, e.department, e.avatar,
         e.date_of_birth::text AS source_date,
         TO_CHAR(
-          CASE WHEN TO_DATE(EXTRACT(YEAR FROM CURRENT_DATE) || TO_CHAR(e.date_of_birth, '-MM-DD'), 'YYYY-MM-DD') >= CURRENT_DATE
+          CASE WHEN TO_DATE(EXTRACT(YEAR FROM CURRENT_DATE) || TO_CHAR(e.date_of_birth, '-MM-DD'), 'YYYY-MM-DD') >= CURRENT_DATE - ${lookbackDays}::int
                THEN TO_DATE(EXTRACT(YEAR FROM CURRENT_DATE) || TO_CHAR(e.date_of_birth, '-MM-DD'), 'YYYY-MM-DD')
                ELSE TO_DATE((EXTRACT(YEAR FROM CURRENT_DATE) + 1) || TO_CHAR(e.date_of_birth, '-MM-DD'), 'YYYY-MM-DD')
           END, 'YYYY-MM-DD'
@@ -4213,7 +4302,7 @@ app.get('/api/upcoming-events', async (req, res) => {
       SELECT e.id, e.name, e.designation, e.department, e.avatar,
         e.join_date::text AS source_date,
         TO_CHAR(
-          CASE WHEN TO_DATE(EXTRACT(YEAR FROM CURRENT_DATE) || TO_CHAR(e.join_date, '-MM-DD'), 'YYYY-MM-DD') >= CURRENT_DATE
+          CASE WHEN TO_DATE(EXTRACT(YEAR FROM CURRENT_DATE) || TO_CHAR(e.join_date, '-MM-DD'), 'YYYY-MM-DD') >= CURRENT_DATE - ${lookbackDays}::int
                THEN TO_DATE(EXTRACT(YEAR FROM CURRENT_DATE) || TO_CHAR(e.join_date, '-MM-DD'), 'YYYY-MM-DD')
                ELSE TO_DATE((EXTRACT(YEAR FROM CURRENT_DATE) + 1) || TO_CHAR(e.join_date, '-MM-DD'), 'YYYY-MM-DD')
           END, 'YYYY-MM-DD'
@@ -4224,7 +4313,7 @@ app.get('/api/upcoming-events', async (req, res) => {
         AND EXTRACT(YEAR FROM CURRENT_DATE) > EXTRACT(YEAR FROM e.join_date)
       ORDER BY event_date`;
     const horizonStr = new Date(Date.now() + horizonDays * 86400_000).toISOString().slice(0, 10);
-    const todayStr = new Date().toISOString().slice(0, 10);
+    const lookbackStr = new Date(Date.now() - lookbackDays * 86400_000).toISOString().slice(0, 10);
 
     const events = [
       ...(holidayRows as any[]).map(r => ({
@@ -4233,7 +4322,7 @@ app.get('/api/upcoming-events', async (req, res) => {
         label: r.name,
       })),
       ...(birthdayRows as any[])
-        .filter(r => r.event_date >= todayStr && r.event_date <= horizonStr)
+        .filter(r => r.event_date >= lookbackStr && r.event_date <= horizonStr)
         .map(r => ({
           kind: 'birthday' as const,
           event_date: r.event_date,
@@ -4241,7 +4330,7 @@ app.get('/api/upcoming-events', async (req, res) => {
           employee: { id: r.id, name: r.name, designation: r.designation, department: r.department, avatar: r.avatar },
         })),
       ...(anniversaryRows as any[])
-        .filter(r => r.event_date >= todayStr && r.event_date <= horizonStr)
+        .filter(r => r.event_date >= lookbackStr && r.event_date <= horizonStr)
         .map(r => ({
           kind: 'anniversary' as const,
           event_date: r.event_date,
