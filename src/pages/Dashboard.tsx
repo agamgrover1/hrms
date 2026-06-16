@@ -608,10 +608,17 @@ export default function Dashboard() {
             ) : (
               <div className="space-y-2 max-h-[320px] overflow-y-auto pr-1 -mr-1">
                 {upcomingEvents.map((e: any, i: number) => {
-                  const today = new Date();
-                  today.setHours(0, 0, 0, 0);
-                  const eventDate = new Date(e.event_date + 'T12:00:00');
-                  const daysAway = Math.round((eventDate.getTime() - today.getTime()) / 86400_000);
+                  // Normalize both dates to LOCAL noon so the delta is
+                  // always a whole-day multiple. Previously today was
+                  // anchored at midnight and the event at noon, giving a
+                  // -0.5 day diff for yesterday's events; Math.round(-0.5)
+                  // is 0 in JS (rounds toward +Inf), which mislabelled
+                  // yesterday's birthday as "Today".
+                  const now = new Date();
+                  const todayNoon = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 12, 0, 0);
+                  const [ey, em, ed] = String(e.event_date).split('-').map(Number);
+                  const eventDate = new Date(ey, em - 1, ed, 12, 0, 0);
+                  const daysAway = Math.round((eventDate.getTime() - todayNoon.getTime()) / 86400_000);
                   const dayLabel =
                     daysAway === 0 ? 'Today' :
                     daysAway === 1 ? 'Tomorrow' :
@@ -1211,10 +1218,17 @@ function EmployeeDashboardView({ announcements, upcomingEvents }: {
             ) : (
               <div className="space-y-2 max-h-[320px] overflow-y-auto pr-1 -mr-1">
                 {upcomingEvents.map((e: any, i: number) => {
-                  const today = new Date();
-                  today.setHours(0, 0, 0, 0);
-                  const eventDate = new Date(e.event_date + 'T12:00:00');
-                  const daysAway = Math.round((eventDate.getTime() - today.getTime()) / 86400_000);
+                  // Normalize both dates to LOCAL noon so the delta is
+                  // always a whole-day multiple. Previously today was
+                  // anchored at midnight and the event at noon, giving a
+                  // -0.5 day diff for yesterday's events; Math.round(-0.5)
+                  // is 0 in JS (rounds toward +Inf), which mislabelled
+                  // yesterday's birthday as "Today".
+                  const now = new Date();
+                  const todayNoon = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 12, 0, 0);
+                  const [ey, em, ed] = String(e.event_date).split('-').map(Number);
+                  const eventDate = new Date(ey, em - 1, ed, 12, 0, 0);
+                  const daysAway = Math.round((eventDate.getTime() - todayNoon.getTime()) / 86400_000);
                   const dayLabel =
                     daysAway === 0 ? 'Today' :
                     daysAway === 1 ? 'Tomorrow' :
