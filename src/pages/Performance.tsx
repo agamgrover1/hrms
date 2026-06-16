@@ -1,11 +1,12 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Cell
 } from 'recharts';
 import {
   Target, TrendingUp, Award, Calendar, Plus, X, Trash2,
   ChevronDown, MessageSquare, Edit3, CheckCircle, AlertCircle, Info,
-  FileText, ChevronRight, Circle, RefreshCw, Minus, Check, Lock, Unlock
+  FileText, ChevronRight, Circle, RefreshCw, Minus, Check, Lock, Unlock,
+  Search, ArrowUpDown, ChevronUp,
 } from 'lucide-react';
 import { api } from '../services/api';
 import { useAuth } from '../context/AuthContext';
@@ -549,6 +550,17 @@ export default function Performance() {
   const [selectedEmpId, setSelectedEmpId] = useState('');
   const [selectedYear, setSelectedYear] = useState(currentYear);
   const [monthlyData, setMonthlyData] = useState<any[]>([]);
+  // Sort key + direction for the Monthly Reviews table. 'month' is the
+  // default and renders the calendar order (Jan→Dec). Any other key sorts
+  // months that have a review first, ranked by the chosen field, then
+  // appends unrated months at the bottom in calendar order.
+  type SortKey = 'month' | 'overall_score' | 'productivity' | 'quality' | 'teamwork' | 'attendance_score' | 'initiative' | 'client_satisfaction' | 'ai_usage' | 'reviewer_name';
+  const [sortKey, setSortKey] = useState<SortKey>('month');
+  const [sortDir, setSortDir] = useState<'asc' | 'desc'>('asc');
+  const toggleSort = (k: SortKey) => {
+    if (sortKey === k) setSortDir(d => d === 'asc' ? 'desc' : 'asc');
+    else { setSortKey(k); setSortDir(k === 'month' || k === 'reviewer_name' ? 'asc' : 'desc'); }
+  };
   const [notes, setNotes] = useState<any[]>([]);
   const [loadingPerf, setLoadingPerf] = useState(false);
   const [loadingNotes, setLoadingNotes] = useState(false);
@@ -605,6 +617,30 @@ export default function Performance() {
   });
 
   const reviewedMonths = monthlyData.length;
+  // Sorted [(monthIdx 0-11, record-or-null)] list driving the table body.
+  // Default 'month' just walks Jan→Dec. For any score-based sort, months
+  // without a review are pushed to the bottom (they can't be ranked).
+  const sortedMonthRows = useMemo(() => {
+    const rows = MONTHS.map((_, idx) => {
+      const monthNum = idx + 1;
+      const record = monthlyData.find(r => r.month === monthNum);
+      return { idx, monthNum, record };
+    });
+    if (sortKey === 'month') {
+      return sortDir === 'asc' ? rows : [...rows].reverse();
+    }
+    const sign = sortDir === 'asc' ? 1 : -1;
+    return [...rows].sort((a, b) => {
+      const ar = a.record, br = b.record;
+      if (!ar && !br) return a.monthNum - b.monthNum;
+      if (!ar) return 1;
+      if (!br) return -1;
+      if (sortKey === 'reviewer_name') {
+        return sign * String(ar.reviewer_name ?? '').localeCompare(String(br.reviewer_name ?? ''));
+      }
+      return sign * (Number(ar[sortKey] ?? 0) - Number(br[sortKey] ?? 0));
+    });
+  }, [monthlyData, sortKey, sortDir]);
   const avgScore = reviewedMonths > 0
     ? Math.round(monthlyData.reduce((a, r) => a + r.overall_score, 0) / reviewedMonths)
     : 0;
@@ -654,17 +690,11 @@ export default function Performance() {
           <>
             {/* Filters */}
             <div className="flex flex-wrap items-center gap-3">
-              <div className="relative">
-                <select
-                  value={selectedEmpId}
-                  onChange={e => setSelectedEmpId(e.target.value)}
-                  className="appearance-none bg-surface border border-outline rounded-lg px-4 pr-9 py-2.5 text-sm font-semibold focus:outline-none focus:border-accent focus:ring-2 focus:ring-accent/20 shadow-elev-1 text-on-surface"
-                  style={{ minWidth: 200 }}
-                >
-                  {employees.map(e => <option key={e.id} value={e.id}>{e.name}</option>)}
-                </select>
-                <ChevronDown size={14} className="absolute right-3 top-1/2 -translate-y-1/2 text-on-surface-subtle pointer-events-none" />
-              </div>
+              <EmployeeSearchSelect
+                employees={employees}
+                value={selectedEmpId}
+                onChange={setSelectedEmpId}
+              />
 
               <div className="relative">
                 <select
@@ -854,21 +884,18 @@ export default function Performance() {
                 <table className="w-full text-sm">
                   <thead>
                     <tr className="bg-surface-2">
-                      <th className="text-left px-5 py-3 text-xs font-semibold text-on-surface-subtle uppercase tracking-wide">Month</th>
+                      <SortHeader label="Month"   k="month"          align="left"   curKey={sortKey} curDir={sortDir} onClick={toggleSort} />
                       {CATEGORIES.map(c => (
-                        <th key={c.key} className="text-center px-2 py-3 text-xs font-semibold text-on-surface-subtle uppercase tracking-wide whitespace-nowrap">
-                          {c.label.split(' ')[0]}
-                        </th>
+                        <SortHeader key={c.key} label={c.label.split(' ')[0]} k={c.key as SortKey} align="center" curKey={sortKey} curDir={sortDir} onClick={toggleSort} />
                       ))}
-                      <th className="text-center px-3 py-3 text-xs font-semibold text-on-surface-subtle uppercase tracking-wide">Overall</th>
-                      <th className="text-left px-3 py-3 text-xs font-semibold text-on-surface-subtle uppercase tracking-wide">Reviewer</th>
+                      <SortHeader label="Overall" k="overall_score"  align="center" curKey={sortKey} curDir={sortDir} onClick={toggleSort} />
+                      <SortHeader label="Reviewer" k="reviewer_name" align="left"   curKey={sortKey} curDir={sortDir} onClick={toggleSort} />
                       {isHROrAdmin && <th className="text-right px-5 py-3 text-xs font-semibold text-on-surface-subtle uppercase tracking-wide">Action</th>}
                     </tr>
                   </thead>
                   <tbody>
-                    {MONTHS.map((m, idx) => {
-                      const record = monthlyData.find(r => r.month === idx + 1);
-                      const monthNum = idx + 1;
+                    {sortedMonthRows.map(({ idx, monthNum, record }) => {
+                      const m = MONTHS[idx];
                       const isFuture = selectedYear === currentYear && monthNum > currentMonth;
                       return (
                         <tr key={m} className="border-t border-outline hover:bg-surface-2 transition-colors">
@@ -1092,5 +1119,110 @@ export default function Performance() {
         />
       )}
     </>
+  );
+}
+
+// ── Searchable employee combobox ──────────────────────────────────────────
+// Replaces the long native <select> on the Performance picker. Type-to-
+// filter for orgs that have grown past "scroll the dropdown is fine"
+// size, while still letting users open the full list with a click.
+// Outside-click + Escape close the panel. Selecting an item commits and
+// closes. Default selected name is shown in the input until the user
+// starts typing.
+function EmployeeSearchSelect({ employees, value, onChange }: {
+  employees: Array<{ id: string; name: string; department?: string | null; designation?: string | null }>;
+  value: string;
+  onChange: (id: string) => void;
+}) {
+  const selected = employees.find(e => e.id === value) ?? null;
+  const [open, setOpen] = useState(false);
+  const [query, setQuery] = useState('');
+  const wrapRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!open) return;
+    const onDown = (e: MouseEvent) => {
+      if (wrapRef.current && !wrapRef.current.contains(e.target as Node)) setOpen(false);
+    };
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setOpen(false); };
+    document.addEventListener('mousedown', onDown);
+    document.addEventListener('keydown', onKey);
+    return () => {
+      document.removeEventListener('mousedown', onDown);
+      document.removeEventListener('keydown', onKey);
+    };
+  }, [open]);
+  const filtered = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    if (!q) return employees;
+    return employees.filter(e =>
+      e.name.toLowerCase().includes(q) ||
+      (e.department ?? '').toLowerCase().includes(q) ||
+      (e.designation ?? '').toLowerCase().includes(q)
+    );
+  }, [employees, query]);
+  return (
+    <div className="relative" ref={wrapRef} style={{ minWidth: 240 }}>
+      <div className="relative">
+        <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-on-surface-subtle pointer-events-none" />
+        <input
+          value={open ? query : (selected?.name ?? '')}
+          onChange={e => { setQuery(e.target.value); if (!open) setOpen(true); }}
+          onFocus={() => { setOpen(true); setQuery(''); }}
+          placeholder="Search employee…"
+          className="w-full appearance-none bg-surface border border-outline rounded-lg pl-9 pr-9 py-2.5 text-sm font-semibold focus:outline-none focus:border-accent focus:ring-2 focus:ring-accent/20 shadow-elev-1 text-on-surface"
+        />
+        <ChevronDown size={14} className="absolute right-3 top-1/2 -translate-y-1/2 text-on-surface-subtle pointer-events-none" />
+      </div>
+      {open && (
+        <div className="absolute left-0 right-0 top-full mt-1 z-30 bg-surface border border-outline rounded-lg shadow-elev-3 max-h-72 overflow-y-auto">
+          {filtered.length === 0 ? (
+            <div className="px-3 py-4 text-xs text-on-surface-subtle text-center">No matches for "{query}"</div>
+          ) : filtered.map(e => (
+            <button
+              key={e.id}
+              onClick={() => { onChange(e.id); setQuery(''); setOpen(false); }}
+              className={`w-full text-left px-3 py-2 hover:bg-surface-2 transition-colors ${e.id === value ? 'bg-accent/5' : ''}`}
+            >
+              <p className="text-sm font-semibold text-on-surface">{e.name}</p>
+              {(e.department || e.designation) && (
+                <p className="text-[11px] text-on-surface-subtle truncate">
+                  {[e.designation, e.department].filter(Boolean).join(' · ')}
+                </p>
+              )}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// Sortable <th>. Click to set this column as the active sort; click again
+// to flip direction. Renders a ↕ glyph when inactive and ↑/↓ when active
+// so the table tells you what it's sorted by at a glance.
+function SortHeader<K extends string>({ label, k, align, curKey, curDir, onClick }: {
+  label: string;
+  k: K;
+  align: 'left' | 'center' | 'right';
+  curKey: string;
+  curDir: 'asc' | 'desc';
+  onClick: (k: K) => void;
+}) {
+  const active = curKey === k;
+  const justify = align === 'left' ? 'justify-start' : align === 'right' ? 'justify-end' : 'justify-center';
+  const textAlign = align === 'left' ? 'text-left' : align === 'right' ? 'text-right' : 'text-center';
+  return (
+    <th className={`${textAlign} px-3 py-3 text-xs font-semibold uppercase tracking-wide whitespace-nowrap`}>
+      <button
+        type="button"
+        onClick={() => onClick(k)}
+        className={`inline-flex items-center gap-1 w-full ${justify} ${active ? 'text-on-surface' : 'text-on-surface-subtle hover:text-on-surface'} transition-colors`}
+      >
+        {label}
+        {active
+          ? (curDir === 'asc' ? <ChevronUp size={11} /> : <ChevronDown size={11} />)
+          : <ArrowUpDown size={10} className="opacity-50" />}
+      </button>
+    </th>
   );
 }
