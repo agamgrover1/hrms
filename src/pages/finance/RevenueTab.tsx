@@ -30,9 +30,9 @@ type Row = {
   billing_source?: string | null;
   billing_type: 'fixed' | 'hourly'; fixed_amount: number; hourly_rate: number; billable_hours: number;
   currency: string; fx_rate: number | null;
-  status: 'pending' | 'cleared';
+  status: 'pending' | 'cleared_pending' | 'cleared';
   amount_received: number | null; received_inr: number | null; received_fx_rate: number | null;
-  cleared_at: string | null; cleared_by_name: string | null; clearance_note: string | null;
+  cleared_at: string | null; cleared_by: string | null; cleared_by_name: string | null; clearance_note: string | null;
 };
 
 export default function RevenueTab({ month, year, onChanged }: { month: number; year: number; onChanged: () => void }) {
@@ -70,6 +70,7 @@ export default function RevenueTab({ month, year, onChanged }: { month: number; 
           received_inr: r.received_inr != null ? Number(r.received_inr) : null,
           received_fx_rate: r.received_fx_rate != null ? Number(r.received_fx_rate) : null,
           cleared_at: r.cleared_at ?? null,
+          cleared_by: r.cleared_by ?? null,
           cleared_by_name: r.cleared_by_name ?? null,
           clearance_note: r.clearance_note ?? null,
         })));
@@ -155,9 +156,29 @@ export default function RevenueTab({ month, year, onChanged }: { month: number; 
     finally { setClearingBusy(false); }
   };
   const reopen = async (r: Row) => {
-    if (!confirm(`Reopen ${r.name}? This clears the received amount and flips it back to pending.`)) return;
+    const isAdmin = user?.role === 'admin';
+    const isOwn = r.status === 'cleared_pending' && r.cleared_by === user?.id;
+    const prompt = !isAdmin && isOwn
+      ? `Withdraw your clearance request for ${r.name}? You can edit and resubmit.`
+      : `Reopen ${r.name}? This clears the received amount and flips it back to pending.`;
+    if (!confirm(prompt)) return;
     try {
       await financeApi.reopenRevenue(r.id, month, year);
+      load(); onChanged();
+    } catch (e: any) { setErr(e.message); }
+  };
+  const approveClearance = async (r: Row) => {
+    if (!confirm(`Approve clearance for ${r.name}?`)) return;
+    try {
+      await financeApi.approveRevenueClearance(r.id, month, year);
+      load(); onChanged();
+    } catch (e: any) { setErr(e.message); }
+  };
+  const rejectClearance = async (r: Row) => {
+    const reason = window.prompt('Reason for rejecting this clearance (the coordinator sees this):');
+    if (!reason?.trim()) return;
+    try {
+      await financeApi.rejectRevenueClearance(r.id, month, year, reason.trim());
       load(); onChanged();
     } catch (e: any) { setErr(e.message); }
   };
@@ -191,12 +212,15 @@ export default function RevenueTab({ month, year, onChanged }: { month: number; 
 
   if (loading) return <div className="h-64 rounded-xl-2 bg-surface-2 animate-pulse" />;
 
-  // Totals (Upwork only, INR)
+  // Totals (Upwork only, INR). Invoiced rolls up everything not finally
+  // cleared (so cleared_pending still appears as outstanding work).
+  // Received counts ONLY rows admin has approved — cleared_pending isn't
+  // cash in the bank yet, even though the coord submitted an amount.
   const invoicedTotal = upworkRows.reduce((s, r) => {
     const v = r.fx_rate ? (r.billing_type === 'hourly' ? r.hourly_rate * r.billable_hours : r.fixed_amount) * r.fx_rate : 0;
     return s + (r.status === 'cleared' ? 0 : v);
   }, 0);
-  const receivedTotal = upworkRows.reduce((s, r) => s + (r.received_inr ?? 0), 0);
+  const receivedTotal = upworkRows.reduce((s, r) => s + (r.status === 'cleared' ? (r.received_inr ?? 0) : 0), 0);
 
   return (
     <div className="space-y-4">
@@ -327,10 +351,16 @@ export default function RevenueTab({ month, year, onChanged }: { month: number; 
               const invoicedNative = r.billing_type === 'hourly' ? r.hourly_rate * r.billable_hours : r.fixed_amount;
               const invoicedInr = r.fx_rate ? invoicedNative * r.fx_rate : invoicedNative;
               const isCleared = r.status === 'cleared';
-              const variance = isCleared && r.received_inr != null ? r.received_inr - invoicedInr : null;
-              const readOnly = isCleared;
+              const isClearPending = r.status === 'cleared_pending';
+              // Coordinator can edit invoiced fields only when status is
+              // 'pending'. As soon as they request clearance the row is
+              // locked until admin decides; once admin clears, the row
+              // is fully read-only.
+              const readOnly = isCleared || isClearPending;
+              const variance = (isCleared || isClearPending) && r.received_inr != null ? r.received_inr - invoicedInr : null;
+              const isOwnClearRequest = isClearPending && r.cleared_by === user?.id;
               return (
-                <tr key={r.id} className={`hover:bg-surface-2/50 ${isCleared ? 'bg-success-container/15' : ''}`}>
+                <tr key={r.id} className={`hover:bg-surface-2/50 ${isCleared ? 'bg-success-container/15' : isClearPending ? 'bg-accent/5' : ''}`}>
                   <td className="px-4 py-2">
                     <div className="flex items-center gap-2 flex-wrap">
                       <span className="font-medium text-on-surface">{r.name}</span>
@@ -340,6 +370,11 @@ export default function RevenueTab({ month, year, onChanged }: { month: number; 
                     {isCleared && r.cleared_at && (
                       <div className="text-[10px] text-on-surface-subtle mt-0.5">
                         Cleared {new Date(r.cleared_at).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' })}{r.cleared_by_name && ` by ${r.cleared_by_name}`}
+                      </div>
+                    )}
+                    {isClearPending && (
+                      <div className="text-[10px] text-accent mt-0.5">
+                        Awaiting admin approval{r.cleared_by_name && ` · submitted by ${r.cleared_by_name}`}
                       </div>
                     )}
                     {r.clearance_note && (
@@ -385,9 +420,9 @@ export default function RevenueTab({ month, year, onChanged }: { month: number; 
                     )}
                   </td>
                   <td className="px-3 py-2 text-right tabular-nums">
-                    {isCleared && r.amount_received != null ? (
+                    {(isCleared || isClearPending) && r.amount_received != null ? (
                       <>
-                        <div className="text-success font-semibold">{fmtCcy(r.amount_received, r.currency)}</div>
+                        <div className={`font-semibold ${isCleared ? 'text-success' : 'text-accent'}`}>{fmtCcy(r.amount_received, r.currency)}</div>
                         {r.currency !== 'INR' && r.received_inr != null && (
                           <div className="text-[10px] text-on-surface-subtle font-normal">≈ {money(r.received_inr)}</div>
                         )}
@@ -403,22 +438,46 @@ export default function RevenueTab({ month, year, onChanged }: { month: number; 
                   </td>
                   <td className="px-3 py-2 text-center">
                     <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-bold ${
-                      isCleared ? 'bg-success-container text-success' : 'bg-warning-container text-warning'
+                      isCleared ? 'bg-success-container text-success'
+                        : isClearPending ? 'bg-accent-container text-accent'
+                        : 'bg-warning-container text-warning'
                     }`}>
-                      {isCleared ? '✓ Cleared' : '⏳ Pending'}
+                      {isCleared ? '✓ Cleared' : isClearPending ? '⚠ Awaiting approval' : '⏳ Pending'}
                     </span>
                   </td>
                   <td className="px-3 py-2 text-right">
-                    {!isCleared && (
+                    {!isCleared && !isClearPending && (
                       <button onClick={() => save(r)} disabled={saving === r.id}
                         className="rounded-lg bg-brand px-3 py-1.5 text-xs font-medium text-on-brand hover:opacity-90 disabled:opacity-40 mr-1.5">
                         {saving === r.id ? '…' : 'Save'}
                       </button>
                     )}
-                    {isAdmin && !isCleared && invoicedNative > 0 && (
+                    {/* Pending → action depends on role. Admin clears
+                        directly; coord submits for approval. */}
+                    {!isCleared && !isClearPending && invoicedNative > 0 && (
                       <button onClick={() => openClear(r)}
                         className="inline-flex items-center gap-1 rounded-lg bg-success px-2.5 py-1.5 text-xs font-medium text-white hover:opacity-90">
-                        <CheckCircle size={12} /> Clear
+                        <CheckCircle size={12} /> {isAdmin ? 'Clear' : 'Request clearance'}
+                      </button>
+                    )}
+                    {/* cleared_pending → admin approves/rejects; coord
+                        who submitted can withdraw. */}
+                    {isAdmin && isClearPending && (
+                      <>
+                        <button onClick={() => approveClearance(r)}
+                          className="inline-flex items-center gap-1 rounded-lg bg-success px-2.5 py-1.5 text-xs font-medium text-white hover:opacity-90 mr-1.5">
+                          <CheckCircle size={12} /> Approve
+                        </button>
+                        <button onClick={() => rejectClearance(r)}
+                          className="inline-flex items-center gap-1 rounded-lg border border-danger/40 px-2.5 py-1.5 text-xs font-medium text-danger hover:bg-danger-container/40">
+                          <X size={12} /> Reject
+                        </button>
+                      </>
+                    )}
+                    {!isAdmin && isOwnClearRequest && (
+                      <button onClick={() => reopen(r)}
+                        className="inline-flex items-center gap-1 rounded-lg border border-outline px-2.5 py-1.5 text-xs font-medium text-on-surface-muted hover:bg-surface-2">
+                        <RotateCcw size={12} /> Withdraw
                       </button>
                     )}
                     {isAdmin && isCleared && (
@@ -446,8 +505,11 @@ export default function RevenueTab({ month, year, onChanged }: { month: number; 
           <div className="bg-surface rounded-2xl shadow-2xl w-full max-w-md overflow-hidden" onClick={e => e.stopPropagation()}>
             <div className="flex items-center justify-between px-6 py-4 border-b border-outline">
               <div>
-                <h2 className="font-bold text-base text-on-surface">Mark Upwork billing cleared</h2>
+                <h2 className="font-bold text-base text-on-surface">{isAdmin ? 'Mark Upwork billing cleared' : 'Request clearance approval'}</h2>
                 <p className="text-xs text-on-surface-subtle mt-0.5">{clearing.name} · {MONTHS[month - 1]} {year}</p>
+                {!isAdmin && (
+                  <p className="text-[11px] text-accent mt-1">Admin approval is required before this counts as received.</p>
+                )}
               </div>
               <button onClick={() => setClearing(null)}><X size={16} className="text-on-surface-subtle" /></button>
             </div>
@@ -480,7 +542,7 @@ export default function RevenueTab({ month, year, onChanged }: { month: number; 
                   className="flex-1 py-2.5 border border-outline rounded-lg text-sm font-medium text-on-surface-muted hover:bg-surface-2">Cancel</button>
                 <button onClick={confirmClear} disabled={clearingBusy || !clearForm.amount_received || Number(clearForm.amount_received) < 0}
                   className="flex-1 py-2.5 bg-success text-white rounded-lg text-sm font-semibold disabled:opacity-50">
-                  {clearingBusy ? 'Saving…' : 'Mark Cleared'}
+                  {clearingBusy ? 'Saving…' : isAdmin ? 'Mark Cleared' : 'Submit for approval'}
                 </button>
               </div>
             </div>

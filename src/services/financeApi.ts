@@ -231,6 +231,10 @@ export const financeApi = {
     request<any>('/revenue', { method: 'PUT', body: JSON.stringify(data) }),
   clearRevenue: (project_id: string, month: number, year: number, data: { amount_received?: number; clearance_note?: string; fx_rate?: number }) =>
     request<any>(`/revenue/${encodeURIComponent(project_id)}/${month}/${year}/clear`, { method: 'PATCH', body: JSON.stringify(data) }),
+  approveRevenueClearance: (project_id: string, month: number, year: number) =>
+    request<any>(`/revenue/${encodeURIComponent(project_id)}/${month}/${year}/approve-clearance`, { method: 'PATCH', body: JSON.stringify({}) }),
+  rejectRevenueClearance: (project_id: string, month: number, year: number, rejection_reason: string) =>
+    request<any>(`/revenue/${encodeURIComponent(project_id)}/${month}/${year}/reject-clearance`, { method: 'PATCH', body: JSON.stringify({ rejection_reason }) }),
   reopenRevenue: (project_id: string, month: number, year: number) =>
     request<any>(`/revenue/${encodeURIComponent(project_id)}/${month}/${year}/reopen`, { method: 'PATCH' }),
   cleanupDirectRevenue: (dry_run = false) =>

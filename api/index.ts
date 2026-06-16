@@ -9529,12 +9529,17 @@ app.put('/api/finance/revenue', async (req, res) => {
     const bh = Number(billable_hours) || 0;
     const rawRevenue = (billing_type || 'fixed') === 'hourly' ? hr * bh : fa;
     const revenueInr = rawRevenue * rate;
-    // Refuse to overwrite a cleared row from this endpoint — admin must reopen
-    // first. Prevents accidental "edit billing setup" wiping a received-amount
-    // record.
+    // Refuse to overwrite a cleared or awaiting-approval row from this
+    // endpoint. Cleared → admin must reopen. cleared_pending → either
+    // wait for admin decision or withdraw the request first. Prevents
+    // accidental "edit billing setup" wiping a received-amount record
+    // or silently changing the numbers admin is reviewing.
     const existing = (await sql`SELECT status FROM fin_project_revenue WHERE project_id=${project_id} AND month=${Number(month)} AND year=${Number(year)}`)[0] as any;
     if (existing?.status === 'cleared') {
       return res.status(409).json({ error: 'This billing entry is already cleared. Reopen it first to edit.' });
+    }
+    if (existing?.status === 'cleared_pending') {
+      return res.status(409).json({ error: 'This billing entry is awaiting admin approval. Withdraw the clearance request first to edit.' });
     }
     await sql`
       INSERT INTO fin_project_revenue (project_id, month, year, billing_type, fixed_amount, hourly_rate, billable_hours, currency, fx_rate, revenue_inr, status)
@@ -9555,18 +9560,28 @@ app.put('/api/finance/revenue', async (req, res) => {
 // not the optimistic invoiced figure.
 app.patch('/api/finance/revenue/:project_id/:month/:year/clear', async (req, res) => {
   await runStartupMigrations();
-  if (!(await requireAdmin(req, res))) return;
+  // Same workflow as Invoices: coord can request clearance (lands in
+  // 'cleared_pending' awaiting admin), admin's call goes straight to
+  // 'cleared'. Mirrors the pattern shipped in c02251b for invoices.
+  const gate = await requireAdminOrCoord(req, res);
+  if (!gate.ok) return;
   try {
     const { project_id, month, year } = req.params;
     const mY = Number(month), yY = Number(year);
     const row = (await sql`SELECT r.*, p.name AS project_name, p.billing_source FROM fin_project_revenue r LEFT JOIN projects p ON p.id=r.project_id WHERE r.project_id=${project_id} AND r.month=${mY} AND r.year=${yY}`)[0] as any;
     if (!row) return res.status(404).json({ error: 'No billing entry for this period' });
+    const isAdmin = gate.user?.role === 'admin';
+    if (row.status === 'cleared' && isAdmin) {
+      return res.status(400).json({ error: 'Billing already cleared — edit it instead' });
+    }
+    if (!isAdmin && row.status === 'cleared_pending' && row.cleared_by !== gate.user?.id) {
+      return res.status(403).json({ error: 'Only the requester or an admin can update this clearance' });
+    }
     const invoiced = Number(row.revenue_inr ?? 0);
     const invoicedNative = row.billing_type === 'hourly'
       ? Number(row.hourly_rate) * Number(row.billable_hours)
       : Number(row.fixed_amount);
     const { amount_received, clearance_note, fx_rate: clientRate } = req.body ?? {};
-    // Default received to invoicedNative (most common case: paid in full).
     const received = amount_received != null ? Number(amount_received) : invoicedNative;
     if (received < 0) return res.status(400).json({ error: 'amount_received cannot be negative' });
     const ccy = (row.currency || 'INR').toUpperCase();
@@ -9578,24 +9593,94 @@ app.patch('/api/finance/revenue/:project_id/:month/:year/clear', async (req, res
       rate = (await getFxRate(today, ccy, 'INR')).rate;
     }
     const receivedInr = received * rate;
-    const adminUser = (await sql`SELECT id, name FROM app_users WHERE id=${(req.headers['x-user-id'] as string) || ''}`)[0] as any;
+    const newStatus = isAdmin ? 'cleared' : 'cleared_pending';
     const updated = (await sql`
       UPDATE fin_project_revenue SET
-        status='cleared',
+        status=${newStatus},
         amount_received=${received},
         received_inr=${receivedInr},
         received_fx_rate=${rate},
         cleared_at=NOW(),
-        cleared_by=${adminUser?.id ?? null},
-        cleared_by_name=${adminUser?.name ?? null},
+        cleared_by=${gate.user?.id ?? null},
+        cleared_by_name=${gate.user?.name ?? null},
         clearance_note=${clearance_note?.trim() || null}
       WHERE project_id=${project_id} AND month=${mY} AND year=${yY}
       RETURNING *`)[0];
-    // Notify the coordinator (or whoever last saved) that their billing was cleared.
-    const variance = receivedInr - invoiced;
-    const varianceMsg = Math.abs(variance) < 1 ? 'paid in full' : variance < 0 ? `short by ₹${Math.round(Math.abs(variance)).toLocaleString('en-IN')}` : `extra ₹${Math.round(variance).toLocaleString('en-IN')}`;
-    notifyAdminsAndHR('invoice_cleared', 'Upwork billing cleared',
-      `${row.project_name ?? 'Project'} (${ccy} ${received.toLocaleString('en-IN')}) — ${varianceMsg}.`).catch(() => {});
+    if (isAdmin) {
+      // Admin cleared directly — ping admins/HR for the activity feed.
+      const variance = receivedInr - invoiced;
+      const varianceMsg = Math.abs(variance) < 1 ? 'paid in full' : variance < 0 ? `short by ₹${Math.round(Math.abs(variance)).toLocaleString('en-IN')}` : `extra ₹${Math.round(variance).toLocaleString('en-IN')}`;
+      notifyAdminsAndHR('invoice_cleared', 'Upwork billing cleared',
+        `${row.project_name ?? 'Project'} (${ccy} ${received.toLocaleString('en-IN')}) — ${varianceMsg}.`).catch(() => {});
+    } else {
+      // Coord requested — ping admins for final approval.
+      notifyAdminsAndHR('invoice_clear_requested',
+        'Billing clearance awaiting your approval',
+        `${gate.user?.name ?? 'A coordinator'} marked ${row.project_name ?? 'a project'} billing as cleared for ${ccy} ${received.toLocaleString('en-IN')}. Open Finance → Billing setup to approve.`
+      ).catch(() => {});
+    }
+    res.json(updated);
+  } catch (err: any) { res.status(500).json({ error: err.message || 'Server error' }); }
+});
+
+// PATCH .../approve-clearance — admin promotes a coord-submitted
+// cleared_pending billing row to cleared. Notifies the coord.
+app.patch('/api/finance/revenue/:project_id/:month/:year/approve-clearance', async (req, res) => {
+  await runStartupMigrations();
+  if (!(await requireAdmin(req, res))) return;
+  try {
+    const { project_id, month, year } = req.params;
+    const mY = Number(month), yY = Number(year);
+    const row = (await sql`SELECT r.*, p.name AS project_name FROM fin_project_revenue r LEFT JOIN projects p ON p.id=r.project_id WHERE r.project_id=${project_id} AND r.month=${mY} AND r.year=${yY}`)[0] as any;
+    if (!row) return res.status(404).json({ error: 'No billing entry for this period' });
+    if (row.status !== 'cleared_pending') {
+      return res.status(400).json({ error: `Billing is ${row.status}, not awaiting clearance approval` });
+    }
+    const updated = (await sql`
+      UPDATE fin_project_revenue SET status='cleared'
+      WHERE project_id=${project_id} AND month=${mY} AND year=${yY}
+      RETURNING *`)[0];
+    const adminUser = (await sql`SELECT id FROM app_users WHERE id=${(req.headers['x-user-id'] as string) || ''}`)[0] as any;
+    if (row.cleared_by && row.cleared_by !== adminUser?.id) {
+      const ccy = (row.currency || 'INR').toUpperCase();
+      notifyUser(row.cleared_by, 'invoice_cleared',
+        'Billing clearance approved ✅',
+        `${row.project_name ?? 'Billing'}: ${ccy} ${Number(row.amount_received).toLocaleString('en-IN')} received — confirmed.`
+      ).catch(() => {});
+    }
+    res.json(updated);
+  } catch (err: any) { res.status(500).json({ error: err.message || 'Server error' }); }
+});
+
+// PATCH .../reject-clearance — admin bounces back to pending with a
+// reason. Body { rejection_reason }. Notifies the coord.
+app.patch('/api/finance/revenue/:project_id/:month/:year/reject-clearance', async (req, res) => {
+  await runStartupMigrations();
+  if (!(await requireAdmin(req, res))) return;
+  try {
+    const { project_id, month, year } = req.params;
+    const mY = Number(month), yY = Number(year);
+    const { rejection_reason } = req.body ?? {};
+    if (!rejection_reason?.trim()) return res.status(400).json({ error: 'rejection_reason is required' });
+    const row = (await sql`SELECT r.*, p.name AS project_name FROM fin_project_revenue r LEFT JOIN projects p ON p.id=r.project_id WHERE r.project_id=${project_id} AND r.month=${mY} AND r.year=${yY}`)[0] as any;
+    if (!row) return res.status(404).json({ error: 'No billing entry for this period' });
+    if (row.status !== 'cleared_pending') {
+      return res.status(400).json({ error: `Billing is ${row.status}, not awaiting clearance approval` });
+    }
+    const requester = row.cleared_by;
+    const updated = (await sql`
+      UPDATE fin_project_revenue SET
+        status='pending',
+        amount_received=NULL, received_inr=NULL, received_fx_rate=NULL,
+        cleared_at=NULL, cleared_by=NULL, cleared_by_name=NULL, clearance_note=NULL
+      WHERE project_id=${project_id} AND month=${mY} AND year=${yY}
+      RETURNING *`)[0];
+    if (requester) {
+      notifyUser(requester, 'invoice_clear_rejected',
+        'Billing clearance needs revision',
+        `Admin rejected the clearance on ${row.project_name ?? 'a project'}: ${rejection_reason.trim().slice(0, 200)}`
+      ).catch(() => {});
+    }
     res.json(updated);
   } catch (err: any) { res.status(500).json({ error: err.message || 'Server error' }); }
 });
@@ -9627,15 +9712,28 @@ app.post('/api/finance/revenue/cleanup-direct', async (req, res) => {
 
 app.patch('/api/finance/revenue/:project_id/:month/:year/reopen', async (req, res) => {
   await runStartupMigrations();
-  if (!(await requireAdmin(req, res))) return;
+  // Admin can reopen any row. Coord can withdraw their OWN pending
+  // clearance request (status='cleared_pending' AND cleared_by = them).
+  // This matches the Invoices "Withdraw request" affordance.
+  const gate = await requireAdminOrCoord(req, res);
+  if (!gate.ok) return;
   try {
     const { project_id, month, year } = req.params;
+    const mY = Number(month), yY = Number(year);
+    const isAdmin = gate.user?.role === 'admin';
+    if (!isAdmin) {
+      const cur = (await sql`SELECT status, cleared_by FROM fin_project_revenue WHERE project_id=${project_id} AND month=${mY} AND year=${yY}`)[0] as any;
+      if (!cur) return res.status(404).json({ error: 'Billing entry not found' });
+      if (cur.status !== 'cleared_pending' || cur.cleared_by !== gate.user?.id) {
+        return res.status(403).json({ error: 'You can only withdraw your own pending clearance request' });
+      }
+    }
     const updated = (await sql`
       UPDATE fin_project_revenue SET
         status='pending',
         amount_received=NULL, received_inr=NULL, received_fx_rate=NULL,
         cleared_at=NULL, cleared_by=NULL, cleared_by_name=NULL, clearance_note=NULL
-      WHERE project_id=${project_id} AND month=${Number(month)} AND year=${Number(year)}
+      WHERE project_id=${project_id} AND month=${mY} AND year=${yY}
       RETURNING *`)[0];
     if (!updated) return res.status(404).json({ error: 'Billing entry not found' });
     res.json(updated);
