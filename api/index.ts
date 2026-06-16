@@ -4263,6 +4263,20 @@ app.delete('/api/announcements/:id/comments/:commentId', async (req, res) => {
 // of holidays + employee birthdays + work anniversaries combined into one
 // chronological list. Saves the client three round-trips and lets the date
 // math happen on the server (postgres handles month/day matching cleanly).
+// GET /api/version — returns the git commit SHA the deployed serverless
+// function was built from. The frontend polls this every minute and
+// compares against the value vite baked into the JS bundle at build
+// time. Mismatch → a new deploy went live → show the "Refresh" banner.
+// Open to anyone (no auth) since it's just a hash and the banner needs
+// to work pre-login too. CDN cache disabled so the value is always live.
+app.get('/api/version', (_req, res) => {
+  res.setHeader('Cache-Control', 'no-store, max-age=0');
+  res.json({
+    version: process.env.VERCEL_GIT_COMMIT_SHA ?? 'dev',
+    deployed_at: process.env.VERCEL_DEPLOYMENT_ID ?? null,
+  });
+});
+
 app.get('/api/upcoming-events', async (req, res) => {
   try {
     await runStartupMigrations();

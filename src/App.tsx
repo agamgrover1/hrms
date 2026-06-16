@@ -2,6 +2,7 @@ import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import { AuthProvider, useAuth } from './context/AuthContext';
 import { ThemeProvider } from './context/ThemeContext';
 import Layout from './components/layout/Layout';
+import VersionCheck from './components/VersionCheck';
 import Login from './pages/Login';
 import Dashboard from './pages/Dashboard';
 import Employees from './pages/Employees';
@@ -104,6 +105,7 @@ export default function App() {
       <BrowserRouter>
         <AuthProvider>
           <AppRoutes />
+          <VersionCheck />
         </AuthProvider>
       </BrowserRouter>
     </ThemeProvider>
