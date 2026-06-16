@@ -43,6 +43,10 @@ export default function RevenueTab({ month, year, onChanged }: { month: number; 
   const [err, setErr] = useState('');
   const [saving, setSaving] = useState<string | null>(null);
   const [showAdd, setShowAdd] = useState(false);
+  // Top-level view inside this tab — table (default) vs activity log.
+  // Mirrors the chip on the Invoices tab so admin lands on a familiar
+  // pattern. Coord sees only the table view.
+  const [view, setView] = useState<'rows' | 'activity'>('rows');
   const [creating, setCreating] = useState(false);
   const [np, setNp] = useState({ ...BLANK_NEW });
   // Clearance dialog state — admin marks "we got the payment"
@@ -265,20 +269,46 @@ export default function RevenueTab({ month, year, onChanged }: { month: number; 
       )}
 
       <div className="flex flex-wrap items-center justify-between gap-2">
-        <p className="text-sm text-on-surface-muted">
-          Upwork billing for <b className="text-on-surface">{MONTHS[month - 1]} {year}</b>
-        </p>
-        <div className="flex items-center gap-2">
-          <button onClick={() => setShowAdd((v) => !v)} className="flex items-center gap-1.5 rounded-xl-2 bg-brand px-3 py-2 text-xs font-medium text-on-brand hover:opacity-90">
-            {showAdd ? <X size={14} /> : <Plus size={14} />} {showAdd ? 'Cancel' : 'New Upwork project'}
-          </button>
-          <button onClick={copyPrev} className="flex items-center gap-1.5 rounded-xl-2 border border-outline bg-surface px-3 py-2 text-xs font-medium text-on-surface hover:bg-surface-2">
-            <Copy size={14} /> Copy last month
-          </button>
+        <div className="flex items-center gap-3 flex-wrap">
+          <p className="text-sm text-on-surface-muted">
+            Upwork billing for <b className="text-on-surface">{MONTHS[month - 1]} {year}</b>
+          </p>
+          {isAdmin && (
+            <div className="inline-flex items-center gap-1 bg-surface-2 border border-outline rounded-xl-2 p-1">
+              <button onClick={() => setView('rows')}
+                className={`px-3 py-1 rounded-lg text-xs font-semibold transition-colors ${
+                  view === 'rows' ? 'bg-accent text-on-accent' : 'text-on-surface-muted hover:text-on-surface hover:bg-surface-3'
+                }`}>
+                Billing rows
+              </button>
+              <button onClick={() => setView('activity')}
+                className={`px-3 py-1 rounded-lg text-xs font-semibold transition-colors ${
+                  view === 'activity' ? 'bg-accent text-on-accent' : 'text-on-surface-muted hover:text-on-surface hover:bg-surface-3'
+                }`}>
+                Activity log
+              </button>
+            </div>
+          )}
         </div>
+        {view === 'rows' && (
+          <div className="flex items-center gap-2">
+            <button onClick={() => setShowAdd((v) => !v)} className="flex items-center gap-1.5 rounded-xl-2 bg-brand px-3 py-2 text-xs font-medium text-on-brand hover:opacity-90">
+              {showAdd ? <X size={14} /> : <Plus size={14} />} {showAdd ? 'Cancel' : 'New Upwork project'}
+            </button>
+            <button onClick={copyPrev} className="flex items-center gap-1.5 rounded-xl-2 border border-outline bg-surface px-3 py-2 text-xs font-medium text-on-surface hover:bg-surface-2">
+              <Copy size={14} /> Copy last month
+            </button>
+          </div>
+        )}
       </div>
 
-      {showAdd && (
+      {/* Activity log replaces the table when selected. Admin only —
+          gated by the chip toggle above. */}
+      {view === 'activity' && isAdmin && (
+        <RevenueActivityLog month={month} year={year} />
+      )}
+
+      {view === 'rows' && showAdd && (
         <div className="rounded-xl-2 border border-brand/30 bg-brand-container/20 p-4">
           <h4 className="text-sm font-semibold text-on-surface mb-3">New Upwork project <span className="font-normal text-on-surface-muted">· also appears in Project Mgmt</span></h4>
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
@@ -330,6 +360,7 @@ export default function RevenueTab({ month, year, onChanged }: { month: number; 
         </div>
       )}
 
+      {view === 'rows' && (
       <div className="rounded-xl-2 border border-outline bg-surface overflow-x-auto">
         <table className="w-full text-sm min-w-[1000px]">
           <thead>
@@ -498,6 +529,7 @@ export default function RevenueTab({ month, year, onChanged }: { month: number; 
           </tbody>
         </table>
       </div>
+      )}
 
       {/* Clearance dialog */}
       {clearing && (
@@ -547,6 +579,173 @@ export default function RevenueTab({ month, year, onChanged }: { month: number; 
               </div>
             </div>
           </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── Activity log ──────────────────────────────────────────────────────────
+// Same pattern as InvoiceActivityLog on the Invoices tab. Lists every
+// saved / clear_requested / cleared / clear_rejected / reopened row for
+// the visible month so admin can trace any clearance dispute or recover
+// an "I swear it was 500 not 1500" moment.
+interface RevenueAuditRow {
+  id: number;
+  project_id: string;
+  project_name: string | null;
+  month: number;
+  year: number;
+  action: 'saved' | 'clear_requested' | 'cleared' | 'clear_rejected' | 'reopened';
+  currency: string | null;
+  billing_type_before: string | null;
+  billing_type_after: string | null;
+  amount_invoiced_before: number | null;
+  amount_invoiced_after: number | null;
+  amount_received_before: number | null;
+  amount_received_after: number | null;
+  status_before: string | null;
+  status_after: string | null;
+  notes_before: string | null;
+  notes_after: string | null;
+  actor_id: string | null;
+  actor_name: string | null;
+  actor_role: string | null;
+  changed_at: string;
+}
+
+const REV_ACTION_TONE: Record<string, string> = {
+  saved:           'bg-warning-container text-warning',
+  clear_requested: 'bg-accent/15 text-accent',
+  cleared:         'bg-success-container text-success',
+  clear_rejected:  'bg-danger-container text-danger',
+  reopened:        'bg-surface-3 text-on-surface-muted',
+};
+
+function timeAgo(ts: string): string {
+  const ms = Date.now() - new Date(ts).getTime();
+  if (Number.isNaN(ms)) return '';
+  const mins = Math.floor(ms / 60000);
+  if (mins < 1) return 'just now';
+  if (mins < 60) return `${mins}m ago`;
+  const hrs = Math.floor(mins / 60);
+  if (hrs < 24) return `${hrs}h ago`;
+  const days = Math.floor(hrs / 24);
+  if (days < 30) return `${days}d ago`;
+  return new Date(ts).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' });
+}
+
+function fmtCcyAmount(amount: number, ccy: string | null): string {
+  const v = Math.round(amount).toLocaleString('en-IN');
+  if (!ccy || ccy === 'INR') return `₹${v}`;
+  if (ccy === 'USD') return `$${v}`;
+  return `${ccy} ${v}`;
+}
+
+function RevenueActivityLog({ month, year }: { month: number; year: number }) {
+  const [rows, setRows] = useState<RevenueAuditRow[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [actionFilter, setActionFilter] = useState<string>('all');
+
+  useEffect(() => {
+    setLoading(true);
+    financeApi.getRevenueAudit({ month, year })
+      .then((r: any) => setRows(Array.isArray(r) ? r : []))
+      .catch(() => setRows([]))
+      .finally(() => setLoading(false));
+  }, [month, year]);
+
+  const filtered = useMemo(() =>
+    actionFilter === 'all' ? rows : rows.filter(r => r.action === actionFilter)
+  , [rows, actionFilter]);
+
+  const counts = useMemo(() => {
+    const c: Record<string, number> = { all: rows.length, saved: 0, clear_requested: 0, cleared: 0, clear_rejected: 0, reopened: 0 };
+    for (const r of rows) c[r.action] = (c[r.action] ?? 0) + 1;
+    return c;
+  }, [rows]);
+
+  return (
+    <div className="rounded-xl-2 border border-outline bg-surface overflow-hidden">
+      <div className="px-5 py-3 border-b border-outline flex items-center justify-between flex-wrap gap-2">
+        <div className="flex items-center gap-2">
+          <h3 className="text-sm font-semibold text-on-surface">Activity log · {MONTHS[month - 1]} {year}</h3>
+          <span className="text-xs text-on-surface-muted">{filtered.length} of {rows.length}</span>
+        </div>
+        <div className="inline-flex items-center gap-1 flex-wrap">
+          {['all','saved','clear_requested','cleared','clear_rejected','reopened'].map(a => (
+            <button key={a} onClick={() => setActionFilter(a)}
+              className={`px-2 py-1 rounded text-[11px] font-semibold capitalize transition-colors ${
+                actionFilter === a
+                  ? 'bg-accent text-on-accent'
+                  : 'text-on-surface-muted hover:text-on-surface hover:bg-surface-2'
+              }`}>
+              {a.replace('_', ' ')} {counts[a] > 0 && <span className="num-mono opacity-75">({counts[a]})</span>}
+            </button>
+          ))}
+        </div>
+      </div>
+      {loading ? (
+        <div className="p-12 text-center text-sm text-on-surface-muted">Loading activity…</div>
+      ) : filtered.length === 0 ? (
+        <div className="p-12 text-center text-sm text-on-surface-muted">
+          No {actionFilter === 'all' ? '' : actionFilter.replace('_', ' ')} activity for {MONTHS[month - 1]} {year}.
+          <p className="text-xs text-on-surface-subtle mt-1">Audit logging started on deploy — events before then are not shown.</p>
+        </div>
+      ) : (
+        <div className="divide-y divide-outline">
+          {filtered.map(r => {
+            const amtChanged = Number(r.amount_invoiced_before ?? 0) !== Number(r.amount_invoiced_after ?? 0);
+            const recvChanged = Number(r.amount_received_before ?? 0) !== Number(r.amount_received_after ?? 0);
+            const notesChanged = (r.notes_before ?? '') !== (r.notes_after ?? '');
+            return (
+              <div key={r.id} className="px-5 py-3 hover:bg-surface-2/40 transition-colors">
+                <div className="flex items-center gap-2 flex-wrap mb-1">
+                  <span className={`inline-flex items-center px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider ${REV_ACTION_TONE[r.action] ?? 'bg-surface-3'}`}>
+                    {r.action.replace('_', ' ')}
+                  </span>
+                  <span className="text-sm font-semibold text-on-surface truncate">{r.project_name ?? '—'}</span>
+                  {r.currency && <span className="text-[10px] text-on-surface-subtle font-bold">{r.currency}</span>}
+                </div>
+                <p className="text-[11px] text-on-surface-subtle">
+                  <span className="font-semibold text-on-surface">{r.actor_name ?? 'Unknown'}</span>
+                  {r.actor_role && <span className="text-on-surface-subtle"> ({r.actor_role})</span>}
+                  {' · '}
+                  <span title={new Date(r.changed_at).toLocaleString('en-IN')}>
+                    {new Date(r.changed_at).toLocaleString('en-IN', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })}
+                  </span>
+                  {' · '}<span className="num-mono">{timeAgo(r.changed_at)}</span>
+                </p>
+                {(amtChanged || recvChanged) && (
+                  <div className="flex items-center gap-2 mt-1.5 text-xs flex-wrap">
+                    {amtChanged && (
+                      <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded bg-warning-container text-warning">
+                        Invoiced
+                        <span className="num-mono opacity-75 line-through">{fmtCcyAmount(Number(r.amount_invoiced_before ?? 0), r.currency)}</span>
+                        <span>→</span>
+                        <span className="num-mono font-semibold">{fmtCcyAmount(Number(r.amount_invoiced_after ?? 0), r.currency)}</span>
+                      </span>
+                    )}
+                    {recvChanged && (
+                      <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded bg-success-container text-success">
+                        Received
+                        <span className="num-mono opacity-75 line-through">{r.amount_received_before == null ? '—' : fmtCcyAmount(Number(r.amount_received_before), r.currency)}</span>
+                        <span>→</span>
+                        <span className="num-mono font-semibold">{r.amount_received_after == null ? '—' : fmtCcyAmount(Number(r.amount_received_after), r.currency)}</span>
+                      </span>
+                    )}
+                  </div>
+                )}
+                {notesChanged && (
+                  <p className="text-[11px] text-on-surface-subtle mt-1 italic">
+                    Notes: <span className="line-through opacity-60">{r.notes_before || '∅'}</span>
+                    {' → '}
+                    <span className="text-on-surface-muted not-italic">{r.notes_after || '∅'}</span>
+                  </p>
+                )}
+              </div>
+            );
+          })}
         </div>
       )}
     </div>

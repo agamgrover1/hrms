@@ -237,6 +237,16 @@ export const financeApi = {
     request<any>(`/revenue/${encodeURIComponent(project_id)}/${month}/${year}/reject-clearance`, { method: 'PATCH', body: JSON.stringify({ rejection_reason }) }),
   reopenRevenue: (project_id: string, month: number, year: number) =>
     request<any>(`/revenue/${encodeURIComponent(project_id)}/${month}/${year}/reopen`, { method: 'PATCH' }),
+  getRevenueAudit: (params?: { month?: number; year?: number; project_id?: string; actor_id?: string; action?: string; limit?: number }) => {
+    const qs = new URLSearchParams();
+    if (params?.month) qs.set('month', String(params.month));
+    if (params?.year)  qs.set('year',  String(params.year));
+    if (params?.project_id) qs.set('project_id', params.project_id);
+    if (params?.actor_id)   qs.set('actor_id',   params.actor_id);
+    if (params?.action)     qs.set('action',     params.action);
+    if (params?.limit) qs.set('limit', String(params.limit));
+    return request<any[]>(`/revenue/audit${qs.toString() ? `?${qs}` : ''}`);
+  },
   cleanupDirectRevenue: (dry_run = false) =>
     request<{ deleted?: number; would_delete?: number; sample?: any[] }>(
       '/revenue/cleanup-direct',

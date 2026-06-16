@@ -797,6 +797,31 @@ async function runStartupMigrations() {
     await sql`ALTER TABLE fin_project_revenue ADD COLUMN IF NOT EXISTS clearance_note TEXT`;
     await sql`UPDATE fin_project_revenue SET status='pending' WHERE status IS NULL`;
   } catch { /* idempotent */ }
+
+  // Audit log for billing setup (Upwork projects in fin_project_revenue).
+  // Mirrors fin_invoice_audit so admin can answer the same "who did what
+  // when" questions on the Billing setup tab. Keyed by (project_id,
+  // month, year) since revenue rows aren't single-id like invoices.
+  await sql`
+    CREATE TABLE IF NOT EXISTS fin_revenue_audit (
+      id SERIAL PRIMARY KEY,
+      project_id TEXT NOT NULL,
+      project_name TEXT,
+      month INTEGER NOT NULL,
+      year INTEGER NOT NULL,
+      action TEXT NOT NULL,
+      currency TEXT,
+      billing_type_before TEXT, billing_type_after TEXT,
+      amount_invoiced_before NUMERIC, amount_invoiced_after NUMERIC,
+      amount_received_before NUMERIC, amount_received_after NUMERIC,
+      status_before TEXT, status_after TEXT,
+      notes_before TEXT, notes_after TEXT,
+      actor_id TEXT, actor_name TEXT, actor_role TEXT,
+      changed_at TIMESTAMPTZ DEFAULT NOW()
+    )`;
+  await sql`CREATE INDEX IF NOT EXISTS idx_fin_rev_audit_when ON fin_revenue_audit(changed_at DESC)`.catch(()=>{});
+  await sql`CREATE INDEX IF NOT EXISTS idx_fin_rev_audit_project ON fin_revenue_audit(project_id, year, month, changed_at DESC)`.catch(()=>{});
+  await sql`CREATE INDEX IF NOT EXISTS idx_fin_rev_audit_actor ON fin_revenue_audit(actor_id, changed_at DESC)`.catch(()=>{});
   await sql`
     CREATE TABLE IF NOT EXISTS fin_other_costs (
       id SERIAL PRIMARY KEY,
@@ -9541,7 +9566,8 @@ app.put('/api/finance/revenue', async (req, res) => {
     if (existing?.status === 'cleared_pending') {
       return res.status(409).json({ error: 'This billing entry is awaiting admin approval. Withdraw the clearance request first to edit.' });
     }
-    await sql`
+    const beforeRow = (await sql`SELECT * FROM fin_project_revenue WHERE project_id=${project_id} AND month=${Number(month)} AND year=${Number(year)}`)[0] as any;
+    const afterRow = (await sql`
       INSERT INTO fin_project_revenue (project_id, month, year, billing_type, fixed_amount, hourly_rate, billable_hours, currency, fx_rate, revenue_inr, status)
       VALUES (${project_id}, ${Number(month)}, ${Number(year)}, ${billing_type || 'fixed'},
               ${fa}, ${hr}, ${bh}, ${ccy}, ${rate}, ${revenueInr}, 'pending')
@@ -9549,7 +9575,25 @@ app.put('/api/finance/revenue', async (req, res) => {
         billing_type = EXCLUDED.billing_type, fixed_amount = EXCLUDED.fixed_amount,
         hourly_rate = EXCLUDED.hourly_rate, billable_hours = EXCLUDED.billable_hours,
         currency = EXCLUDED.currency, fx_rate = EXCLUDED.fx_rate, revenue_inr = EXCLUDED.revenue_inr,
-        status = COALESCE(fin_project_revenue.status, 'pending')`;
+        status = COALESCE(fin_project_revenue.status, 'pending')
+      RETURNING *`)[0];
+    // Only log if anything actually moved. Re-saving the same row with
+    // identical values is a no-op from a record-keeping POV; skipping
+    // keeps the activity log signal-only.
+    if (gate.ok) {
+      const beforeNative = beforeRow
+        ? (beforeRow.billing_type === 'hourly' ? Number(beforeRow.hourly_rate||0) * Number(beforeRow.billable_hours||0) : Number(beforeRow.fixed_amount||0))
+        : null;
+      const afterNative = afterRow.billing_type === 'hourly' ? Number(afterRow.hourly_rate||0) * Number(afterRow.billable_hours||0) : Number(afterRow.fixed_amount||0);
+      const changed = !beforeRow ||
+        beforeNative !== afterNative ||
+        beforeRow.currency !== afterRow.currency ||
+        beforeRow.billing_type !== afterRow.billing_type;
+      if (changed) {
+        const proj = (await sql`SELECT name FROM projects WHERE id=${project_id}`)[0] as any;
+        logRevenueAudit('saved', beforeRow ?? null, afterRow, gate.user, proj?.name ?? null);
+      }
+    }
     res.json({ ok: true });
   } catch (err: any) { res.status(500).json({ error: err.message || 'Server error' }); }
 });
@@ -9606,6 +9650,7 @@ app.patch('/api/finance/revenue/:project_id/:month/:year/clear', async (req, res
         clearance_note=${clearance_note?.trim() || null}
       WHERE project_id=${project_id} AND month=${mY} AND year=${yY}
       RETURNING *`)[0];
+    logRevenueAudit(isAdmin ? 'cleared' : 'clear_requested', row, updated, gate.user, row.project_name);
     if (isAdmin) {
       // Admin cleared directly — ping admins/HR for the activity feed.
       const variance = receivedInr - invoiced;
@@ -9640,7 +9685,8 @@ app.patch('/api/finance/revenue/:project_id/:month/:year/approve-clearance', asy
       UPDATE fin_project_revenue SET status='cleared'
       WHERE project_id=${project_id} AND month=${mY} AND year=${yY}
       RETURNING *`)[0];
-    const adminUser = (await sql`SELECT id FROM app_users WHERE id=${(req.headers['x-user-id'] as string) || ''}`)[0] as any;
+    const adminUser = (await sql`SELECT id, name FROM app_users WHERE id=${(req.headers['x-user-id'] as string) || ''}`)[0] as any;
+    logRevenueAudit('cleared', row, updated, { id: adminUser?.id ?? null, name: adminUser?.name ?? null, role: 'admin' }, row.project_name);
     if (row.cleared_by && row.cleared_by !== adminUser?.id) {
       const ccy = (row.currency || 'INR').toUpperCase();
       notifyUser(row.cleared_by, 'invoice_cleared',
@@ -9675,6 +9721,8 @@ app.patch('/api/finance/revenue/:project_id/:month/:year/reject-clearance', asyn
         cleared_at=NULL, cleared_by=NULL, cleared_by_name=NULL, clearance_note=NULL
       WHERE project_id=${project_id} AND month=${mY} AND year=${yY}
       RETURNING *`)[0];
+    const adminActor = (await sql`SELECT id, name FROM app_users WHERE id=${(req.headers['x-user-id'] as string) || ''}`)[0] as any;
+    logRevenueAudit('clear_rejected', row, updated, { id: adminActor?.id ?? null, name: adminActor?.name ?? null, role: 'admin' }, row.project_name);
     if (requester) {
       notifyUser(requester, 'invoice_clear_rejected',
         'Billing clearance needs revision',
@@ -9728,6 +9776,7 @@ app.patch('/api/finance/revenue/:project_id/:month/:year/reopen', async (req, re
         return res.status(403).json({ error: 'You can only withdraw your own pending clearance request' });
       }
     }
+    const before = (await sql`SELECT r.*, p.name AS project_name FROM fin_project_revenue r LEFT JOIN projects p ON p.id=r.project_id WHERE r.project_id=${project_id} AND r.month=${mY} AND r.year=${yY}`)[0] as any;
     const updated = (await sql`
       UPDATE fin_project_revenue SET
         status='pending',
@@ -9736,9 +9785,38 @@ app.patch('/api/finance/revenue/:project_id/:month/:year/reopen', async (req, re
       WHERE project_id=${project_id} AND month=${mY} AND year=${yY}
       RETURNING *`)[0];
     if (!updated) return res.status(404).json({ error: 'Billing entry not found' });
+    logRevenueAudit('reopened', before, updated, gate.user, before?.project_name);
     res.json(updated);
   } catch (err: any) { res.status(500).json({ error: err.message || 'Server error' }); }
 });
+
+// GET /api/finance/revenue/audit — list audit entries. Admin only —
+// exposes per-project clearance history. Same shape as the invoice
+// audit endpoint for symmetry on the client.
+app.get('/api/finance/revenue/audit', async (req, res) => {
+  await runStartupMigrations();
+  if (!(await requireAdmin(req, res))) return;
+  try {
+    const month = req.query.month ? Number(req.query.month) : null;
+    const year  = req.query.year  ? Number(req.query.year)  : null;
+    const project_id = (req.query.project_id as string) || null;
+    const actor_id   = (req.query.actor_id   as string) || null;
+    const action     = (req.query.action     as string) || null;
+    const limit = Math.min(Number(req.query.limit) || 200, 500);
+    const rows = await sql`
+      SELECT *
+      FROM fin_revenue_audit
+      WHERE (${month}::int IS NULL OR month=${month})
+        AND (${year}::int  IS NULL OR year=${year})
+        AND (${project_id}::text IS NULL OR project_id=${project_id})
+        AND (${actor_id}::text   IS NULL OR actor_id=${actor_id})
+        AND (${action}::text     IS NULL OR action=${action})
+      ORDER BY changed_at DESC
+      LIMIT ${limit}`;
+    res.json(rows);
+  } catch (err: any) { res.status(500).json({ error: err.message || 'Server error' }); }
+});
+
 // Create a project FROM the finance module — writes a real projects row (so it
 // shows up in Project Mgmt too) and sets its billing for the given month.
 app.post('/api/finance/projects', async (req, res) => {
@@ -10022,6 +10100,49 @@ async function logInvoiceAudit(
         ${actor?.id ?? null}, ${actor?.name ?? null}, ${actor?.role ?? null}
       )`;
   } catch {/* audit write must never fail the parent request */}
+}
+
+// Audit writer for Billing setup (fin_project_revenue). `before` and
+// `after` are the revenue rows; either can be null on create / delete-
+// style transitions but in practice both are populated. The invoiced
+// amount is computed from billing_type + (fixed_amount | hourly_rate *
+// billable_hours) since that's the user-facing native-currency total.
+async function logRevenueAudit(
+  action: 'saved' | 'clear_requested' | 'cleared' | 'clear_rejected' | 'reopened',
+  before: any | null,
+  after: any | null,
+  actor: { id?: string | null; name?: string | null; role?: string | null } | null,
+  projectName?: string | null,
+) {
+  try {
+    const ref = after ?? before;
+    if (!ref) return;
+    const computeNative = (r: any) => {
+      if (!r) return null;
+      return r.billing_type === 'hourly'
+        ? Number(r.hourly_rate || 0) * Number(r.billable_hours || 0)
+        : Number(r.fixed_amount || 0);
+    };
+    await sql`
+      INSERT INTO fin_revenue_audit (
+        project_id, project_name, month, year, action, currency,
+        billing_type_before, billing_type_after,
+        amount_invoiced_before, amount_invoiced_after,
+        amount_received_before, amount_received_after,
+        status_before, status_after,
+        notes_before, notes_after,
+        actor_id, actor_name, actor_role
+      ) VALUES (
+        ${ref.project_id}, ${projectName ?? ref.project_name ?? null},
+        ${ref.month}, ${ref.year}, ${action}, ${ref.currency ?? null},
+        ${before?.billing_type ?? null}, ${after?.billing_type ?? null},
+        ${computeNative(before)}, ${computeNative(after)},
+        ${before?.amount_received ?? null}, ${after?.amount_received ?? null},
+        ${before?.status ?? null}, ${after?.status ?? null},
+        ${before?.clearance_note ?? null}, ${after?.clearance_note ?? null},
+        ${actor?.id ?? null}, ${actor?.name ?? null}, ${actor?.role ?? null}
+      )`;
+  } catch {/* audit write must never block the parent request */}
 }
 
 app.get('/api/finance/invoices', async (req, res) => {
