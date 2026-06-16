@@ -4530,14 +4530,18 @@ app.get('/api/permissions/me', async (req, res) => {
 // Permission: who can REQUEST a change against `targetEmpId` on this project?
 // - admin / HR / project_coordinator: always
 // - direct reporting manager of the employee (walks the chain)
-// - reporting_person_id on the project (the "reviewer")
+// - project_reporting_id on the project (the "reviewer")
+// - project_lead_id on the project (the lead)
 async function canRequestAllocation(u: any, actorEmpId: string | null, targetEmpId: string, projectId: string): Promise<boolean> {
   if (!u) return false;
   if (u.role === 'admin' || u.role === 'hr_manager' || u.role === 'project_coordinator') return true;
   if (!actorEmpId) return false;
-  // Project reviewer?
-  const p = (await sql`SELECT reporting_person_id FROM projects WHERE id=${projectId}`)[0] as any;
-  if (p?.reporting_person_id && p.reporting_person_id === actorEmpId) return true;
+  // Project reviewer or lead? (column name was wrong here — projects has
+  // project_reporting_id, not reporting_person_id, so the SELECT was
+  // throwing 'column does not exist' and bubbling up as "Failed to send"
+  // on the allocation-change modal even though the actor was legitimate.)
+  const p = (await sql`SELECT project_reporting_id, project_lead_id FROM projects WHERE id=${projectId}`)[0] as any;
+  if (p && (p.project_reporting_id === actorEmpId || p.project_lead_id === actorEmpId)) return true;
   // Manager walk
   let cur = targetEmpId;
   for (let i = 0; i < 10; i++) {
