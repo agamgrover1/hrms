@@ -78,7 +78,7 @@ export interface FinInvoice {
   fx_rate: number | null;
   amount_invoiced_inr: number;
   amount_received: number | null;
-  status: 'pending' | 'cleared' | 'cancelled';
+  status: 'pending' | 'cleared_pending' | 'cleared' | 'cancelled';
   cleared_date: string | null;
   cleared_by: string | null;
   cleared_by_name: string | null;
@@ -286,6 +286,10 @@ export const financeApi = {
   },
   clearInvoice: (id: number, data: { amount_received?: number; cleared_date?: string; notes?: string }) =>
     request<FinInvoice>(`/invoices/${id}/clear`, { method: 'PATCH', body: JSON.stringify(data) }),
+  approveClearance: (id: number) =>
+    request<FinInvoice>(`/invoices/${id}/approve-clearance`, { method: 'PATCH', body: JSON.stringify({}) }),
+  rejectClearance: (id: number, rejection_reason: string) =>
+    request<FinInvoice>(`/invoices/${id}/reject-clearance`, { method: 'PATCH', body: JSON.stringify({ rejection_reason }) }),
   reopenInvoice: (id: number) =>
     request<FinInvoice>(`/invoices/${id}/reopen`, { method: 'PATCH', body: JSON.stringify({}) }),
   deleteInvoice: (id: number) => request<any>(`/invoices/${id}`, { method: 'DELETE' }),

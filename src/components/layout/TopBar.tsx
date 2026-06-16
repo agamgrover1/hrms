@@ -141,6 +141,8 @@ export function getNotifRoute(type: string, role: string): string {
     case 'invoice_cleared':
     case 'invoice_adjusted':
     case 'invoice_reopened':
+    case 'invoice_clear_requested':
+    case 'invoice_clear_rejected':
       // Both admin and coordinator land on the Invoices tab of /finance.
       return '/finance?tab=invoices';
 
@@ -235,6 +237,8 @@ export const TYPE_CONFIG: Record<string, { icon: any; color: string; bg: string 
   invoice_cleared:         { icon: CheckCircle,    color: '#15803d', bg: '#f0fdf4' },
   invoice_adjusted:        { icon: AlertTriangle,  color: '#d97706', bg: '#fffbeb' },
   invoice_reopened:        { icon: XCircle,        color: '#dc2626', bg: '#fef2f2' },
+  invoice_clear_requested: { icon: AlertTriangle,  color: '#d97706', bg: '#fffbeb' },
+  invoice_clear_rejected:  { icon: XCircle,        color: '#dc2626', bg: '#fef2f2' },
   // Performance Pulse
   pulse_weekly_digest:     { icon: TrendingUp,     color: '#3730a3', bg: '#eef2ff' },
   pulse_rating_prompt:     { icon: TrendingUp,     color: '#d97706', bg: '#fffbeb' },

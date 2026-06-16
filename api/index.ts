@@ -9893,7 +9893,7 @@ const fmtMoneyCcy = (n: number, ccy: string) => {
 // `after` on delete). Wrapped so a failed audit insert never blocks the
 // actual mutation; the GET endpoint will simply not see the entry.
 async function logInvoiceAudit(
-  action: 'created' | 'edited' | 'cleared' | 'reopened' | 'deleted',
+  action: 'created' | 'edited' | 'cleared' | 'reopened' | 'deleted' | 'clear_requested' | 'clear_rejected',
   before: any | null,
   after: any | null,
   actor: { id?: string | null; name?: string | null; role?: string | null } | null,
@@ -10088,38 +10088,129 @@ app.put('/api/finance/invoices/:id', async (req, res) => {
 
 app.patch('/api/finance/invoices/:id/clear', async (req, res) => {
   await runStartupMigrations();
+  // Coordinator can now propose a clearance — but only an admin's call
+  // flips the invoice to 'cleared' outright. A coordinator's call lands
+  // it in 'cleared_pending', and admin gets a notification to either
+  // approve (→ cleared) or reject (→ back to pending) the request.
+  const gate = await requireAdminOrCoord(req, res);
+  if (!gate.ok) return;
+  try {
+    const id = Number(req.params.id);
+    const existing = (await sql`SELECT i.*, p.name AS project_name FROM fin_project_invoices i LEFT JOIN projects p ON p.id=i.project_id WHERE i.id=${id}`) as any[];
+    if (!existing.length) return res.status(404).json({ error: 'Invoice not found' });
+    const inv = existing[0];
+    const isAdmin = gate.user?.role === 'admin';
+    // Allow re-submitting clearance only when status is 'pending' (fresh)
+    // or 'cleared_pending' (coord adjusting before admin reviews). Admin
+    // calling on 'cleared' is a no-op handled by edit; don't double-flip.
+    if (inv.status === 'cleared' && isAdmin) {
+      return res.status(400).json({ error: 'Invoice already cleared — edit it instead' });
+    }
+    if (!isAdmin && inv.status === 'cleared_pending' && inv.cleared_by !== gate.user?.id) {
+      return res.status(403).json({ error: 'Only the requester or an admin can update this clearance' });
+    }
+    const { amount_received, cleared_date, notes } = req.body;
+    const received = amount_received != null ? Number(amount_received) : Number(inv.amount_invoiced);
+    if (received < 0) return res.status(400).json({ error: 'amount_received cannot be negative' });
+    const actorName = gate.user?.name ?? null;
+    const actorId = gate.user?.id ?? null;
+    const newStatus = isAdmin ? 'cleared' : 'cleared_pending';
+    const rows = await sql`
+      UPDATE fin_project_invoices SET
+        amount_received=${received},
+        status=${newStatus},
+        cleared_date=${cleared_date || new Date().toISOString().slice(0, 10)},
+        cleared_by=${actorId},
+        cleared_by_name=${actorName},
+        notes=COALESCE(${notes?.trim() || null}, notes),
+        updated_at=NOW()
+      WHERE id=${id}
+      RETURNING *`;
+    const updated = rows[0];
+    logInvoiceAudit(isAdmin ? 'cleared' : 'clear_requested', inv, updated, gate.user, inv.project_name);
+    if (isAdmin) {
+      // Final approval — ping the coordinator who raised the invoice.
+      if (inv.created_by) {
+        const variance = received - Number(inv.amount_invoiced);
+        const varianceMsg = variance === 0 ? 'paid in full' : variance < 0 ? `short by ${fmtMoney(Math.abs(variance))}` : `extra ${fmtMoney(variance)}`;
+        notifyUser(inv.created_by, 'invoice_cleared', 'Invoice Cleared ✅',
+          `${inv.project_name} · ${fmtMoney(received)} received (${varianceMsg}).`).catch(()=>{});
+      }
+    } else {
+      // Coordinator requested clearance — ping admins for final approval.
+      notifyAdminsAndHR('invoice_clear_requested',
+        'Clearance request awaiting your approval',
+        `${actorName ?? 'A coordinator'} marked ${inv.project_name}${inv.invoice_number ? ` (${inv.invoice_number})` : ''} as cleared for ${fmtMoney(received)}. Open Finance to approve.`
+      ).catch(()=>{});
+    }
+    res.json(updated);
+  } catch (err: any) { res.status(500).json({ error: err.message || 'Server error' }); }
+});
+
+// PATCH /api/finance/invoices/:id/approve-clearance — admin-only. Promotes
+// a coord-submitted cleared_pending to cleared. Notifies the coord who
+// raised the original clearance request.
+app.patch('/api/finance/invoices/:id/approve-clearance', async (req, res) => {
+  await runStartupMigrations();
   if (!(await requireAdmin(req, res))) return;
   try {
     const id = Number(req.params.id);
     const existing = (await sql`SELECT i.*, p.name AS project_name FROM fin_project_invoices i LEFT JOIN projects p ON p.id=i.project_id WHERE i.id=${id}`) as any[];
     if (!existing.length) return res.status(404).json({ error: 'Invoice not found' });
     const inv = existing[0];
-    const { amount_received, cleared_date, notes } = req.body;
-    // amount_received defaults to amount_invoiced when omitted — the common
-    // "paid in full" case.
-    const received = amount_received != null ? Number(amount_received) : Number(inv.amount_invoiced);
-    if (received < 0) return res.status(400).json({ error: 'amount_received cannot be negative' });
+    if (inv.status !== 'cleared_pending') {
+      return res.status(400).json({ error: `Invoice is ${inv.status}, not awaiting clearance approval` });
+    }
     const adminUser = (await sql`SELECT id, name FROM app_users WHERE id=${(req.headers['x-user-id'] as string) || ''}`) as any[];
-    const adminName = adminUser[0]?.name ?? null;
-    const adminId = adminUser[0]?.id ?? null;
+    const rows = await sql`
+      UPDATE fin_project_invoices SET status='cleared', updated_at=NOW() WHERE id=${id} RETURNING *`;
+    const updated = rows[0];
+    logInvoiceAudit('cleared', inv, updated, { id: adminUser[0]?.id ?? null, name: adminUser[0]?.name ?? null, role: 'admin' }, inv.project_name);
+    // Tell the coordinator the request was approved.
+    if (inv.cleared_by && inv.cleared_by !== adminUser[0]?.id) {
+      notifyUser(inv.cleared_by, 'invoice_cleared',
+        'Clearance approved ✅',
+        `${inv.project_name}${inv.invoice_number ? ` (${inv.invoice_number})` : ''}: ${fmtMoney(Number(inv.amount_received))} received — confirmed.`).catch(()=>{});
+    }
+    res.json(updated);
+  } catch (err: any) { res.status(500).json({ error: err.message || 'Server error' }); }
+});
+
+// PATCH /api/finance/invoices/:id/reject-clearance — admin-only. Bounces
+// a coord-submitted clearance back to pending. Body { rejection_reason }.
+// Notifies the coord with the reason so they can fix and resubmit.
+app.patch('/api/finance/invoices/:id/reject-clearance', async (req, res) => {
+  await runStartupMigrations();
+  if (!(await requireAdmin(req, res))) return;
+  try {
+    const id = Number(req.params.id);
+    const { rejection_reason } = req.body ?? {};
+    if (!rejection_reason?.trim()) return res.status(400).json({ error: 'rejection_reason is required' });
+    const existing = (await sql`SELECT i.*, p.name AS project_name FROM fin_project_invoices i LEFT JOIN projects p ON p.id=i.project_id WHERE i.id=${id}`) as any[];
+    if (!existing.length) return res.status(404).json({ error: 'Invoice not found' });
+    const inv = existing[0];
+    if (inv.status !== 'cleared_pending') {
+      return res.status(400).json({ error: `Invoice is ${inv.status}, not awaiting clearance approval` });
+    }
+    const adminUser = (await sql`SELECT id, name FROM app_users WHERE id=${(req.headers['x-user-id'] as string) || ''}`) as any[];
+    const requester = inv.cleared_by;
     const rows = await sql`
       UPDATE fin_project_invoices SET
-        amount_received=${received},
-        status='cleared',
-        cleared_date=${cleared_date || new Date().toISOString().slice(0, 10)},
-        cleared_by=${adminId},
-        cleared_by_name=${adminName},
-        notes=COALESCE(${notes?.trim() || null}, notes),
+        status='pending',
+        amount_received=NULL,
+        cleared_date=NULL,
+        cleared_by=NULL,
+        cleared_by_name=NULL,
         updated_at=NOW()
       WHERE id=${id}
       RETURNING *`;
     const updated = rows[0];
-    logInvoiceAudit('cleared', inv, updated, { id: adminId, name: adminName, role: 'admin' }, inv.project_name);
-    if (inv.created_by) {
-      const variance = received - Number(inv.amount_invoiced);
-      const varianceMsg = variance === 0 ? 'paid in full' : variance < 0 ? `short by ${fmtMoney(Math.abs(variance))}` : `extra ${fmtMoney(variance)}`;
-      notifyUser(inv.created_by, 'invoice_cleared', 'Invoice Cleared ✅',
-        `${inv.project_name} · ${fmtMoney(received)} received (${varianceMsg}).`).catch(()=>{});
+    logInvoiceAudit('clear_rejected', inv, updated, { id: adminUser[0]?.id ?? null, name: adminUser[0]?.name ?? null, role: 'admin' }, inv.project_name);
+    if (requester) {
+      notifyUser(requester, 'invoice_clear_rejected',
+        'Clearance request needs revision',
+        `Admin rejected the clearance on ${inv.project_name}${inv.invoice_number ? ` (${inv.invoice_number})` : ''}: ${rejection_reason.trim().slice(0, 200)}`
+      ).catch(()=>{});
     }
     res.json(updated);
   } catch (err: any) { res.status(500).json({ error: err.message || 'Server error' }); }

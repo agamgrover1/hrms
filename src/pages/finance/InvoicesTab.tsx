@@ -96,6 +96,12 @@ export default function InvoicesTab({ month, year, onChanged }: { month: number;
 
   const filtered = useMemo(() => {
     if (statusFilter === 'all') return invoices.filter(i => i.status !== 'cancelled');
+    // 'pending' filter shows both fresh pending invoices AND coord-submitted
+    // clearances still awaiting admin approval — they're both "open work"
+    // from the workflow POV, just at different stages.
+    if (statusFilter === 'pending') {
+      return invoices.filter(i => i.status === 'pending' || i.status === 'cleared_pending');
+    }
     return invoices.filter(i => i.status === statusFilter);
   }, [invoices, statusFilter]);
 
@@ -105,10 +111,16 @@ export default function InvoicesTab({ month, year, onChanged }: { month: number;
     const active = invoices.filter(i => i.status !== 'cancelled');
     const inrOf = (i: FinInvoice) => Number(i.amount_invoiced_inr ?? i.amount_invoiced ?? 0);
     const invoiced = active.reduce((s, i) => s + inrOf(i), 0);
+    // 'received' only counts FINAL cleared invoices — admin-approved cash
+    // in the bank. cleared_pending entries aren't real cash yet.
     const received = active.filter(i => i.status === 'cleared').reduce((s, i) => s + Number(i.amount_received || 0), 0);
-    const pending = active.filter(i => i.status === 'pending').reduce((s, i) => s + inrOf(i), 0);
-    const pendingCount = active.filter(i => i.status === 'pending').length;
-    return { invoiced, received, pending, pendingCount };
+    // 'pending' = unsettled work, includes both raw pending AND awaiting-
+    // approval clearances. Count is the badge admin sees on the chip.
+    const pendingRows = active.filter(i => i.status === 'pending' || i.status === 'cleared_pending');
+    const pending = pendingRows.reduce((s, i) => s + inrOf(i), 0);
+    const pendingCount = pendingRows.length;
+    const awaitingApprovalCount = active.filter(i => i.status === 'cleared_pending').length;
+    return { invoiced, received, pending, pendingCount, awaitingApprovalCount };
   }, [invoices]);
 
   const create = async () => {
@@ -159,6 +171,18 @@ export default function InvoicesTab({ month, year, onChanged }: { month: number;
   const cancelInv = async (inv: FinInvoice) => {
     if (!confirm(`Cancel this invoice? It will be excluded from all totals but the row stays for audit.`)) return;
     try { await financeApi.updateInvoice(inv.id, { status: 'cancelled' }); load(); onChanged(); }
+    catch (e: any) { setErr(e.message); }
+  };
+
+  const approveClearance = async (inv: FinInvoice) => {
+    if (!confirm(`Approve clearance for ${inv.project_name}${inv.invoice_number ? ` (${inv.invoice_number})` : ''}?`)) return;
+    try { await financeApi.approveClearance(inv.id); load(); onChanged(); }
+    catch (e: any) { setErr(e.message); }
+  };
+  const rejectClearance = async (inv: FinInvoice) => {
+    const reason = window.prompt('Reason for rejecting this clearance (the coordinator sees this):');
+    if (!reason?.trim()) return;
+    try { await financeApi.rejectClearance(inv.id, reason.trim()); load(); onChanged(); }
     catch (e: any) { setErr(e.message); }
   };
 
@@ -246,6 +270,10 @@ export default function InvoicesTab({ month, year, onChanged }: { month: number;
                 {filtered.map(inv => {
                   const isCancelled = inv.status === 'cancelled';
                   const isCleared = inv.status === 'cleared';
+                  // Coord may edit their own pending invoices. Once they've
+                  // submitted a clearance (cleared_pending) the invoice is
+                  // locked until admin approves or rejects — they can still
+                  // see + cancel the request but not edit the amounts.
                   const canEditAsCoord = !isAdmin && inv.status === 'pending' && inv.created_by === userId;
                   const canDeleteAsCoord = canEditAsCoord;
                   // For variance: compare apples-to-apples in INR — amount_received
@@ -301,6 +329,7 @@ export default function InvoicesTab({ month, year, onChanged }: { month: number;
                         <RowActions
                           inv={inv}
                           isAdmin={isAdmin}
+                          currentUserId={userId}
                           canEditAsCoord={canEditAsCoord}
                           canDeleteAsCoord={canDeleteAsCoord}
                           onClear={() => setClearTarget(inv)}
@@ -308,6 +337,8 @@ export default function InvoicesTab({ month, year, onChanged }: { month: number;
                           onReopen={() => reopen(inv)}
                           onCancel={() => cancelInv(inv)}
                           onDelete={() => remove(inv)}
+                          onApproveClearance={() => approveClearance(inv)}
+                          onRejectClearance={() => rejectClearance(inv)}
                         />
                       </td>
                     </tr>
@@ -441,6 +472,13 @@ function StatusPill({ status }: { status: FinInvoice['status'] }) {
       </span>
     );
   }
+  if (status === 'cleared_pending') {
+    return (
+      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-semibold bg-accent-container text-accent">
+        <AlertTriangle size={11} strokeWidth={2.5} /> Awaiting approval
+      </span>
+    );
+  }
   if (status === 'cancelled') {
     return (
       <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-semibold bg-surface-3 text-on-surface-subtle">
@@ -455,15 +493,24 @@ function StatusPill({ status }: { status: FinInvoice['status'] }) {
   );
 }
 
-function RowActions({ inv, isAdmin, canEditAsCoord, canDeleteAsCoord, onClear, onEdit, onReopen, onCancel, onDelete }: {
-  inv: FinInvoice; isAdmin: boolean;
+function RowActions({ inv, isAdmin, currentUserId, canEditAsCoord, canDeleteAsCoord, onClear, onEdit, onReopen, onCancel, onDelete, onApproveClearance, onRejectClearance }: {
+  inv: FinInvoice; isAdmin: boolean; currentUserId?: string;
   canEditAsCoord: boolean; canDeleteAsCoord: boolean;
   onClear: () => void; onEdit: () => void; onReopen: () => void; onCancel: () => void; onDelete: () => void;
+  onApproveClearance: () => void; onRejectClearance: () => void;
 }) {
   const [open, setOpen] = useState(false);
   const isPending = inv.status === 'pending';
+  const isClearPending = inv.status === 'cleared_pending';
   const isCleared = inv.status === 'cleared';
-  const showAnything = isAdmin || canEditAsCoord || canDeleteAsCoord;
+  // Coordinator may submit a clearance request on their own pending
+  // invoices (or any pending invoice if they have permission). Mirrors
+  // the same write-gate the backend enforces.
+  const canRequestClearAsCoord = !isAdmin && isPending;
+  // Coord can withdraw their own pending clearance request (returns it
+  // to plain pending so they can edit + resubmit).
+  const isOwnClearRequest = !isAdmin && isClearPending && inv.cleared_by === currentUserId;
+  const showAnything = isAdmin || canEditAsCoord || canDeleteAsCoord || canRequestClearAsCoord || isOwnClearRequest;
   if (!showAnything) return null;
   return (
     <div className="relative">
@@ -474,9 +521,26 @@ function RowActions({ inv, isAdmin, canEditAsCoord, canDeleteAsCoord, onClear, o
       {open && (
         <>
           <div className="fixed inset-0 z-10" onClick={() => setOpen(false)} />
-          <div className="absolute right-0 mt-1 w-48 bg-surface border border-outline rounded-lg shadow-elev-3 py-1 z-20">
-            {isAdmin && isPending && (
-              <Item icon={CheckCircle2} label="Mark cleared" onClick={() => { setOpen(false); onClear(); }} tone="text-success" />
+          <div className="absolute right-0 mt-1 w-52 bg-surface border border-outline rounded-lg shadow-elev-3 py-1 z-20">
+            {/* Admin marks cleared directly. Coord submits for admin
+                approval — same modal, different terminal status. */}
+            {isPending && (isAdmin || canRequestClearAsCoord) && (
+              <Item icon={CheckCircle2}
+                label={isAdmin ? 'Mark cleared' : 'Request clearance'}
+                onClick={() => { setOpen(false); onClear(); }}
+                tone="text-success" />
+            )}
+            {/* Admin approving / rejecting a coord-submitted clearance. */}
+            {isAdmin && isClearPending && (
+              <>
+                <Item icon={CheckCircle2} label="Approve clearance" onClick={() => { setOpen(false); onApproveClearance(); }} tone="text-success" />
+                <Item icon={X} label="Reject clearance" onClick={() => { setOpen(false); onRejectClearance(); }} tone="text-danger" />
+              </>
+            )}
+            {/* Coord can withdraw their own clearance request (uses
+                reopen — same effect, returns to pending). */}
+            {isOwnClearRequest && (
+              <Item icon={RotateCcw} label="Withdraw request" onClick={() => { setOpen(false); onReopen(); }} tone="text-warning" />
             )}
             {(isAdmin || canEditAsCoord) && (
               <Item icon={Pencil} label="Edit" onClick={() => { setOpen(false); onEdit(); }} />
@@ -507,6 +571,8 @@ function Item({ icon: Icon, label, onClick, tone = 'text-on-surface' }: { icon: 
 }
 
 function ClearModal({ inv, onClose, onSaved }: { inv: FinInvoice; onClose: () => void; onSaved: () => void }) {
+  const { user } = useAuth();
+  const isAdmin = user?.role === 'admin';
   // Received amount is ALWAYS in INR (the bank reality). For comparison we
   // use amount_invoiced_inr — the INR equivalent locked at billing time.
   const invInr = Number(inv.amount_invoiced_inr ?? inv.amount_invoiced);
@@ -535,7 +601,7 @@ function ClearModal({ inv, onClose, onSaved }: { inv: FinInvoice; onClose: () =>
   };
 
   return (
-    <Modal onClose={onClose} title={`Mark cleared · ${inv.project_name}`}>
+    <Modal onClose={onClose} title={`${isAdmin ? 'Mark cleared' : 'Request clearance'} · ${inv.project_name}`}>
       <div className="space-y-3">
         <div className="rounded-lg bg-surface-2 border border-outline p-3 text-xs text-on-surface-muted">
           {isForeign ? (
@@ -573,7 +639,7 @@ function ClearModal({ inv, onClose, onSaved }: { inv: FinInvoice; onClose: () =>
           <button onClick={onClose} className="px-3 py-2 rounded-lg text-sm font-medium text-on-surface-muted hover:bg-surface-2">Cancel</button>
           <button onClick={submit} disabled={saving}
             className="px-4 py-2 rounded-lg text-sm font-semibold bg-success text-on-accent disabled:opacity-50 inline-flex items-center gap-1.5">
-            <CheckCircle2 size={14} /> {saving ? 'Saving…' : 'Mark cleared'}
+            <CheckCircle2 size={14} /> {saving ? 'Saving…' : isAdmin ? 'Mark cleared' : 'Submit for approval'}
           </button>
         </div>
       </div>
@@ -688,7 +754,7 @@ function formatDate(d: string | null): string {
 interface InvoiceAuditRow {
   id: number;
   invoice_id: number | null;
-  action: 'created' | 'edited' | 'cleared' | 'reopened' | 'deleted';
+  action: 'created' | 'edited' | 'cleared' | 'reopened' | 'deleted' | 'clear_requested' | 'clear_rejected';
   invoice_number: string | null;
   invoice_date: string | null;
   project_id: string | null;
@@ -724,11 +790,13 @@ function timeAgo(ts: string): string {
 }
 
 const ACTION_TONE: Record<string, string> = {
-  created:  'bg-success-container text-success',
-  edited:   'bg-warning-container text-warning',
-  cleared:  'bg-accent-container text-accent',
-  reopened: 'bg-surface-3 text-on-surface-muted',
-  deleted:  'bg-danger-container text-danger',
+  created:         'bg-success-container text-success',
+  edited:          'bg-warning-container text-warning',
+  cleared:         'bg-accent-container text-accent',
+  reopened:        'bg-surface-3 text-on-surface-muted',
+  deleted:         'bg-danger-container text-danger',
+  clear_requested: 'bg-accent/15 text-accent',
+  clear_rejected:  'bg-danger-container text-danger',
 };
 
 function InvoiceActivityLog({ month, year }: { month: number; year: number }) {
@@ -749,7 +817,7 @@ function InvoiceActivityLog({ month, year }: { month: number; year: number }) {
   , [rows, actionFilter]);
 
   const counts = useMemo(() => {
-    const c: Record<string, number> = { all: rows.length, created: 0, edited: 0, cleared: 0, reopened: 0, deleted: 0 };
+    const c: Record<string, number> = { all: rows.length, created: 0, edited: 0, clear_requested: 0, cleared: 0, clear_rejected: 0, reopened: 0, deleted: 0 };
     for (const r of rows) c[r.action] = (c[r.action] ?? 0) + 1;
     return c;
   }, [rows]);
@@ -762,7 +830,7 @@ function InvoiceActivityLog({ month, year }: { month: number; year: number }) {
           <span className="text-xs text-on-surface-muted">{filtered.length} of {rows.length}</span>
         </div>
         <div className="inline-flex items-center gap-1">
-          {['all','created','edited','cleared','reopened','deleted'].map(a => (
+          {['all','created','edited','clear_requested','cleared','clear_rejected','reopened','deleted'].map(a => (
             <button key={a} onClick={() => setActionFilter(a)}
               className={`px-2 py-1 rounded text-[11px] font-semibold capitalize transition-colors ${
                 actionFilter === a
