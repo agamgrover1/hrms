@@ -7797,7 +7797,9 @@ app.get('/api/hour-logs', async (req, res) => {
         AND (${year}::int IS NULL  OR hl.year=${year})
         AND (${employee_id}::text IS NULL OR hl.employee_id=${employee_id})
         AND (${status}::text IS NULL OR hl.status=${status})
-        AND (${reviewer_id}::text IS NULL OR p.project_reporting_id=${reviewer_id})
+        AND (${reviewer_id}::text IS NULL
+             OR p.project_reporting_id=${reviewer_id}
+             OR p.project_lead_id=${reviewer_id})
       ORDER BY hl.submitted_at DESC`;
     res.json(rows);
   } catch (err: any) { res.status(500).json({ error: err.message || 'Server error' }); }
@@ -7845,12 +7847,22 @@ app.post('/api/hour-logs', async (req, res) => {
       after: { hours_logged: Number(hours_logged) || 0, status: 'pending', work_description: work_description ?? null },
     });
     try {
-      const p = await sql`SELECT name, project_reporting_id FROM projects WHERE id=${project_id}`;
+      const p = await sql`SELECT name, project_reporting_id, project_lead_id FROM projects WHERE id=${project_id}`;
       const projRow = (p as any[])[0];
-      if (projRow?.project_reporting_id) {
-        notifyEmployeeUser(projRow.project_reporting_id, 'hours_logged',
-          'Hours Submitted for Review',
-          `${req.body.employee_name || 'An employee'} logged ${hours_logged}h on ${projRow.name} (W${week_num})`).catch(()=>{});
+      // Notify both the project_reporting_id (designated reviewer) AND
+      // the project_lead_id when set, so a lead who isn't the reporter
+      // still sees the approval task land in their bell. Dedup against
+      // the same id to avoid double-pinging when one person holds both
+      // roles.
+      const recipients = new Set<string>();
+      if (projRow?.project_reporting_id) recipients.add(projRow.project_reporting_id);
+      if (projRow?.project_lead_id)      recipients.add(projRow.project_lead_id);
+      if (recipients.size > 0) {
+        for (const empId of recipients) {
+          notifyEmployeeUser(empId, 'hours_logged',
+            'Hours Submitted for Review',
+            `${req.body.employee_name || 'An employee'} logged ${hours_logged}h on ${projRow.name} (W${week_num})`).catch(()=>{});
+        }
       } else {
         notifyCoordinators('hours_logged',
           'Hours Submitted (no reviewer set)',
