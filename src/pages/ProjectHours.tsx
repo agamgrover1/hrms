@@ -42,6 +42,10 @@ interface SummaryEmployee {
   over_plan_log_count?: number;
   w1_logged?: number; w2_logged?: number; w3_logged?: number; w4_logged?: number; w5_logged?: number;
   w1_over?: number;   w2_over?: number;   w3_over?: number;   w4_over?: number;   w5_over?: number;
+  // Approved internal-activity hours per week + month total. Surfaces
+  // a third sub-column next to Plan / Log on Capacity + Mine.
+  w1_internal?: number; w2_internal?: number; w3_internal?: number; w4_internal?: number; w5_internal?: number;
+  month_internal?: number;
 }
 
 const MONTHS = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
@@ -764,7 +768,7 @@ function CapacityView({ summary, employees, loading, search, month, year, openDe
         <div>
           <h3 className="font-display text-xl font-bold tracking-tight text-on-surface">Per-employee capacity · {MONTHS[month-1]} {year}</h3>
           <p className="text-xs text-on-surface-muted mt-0.5">
-            Each week splits into <span className="font-semibold">Plan</span> (allocated) and <span className="font-semibold">Log</span> (actual approved) side-by-side. The Log cell is tinted by status — <span className="text-success font-semibold">green</span> for a match, <span className="text-warning font-semibold">amber</span> when over-plan, <span className="text-danger font-semibold">red</span> when short. Click any cell to drill into the logs. Target: <span className="num-mono">{TARGET_WEEKLY}h</span>/week.
+            Each week splits into <span className="font-semibold">Plan</span> (allocated) · <span className="font-semibold">Log</span> (approved project hours) · <span className="font-semibold text-accent">Int</span> (approved internal-activity hours — training, recruiting, admin etc.). Log is tinted <span className="text-success font-semibold">green</span> for match · <span className="text-warning font-semibold">amber</span> over-plan · <span className="text-danger font-semibold">red</span> short. Target: <span className="num-mono">{TARGET_WEEKLY}h</span>/week.
           </p>
         </div>
         <div className="flex items-center gap-3 text-[11px] text-on-surface-muted flex-wrap">
@@ -793,29 +797,31 @@ function CapacityView({ summary, employees, loading, search, month, year, openDe
       <div className="overflow-x-auto">
         <table className="w-full text-sm">
           <thead className="bg-surface-2 border-b border-outline">
-            {/* Grouped header — each week (and Month) splits into Plan + Log
-                sub-columns so the comparison is a side-by-side glance instead
-                of doing math against a stacked cell. The top row carries the
-                W1..W5 / Month labels with colspan=2; the second row carries
-                the per-side "Plan" / "Log" sub-labels. */}
+            {/* Grouped header — each week (and Month) splits into Plan +
+                Log + Int sub-columns. Plan = allocated. Log = approved
+                project hours. Int = approved internal-activity hours
+                (training, recruiting, admin, etc.) — kept separate so
+                the project-hours read stays clean. */}
             <tr className="text-left text-[10px] font-bold text-on-surface-muted uppercase tracking-[0.16em]">
               <th rowSpan={2} className="px-5 py-3 sticky left-0 bg-surface-2 align-bottom">Employee</th>
               {['W1','W2','W3','W4','W5'].map(w => (
-                <th key={w} colSpan={2} className="px-3 py-2 text-center border-l border-outline">{w}</th>
+                <th key={w} colSpan={3} className="px-3 py-2 text-center border-l border-outline">{w}</th>
               ))}
-              <th colSpan={2} className="px-3 py-2 text-center bg-surface-3 border-l border-outline">Month</th>
+              <th colSpan={3} className="px-3 py-2 text-center bg-surface-3 border-l border-outline">Month</th>
               <th rowSpan={2} className="px-3 py-3 text-center min-w-[88px] align-bottom border-l border-outline">Over plan</th>
               <th rowSpan={2} className="px-3 py-3"></th>
             </tr>
             <tr className="text-[9px] font-semibold text-on-surface-subtle uppercase tracking-wider">
               {['W1','W2','W3','W4','W5'].map(w => (
                 <Fragment key={w}>
-                  <th className="px-1 py-1.5 text-center min-w-[48px] border-l border-outline">Plan</th>
-                  <th className="px-1 py-1.5 text-center min-w-[52px]">Log</th>
+                  <th className="px-1 py-1.5 text-center min-w-[44px] border-l border-outline">Plan</th>
+                  <th className="px-1 py-1.5 text-center min-w-[48px]">Log</th>
+                  <th className="px-1 py-1.5 text-center min-w-[44px]" title="Approved internal-activity hours">Int</th>
                 </Fragment>
               ))}
-              <th className="px-1 py-1.5 text-center min-w-[52px] bg-surface-3 border-l border-outline">Plan</th>
-              <th className="px-1 py-1.5 text-center min-w-[56px] bg-surface-3">Log</th>
+              <th className="px-1 py-1.5 text-center min-w-[48px] bg-surface-3 border-l border-outline">Plan</th>
+              <th className="px-1 py-1.5 text-center min-w-[52px] bg-surface-3">Log</th>
+              <th className="px-1 py-1.5 text-center min-w-[48px] bg-surface-3" title="Approved internal-activity hours">Int</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-outline">
@@ -830,8 +836,8 @@ function CapacityView({ summary, employees, loading, search, month, year, openDe
                         <span className="num-mono text-[10px] font-semibold text-on-surface-muted bg-surface px-1.5 py-0.5 rounded-full">{g.headcount}</span>
                       </div>
                     </td>
-                    <td colSpan={10} className="px-2 py-2.5"></td>
-                    <td colSpan={2} className="px-2 py-2.5 text-center bg-surface-3/50">
+                    <td colSpan={15} className="px-2 py-2.5"></td>
+                    <td colSpan={3} className="px-2 py-2.5 text-center bg-surface-3/50">
                       <span className="num-mono text-sm font-bold text-on-surface">{Math.round(g.subtotalMonth)}<span className="text-[10px] font-normal text-on-surface-muted ml-0.5">h</span></span>
                     </td>
                     <td className="px-4 py-2.5 text-center">
@@ -846,8 +852,10 @@ function CapacityView({ summary, employees, loading, search, month, year, openDe
               const weekPlans = [e.w1, e.w2, e.w3, e.w4, e.w5];
               const weekOvers = [e.w1_over ?? 0, e.w2_over ?? 0, e.w3_over ?? 0, e.w4_over ?? 0, e.w5_over ?? 0];
               const weekLogged = [e.w1_logged ?? 0, e.w2_logged ?? 0, e.w3_logged ?? 0, e.w4_logged ?? 0, e.w5_logged ?? 0];
+              const weekInternal = [e.w1_internal ?? 0, e.w2_internal ?? 0, e.w3_internal ?? 0, e.w4_internal ?? 0, e.w5_internal ?? 0];
               const monthPlan = Number(e.monthly);
               const monthLogged = weekLogged.reduce((s, v) => s + Number(v), 0);
+              const monthInternal = Number(e.month_internal ?? weekInternal.reduce((s, v) => s + Number(v), 0));
               const monthOver = Number(e.logged_over_plan ?? 0);
               const monthUnder = (monthLogged > 0 && monthLogged < monthPlan && monthOver === 0) ? monthPlan - monthLogged : 0;
               return (
@@ -904,6 +912,18 @@ function CapacityView({ summary, employees, loading, search, month, year, openDe
                             {under > 0 && <span className="ml-0.5 text-[9px] font-bold inline-flex items-center gap-0.5"><AlertTriangle size={8} />−{Math.round(under)}</span>}
                           </button>
                         </td>
+                        {/* Int sub-cell — approved internal-activity hours
+                            for this week. Subtle accent tint so it reads
+                            as supplementary context, not as a target. */}
+                        <td className="px-1 py-2 text-center">
+                          <button onClick={() => openDetail(e.employee_id, e.employee_name || '—', i + 1)}
+                            title={`Internal-activity hours (approved): ${Number(weekInternal[i])}h`}
+                            className={`num-mono inline-flex items-center justify-center w-full px-1.5 py-1.5 rounded-md text-sm font-semibold transition-colors hover:shadow-elev-1 ${
+                              Number(weekInternal[i]) > 0 ? 'bg-accent/10 text-accent' : 'text-on-surface-subtle'
+                            }`}>
+                            {Number(weekInternal[i])}
+                          </button>
+                        </td>
                       </Fragment>
                     );
                   })}
@@ -928,6 +948,15 @@ function CapacityView({ summary, employees, loading, search, month, year, openDe
                       {Math.round(monthLogged)}
                       {monthOver > 0 && <span className="ml-0.5 text-[9px] font-bold">+{Math.round(monthOver)}</span>}
                       {monthUnder > 0 && <span className="ml-0.5 text-[9px] font-bold">−{Math.round(monthUnder)}</span>}
+                    </button>
+                  </td>
+                  <td className="px-1 py-2 text-center bg-surface-2">
+                    <button onClick={() => openDetail(e.employee_id, e.employee_name || '—')}
+                      title={`Internal-activity hours this month (approved): ${Math.round(monthInternal)}h`}
+                      className={`num-mono inline-flex items-center justify-center w-full px-2 py-2 rounded-md text-base font-bold transition-colors ${
+                        monthInternal > 0 ? 'bg-accent/10 text-accent' : 'text-on-surface-subtle'
+                      }`}>
+                      {Math.round(monthInternal)}
                     </button>
                   </td>
                   <td className="px-2 py-2 text-center">
@@ -1099,12 +1128,12 @@ function MineView({ summary, assignments, myProjects, reportsToIds, loading, mon
                       className="" align="left" />
                   </th>
                   {(['w1','w2','w3','w4','w5'] as const).map(k => (
-                    <th key={k} colSpan={2} className="px-2 py-2 text-center border-l border-outline">
+                    <th key={k} colSpan={3} className="px-2 py-2 text-center border-l border-outline">
                       <SortableTh label={k.toUpperCase()} sortKey={k} current={teamSort} onSort={onSort}
                         className="" align="center" />
                     </th>
                   ))}
-                  <th colSpan={2} className="px-2 py-2 text-center bg-surface-3 border-l border-outline">
+                  <th colSpan={3} className="px-2 py-2 text-center bg-surface-3 border-l border-outline">
                     <SortableTh label="Month" sortKey="month" current={teamSort} onSort={onSort}
                       className="" align="center" />
                   </th>
@@ -1116,12 +1145,14 @@ function MineView({ summary, assignments, myProjects, reportsToIds, loading, mon
                 <tr className="text-[9px] font-semibold text-on-surface-subtle uppercase tracking-wider">
                   {(['w1','w2','w3','w4','w5'] as const).map(k => (
                     <Fragment key={k}>
-                      <th className="px-1 py-1.5 text-center min-w-[44px] border-l border-outline">Plan</th>
-                      <th className="px-1 py-1.5 text-center min-w-[48px]">Log</th>
+                      <th className="px-1 py-1.5 text-center min-w-[40px] border-l border-outline">Plan</th>
+                      <th className="px-1 py-1.5 text-center min-w-[44px]">Log</th>
+                      <th className="px-1 py-1.5 text-center min-w-[40px]" title="Approved internal-activity hours">Int</th>
                     </Fragment>
                   ))}
-                  <th className="px-1 py-1.5 text-center min-w-[48px] bg-surface-3 border-l border-outline">Plan</th>
-                  <th className="px-1 py-1.5 text-center min-w-[52px] bg-surface-3">Log</th>
+                  <th className="px-1 py-1.5 text-center min-w-[44px] bg-surface-3 border-l border-outline">Plan</th>
+                  <th className="px-1 py-1.5 text-center min-w-[48px] bg-surface-3">Log</th>
+                  <th className="px-1 py-1.5 text-center min-w-[44px] bg-surface-3" title="Approved internal-activity hours">Int</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-outline">
@@ -1129,8 +1160,10 @@ function MineView({ summary, assignments, myProjects, reportsToIds, loading, mon
                   const weekPlans = [e.w1, e.w2, e.w3, e.w4, e.w5];
                   const weekOvers = [e.w1_over ?? 0, e.w2_over ?? 0, e.w3_over ?? 0, e.w4_over ?? 0, e.w5_over ?? 0];
                   const weekLogged = [e.w1_logged ?? 0, e.w2_logged ?? 0, e.w3_logged ?? 0, e.w4_logged ?? 0, e.w5_logged ?? 0];
+                  const weekInternal = [e.w1_internal ?? 0, e.w2_internal ?? 0, e.w3_internal ?? 0, e.w4_internal ?? 0, e.w5_internal ?? 0];
                   const monthPlan = Number(e.monthly);
                   const monthLogged = weekLogged.reduce((s, v) => s + Number(v), 0);
+                  const monthInternal = Number(e.month_internal ?? weekInternal.reduce((s, v) => s + Number(v), 0));
                   const monthOver = Number(e.logged_over_plan ?? 0);
                   const monthUnder = (monthLogged > 0 && monthLogged < monthPlan && monthOver === 0) ? monthPlan - monthLogged : 0;
                   return (
@@ -1171,6 +1204,15 @@ function MineView({ summary, assignments, myProjects, reportsToIds, loading, mon
                                 {under > 0 && <span className="ml-0.5 text-[9px] font-bold inline-flex items-center gap-0.5"><AlertTriangle size={8} />−{Math.round(under)}</span>}
                               </button>
                             </td>
+                            <td className="px-1 py-2 text-center">
+                              <button onClick={() => openDetail(e.employee_id, e.employee_name || '—', i + 1)}
+                                title={`Internal-activity hours (approved): ${Number(weekInternal[i])}h`}
+                                className={`num-mono inline-flex items-center justify-center w-full px-1.5 py-1 rounded-md text-sm font-semibold transition-colors ${
+                                  Number(weekInternal[i]) > 0 ? 'bg-accent/10 text-accent' : 'text-on-surface-subtle'
+                                }`}>
+                                {Number(weekInternal[i])}
+                              </button>
+                            </td>
                           </Fragment>
                         );
                       })}
@@ -1194,6 +1236,15 @@ function MineView({ summary, assignments, myProjects, reportsToIds, loading, mon
                           {Math.round(monthLogged)}
                           {monthOver > 0 && <span className="ml-0.5 text-[9px] font-bold">+{Math.round(monthOver)}</span>}
                           {monthUnder > 0 && <span className="ml-0.5 text-[9px] font-bold">−{Math.round(monthUnder)}</span>}
+                        </button>
+                      </td>
+                      <td className="px-1 py-2 text-center bg-surface-2">
+                        <button onClick={() => openDetail(e.employee_id, e.employee_name || '—')}
+                          title={`Internal-activity hours this month (approved): ${Math.round(monthInternal)}h`}
+                          className={`num-mono inline-flex items-center justify-center w-full px-2 py-1 rounded-md text-base font-bold transition-colors ${
+                            monthInternal > 0 ? 'bg-accent/10 text-accent' : 'text-on-surface-subtle'
+                          }`}>
+                          {Math.round(monthInternal)}
                         </button>
                       </td>
                       <td className="px-2 py-2 text-center">

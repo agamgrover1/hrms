@@ -700,12 +700,22 @@ export const api = {
     if (params.employee_id) qs.set('employee_id', params.employee_id);
     if (params.from) qs.set('from', params.from);
     if (params.to) qs.set('to', params.to);
-    return request<Array<{ id: string; employee_id: string; activity_id: string; activity_name: string; log_date: string; hours: number; notes: string | null }>>(`/internal-hour-logs?${qs}`);
+    return request<Array<{
+      id: string; employee_id: string; activity_id: string; activity_name: string;
+      log_date: string; hours: number; notes: string | null;
+      status: 'pending' | 'approved' | 'rejected';
+      reviewed_by_id: string | null; reviewed_by_name: string | null;
+      reviewed_at: string | null; rejection_reason: string | null;
+    }>>(`/internal-hour-logs?${qs}`);
   },
   saveInternalHourLog: (data: { activity_id: string; log_date: string; hours: number; notes: string }) =>
     request(`/internal-hour-logs`, { method: 'POST', body: JSON.stringify(data) }),
   deleteInternalHourLog: (id: string) =>
     request(`/internal-hour-logs/${id}`, { method: 'DELETE' }),
+  approveInternalHourLog: (id: string) =>
+    request<any>(`/internal-hour-logs/${id}/approve`, { method: 'PATCH', body: JSON.stringify({}) }),
+  rejectInternalHourLog: (id: string, rejection_reason: string) =>
+    request<any>(`/internal-hour-logs/${id}/reject`, { method: 'PATCH', body: JSON.stringify({ rejection_reason }) }),
 
   // ── To-Do tasks ──────────────────────────────────────────────────────
   getTodos: (params: { status?: string } = {}) => {

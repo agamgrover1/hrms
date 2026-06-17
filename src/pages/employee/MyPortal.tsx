@@ -3407,18 +3407,45 @@ function InternalHoursPanel() {
                   </span>
                 </p>
                 <div className="space-y-1.5">
-                  {byDate.get(d)!.map(l => (
-                    <div key={l.id} className="flex items-start gap-3 py-1.5 px-3 rounded-lg bg-surface-2/40 border border-outline">
-                      <div className="flex-1 min-w-0">
-                        <p className="text-sm font-medium text-on-surface truncate">{l.activity_name}</p>
-                        {l.notes && <p className="text-xs text-on-surface-muted leading-snug">{l.notes}</p>}
+                  {byDate.get(d)!.map(l => {
+                    // Approval status per log — pending awaits manager
+                    // review, rejected shows the reason so the employee
+                    // knows what to fix. Approved gets a quiet green pill.
+                    const status = (l as any).status ?? 'pending';
+                    const tone = status === 'approved'
+                      ? 'border-success/30 bg-success/5'
+                      : status === 'rejected'
+                      ? 'border-danger/30 bg-danger-container/30'
+                      : 'border-outline bg-surface-2/40';
+                    return (
+                      <div key={l.id} className={`py-1.5 px-3 rounded-lg border ${tone}`}>
+                        <div className="flex items-start gap-3">
+                          <div className="flex-1 min-w-0">
+                            <div className="flex items-center gap-1.5 flex-wrap">
+                              <p className="text-sm font-medium text-on-surface truncate">{l.activity_name}</p>
+                              {status === 'approved' && (
+                                <span className="text-[9px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded bg-success-container text-success">✓ Approved</span>
+                              )}
+                              {status === 'pending' && (
+                                <span className="text-[9px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded bg-warning-container text-warning">⏳ Awaiting review</span>
+                              )}
+                              {status === 'rejected' && (
+                                <span className="text-[9px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded bg-danger-container text-danger">✕ Rejected</span>
+                              )}
+                            </div>
+                            {l.notes && <p className="text-xs text-on-surface-muted leading-snug mt-0.5">{l.notes}</p>}
+                            {status === 'rejected' && (l as any).rejection_reason && (
+                              <p className="text-[11px] text-danger italic mt-0.5">"{(l as any).rejection_reason}" — fix the entry to re-submit; saving sends it back to pending.</p>
+                            )}
+                          </div>
+                          <span className="text-xs num-mono font-bold text-on-surface whitespace-nowrap">{Number(l.hours).toFixed(1)}h</span>
+                          <button onClick={() => removeLog(l.id)} className="text-on-surface-subtle hover:text-danger p-0.5" title="Delete">
+                            <X size={14} />
+                          </button>
+                        </div>
                       </div>
-                      <span className="text-xs num-mono font-bold text-on-surface whitespace-nowrap">{Number(l.hours).toFixed(1)}h</span>
-                      <button onClick={() => removeLog(l.id)} className="text-on-surface-subtle hover:text-danger p-0.5">
-                        <X size={14} />
-                      </button>
-                    </div>
-                  ))}
+                    );
+                  })}
                 </div>
               </div>
             ))}

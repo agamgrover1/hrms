@@ -1047,6 +1047,25 @@ async function runStartupMigrations() {
     )`;
   await sql`CREATE INDEX IF NOT EXISTS idx_internal_logs_emp_date ON internal_hour_logs(employee_id, log_date DESC)`.catch(()=>{});
   await sql`CREATE INDEX IF NOT EXISTS idx_internal_logs_date ON internal_hour_logs(log_date DESC)`.catch(()=>{});
+  // Approval workflow on internal hour logs. NEW rows land in 'pending'
+  // and the reporting manager gets notified; existing pre-approval-era
+  // rows backfill to 'approved' so we don't retro-invalidate them.
+  // Only 'approved' rows count toward Capacity tables, Pulse hours
+  // hygiene, and per-employee totals from this point on.
+  //
+  // Add the column WITHOUT a default first, backfill NULL rows to
+  // 'approved' (those are the pre-feature rows), then set the default
+  // and NOT NULL. Fully idempotent — on re-run the ADD is a no-op, the
+  // UPDATE finds zero NULLs, and the constraint changes are no-ops.
+  await sql`ALTER TABLE internal_hour_logs ADD COLUMN IF NOT EXISTS status TEXT`.catch(()=>{});
+  await sql`UPDATE internal_hour_logs SET status='approved' WHERE status IS NULL`.catch(()=>{});
+  await sql`ALTER TABLE internal_hour_logs ALTER COLUMN status SET DEFAULT 'pending'`.catch(()=>{});
+  await sql`ALTER TABLE internal_hour_logs ALTER COLUMN status SET NOT NULL`.catch(()=>{});
+  await sql`ALTER TABLE internal_hour_logs ADD COLUMN IF NOT EXISTS reviewed_by_id TEXT`.catch(()=>{});
+  await sql`ALTER TABLE internal_hour_logs ADD COLUMN IF NOT EXISTS reviewed_by_name TEXT`.catch(()=>{});
+  await sql`ALTER TABLE internal_hour_logs ADD COLUMN IF NOT EXISTS reviewed_at TIMESTAMPTZ`.catch(()=>{});
+  await sql`ALTER TABLE internal_hour_logs ADD COLUMN IF NOT EXISTS rejection_reason TEXT`.catch(()=>{});
+  await sql`CREATE INDEX IF NOT EXISTS idx_internal_logs_status ON internal_hour_logs(status, employee_id)`.catch(()=>{});
   // Role scoping for the activity picker. NULL/empty array = visible to
   // everyone (preserves current behaviour for legacy rows). Non-empty
   // array = only roles listed see the activity. Effective role values
@@ -2549,12 +2568,16 @@ async function computePulseForDate(asOf: string, employeeIdsFilter?: string[] | 
     sql`SELECT project_id, employee_id, month, year, monthly_hours FROM project_assignments
         WHERE monthly_hours > 0`,
     sql`SELECT id, project_reporting_id, project_lead_id, created_by FROM projects WHERE status='active'`,
+    // Pulse counts ONLY approved internal-hours toward hours hygiene —
+    // pending submissions don't credit until the manager signs off.
     eIds
       ? sql`SELECT employee_id, log_date, hours, notes FROM internal_hour_logs
             WHERE employee_id = ANY(${eIds}::text[])
-              AND log_date BETWEEN ${windowStartStr}::date AND ${asOf}::date`
+              AND log_date BETWEEN ${windowStartStr}::date AND ${asOf}::date
+              AND status='approved'`
       : sql`SELECT employee_id, log_date, hours, notes FROM internal_hour_logs
-            WHERE log_date BETWEEN ${windowStartStr}::date AND ${asOf}::date`,
+            WHERE log_date BETWEEN ${windowStartStr}::date AND ${asOf}::date
+              AND status='approved'`,
     // Full reporting graph (id, manager) for every active employee. Needed
     // for Team Stewardship: a manager in the chunk needs to know who reports
     // to them even if those reports aren't in this chunk. Cheap query, two
@@ -5152,17 +5175,99 @@ app.post('/api/internal-hour-logs', async (req, res) => {
     if (!h || h <= 0 || h > 24) return res.status(400).json({ error: 'hours must be between 0 and 24' });
     if (!(notes ?? '').trim()) return res.status(400).json({ error: 'Notes are required (what did you do?)' });
     const id = `inlog_${Date.now()}`;
-    // Upsert by (employee, activity, date) so re-saving the same day updates
-    // instead of erroring with the unique constraint.
+    // Upsert by (employee, activity, date) so re-saving the same day
+    // updates instead of erroring with the unique constraint. Re-saving
+    // ALWAYS resets the row back to 'pending' — an employee tweaking
+    // their hours after manager approval needs a fresh review.
     const row = (await sql`
-      INSERT INTO internal_hour_logs (id, employee_id, activity_id, log_date, hours, notes)
-      VALUES (${id}, ${empDbId}, ${activity_id}, ${log_date}::date, ${h}, ${notes.trim()})
+      INSERT INTO internal_hour_logs (id, employee_id, activity_id, log_date, hours, notes, status,
+        reviewed_by_id, reviewed_by_name, reviewed_at, rejection_reason)
+      VALUES (${id}, ${empDbId}, ${activity_id}, ${log_date}::date, ${h}, ${notes.trim()}, 'pending',
+              NULL, NULL, NULL, NULL)
       ON CONFLICT (employee_id, activity_id, log_date) DO UPDATE
-        SET hours=EXCLUDED.hours, notes=EXCLUDED.notes, updated_at=NOW()
+        SET hours=EXCLUDED.hours, notes=EXCLUDED.notes, status='pending',
+            reviewed_by_id=NULL, reviewed_by_name=NULL, reviewed_at=NULL, rejection_reason=NULL,
+            updated_at=NOW()
       RETURNING *`)[0];
+    // Notify the reporting manager so they see a pending review in
+    // their queue without the employee having to ping them separately.
+    try {
+      const actName = (await sql`SELECT name FROM internal_activities WHERE id=${activity_id}`)[0] as any;
+      const empName = (await sql`SELECT name FROM employees WHERE id=${empDbId}`)[0] as any;
+      const datePretty = new Date(log_date).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' });
+      notifyManagerOfEmployee(empDbId, 'internal_logged',
+        `Internal hours awaiting review`,
+        `${empName?.name ?? 'An employee'} logged ${h}h on ${actName?.name ?? 'an activity'} (${datePretty}). Open Approvals to review.`
+      ).catch(()=>{});
+    } catch {/* notification is best-effort; the log itself is what matters */}
     res.status(201).json(row);
   } catch (err: any) { res.status(500).json({ error: err.message ?? 'Server error' }); }
 });
+
+// PATCH /api/internal-hour-logs/:id/approve|reject — reporting manager
+// (or admin / HR) actions a pending internal-hour-log entry. Reject
+// requires a reason; approve doesn't. Body: { rejection_reason? }.
+// Self-approval is blocked — would defeat the workflow.
+async function handleInternalLogReview(action: 'approve' | 'reject', req: any, res: any) {
+  try {
+    await runStartupMigrations();
+    const uid = req.header('x-user-id');
+    if (!uid) return res.status(401).json({ error: 'Sign in required' });
+    const u = (await sql`SELECT id, name, role, employee_id_ref FROM app_users WHERE id=${uid}`)[0] as any;
+    if (!u) return res.status(401).json({ error: 'Unknown user' });
+    const row = (await sql`SELECT * FROM internal_hour_logs WHERE id=${req.params.id}`)[0] as any;
+    if (!row) return res.status(404).json({ error: 'Log not found' });
+    // Permission: same set that can SEE the log can also action it —
+    // canViewInternalHoursOf already covers admin / HR / chain manager
+    // / project reviewer/lead. Self can NOT approve their own (the
+    // canView helper allows self, so we add an explicit block here).
+    const self = (await sql`
+      SELECT id FROM employees
+      WHERE employee_id = ${u.employee_id_ref} OR id = ${u.employee_id_ref}
+      LIMIT 1`)[0] as any;
+    const selfId = self?.id ?? null;
+    if (selfId && selfId === row.employee_id && u.role !== 'admin' && u.role !== 'hr_manager') {
+      return res.status(403).json({ error: "You can't approve your own internal hour log." });
+    }
+    const allowed = await canViewInternalHoursOf(u, selfId, row.employee_id, null);
+    if (!allowed) return res.status(403).json({ error: 'Not permitted to review this log.' });
+
+    if (action === 'reject') {
+      const reason = req.body?.rejection_reason;
+      if (!reason?.trim()) return res.status(400).json({ error: 'A reason is required when rejecting.' });
+      const updated = (await sql`
+        UPDATE internal_hour_logs SET
+          status='rejected',
+          reviewed_by_id=${u.id}, reviewed_by_name=${u.name},
+          reviewed_at=NOW(),
+          rejection_reason=${reason.trim()},
+          updated_at=NOW()
+        WHERE id=${req.params.id}
+        RETURNING *`)[0];
+      notifyEmployeeUser(row.employee_id, 'internal_rejected',
+        'Internal hours rejected',
+        `${u.name} rejected your internal-hours log on ${row.log_date}: ${reason.trim().slice(0, 140)}`
+      ).catch(()=>{});
+      return res.json(updated);
+    }
+    const updated = (await sql`
+      UPDATE internal_hour_logs SET
+        status='approved',
+        reviewed_by_id=${u.id}, reviewed_by_name=${u.name},
+        reviewed_at=NOW(),
+        rejection_reason=NULL,
+        updated_at=NOW()
+      WHERE id=${req.params.id}
+      RETURNING *`)[0];
+    notifyEmployeeUser(row.employee_id, 'internal_approved',
+      'Internal hours approved ✅',
+      `${u.name} approved your ${row.hours}h log on ${row.log_date}.`
+    ).catch(()=>{});
+    res.json(updated);
+  } catch (err: any) { res.status(500).json({ error: err.message ?? 'Server error' }); }
+}
+app.patch('/api/internal-hour-logs/:id/approve', (req, res) => handleInternalLogReview('approve', req, res));
+app.patch('/api/internal-hour-logs/:id/reject',  (req, res) => handleInternalLogReview('reject',  req, res));
 app.delete('/api/internal-hour-logs/:id', async (req, res) => {
   try {
     const uid = req.header('x-user-id');
@@ -8535,6 +8640,25 @@ app.get('/api/hours-summary', async (req, res) => {
     for (const e of editStats as any[]) editsMap.set(e.employee_id, e);
     const logsMap = new Map<string, any>();
     for (const l of logSums as any[]) logsMap.set(l.employee_id, l);
+    // Approved internal-activity hours per week. Week is derived from
+    // log_date — days 1-7 = W1, 8-14 = W2, 15-21 = W3, 22-28 = W4,
+    // 29-31 = W5. Matches the same boundary used elsewhere. Only
+    // approved rows count (mirrors project hour_logs).
+    const internalSums = await sql`
+      SELECT employee_id,
+        SUM(CASE WHEN EXTRACT(DAY FROM log_date) BETWEEN 1 AND 7   THEN hours ELSE 0 END)::numeric AS w1_internal,
+        SUM(CASE WHEN EXTRACT(DAY FROM log_date) BETWEEN 8 AND 14  THEN hours ELSE 0 END)::numeric AS w2_internal,
+        SUM(CASE WHEN EXTRACT(DAY FROM log_date) BETWEEN 15 AND 21 THEN hours ELSE 0 END)::numeric AS w3_internal,
+        SUM(CASE WHEN EXTRACT(DAY FROM log_date) BETWEEN 22 AND 28 THEN hours ELSE 0 END)::numeric AS w4_internal,
+        SUM(CASE WHEN EXTRACT(DAY FROM log_date) >= 29              THEN hours ELSE 0 END)::numeric AS w5_internal,
+        SUM(hours)::numeric AS month_internal
+      FROM internal_hour_logs
+      WHERE EXTRACT(MONTH FROM log_date) = ${month}
+        AND EXTRACT(YEAR  FROM log_date) = ${year}
+        AND status='approved'
+      GROUP BY employee_id`;
+    const internalMap = new Map<string, any>();
+    for (const r of internalSums as any[]) internalMap.set(r.employee_id, r);
     const totals = await sql`
       SELECT
         COALESCE(SUM(COALESCE(monthly_hours,0)),0)::numeric AS total_allocated
@@ -8569,6 +8693,7 @@ app.get('/api/hours-summary', async (req, res) => {
     const employeeRows = (byEmployee as any[]).map((e: any) => {
       const log = logsMap.get(e.employee_id) || {};
       const edits = editsMap.get(e.employee_id) || {};
+      const internal = internalMap.get(e.employee_id) || {};
       const weeks = [Number(e.w1), Number(e.w2), Number(e.w3), Number(e.w4), Number(e.w5)];
       const variance = weeks.map(w => w - 35);
       return {
@@ -8590,6 +8715,15 @@ app.get('/api/hours-summary', async (req, res) => {
         w1_over: Number(log.w1_over ?? 0), w2_over: Number(log.w2_over ?? 0),
         w3_over: Number(log.w3_over ?? 0), w4_over: Number(log.w4_over ?? 0),
         w5_over: Number(log.w5_over ?? 0),
+        // Approved internal-activity hours per week (and month total).
+        // Surfaced as a separate sub-column on Capacity / Mine so
+        // project-hours readers stay clean.
+        w1_internal: Number(internal.w1_internal ?? 0),
+        w2_internal: Number(internal.w2_internal ?? 0),
+        w3_internal: Number(internal.w3_internal ?? 0),
+        w4_internal: Number(internal.w4_internal ?? 0),
+        w5_internal: Number(internal.w5_internal ?? 0),
+        month_internal: Number(internal.month_internal ?? 0),
         w1_edits: Number(edits.w1_edits ?? 0), w2_edits: Number(edits.w2_edits ?? 0),
         w3_edits: Number(edits.w3_edits ?? 0), w4_edits: Number(edits.w4_edits ?? 0),
         w5_edits: Number(edits.w5_edits ?? 0),
@@ -8756,7 +8890,7 @@ app.get('/api/hours-compliance', async (req, res) => {
     const internalLogged = await sql`
       SELECT employee_id, SUM(COALESCE(hours, 0))::numeric AS hours_today
       FROM internal_hour_logs
-      WHERE log_date = ${dateStr}
+      WHERE log_date = ${dateStr} AND status='approved'
       GROUP BY employee_id`;
     const loggedMap = new Map<string, number>();
     for (const r of projectLogged as any[]) loggedMap.set(r.employee_id, Number(r.hours_today));

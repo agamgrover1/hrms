@@ -78,7 +78,12 @@ export default function HoursApproval() {
   // Top-level tab. The existing weekly-log queue stays the default; the new
   // allocation-change queue lives alongside it so reviewers don't get a
   // second sidebar item to remember.
-  const [topTab, setTopTab] = useState<'logs' | 'allocations'>('logs');
+  const [topTab, setTopTab] = useState<'logs' | 'allocations' | 'internal'>(() => {
+    // Deep-link support: bell notifications on internal-hour reviews
+    // carry ?queue=internal so the reviewer lands on the right tab.
+    const q = new URLSearchParams(window.location.search).get('queue');
+    return q === 'allocations' ? 'allocations' : q === 'internal' ? 'internal' : 'logs';
+  });
   const canApproveAlloc = role === 'admin' || role === 'project_coordinator';
 
   // Resolve current user's employee.id once
@@ -235,9 +240,15 @@ export default function HoursApproval() {
           className={`px-3 py-1.5 rounded-md text-xs font-semibold ${topTab === 'allocations' ? 'bg-accent text-on-accent' : 'text-on-surface-muted hover:text-on-surface'}`}>
           Allocation requests
         </button>
+        <button onClick={() => setTopTab('internal')}
+          className={`px-3 py-1.5 rounded-md text-xs font-semibold ${topTab === 'internal' ? 'bg-accent text-on-accent' : 'text-on-surface-muted hover:text-on-surface'}`}>
+          Internal activities
+        </button>
       </div>
 
-      {topTab === 'allocations' ? (
+      {topTab === 'internal' ? (
+        <InternalLogReviewView reviewerEmpId={reviewerEmpId} />
+      ) : topTab === 'allocations' ? (
         <AllocationRequestsView canApprove={canApproveAlloc} currentUserId={user?.id ?? ''} />
       ) : (<>
       {/* Summary */}
@@ -856,6 +867,133 @@ function RejectModal({ log, onClose, onConfirm }: { log: HourLog; onClose: () =>
             Confirm Reject
           </button>
         </div>
+      </div>
+    </div>
+  );
+}
+
+// ── Internal-activity log review queue ────────────────────────────────────
+// Surfaces every PENDING internal-hour-log entry visible to the current
+// reviewer (their team members plus anyone whose internal logs they can
+// already see — chain managers, admin/HR, project reviewers/leads).
+function InternalLogReviewView({ reviewerEmpId }: { reviewerEmpId: string | null }) {
+  const [logs, setLogs] = useState<any[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [statusFilter, setStatusFilter] = useState<'pending' | 'approved' | 'rejected' | 'all'>('pending');
+  const [members, setMembers] = useState<any[]>([]);
+  useEffect(() => {
+    if (!reviewerEmpId) return;
+    api.getTeamMembers(reviewerEmpId, true).then(setMembers).catch(() => setMembers([]));
+  }, [reviewerEmpId]);
+  const load = useCallback(async () => {
+    if (!members.length) { setLogs([]); setLoading(false); return; }
+    setLoading(true);
+    try {
+      // 60-day window covers the typical "log last month's hours" pattern
+      // without bloating the queue.
+      const from = new Date(Date.now() - 60 * 86400000).toISOString().slice(0, 10);
+      const to = new Date().toISOString().slice(0, 10);
+      const all = await Promise.all(members.map(m =>
+        api.getInternalHourLogs({ employee_id: m.id, from, to })
+          .then(r => (r as any[]).map(l => ({ ...l, employee_name: m.name })))
+          .catch(() => [])
+      ));
+      setLogs(all.flat().sort((a, b) => String(b.log_date).localeCompare(String(a.log_date))));
+    } finally { setLoading(false); }
+  }, [members]);
+  useEffect(() => { load(); }, [load]);
+
+  const filtered = useMemo(() =>
+    statusFilter === 'all' ? logs : logs.filter(l => l.status === statusFilter)
+  , [logs, statusFilter]);
+  const counts = useMemo(() => {
+    const c: Record<string, number> = { pending: 0, approved: 0, rejected: 0 };
+    for (const l of logs) c[l.status] = (c[l.status] ?? 0) + 1;
+    return c;
+  }, [logs]);
+
+  const approve = async (l: any) => {
+    try { await api.approveInternalHourLog(l.id); load(); }
+    catch (e: any) { toast.error('Approve failed', e.message); }
+  };
+  const reject = async (l: any) => {
+    const reason = window.prompt('Reason for rejecting this log (employee will see it):');
+    if (!reason?.trim()) return;
+    try { await api.rejectInternalHourLog(l.id, reason.trim()); load(); }
+    catch (e: any) { toast.error('Reject failed', e.message); }
+  };
+
+  if (!reviewerEmpId) {
+    return (
+      <div className="rounded-xl-2 border border-outline bg-surface px-5 py-12 text-center text-sm text-on-surface-muted">
+        Loading your team…
+      </div>
+    );
+  }
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center gap-1 bg-surface rounded-lg border border-outline p-1 w-fit">
+        {(['pending','approved','rejected','all'] as const).map(s => (
+          <button key={s} onClick={() => setStatusFilter(s)}
+            className={`px-3 py-1.5 rounded-md text-xs font-semibold capitalize ${
+              statusFilter === s ? 'bg-accent text-on-accent' : 'text-on-surface-muted hover:text-on-surface'
+            }`}>
+            {s}{s !== 'all' && counts[s] > 0 && <span className="num-mono opacity-75 ml-1">({counts[s]})</span>}
+          </button>
+        ))}
+      </div>
+      <div className="rounded-xl-2 border border-outline bg-surface overflow-hidden">
+        {loading ? (
+          <div className="p-12 text-center text-sm text-on-surface-muted">Loading…</div>
+        ) : filtered.length === 0 ? (
+          <div className="p-12 text-center">
+            <Clock size={28} className="mx-auto text-on-surface-subtle mb-2" />
+            <p className="text-sm text-on-surface-muted">No {statusFilter === 'all' ? '' : statusFilter} internal-activity logs from your team.</p>
+            <p className="text-xs text-on-surface-subtle mt-1">New submissions land here for review and ping you on the bell.</p>
+          </div>
+        ) : (
+          <div className="divide-y divide-outline">
+            {filtered.map(l => {
+              const tone = l.status === 'approved' ? 'border-l-4 border-l-success'
+                : l.status === 'rejected' ? 'border-l-4 border-l-danger'
+                : 'border-l-4 border-l-warning';
+              return (
+                <div key={l.id} className={`px-5 py-3 ${tone} hover:bg-surface-2/40 transition-colors`}>
+                  <div className="flex items-start justify-between gap-4">
+                    <div className="min-w-0 flex-1">
+                      <p className="text-sm font-semibold text-on-surface">
+                        {l.employee_name} <span className="text-on-surface-muted">· {l.activity_name}</span>
+                      </p>
+                      <p className="text-[11px] text-on-surface-subtle mt-0.5">
+                        {new Date(l.log_date).toLocaleDateString('en-IN', { weekday: 'short', day: 'numeric', month: 'short', year: 'numeric' })}
+                        {' · '}<span className="num-mono">{Number(l.hours).toFixed(1)}h</span>
+                        {l.reviewed_by_name && (
+                          <> · <span className="opacity-75">{l.status === 'approved' ? 'Approved' : 'Rejected'} by {l.reviewed_by_name}</span></>
+                        )}
+                      </p>
+                      {l.notes && <p className="text-xs text-on-surface mt-1 whitespace-pre-line">{l.notes}</p>}
+                      {l.status === 'rejected' && l.rejection_reason && (
+                        <p className="text-[11px] text-danger italic mt-1">Rejection reason: "{l.rejection_reason}"</p>
+                      )}
+                    </div>
+                    {l.status === 'pending' && (
+                      <div className="flex gap-1.5 flex-shrink-0">
+                        <button onClick={() => approve(l)}
+                          className="text-[10px] font-bold px-2.5 py-1.5 rounded bg-success text-on-accent hover:opacity-90 inline-flex items-center gap-1">
+                          <CheckCircle size={11} /> Approve
+                        </button>
+                        <button onClick={() => reject(l)}
+                          className="text-[10px] font-bold px-2.5 py-1.5 rounded text-danger border border-danger/30 hover:bg-danger-container inline-flex items-center gap-1">
+                          <XCircle size={11} /> Reject
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
       </div>
     </div>
   );

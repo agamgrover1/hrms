@@ -151,6 +151,15 @@ export function getNotifRoute(type: string, role: string): string {
       // hosts the Company Announcements widget.
       return isHR ? '/' : '/my';
 
+    // ── Internal-activity hours approval ──────────────────────────────────────
+    case 'internal_logged':
+      // Manager-side ping → opens the new Internal queue inside Approvals.
+      return '/hours/approvals?queue=internal';
+    case 'internal_approved':
+    case 'internal_rejected':
+      // Employee receives → their internal-activities tab.
+      return '/my?tab=internal';
+
     // ── Performance Pulse ──────────────────────────────────────────────────
     case 'pulse_weekly_digest':
       // Self digest — opens own breakdown drawer via Hub
@@ -232,6 +241,10 @@ export const TYPE_CONFIG: Record<string, { icon: any; color: string; bg: string 
   feature_published:       { icon: Sparkles,       color: '#7c3aed', bg: '#f5f3ff' },
   // Announcements
   announcement_comment:    { icon: Megaphone,      color: '#7c3aed', bg: '#f5f3ff' },
+  // Internal-activity hours
+  internal_logged:         { icon: ClockIcon,      color: '#d97706', bg: '#fffbeb' },
+  internal_approved:       { icon: CheckCircle,    color: '#15803d', bg: '#f0fdf4' },
+  internal_rejected:       { icon: XCircle,        color: '#dc2626', bg: '#fef2f2' },
   // Invoices
   invoice_raised:          { icon: FileText,       color: '#2563eb', bg: '#eff6ff' },
   invoice_cleared:         { icon: CheckCircle,    color: '#15803d', bg: '#f0fdf4' },
