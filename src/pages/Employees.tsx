@@ -391,6 +391,7 @@ const emptyForm = {
   manager: '',
   reporting_manager_id: '',
   status: 'active',
+  exit_date: '',
   salary: '',
   ctc: '',
   password: '',
@@ -549,7 +550,7 @@ function AddEmployeeModal({ onClose, onSaved, existingEmployees, departments = [
             </div>
           </div>
 
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
             <div>
               <label className={labelCls}>Status</label>
               <select value={form.status} onChange={e => set('status', e.target.value)} className={inputCls}>
@@ -564,6 +565,15 @@ function AddEmployeeModal({ onClose, onSaved, existingEmployees, departments = [
                   <option key={s.value} value={s.value}>{s.label} ({s.time})</option>
                 ))}
               </select>
+            </div>
+            <div>
+              <label className={labelCls}>Exit Date <span className="text-on-surface-subtle font-normal">(if separated)</span></label>
+              <input type="date" value={form.exit_date ?? ''} onChange={e => set('exit_date', e.target.value)} className={inputCls} />
+              {form.exit_date && (
+                <p className="mt-1 text-[11px] text-on-surface-muted leading-snug">
+                  Salary for {new Date(form.exit_date).toLocaleDateString('en-IN', { month: 'long', year: 'numeric' })} will be prorated to days worked. From the next month they're auto-excluded from the cost roll-up.
+                </p>
+              )}
             </div>
           </div>
 
@@ -657,6 +667,11 @@ export function EditEmployeeModal({ emp, onClose, onSaved, allEmployees, departm
     designation: emp.designation || '',
     join_date: toDateStr(emp.join_date) || new Date().toISOString().split('T')[0],
     date_of_birth: toDateStr(emp.date_of_birth) || '',
+    // Exit date (last working day). When set, salary in the exit month
+    // is prorated automatically by finComputeMonth, and from the
+    // following month the employee disappears from the salary roll-up
+    // without admin having to flip fin_employee_meta.active.
+    exit_date: toDateStr(emp.exit_date) || '',
     location: emp.location || '',
     manager: emp.manager || '',
     reporting_manager_id: emp.reporting_manager_id || '',
@@ -779,7 +794,7 @@ export function EditEmployeeModal({ emp, onClose, onSaved, allEmployees, departm
             </div>
           </div>
 
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
             <div>
               <label className={labelCls}>Status</label>
               <select value={form.status} onChange={e => set('status', e.target.value)} className={inputCls}>
@@ -794,6 +809,15 @@ export function EditEmployeeModal({ emp, onClose, onSaved, allEmployees, departm
                   <option key={s.value} value={s.value}>{s.label} ({s.time})</option>
                 ))}
               </select>
+            </div>
+            <div>
+              <label className={labelCls}>Exit Date <span className="text-on-surface-subtle font-normal">(if separated)</span></label>
+              <input type="date" value={form.exit_date ?? ''} onChange={e => set('exit_date', e.target.value)} className={inputCls} />
+              {form.exit_date && (
+                <p className="mt-1 text-[11px] text-on-surface-muted leading-snug">
+                  Salary for {new Date(form.exit_date).toLocaleDateString('en-IN', { month: 'long', year: 'numeric' })} will be prorated to days worked. From the next month they're auto-excluded from the cost roll-up.
+                </p>
+              )}
             </div>
           </div>
 

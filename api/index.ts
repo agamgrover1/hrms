@@ -1525,6 +1525,14 @@ async function runStartupMigrations() {
     await sql`ALTER TABLE employees ADD COLUMN IF NOT EXISTS probation_end_date DATE`;
     await sql`ALTER TABLE employees ADD COLUMN IF NOT EXISTS biometric_id TEXT`;
     await sql`ALTER TABLE employees ADD COLUMN IF NOT EXISTS date_of_birth DATE`;
+    // Exit date — last working day for separated employees. NULL = still
+    // on the payroll. Drives salary proration in finComputeMonth: an
+    // employee who left on day 10 of a 30-day month counts at salary *
+    // 10/30 in that month, not 0 (which understated cost) or full salary
+    // (which overstated). From the month AFTER their exit they're
+    // automatically excluded from the salary roll-up without admin
+    // having to remember to flip fin_employee_meta.active.
+    await sql`ALTER TABLE employees ADD COLUMN IF NOT EXISTS exit_date DATE`;
     await sql`ALTER TABLE attendance_records ADD COLUMN IF NOT EXISTS source TEXT DEFAULT 'manual'`;
     await sql`ALTER TABLE attendance_records ADD COLUMN IF NOT EXISTS biometric_sync_id TEXT`;
     await sql`ALTER TABLE attendance_records ADD COLUMN IF NOT EXISTS extension_hours NUMERIC DEFAULT 0`;
@@ -1769,8 +1777,9 @@ app.post('/api/employees', async (req, res) => {
 
 app.put('/api/employees/:id', async (req, res) => {
   try {
-    const { name, email, phone, department, designation, join_date, location, manager, reporting_manager_id, status, salary, ctc, biometric_id, shift, next_appraisal_month, next_appraisal_year, date_of_birth } = req.body;
+    const { name, email, phone, department, designation, join_date, location, manager, reporting_manager_id, status, salary, ctc, biometric_id, shift, next_appraisal_month, next_appraisal_year, date_of_birth, exit_date } = req.body;
     await sql`ALTER TABLE employees ADD COLUMN IF NOT EXISTS date_of_birth DATE`.catch(()=>{});
+    await sql`ALTER TABLE employees ADD COLUMN IF NOT EXISTS exit_date DATE`.catch(()=>{});
     const rows = await sql`
       UPDATE employees SET name=${name}, email=${email}, phone=${phone}, department=${department},
         designation=${designation}, join_date=${join_date || null},
@@ -1779,7 +1788,8 @@ app.put('/api/employees/:id', async (req, res) => {
         status=${status}, salary=${salary}, ctc=${ctc},
         biometric_id=${biometric_id ?? null}, shift=${shift ?? 'day'},
         next_appraisal_month=${next_appraisal_month ?? null}, next_appraisal_year=${next_appraisal_year ?? null},
-        date_of_birth=${date_of_birth || null}
+        date_of_birth=${date_of_birth || null},
+        exit_date=${exit_date || null}
       WHERE id=${req.params.id} RETURNING *`;
     // Keep the linked app_users row in sync — name / department / designation are
     // denormalized there for the employee's own portal. Without this, HR can edit
@@ -8828,11 +8838,52 @@ async function finComputeMonth(month: number, year: number) {
   const settings = await finGetSettings();
   const defCap = settings.working_hours_per_month;
 
+  // Pull everyone who's still on the meta as active PLUS anyone who has
+  // an exit_date (regardless of meta.active) so a separated employee
+  // still appears in their exit month for proration. From the month
+  // AFTER their exit we don't pull them at all — the WHERE clause does
+  // the cutoff. salary_factor is the proration multiplier applied
+  // below: 0..1 for the exit month, 1 for months before exit, 0 for
+  // anyone whose exit_date is before the period (filtered out anyway).
+  const periodFirstDay = `${year}-${String(month).padStart(2, '0')}-01`;
+  const periodLastDay = (() => {
+    const d = new Date(Date.UTC(year, month, 0));
+    return d.toISOString().slice(0, 10);
+  })();
   const employees = (await sql`
     SELECT e.id, e.name, e.designation, e.department, e.reporting_manager_id,
-           COALESCE(e.salary,0) AS salary, m.cost_type, m.capacity_hours
-    FROM fin_employee_meta m JOIN employees e ON e.id = m.employee_id
-    WHERE m.active = TRUE`) as any[];
+           COALESCE(e.salary,0) AS salary, m.cost_type, m.capacity_hours,
+           e.exit_date::text AS exit_date
+    FROM employees e
+    LEFT JOIN fin_employee_meta m ON m.employee_id = e.id
+    WHERE (
+            (m.active = TRUE AND (e.exit_date IS NULL OR e.exit_date >= ${periodFirstDay}::date))
+            OR
+            (e.exit_date IS NOT NULL
+              AND e.exit_date >= ${periodFirstDay}::date
+              AND e.exit_date <= ${periodLastDay}::date)
+          )`) as any[];
+  // Apply proration: salary becomes salary * days_in_period_worked /
+  // total_days_in_period when the employee exited inside this period.
+  // Using calendar days (the standard for separation pay) rather than
+  // working days — easier to explain to people who'll question the
+  // number. `salary_factor` is preserved so the dashboard can render
+  // a "prorated to X/30 days" hint next to the cost.
+  const daysInMonth = new Date(Date.UTC(year, month, 0)).getUTCDate();
+  for (const e of employees) {
+    if (e.exit_date) {
+      const ed = String(e.exit_date).slice(0, 10);
+      const [, , ddStr] = ed.split('-');
+      const exitDay = Number(ddStr);
+      const worked = Math.max(0, Math.min(exitDay, daysInMonth));
+      e.salary_factor = worked / daysInMonth;
+      e.salary_prorated_days = worked;
+      e.salary_prorated_total_days = daysInMonth;
+      e.salary = Number(e.salary) * e.salary_factor;
+    } else {
+      e.salary_factor = 1;
+    }
+  }
   const projects = (await sql`SELECT id, name, client_name, project_lead_id, project_reporting_id FROM projects WHERE status='active'`) as any[];
   // For the org-wide INVOICED / RECEIVED / PENDING tiles we need every
   // non-cancelled invoice in the period — not just those tied to an active

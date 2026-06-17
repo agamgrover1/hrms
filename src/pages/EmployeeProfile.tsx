@@ -558,6 +558,11 @@ export default function EmployeeProfile() {
                   ⏳ On Probation
                 </span>
               )}
+              {emp.exit_date && (
+                <span className="inline-flex items-center gap-1 text-xs font-semibold rounded-full px-3 py-1 bg-danger/25 text-white border border-danger/40 backdrop-blur-sm" title="Salary for the exit month is prorated to days worked. From the next month they're auto-excluded from the cost roll-up.">
+                  ✕ Exited {fmtDate(emp.exit_date, {day:'numeric',month:'short',year:'numeric'})}
+                </span>
+              )}
             </div>
           </div>
         </section>
