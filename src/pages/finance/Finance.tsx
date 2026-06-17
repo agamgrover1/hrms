@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useLocation } from 'react-router-dom';
-import { LineChart, LayoutDashboard, IndianRupee, Users, Building2, SlidersHorizontal, FileText, Zap } from 'lucide-react';
+import { LineChart, LayoutDashboard, IndianRupee, Users, Building2, SlidersHorizontal, FileText, Zap, Eye, EyeOff } from 'lucide-react';
 import { MONTHS } from './format';
 import DashboardTab from './DashboardTab';
 import TrendsTab from './TrendsTab';
@@ -57,6 +57,19 @@ export default function Finance() {
   const [rev, setRev] = useState(0);
   const refresh = () => setRev((r) => r + 1);
 
+  // Privacy mask — blurs every monetary / numeric value across the
+  // Finance surface so the page is safe to leave open in a meeting
+  // or screen-share. Default ON so a fresh login doesn't expose
+  // anything until the admin chooses to. Persisted to localStorage
+  // so the choice survives reloads but stays per-device.
+  const [masked, setMasked] = useState<boolean>(() => {
+    try { return localStorage.getItem('financeMasked') !== 'false'; }
+    catch { return true; }
+  });
+  useEffect(() => {
+    try { localStorage.setItem('financeMasked', String(masked)); } catch {/* private mode */}
+  }, [masked]);
+
   const showPeriod = tab !== 'people' && tab !== 'settings';
 
   return (
@@ -73,18 +86,30 @@ export default function Finance() {
               : 'Raise invoices when work is delivered. Admin marks them cleared once payment lands.'}
           </p>
         </div>
-        {showPeriod && (
-          <div className="flex items-center gap-2">
-            <select value={month} onChange={(e) => setMonth(Number(e.target.value))}
-              className="rounded-xl-2 border border-outline bg-surface px-3 py-2 text-sm text-on-surface focus:border-brand outline-none">
-              {MONTHS.map((m, i) => <option key={m} value={i + 1}>{m}</option>)}
-            </select>
-            <select value={year} onChange={(e) => setYear(Number(e.target.value))}
-              className="rounded-xl-2 border border-outline bg-surface px-3 py-2 text-sm text-on-surface focus:border-brand outline-none">
-              {YEARS.map((y) => <option key={y} value={y}>{y}</option>)}
-            </select>
-          </div>
-        )}
+        <div className="flex items-center gap-2">
+          {showPeriod && (
+            <>
+              <select value={month} onChange={(e) => setMonth(Number(e.target.value))}
+                className="rounded-xl-2 border border-outline bg-surface px-3 py-2 text-sm text-on-surface focus:border-brand outline-none">
+                {MONTHS.map((m, i) => <option key={m} value={i + 1}>{m}</option>)}
+              </select>
+              <select value={year} onChange={(e) => setYear(Number(e.target.value))}
+                className="rounded-xl-2 border border-outline bg-surface px-3 py-2 text-sm text-on-surface focus:border-brand outline-none">
+                {YEARS.map((y) => <option key={y} value={y}>{y}</option>)}
+              </select>
+            </>
+          )}
+          {/* Privacy toggle. Eye = reveal, EyeOff = hide. Visible across
+              every tab so admin can hide before someone glances at the
+              screen. */}
+          <button onClick={() => setMasked(m => !m)}
+            title={masked ? 'Reveal financial numbers' : 'Hide financial numbers'}
+            aria-label={masked ? 'Reveal financial numbers' : 'Hide financial numbers'}
+            className="inline-flex items-center gap-1.5 rounded-xl-2 border border-outline bg-surface px-3 py-2 text-xs font-semibold text-on-surface-muted hover:text-on-surface hover:bg-surface-2 transition-colors">
+            {masked ? <Eye size={14} /> : <EyeOff size={14} />}
+            {masked ? 'Show' : 'Hide'}
+          </button>
+        </div>
       </div>
 
       {/* Tabs — only render the ones the current role can see. */}
@@ -106,15 +131,25 @@ export default function Finance() {
         </div>
       )}
 
-      {/* Body — gate each tab body too so a coordinator can't probe URLs. */}
-      {tab === 'dashboard' && isAdmin && <DashboardTab month={month} year={year} rev={rev} />}
-      {tab === 'trends' && isAdmin && <TrendsTab month={month} year={year} rev={rev} />}
-      {tab === 'optimize' && isAdmin && <OptimizationTab month={month} year={year} rev={rev} />}
-      {tab === 'invoices' && <InvoicesTab month={month} year={year} onChanged={refresh} />}
-      {tab === 'revenue' && <RevenueTab month={month} year={year} onChanged={refresh} />}
-      {tab === 'people' && isAdmin && <PeopleTab onChanged={refresh} />}
-      {tab === 'overhead' && isAdmin && <OverheadTab month={month} year={year} onChanged={refresh} />}
-      {tab === 'settings' && isAdmin && <SettingsTab onChanged={refresh} />}
+      {/* Body — gate each tab body too so a coordinator can't probe URLs.
+          The mask wrapper blurs numeric cells when masked is true.
+          Tailwind arbitrary variants target both .num-mono (monetary
+          cells, tables, KPI subs) and .tabular-nums (KPI big numbers
+          on Kpi / PnlTile components). select-none prevents copy-paste
+          working around the blur. Smooth transition so the toggle
+          flips visibly without a jarring re-render. */}
+      <div className={masked
+        ? '[&_.num-mono]:blur-md [&_.num-mono]:select-none [&_.num-mono]:transition-[filter] [&_.tabular-nums]:blur-md [&_.tabular-nums]:select-none [&_.tabular-nums]:transition-[filter]'
+        : '[&_.num-mono]:transition-[filter] [&_.tabular-nums]:transition-[filter]'}>
+        {tab === 'dashboard' && isAdmin && <DashboardTab month={month} year={year} rev={rev} />}
+        {tab === 'trends' && isAdmin && <TrendsTab month={month} year={year} rev={rev} />}
+        {tab === 'optimize' && isAdmin && <OptimizationTab month={month} year={year} rev={rev} />}
+        {tab === 'invoices' && <InvoicesTab month={month} year={year} onChanged={refresh} />}
+        {tab === 'revenue' && <RevenueTab month={month} year={year} onChanged={refresh} />}
+        {tab === 'people' && isAdmin && <PeopleTab onChanged={refresh} />}
+        {tab === 'overhead' && isAdmin && <OverheadTab month={month} year={year} onChanged={refresh} />}
+        {tab === 'settings' && isAdmin && <SettingsTab onChanged={refresh} />}
+      </div>
     </div>
   );
 }
