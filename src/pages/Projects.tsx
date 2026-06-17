@@ -418,16 +418,30 @@ export function ProjectDailyActivityModal({ project, onClose }: { project: Proje
     id: string; employee_id: string; employee_name: string | null; log_date: string;
     hours: number; notes: string | null;
   }>>([]);
+  // Project assignments for the visible month → drives the Plan + Δ
+  // columns. Keyed by employee_id so per-row lookups are O(1).
+  const [assignments, setAssignments] = useState<Array<{
+    employee_id: string; monthly_hours: number;
+  }>>([]);
   const [loading, setLoading] = useState(true);
   const [hoveredCell, setHoveredCell] = useState<{ emp: string; date: string } | null>(null);
 
   useEffect(() => {
     setLoading(true);
-    api.getHourLogDays({ project_id: project.id, month, year })
-      .then((d: any[]) => setDays(d as any))
-      .catch(() => setDays([]))
-      .finally(() => setLoading(false));
+    Promise.all([
+      api.getHourLogDays({ project_id: project.id, month, year }).catch(() => []),
+      api.getProjectAssignments({ project_id: project.id, month, year }).catch(() => []),
+    ]).then(([d, a]) => {
+      setDays(d as any);
+      setAssignments(a as any);
+    }).finally(() => setLoading(false));
   }, [project.id, month, year]);
+
+  // Allocation lookup keyed by employee. Falls back to 0 when an
+  // employee logged hours without an assignment (= unplanned work).
+  const planByEmp = new Map<string, number>();
+  for (const a of assignments) planByEmp.set(a.employee_id, Number(a.monthly_hours) || 0);
+  const totalPlanned = assignments.reduce((s, a) => s + (Number(a.monthly_hours) || 0), 0);
 
   // Build the list of days in the month (1..N)
   const daysInMonth = new Date(year, month, 0).getDate();
@@ -443,6 +457,18 @@ export function ProjectDailyActivityModal({ project, onClose }: { project: Proje
     if (!empMap.has(iso)) empMap.set(iso, []);
     empMap.get(iso)!.push(d);
     if (d.employee_name) empNames.set(d.employee_id, d.employee_name);
+  }
+  // Surface employees who were ALLOCATED but didn't log anything too —
+  // a fully-empty row makes the "0 / 35 (-35h short)" visible instead of
+  // hiding their underspend behind silence.
+  for (const a of assignments) {
+    if (!byEmpDate.has(a.employee_id)) byEmpDate.set(a.employee_id, new Map());
+  }
+  // Backfill names for allocated-but-not-logged people from the
+  // assignments payload if it carries employee_name (it does on the
+  // backend join).
+  for (const a of assignments as any[]) {
+    if (a.employee_name && !empNames.has(a.employee_id)) empNames.set(a.employee_id, a.employee_name);
   }
   const employees = Array.from(byEmpDate.keys()).sort((a, b) =>
     (empNames.get(a) ?? '').localeCompare(empNames.get(b) ?? '')
@@ -480,7 +506,7 @@ export function ProjectDailyActivityModal({ project, onClose }: { project: Proje
           <div className="min-w-0">
             <h3 className="font-display text-xl font-bold tracking-tight text-on-surface truncate">Daily activity</h3>
             <p className="text-xs text-on-surface-muted mt-0.5 truncate">{project.name}{project.client_name ? ` · ${project.client_name}` : ''}</p>
-            <p className="text-[11px] text-on-surface-subtle mt-1">Each cell is one employee's hours on this project for that day. Hover for the work notes.</p>
+            <p className="text-[11px] text-on-surface-subtle mt-1">Each cell is one employee's hours on this project for that day. Hover for the work notes. The right side compares Logged vs Plan with a Δ chip for over- / under-spend.</p>
           </div>
           <button onClick={onClose} className="p-1.5 hover:bg-surface-2 rounded-lg flex-shrink-0"><X size={16} className="text-on-surface-muted" /></button>
         </div>
@@ -498,8 +524,21 @@ export function ProjectDailyActivityModal({ project, onClose }: { project: Proje
               {[year-1, year, year+1].map(y => <option key={y} value={y}>{y}</option>)}
             </select>
           </div>
-          <div className="flex items-center gap-6 text-xs">
-            <div><span className="text-on-surface-subtle">Hours: </span><span className="num-mono font-bold text-on-surface">{Math.round(totalHours)}h</span></div>
+          <div className="flex items-center gap-6 text-xs flex-wrap">
+            <div><span className="text-on-surface-subtle">Logged: </span><span className="num-mono font-bold text-on-surface">{Math.round(totalHours)}h</span></div>
+            {totalPlanned > 0 && (
+              <div><span className="text-on-surface-subtle">Plan: </span><span className="num-mono font-bold text-on-surface">{Math.round(totalPlanned)}h</span></div>
+            )}
+            {totalPlanned > 0 && (() => {
+              const d = totalHours - totalPlanned;
+              const tol = Math.max(4, totalPlanned * 0.1);
+              const cls = Math.abs(d) <= tol ? 'text-on-surface-subtle'
+                : d > 0 ? 'text-warning'
+                : 'text-danger';
+              return (
+                <div><span className="text-on-surface-subtle">Δ: </span><span className={`num-mono font-bold ${cls}`}>{d === 0 ? '0' : (d > 0 ? '+' : '') + Math.round(d)}h</span></div>
+              );
+            })()}
             <div><span className="text-on-surface-subtle">Contributors: </span><span className="num-mono font-bold text-on-surface">{employees.length}</span></div>
             <div><span className="text-on-surface-subtle">Active days: </span><span className="num-mono font-bold text-on-surface">{activeDays}</span></div>
           </div>
@@ -524,13 +563,36 @@ export function ProjectDailyActivityModal({ project, onClose }: { project: Proje
                       <div className="text-[10px] font-semibold text-on-surface">{d}</div>
                     </th>
                   ))}
-                  <th className="px-2 py-2 text-right text-[10px] uppercase tracking-wider font-bold text-on-surface-muted bg-surface-3 min-w-[60px]">Total</th>
+                  <th className="px-2 py-2 text-right text-[10px] uppercase tracking-wider font-bold text-on-surface-muted bg-surface-3 min-w-[56px]" title="Logged hours this month on this project">Logged</th>
+                  <th className="px-2 py-2 text-right text-[10px] uppercase tracking-wider font-bold text-on-surface-muted bg-surface-3 min-w-[56px]" title="Planned monthly hours from project_assignments">Plan</th>
+                  <th className="px-2 py-2 text-right text-[10px] uppercase tracking-wider font-bold text-on-surface-muted bg-surface-3 min-w-[56px]" title="Logged − Plan. Green = under-plan, amber = over-plan, red = significantly off.">Δ</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-outline">
                 {employees.map(empId => {
                   const dateMap = byEmpDate.get(empId) ?? new Map();
                   const empTotal = Array.from(dateMap.values()).flat().reduce((s, d) => s + Number(d.hours), 0);
+                  const empPlan = planByEmp.get(empId) ?? 0;
+                  const empDelta = empTotal - empPlan;
+                  // Δ tinting: small drift is fine, big over or under
+                  // gets a colour. 10% of plan or 2h (whichever larger)
+                  // is the "close enough" band.
+                  const tol = Math.max(2, empPlan * 0.1);
+                  const deltaCls =
+                    empPlan === 0 && empTotal > 0
+                      ? 'bg-warning-container text-warning'
+                      : Math.abs(empDelta) <= tol
+                      ? 'text-on-surface-subtle'
+                      : empDelta > 0
+                      ? 'bg-warning-container text-warning'
+                      : 'bg-danger-container text-danger';
+                  const deltaTitle = empPlan === 0 && empTotal > 0
+                    ? 'No allocation for this month — every hour logged is unplanned.'
+                    : empDelta === 0
+                    ? 'Spot on plan.'
+                    : empDelta > 0
+                    ? `${Math.round(empDelta)}h over plan (${empTotal}h logged of ${empPlan}h planned).`
+                    : `${Math.abs(Math.round(empDelta))}h under plan (${empTotal}h logged of ${empPlan}h planned).`;
                   return (
                     <tr key={empId} className="hover:bg-surface-2/40">
                       <td className="px-3 py-1.5 text-sm font-semibold text-on-surface sticky left-0 bg-surface hover:bg-surface-2/40 whitespace-nowrap">{empNames.get(empId) ?? '—'}</td>
@@ -549,6 +611,16 @@ export function ProjectDailyActivityModal({ project, onClose }: { project: Proje
                         );
                       })}
                       <td className="px-2 py-1.5 text-right num-mono font-bold text-on-surface bg-surface-2/40">{Math.round(empTotal)}</td>
+                      <td className="px-2 py-1.5 text-right num-mono text-on-surface-muted bg-surface-2/40">{empPlan > 0 ? Math.round(empPlan) : '—'}</td>
+                      <td className="px-2 py-1.5 text-right num-mono font-bold bg-surface-2/40">
+                        {empPlan === 0 && empTotal === 0 ? (
+                          <span className="text-on-surface-subtle">—</span>
+                        ) : (
+                          <span title={deltaTitle} className={`inline-block px-1.5 py-0.5 rounded-md text-[11px] ${deltaCls}`}>
+                            {empDelta === 0 ? '0' : (empDelta > 0 ? '+' : '') + Math.round(empDelta)}h
+                          </span>
+                        )}
+                      </td>
                     </tr>
                   );
                 })}
@@ -563,6 +635,25 @@ export function ProjectDailyActivityModal({ project, onClose }: { project: Proje
                     );
                   })}
                   <td className="px-2 py-2 text-right num-mono font-bold text-accent">{Math.round(totalHours)}</td>
+                  <td className="px-2 py-2 text-right num-mono font-bold text-on-surface-muted">{totalPlanned > 0 ? Math.round(totalPlanned) : '—'}</td>
+                  <td className="px-2 py-2 text-right num-mono font-bold">
+                    {(() => {
+                      const d = totalHours - totalPlanned;
+                      const tol = Math.max(4, totalPlanned * 0.1);
+                      if (totalPlanned === 0 && totalHours === 0) return <span className="text-on-surface-subtle">—</span>;
+                      const cls =
+                        totalPlanned === 0 && totalHours > 0 ? 'bg-warning-container text-warning'
+                        : Math.abs(d) <= tol ? 'text-on-surface-subtle'
+                        : d > 0 ? 'bg-warning-container text-warning'
+                        : 'bg-danger-container text-danger';
+                      return (
+                        <span className={`inline-block px-1.5 py-0.5 rounded-md text-[11px] ${cls}`}
+                          title={d === 0 ? 'Project on plan.' : d > 0 ? `${Math.round(d)}h over project plan` : `${Math.abs(Math.round(d))}h under project plan`}>
+                          {d === 0 ? '0' : (d > 0 ? '+' : '') + Math.round(d)}h
+                        </span>
+                      );
+                    })()}
+                  </td>
                 </tr>
               </tfoot>
             </table>
