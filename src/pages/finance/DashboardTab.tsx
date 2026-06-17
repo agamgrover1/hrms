@@ -653,12 +653,11 @@ function ProjectDrilldownModal({ project: p, model, month, year, onClose }: {
               </div>
             ) : (p as any).has_legacy_billing_row ? (
               <div className="rounded-xl-2 border border-warning/40 bg-warning-container/30 p-3 text-xs text-on-surface-muted">
-                <p className="font-semibold text-warning mb-1">Legacy billing row — not counted</p>
+                <p className="font-semibold text-warning mb-1">Billing row exists — not counted</p>
                 <p>
-                  This project has a fin_project_revenue entry for {MONTHS[month - 1]} {year}, but it's a direct/retainer
-                  project so the row is ignored. Revenue only comes from invoices for these clients. The legacy entry
-                  exists silently in the database; clean it up from the Billing setup tab using the "Clean direct rows"
-                  banner that appears for admin.
+                  This project has a fin_project_revenue entry for {MONTHS[month - 1]} {year}, but {(p as any).status === 'archived'
+                    ? <>the project is <b>archived</b> so the Billing setup tab can't surface it and it's excluded from the revenue roll-up. Once a project is closed, only invoices count — raise one on the Invoices tab if revenue is genuinely owed for this period.</>
+                    : <>it's a direct/retainer project so the row is ignored. Revenue only comes from invoices for these clients. Clean the entry up from the Billing setup tab using the "Clean direct rows" banner that appears for admin.</>}
                 </p>
               </div>
             ) : (

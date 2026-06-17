@@ -9154,6 +9154,15 @@ async function finComputeMonth(month: number, year: number) {
     // the books for this month. So we only consult fin_project_revenue
     // for projects whose billing_source is explicitly 'upwork'.
     if (p.billing_source !== 'upwork') return 0;
+    // Archived projects don't accrue billing-setup revenue automatically.
+    // The Billing setup tab filters to active projects only, so once a
+    // project is archived admin can't see or maintain the row — any
+    // monthly recurring amount sitting in fin_project_revenue would
+    // surface as phantom income (same trap the direct-project guard
+    // above catches). For archived projects, invoices remain the only
+    // revenue path; if you actually earned something during a closed
+    // project's wind-down, raise an invoice for it.
+    if (p.status === 'archived') return 0;
     const r = revByProj.get(p.id);
     if (!r) return 0;
     // Billing Setup (Upwork): same accrual rule as invoices — the
@@ -9338,14 +9347,18 @@ async function finComputeMonth(month: number, year: number) {
       // a row for the cost they incurred before closure.
       status: p.status || 'active',
       // Did fin_project_revenue carry a row counted toward revenue for
-      // this period? Only true for Upwork projects — direct/retainer
-      // projects use the Invoices flow and any fin_project_revenue row
-      // they have is legacy and ignored by the roll-up.
-      has_billing_setup: !!r && p.billing_source === 'upwork',
-      // Flag a legacy direct-project row separately so the drilldown
-      // can warn admin that a phantom entry exists in the table even
-      // though it doesn't affect revenue.
-      has_legacy_billing_row: !!r && p.billing_source !== 'upwork',
+      // this period? Only true for ACTIVE Upwork projects. Direct
+      // projects use invoices only; archived projects (even Upwork)
+      // skip billing-setup revenue since admin can't maintain them.
+      has_billing_setup: !!r && p.billing_source === 'upwork' && p.status === 'active',
+      // Flag rows that exist in the DB but aren't counted so the
+      // drilldown can warn admin. Two cases:
+      //   - Direct-project legacy row (Billing setup tab is Upwork-only)
+      //   - Upwork row on an archived project (Billing setup tab is
+      //     status=active-only)
+      has_legacy_billing_row: !!r && (
+        p.billing_source !== 'upwork' || p.status === 'archived'
+      ),
       billing_source: p.billing_source || 'direct',
       // Status of the Billing-setup row (pending / cleared_pending /
       // cleared). Counts toward revenue ONLY when cleared. Surfaced so
