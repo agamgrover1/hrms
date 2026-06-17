@@ -3432,8 +3432,18 @@ function InternalHoursPanel() {
 function MyHoursTab({ employeeId, employeeName }: { employeeId: string; employeeName: string }) {
   const { user } = useAuth();
   const today = new Date();
-  const [month, setMonth] = useState(today.getMonth() + 1);
-  const [year, setYear] = useState(today.getFullYear());
+  // Initial month / year — if we arrived from a `&m=&y=` deep-link (the
+  // bell notification on a comment / on-hold action carries these), use
+  // the log's own period so it actually appears in the loaded set. Falls
+  // back to today's date when no deep-link params are present.
+  const [month, setMonth] = useState(() => {
+    const m = Number(new URLSearchParams(window.location.search).get('m'));
+    return m >= 1 && m <= 12 ? m : today.getMonth() + 1;
+  });
+  const [year, setYear] = useState(() => {
+    const y = Number(new URLSearchParams(window.location.search).get('y'));
+    return y >= 2000 && y < 2100 ? y : today.getFullYear();
+  });
   const [assignments, setAssignments] = useState<MHAssignment[]>([]);
   const [logs, setLogs] = useState<MHLog[]>([]);
   const [loading, setLoading] = useState(true);
@@ -3465,9 +3475,11 @@ function MyHoursTab({ employeeId, employeeName }: { employeeId: string; employee
     if (!log) return;
     const assn = assignments.find(a => a.project_id === log.project_id);
     setDiscussing({ log, assignmentName: assn?.project_name ?? 'Project' });
-    // Clean the URL so refreshing doesn't re-open the modal on top of itself.
+    // Clean the URL so refreshing doesn't re-open the modal on top of
+    // itself, and so the m/y context isn't sticky on subsequent reloads.
     const u = new URL(window.location.href);
     u.searchParams.delete('logId'); u.searchParams.delete('discuss');
+    u.searchParams.delete('m'); u.searchParams.delete('y');
     window.history.replaceState({}, '', u.toString());
   }, [logs, assignments]);
 

@@ -8292,7 +8292,12 @@ app.patch('/api/hour-logs/:id/hold', async (req, res) => {
       notifyEmployeeUser(r.employee_id, 'hours_on_hold',
         'Hours Held — clarification needed',
         `${reviewer_name || 'Your reviewer'} put your ${r.hours_logged}h on ${projectName} (W${r.week_num}) on hold: ${note.trim().slice(0, 140)}`,
-        `/my?tab=my-hours&logId=${r.id}&discuss=1`).catch(()=>{});
+        // Carry the log's own month/year so MyHoursTab can switch the
+        // month picker to the right period before searching for the
+        // log. Without these, a comment on a past month's log opened
+        // an empty page because MyHoursTab defaults to the current
+        // month and the target id was never in the loaded set.
+        `/my?tab=my-hours&logId=${r.id}&discuss=1&m=${r.month}&y=${r.year}`).catch(()=>{});
     } catch {}
     res.json(r);
   } catch (err: any) { res.status(500).json({ error: err.message || 'Server error' }); }
@@ -8334,8 +8339,11 @@ app.post('/api/hour-logs/:id/comments', async (req, res) => {
       // Reviewer-side deep-link → opens the same modal on /hours/approvals
       // by also accepting ?logId. Employee-side deep-link → My Hours tab
       // with auto-open of the discussion modal for the matching log.
-      const reviewerLink = `/hours/approvals?logId=${log.id}&discuss=1`;
-      const employeeLink = `/my?tab=my-hours&logId=${log.id}&discuss=1`;
+      // m/y carry the log's period so the employee's My Hours picker
+      // switches to that month before searching — otherwise comments on
+      // a past month's log opened an empty page with no modal.
+      const reviewerLink = `/hours/approvals?logId=${log.id}&discuss=1&m=${log.month}&y=${log.year}`;
+      const employeeLink = `/my?tab=my-hours&logId=${log.id}&discuss=1&m=${log.month}&y=${log.year}`;
       if (fromEmployee && log.reviewed_by_id) {
         // Employee replied — ping the reviewer who held / reviewed it.
         notifyEmployeeUser(log.reviewed_by_id, 'hours_comment',
