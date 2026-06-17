@@ -132,15 +132,13 @@ export default function Finance() {
       )}
 
       {/* Body — gate each tab body too so a coordinator can't probe URLs.
-          The mask wrapper blurs numeric cells when masked is true.
-          Tailwind arbitrary variants target both .num-mono (monetary
-          cells, tables, KPI subs) and .tabular-nums (KPI big numbers
-          on Kpi / PnlTile components). select-none prevents copy-paste
-          working around the blur. Smooth transition so the toggle
-          flips visibly without a jarring re-render. */}
+          The mask wrapper blurs ONLY the dashboard KPI tiles at the top
+          of each tab (tagged with data-mask-summary). Tables, drill-in
+          cells, and per-row figures stay readable so admin can keep
+          working on detail while the headline numbers are hidden. */}
       <div className={masked
-        ? '[&_.num-mono]:blur-md [&_.num-mono]:select-none [&_.num-mono]:transition-[filter] [&_.tabular-nums]:blur-md [&_.tabular-nums]:select-none [&_.tabular-nums]:transition-[filter]'
-        : '[&_.num-mono]:transition-[filter] [&_.tabular-nums]:transition-[filter]'}>
+        ? '[&_[data-mask-summary]_.num-mono]:blur-md [&_[data-mask-summary]_.num-mono]:select-none [&_[data-mask-summary]_.tabular-nums]:blur-md [&_[data-mask-summary]_.tabular-nums]:select-none [&_[data-mask-summary]]:transition-[filter]'
+        : ''}>
         {tab === 'dashboard' && isAdmin && <DashboardTab month={month} year={year} rev={rev} />}
         {tab === 'trends' && isAdmin && <TrendsTab month={month} year={year} rev={rev} />}
         {tab === 'optimize' && isAdmin && <OptimizationTab month={month} year={year} rev={rev} />}

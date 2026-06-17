@@ -252,7 +252,7 @@ export default function RevenueTab({ month, year, onChanged }: { month: number; 
 
       {/* KPI strip — only meaningful for admins; coords don't see cost breakdowns anywhere else either */}
       {isAdmin && (
-        <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
+        <div data-mask-summary className="grid grid-cols-2 sm:grid-cols-3 gap-3">
           <div className="rounded-xl-2 border border-outline bg-surface p-4">
             <p className="text-[10px] uppercase tracking-wide text-on-surface-subtle font-semibold">Pending (invoiced)</p>
             <p className="num-mono text-2xl font-bold text-warning mt-1">{money(invoicedTotal)}</p>

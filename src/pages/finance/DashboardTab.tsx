@@ -42,8 +42,10 @@ export default function DashboardTab({ month, year, rev }: { month: number; year
 
   return (
     <div className="space-y-5">
-      {/* KPIs */}
-      <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+      {/* KPIs — tagged data-mask-summary so the Finance privacy toggle
+          can hide just the headline numbers without dimming the rest
+          of the page (tables, drill-ins stay readable). */}
+      <div data-mask-summary className="grid grid-cols-2 gap-3 lg:grid-cols-4">
         <Kpi label="Net profit (true)" value={money(t.netProfit, c)} tone={t.netProfit >= 0 ? 'text-success' : 'text-danger'} sub="after every cost" />
         <Kpi label="Net margin" value={pct(t.netMargin)} tone={marginTone(t.netMargin)} sub={`gross ${pct(t.grossMargin)}`} />
         <Kpi label="Utilization" value={pct(t.utilization)} tone={(t.utilization ?? 0) >= 0.8 ? 'text-success' : (t.utilization ?? 0) >= 0.6 ? 'text-warning' : 'text-danger'} sub={`${hrs(t.allocatedDirectHours)} / ${hrs(t.directCapacityHours)}`} />
@@ -51,7 +53,7 @@ export default function DashboardTab({ month, year, rev }: { month: number; year
       </div>
 
       {/* Invoiced vs Received strip — accrual vs cash side-by-side */}
-      <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+      <div data-mask-summary className="grid grid-cols-2 gap-3 lg:grid-cols-4">
         <Kpi label="Invoiced" value={money(t.totalInvoiced || t.revenue, c)} sub="accrual · what we billed" />
         <Kpi label="Received" value={money(t.totalReceived || 0, c)} tone="text-success" sub="cash · in the bank" />
         <Kpi label="Pending" value={money(t.totalPending || 0, c)}

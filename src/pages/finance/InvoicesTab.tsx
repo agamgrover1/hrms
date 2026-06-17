@@ -238,7 +238,7 @@ export default function InvoicesTab({ month, year, onChanged }: { month: number;
           admin's view. Also hidden in the Activity view since those numbers
           describe the current invoice set, not the audit log. */}
       {isAdmin && statusFilter !== 'activity' && (
-        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+        <div data-mask-summary className="grid grid-cols-2 sm:grid-cols-4 gap-3">
           <Tile label="Invoiced" value={money(totals.invoiced)} sub="accrual · what we billed" tone="text-on-surface" />
           <Tile label="Received" value={money(totals.received)} sub="cash · what landed in bank" tone="text-success" />
           <Tile label="Pending" value={money(totals.pending)} sub={`${totals.pendingCount} invoice${totals.pendingCount === 1 ? '' : 's'} awaiting clearance`} tone={totals.pendingCount > 0 ? 'text-warning' : 'text-on-surface-subtle'} />
