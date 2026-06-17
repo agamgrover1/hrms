@@ -307,6 +307,11 @@ export const financeApi = {
   reopenInvoice: (id: number) =>
     request<FinInvoice>(`/invoices/${id}/reopen`, { method: 'PATCH', body: JSON.stringify({}) }),
   deleteInvoice: (id: number) => request<any>(`/invoices/${id}`, { method: 'DELETE' }),
+  copyInvoiceMonth: (from_month: number, from_year: number, to_month: number, to_year: number) =>
+    request<{ copied: number; skipped: number; total?: number; message?: string }>(
+      '/invoices/copy-month',
+      { method: 'POST', body: JSON.stringify({ from_month, from_year, to_month, to_year }) },
+    ),
   getInvoiceAudit: (params?: { month?: number; year?: number; project_id?: string; actor_id?: string; action?: string; limit?: number }) => {
     const qs = new URLSearchParams();
     if (params?.month) qs.set('month', String(params.month));

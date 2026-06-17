@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { Plus, X, CheckCircle2, Clock, RotateCcw, Pencil, Trash2, MoreVertical, AlertTriangle, FileText, Ban, Briefcase } from 'lucide-react';
+import { Plus, X, CheckCircle2, Clock, RotateCcw, Pencil, Trash2, MoreVertical, AlertTriangle, FileText, Ban, Briefcase, Copy } from 'lucide-react';
 import { financeApi, type FinInvoice } from '../../services/financeApi';
 import { api } from '../../services/api';
 import { useAuth } from '../../context/AuthContext';
@@ -174,6 +174,21 @@ export default function InvoicesTab({ month, year, onChanged }: { month: number;
     catch (e: any) { setErr(e.message); }
   };
 
+  // Copy the previous calendar month's invoices into the current month
+  // as fresh PENDING rows. Skips projects that already have an invoice
+  // here so we never duplicate. Useful for retainer clients whose
+  // amount/currency stays steady month to month.
+  const copyPrev = async () => {
+    const idx = year * 12 + (month - 1) - 1;
+    const pm = (idx % 12) + 1, py = Math.floor(idx / 12);
+    if (!confirm(`Copy invoices from ${MONTHS[pm - 1]} ${py} into ${MONTHS[month - 1]} ${year} as new pending invoices?\nExisting invoices in the target month are kept untouched.`)) return;
+    try {
+      const r = await financeApi.copyInvoiceMonth(pm, py, month, year);
+      load(); onChanged();
+      if ((r.copied ?? 0) === 0) setErr(r.message ?? `Nothing to copy — ${MONTHS[pm - 1]} ${py} had no invoices.`);
+    } catch (e: any) { setErr(e.message); }
+  };
+
   const approveClearance = async (inv: FinInvoice) => {
     if (!confirm(`Approve clearance for ${inv.project_name}${inv.invoice_number ? ` (${inv.invoice_number})` : ''}?`)) return;
     try { await financeApi.approveClearance(inv.id); load(); onChanged(); }
@@ -205,10 +220,17 @@ export default function InvoicesTab({ month, year, onChanged }: { month: number;
             </button>
           ))}
         </div>
-        <button onClick={() => setShowAdd(true)}
-          className="inline-flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-semibold bg-accent text-on-accent">
-          <Plus size={15} /> New Invoice
-        </button>
+        <div className="flex items-center gap-2">
+          <button onClick={() => setShowAdd(true)}
+            className="inline-flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-semibold bg-accent text-on-accent">
+            <Plus size={15} /> New Invoice
+          </button>
+          <button onClick={copyPrev}
+            title="Copy last month's invoices into this month as new pending rows"
+            className="inline-flex items-center gap-2 px-3 py-2 rounded-lg text-sm font-semibold border border-outline bg-surface text-on-surface hover:bg-surface-2">
+            <Copy size={14} /> Copy last month
+          </button>
+        </div>
       </div>
 
       {/* KPI strip — hidden for project_coordinator since they shouldn't see

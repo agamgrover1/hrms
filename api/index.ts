@@ -10646,6 +10646,77 @@ app.delete('/api/finance/invoices/:id', async (req, res) => {
   } catch (err: any) { res.status(500).json({ error: err.message || 'Server error' }); }
 });
 
+// POST /api/finance/invoices/copy-month — clone the source-month
+// invoices into the target month as fresh PENDING rows.
+//
+// Semantics:
+//   • For each project that had at least one invoice in (from_month,
+//     from_year) AND has no existing invoice in (to_month, to_year),
+//     pick that project's most recent invoice from the source month
+//     and copy its template (amount_invoiced, currency, fx_rate,
+//     invoice_number, notes) into the target month as a NEW row with:
+//       status='pending', amount_received=NULL, cleared_*=NULL,
+//       created_by=<actor>, created_by_name/role=<actor>,
+//       invoice_date = target month first day (admin can adjust).
+//   • Projects that already have at least one target-month invoice
+//     are skipped — never duplicate. (Multiple invoices per project
+//     per month is supported, but copy-month picks one template per
+//     project so admin doesn't drown in dupes.)
+//
+// Returns { copied, skipped } so the UI can toast a useful summary.
+app.post('/api/finance/invoices/copy-month', async (req, res) => {
+  await runStartupMigrations();
+  const gate = await requireAdminOrCoord(req, res);
+  if (!gate.ok) return;
+  try {
+    const { from_month, from_year, to_month, to_year } = req.body ?? {};
+    if (!from_month || !from_year || !to_month || !to_year) {
+      return res.status(400).json({ error: 'from/to month & year are required' });
+    }
+    const fm = Number(from_month), fy = Number(from_year);
+    const tm = Number(to_month),   ty = Number(to_year);
+
+    // 1. Latest source-month invoice PER project. DISTINCT ON keeps
+    //    the most recent created_at per project_id.
+    const sources = (await sql`
+      SELECT DISTINCT ON (project_id)
+        project_id, invoice_number, amount_invoiced, currency, fx_rate,
+        amount_invoiced_inr, notes
+      FROM fin_project_invoices
+      WHERE month=${fm} AND year=${fy}
+        AND status <> 'cancelled'
+      ORDER BY project_id, created_at DESC`) as any[];
+    if (sources.length === 0) {
+      return res.json({ copied: 0, skipped: 0, message: `No invoices to copy from ${fm}/${fy}` });
+    }
+    // 2. Projects already invoiced in the target month — skip these.
+    const targetExisting = (await sql`
+      SELECT DISTINCT project_id FROM fin_project_invoices
+      WHERE month=${tm} AND year=${ty}`) as any[];
+    const alreadyInvoiced = new Set<string>(targetExisting.map(r => r.project_id));
+
+    const targetFirstDay = `${ty}-${String(tm).padStart(2, '0')}-01`;
+    let copied = 0;
+    let skipped = 0;
+    for (const s of sources) {
+      if (alreadyInvoiced.has(s.project_id)) { skipped++; continue; }
+      await sql`
+        INSERT INTO fin_project_invoices
+          (project_id, month, year, invoice_number, invoice_date,
+           amount_invoiced, currency, fx_rate, amount_invoiced_inr,
+           notes, status, created_by, created_by_name, created_by_role)
+        VALUES (${s.project_id}, ${tm}, ${ty}, ${s.invoice_number ?? null},
+                ${targetFirstDay}::date,
+                ${Number(s.amount_invoiced)}, ${s.currency ?? 'INR'},
+                ${s.fx_rate ?? 1}, ${s.amount_invoiced_inr ?? Number(s.amount_invoiced)},
+                ${s.notes ?? null}, 'pending',
+                ${gate.user?.id ?? null}, ${gate.user?.name ?? null}, ${gate.user?.role ?? null})`;
+      copied++;
+    }
+    res.json({ copied, skipped, total: sources.length });
+  } catch (err: any) { res.status(500).json({ error: err.message || 'Server error' }); }
+});
+
 // GET /api/finance/invoices/audit — list audit entries. Admin only since
 // the log exposes who-did-what on revenue rows.
 app.get('/api/finance/invoices/audit', async (req, res) => {
