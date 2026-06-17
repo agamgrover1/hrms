@@ -9326,6 +9326,14 @@ async function finComputeMonth(month: number, year: number) {
       // activity (allocation / logs / invoices) — finance still owes
       // a row for the cost they incurred before closure.
       status: p.status || 'active',
+      // Did fin_project_revenue carry a row for this period? Used by
+      // the drilldown to render a "Billing setup" section so admin can
+      // see why revenue exists even when the Invoices section is empty
+      // (legacy direct projects fall into this path).
+      has_billing_setup: !!r,
+      billing_currency: r?.currency || 'INR',
+      billing_fx_rate: Number(r?.fx_rate || 1),
+      billing_revenue_inr: Number(r?.revenue_inr || 0),
       billing_type: r?.billing_type || 'fixed', hourly_rate: Number(r?.hourly_rate || 0),
       billable_hours: Number(r?.billable_hours || 0), fixed_amount: Number(r?.fixed_amount || 0),
       revenue, directCost, directHours, projectExpenses,

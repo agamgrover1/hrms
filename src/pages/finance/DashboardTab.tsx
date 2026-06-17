@@ -1,5 +1,5 @@
 import { Fragment, useEffect, useMemo, useState } from 'react';
-import { X, Briefcase, Users as UsersIcon, FileText, IndianRupee, Receipt, Clock, CheckCircle2, Ban, ChevronRight } from 'lucide-react';
+import { X, Briefcase, Users as UsersIcon, FileText, IndianRupee, Receipt, Clock, CheckCircle2, Ban, ChevronRight, Settings as SettingsIcon } from 'lucide-react';
 import { financeApi, type FinModel, type FinEmployeeRow, type FinProjectRow, type FinInvoice, type FinProjectExpense } from '../../services/financeApi';
 import { MONTHS, money, moneyShort, pct, hrs, marginTone } from './format';
 
@@ -583,6 +583,56 @@ function ProjectDrilldownModal({ project: p, model, month, year, onClose }: {
                   ))}
                 </tbody>
               </table>
+            )}
+          </Section>
+
+          {/* Billing setup — shows the fin_project_revenue row backing
+              this project's revenue, including the legacy direct-
+              project rows that aren't visible on the Billing Setup tab
+              (which filters to Upwork only). Answers "where is this
+              ₹X revenue coming from when Invoices is empty?". */}
+          <Section icon={SettingsIcon} title="Billing setup"
+            subtitle={(p as any).has_billing_setup
+              ? `${((p as any).billing_type === 'hourly') ? `${money((p as any).hourly_rate, (p as any).billing_currency || c)}/h × ${hrs((p as any).billable_hours)}` : `${money((p as any).fixed_amount, (p as any).billing_currency || c)} fixed`}${(p as any).billing_currency && (p as any).billing_currency !== 'INR' ? ` · ${(p as any).billing_currency}` : ''}`
+              : 'No setup row for this period'}>
+            {(p as any).has_billing_setup ? (
+              <div className="overflow-x-auto">
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr className="text-[10px] uppercase tracking-wide text-on-surface-subtle border-b border-outline">
+                      <th className="text-left font-semibold px-3 py-2">Field</th>
+                      <th className="text-right font-semibold px-3 py-2">Value</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-outline">
+                    <tr><td className="px-3 py-2 text-on-surface-muted">Billing type</td><td className="px-3 py-2 text-right font-semibold text-on-surface capitalize">{(p as any).billing_type}</td></tr>
+                    <tr><td className="px-3 py-2 text-on-surface-muted">Currency</td><td className="px-3 py-2 text-right font-semibold text-on-surface">{(p as any).billing_currency || 'INR'}</td></tr>
+                    {(p as any).billing_type === 'fixed' ? (
+                      <tr><td className="px-3 py-2 text-on-surface-muted">Fixed amount</td><td className="px-3 py-2 text-right font-semibold text-on-surface num-mono">{money((p as any).fixed_amount, (p as any).billing_currency || c)}</td></tr>
+                    ) : (
+                      <>
+                        <tr><td className="px-3 py-2 text-on-surface-muted">Hourly rate</td><td className="px-3 py-2 text-right font-semibold text-on-surface num-mono">{money((p as any).hourly_rate, (p as any).billing_currency || c)}/h</td></tr>
+                        <tr><td className="px-3 py-2 text-on-surface-muted">Billable hours</td><td className="px-3 py-2 text-right font-semibold text-on-surface num-mono">{hrs((p as any).billable_hours)}</td></tr>
+                        <tr><td className="px-3 py-2 text-on-surface-muted">Subtotal</td><td className="px-3 py-2 text-right font-semibold text-on-surface num-mono">{money(Number((p as any).hourly_rate) * Number((p as any).billable_hours), (p as any).billing_currency || c)}</td></tr>
+                      </>
+                    )}
+                    {(p as any).billing_currency && (p as any).billing_currency !== 'INR' && (
+                      <>
+                        <tr><td className="px-3 py-2 text-on-surface-muted">FX rate</td><td className="px-3 py-2 text-right font-semibold text-on-surface num-mono">1 {(p as any).billing_currency} = ₹{Number((p as any).billing_fx_rate || 1).toFixed(4)}</td></tr>
+                        <tr><td className="px-3 py-2 text-on-surface-muted">Revenue (INR)</td><td className="px-3 py-2 text-right font-bold text-on-surface num-mono">{money((p as any).billing_revenue_inr || p.revenue, c)}</td></tr>
+                      </>
+                    )}
+                  </tbody>
+                </table>
+                {p.invoiceCount === 0 && (
+                  <p className="px-3 pt-3 text-[11px] text-on-surface-muted italic">
+                    No invoices for this period — revenue above is coming from this Billing-setup row directly. For direct/retainer clients, raising an invoice on the Invoices tab will take precedence over this row in the roll-up.
+                  </p>
+                )}
+              </div>
+            ) : (
+              <Empty label="No Billing-setup row exists for this period."
+                sub={p.revenue > 0 ? 'But revenue is non-zero — likely from an invoice. See the Invoices section above.' : undefined} />
             )}
           </Section>
 
