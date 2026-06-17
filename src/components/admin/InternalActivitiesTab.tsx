@@ -5,13 +5,26 @@ import { api } from '../../services/api';
 // Admin-managed list of non-project activities. Employees pick from this
 // list when logging hours that aren't tied to a billable project.
 // Deletion is soft (active=false) so historical logs still resolve names.
+// Roles an admin can assign per-activity. Empty selection = visible to
+// everyone (the GET endpoint treats NULL / empty as "all hands"). The
+// labels are the user-facing strings; the keys are what the backend
+// stores and the GET filter compares against.
+type RoleKey = 'admin' | 'hr_manager' | 'project_coordinator' | 'manager' | 'employee';
+const ROLE_CHIPS: { key: RoleKey; label: string }[] = [
+  { key: 'admin',                label: 'Admin' },
+  { key: 'hr_manager',           label: 'HR' },
+  { key: 'project_coordinator',  label: 'Coord' },
+  { key: 'manager',              label: 'Manager' },
+  { key: 'employee',             label: 'Employee' },
+];
+
 export default function InternalActivitiesTab() {
-  const [rows, setRows] = useState<Array<{ id: string; name: string; description: string | null; active: boolean; sort_order: number }>>([]);
+  const [rows, setRows] = useState<Array<{ id: string; name: string; description: string | null; active: boolean; sort_order: number; roles: string[] | null }>>([]);
   const [loading, setLoading] = useState(true);
   const [adding, setAdding] = useState(false);
-  const [draft, setDraft] = useState({ name: '', description: '', sort_order: '100' });
+  const [draft, setDraft] = useState<{ name: string; description: string; sort_order: string; roles: RoleKey[] }>({ name: '', description: '', sort_order: '100', roles: [] });
   const [editingId, setEditingId] = useState<string | null>(null);
-  const [editDraft, setEditDraft] = useState({ name: '', description: '', sort_order: 100 });
+  const [editDraft, setEditDraft] = useState<{ name: string; description: string; sort_order: number; roles: RoleKey[] }>({ name: '', description: '', sort_order: 100, roles: [] });
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
 
@@ -32,8 +45,12 @@ export default function InternalActivitiesTab() {
         name: draft.name.trim(),
         description: draft.description.trim() || undefined,
         sort_order: Number(draft.sort_order) || 100,
+        // Empty array on the wire would be normalized to null on the
+        // server (= visible to everyone). Pass it explicitly so admin's
+        // toggle state matches what the backend stores.
+        roles: draft.roles.length ? draft.roles : null,
       });
-      setDraft({ name: '', description: '', sort_order: '100' });
+      setDraft({ name: '', description: '', sort_order: '100', roles: [] });
       setAdding(false);
       load();
     } catch (e: any) { setError(e.message ?? 'Failed to add'); }
@@ -42,7 +59,12 @@ export default function InternalActivitiesTab() {
 
   const startEdit = (r: typeof rows[number]) => {
     setEditingId(r.id);
-    setEditDraft({ name: r.name, description: r.description ?? '', sort_order: r.sort_order });
+    setEditDraft({
+      name: r.name,
+      description: r.description ?? '',
+      sort_order: r.sort_order,
+      roles: (r.roles ?? []) as RoleKey[],
+    });
   };
   const saveEdit = async (id: string) => {
     setBusy(true); setError('');
@@ -51,6 +73,7 @@ export default function InternalActivitiesTab() {
         name: editDraft.name.trim(),
         description: editDraft.description.trim() || undefined,
         sort_order: editDraft.sort_order,
+        roles: editDraft.roles.length ? editDraft.roles : null,
       });
       setEditingId(null);
       load();
@@ -104,6 +127,16 @@ export default function InternalActivitiesTab() {
               <input type="number" value={draft.sort_order} onChange={e => setDraft({ ...draft, sort_order: e.target.value })}
                 className="w-full rounded-lg border border-outline bg-surface px-2.5 py-2 text-sm focus:border-brand outline-none num-mono" />
             </div>
+            <div className="sm:col-span-12">
+              <label className="block text-xs text-on-surface-muted mb-1">Visible to</label>
+              <RoleChips
+                value={draft.roles}
+                onChange={r => setDraft({ ...draft, roles: r })}
+              />
+              <p className="text-[11px] text-on-surface-subtle mt-1">
+                Pick the roles that should see this activity in their picker. Leave empty to make it visible to everyone.
+              </p>
+            </div>
           </div>
           <div className="mt-3 flex items-center gap-3">
             <button onClick={add} disabled={busy || !draft.name.trim()}
@@ -120,6 +153,7 @@ export default function InternalActivitiesTab() {
             <tr className="text-[11px] uppercase tracking-wide text-on-surface-subtle border-b border-outline bg-surface-2">
               <th className="text-left px-4 py-2.5 font-semibold">Name</th>
               <th className="text-left px-4 py-2.5 font-semibold">Description</th>
+              <th className="text-left px-4 py-2.5 font-semibold">Visible to</th>
               <th className="text-right px-3 py-2.5 font-semibold">Sort</th>
               <th className="text-center px-3 py-2.5 font-semibold">Status</th>
               <th className="px-3 py-2.5"></th>
@@ -141,6 +175,16 @@ export default function InternalActivitiesTab() {
                       ? <input value={editDraft.description} onChange={e => setEditDraft({ ...editDraft, description: e.target.value })}
                           className="w-full rounded-lg border border-outline bg-surface px-2 py-1.5 text-sm focus:border-brand outline-none" />
                       : (r.description ?? '—')}
+                  </td>
+                  <td className="px-4 py-2">
+                    {isEditing ? (
+                      <RoleChips
+                        value={editDraft.roles}
+                        onChange={roles => setEditDraft({ ...editDraft, roles })}
+                      />
+                    ) : (
+                      <RoleChips value={(r.roles ?? []) as RoleKey[]} readOnly />
+                    )}
                   </td>
                   <td className="px-3 py-2 text-right num-mono text-xs">
                     {isEditing
@@ -175,11 +219,63 @@ export default function InternalActivitiesTab() {
               );
             })}
             {rows.length === 0 && (
-              <tr><td colSpan={5} className="px-4 py-8 text-center text-on-surface-muted">No activities yet — click "New activity" above to add one.</td></tr>
+              <tr><td colSpan={6} className="px-4 py-8 text-center text-on-surface-muted">No activities yet — click "New activity" above to add one.</td></tr>
             )}
           </tbody>
         </table>
       </div>
+    </div>
+  );
+}
+
+// Toggle strip showing the 5 role chips. Empty selection (read or write)
+// renders an "All roles" pill so it's obvious the activity is unscoped
+// rather than accidentally hidden from everyone.
+function RoleChips({ value, onChange, readOnly = false }: {
+  value: RoleKey[];
+  onChange?: (next: RoleKey[]) => void;
+  readOnly?: boolean;
+}) {
+  if (readOnly && value.length === 0) {
+    return (
+      <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider bg-success-container text-success">
+        All roles
+      </span>
+    );
+  }
+  const toggle = (k: RoleKey) => {
+    if (!onChange) return;
+    onChange(value.includes(k) ? value.filter(r => r !== k) : [...value, k]);
+  };
+  return (
+    <div className="flex flex-wrap gap-1">
+      {ROLE_CHIPS.map(({ key, label }) => {
+        const on = value.includes(key);
+        if (readOnly) {
+          if (!on) return null;
+          return (
+            <span key={key} className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider bg-accent-container text-accent">
+              {label}
+            </span>
+          );
+        }
+        return (
+          <button key={key} type="button" onClick={() => toggle(key)}
+            className={`inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider transition-colors ${
+              on
+                ? 'bg-accent text-on-accent'
+                : 'bg-surface-2 text-on-surface-subtle border border-outline hover:bg-surface-3'
+            }`}>
+            {label}
+          </button>
+        );
+      })}
+      {!readOnly && value.length > 0 && (
+        <button type="button" onClick={() => onChange?.([])}
+          className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-semibold uppercase tracking-wider text-on-surface-subtle hover:text-on-surface">
+          Clear
+        </button>
+      )}
     </div>
   );
 }

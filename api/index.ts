@@ -1047,6 +1047,15 @@ async function runStartupMigrations() {
     )`;
   await sql`CREATE INDEX IF NOT EXISTS idx_internal_logs_emp_date ON internal_hour_logs(employee_id, log_date DESC)`.catch(()=>{});
   await sql`CREATE INDEX IF NOT EXISTS idx_internal_logs_date ON internal_hour_logs(log_date DESC)`.catch(()=>{});
+  // Role scoping for the activity picker. NULL/empty array = visible to
+  // everyone (preserves current behaviour for legacy rows). Non-empty
+  // array = only roles listed see the activity. Effective role values
+  // are 'admin' / 'hr_manager' / 'project_coordinator' / 'manager' /
+  // 'employee'. 'manager' is a synthetic role assigned at request time
+  // when the current user has direct reports (employees.reporting_manager_id
+  // = them) — that lets HR scope, say, "1:1 prep" to managers only
+  // without needing a separate flag on the employee record.
+  await sql`ALTER TABLE internal_activities ADD COLUMN IF NOT EXISTS roles TEXT[]`.catch(()=>{});
   // Backfill (idempotent): legacy POST stored employee_id as the HUMAN
   // code (e.g. "DL0092") because it grabbed u.employee_id_ref. But every
   // reader — Pulse compute, the EmployeeHoursDetailModal, the new Hours
@@ -3591,26 +3600,67 @@ app.put('/api/performance/pulse/weights/:dept', async (req, res) => {
 app.get('/api/internal-activities', async (req, res) => {
   try {
     await runStartupMigrations();
-    // Hide inactive entries unless the caller is admin (admin needs them to
-    // re-activate / clean up).
-    const u = (await sql`SELECT role FROM app_users WHERE id=${req.header('x-user-id') ?? ''}`)[0] as any;
-    const includeInactive = u?.role === 'admin' || u?.role === 'hr_manager';
-    const rows = includeInactive
-      ? await sql`SELECT * FROM internal_activities ORDER BY sort_order, name`
-      : await sql`SELECT * FROM internal_activities WHERE active=TRUE ORDER BY sort_order, name`;
+    const u = (await sql`SELECT role, employee_id_ref FROM app_users WHERE id=${req.header('x-user-id') ?? ''}`)[0] as any;
+    // Admin / HR see the whole catalogue (including inactive rows so they
+    // can re-activate / clean up). Everyone else only sees active rows
+    // scoped to their effective roles.
+    const isAdminOrHR = u?.role === 'admin' || u?.role === 'hr_manager';
+    if (isAdminOrHR) {
+      const rows = await sql`SELECT * FROM internal_activities ORDER BY sort_order, name`;
+      return res.json(rows);
+    }
+    // Build the user's effective-roles set. Always includes their primary
+    // role; adds 'manager' if they have any direct reports. Empty when we
+    // can't resolve them — returns NULL-roles activities only (the "all
+    // hands" set), so they at least see the unscoped defaults.
+    const effective: string[] = [];
+    if (u?.role) effective.push(u.role);
+    if (u?.employee_id_ref) {
+      const meRow = (await sql`
+        SELECT id FROM employees
+        WHERE employee_id = ${u.employee_id_ref} OR id = ${u.employee_id_ref}
+        LIMIT 1`)[0] as any;
+      if (meRow?.id) {
+        const hasReports = (await sql`
+          SELECT 1 FROM employees WHERE reporting_manager_id = ${meRow.id} LIMIT 1`) as any[];
+        if (hasReports.length) effective.push('manager');
+      }
+    }
+    const rows = await sql`
+      SELECT * FROM internal_activities
+      WHERE active = TRUE
+        AND (
+          roles IS NULL
+          OR cardinality(roles) = 0
+          OR roles && ${effective}::text[]
+        )
+      ORDER BY sort_order, name`;
     res.json(rows);
   } catch (err: any) { res.status(500).json({ error: err.message ?? 'Server error' }); }
 });
+// Sanitize a roles input: must be an array of known role strings. Empty
+// arrays are coerced to NULL so the GET filter treats it as "visible to
+// everyone" (rather than the technically-correct "visible to nobody").
+const VALID_ACTIVITY_ROLES = new Set(['admin', 'hr_manager', 'project_coordinator', 'manager', 'employee']);
+function normalizeActivityRoles(input: any): string[] | null {
+  if (!Array.isArray(input)) return null;
+  const cleaned = input
+    .map(r => String(r).trim())
+    .filter(r => VALID_ACTIVITY_ROLES.has(r));
+  return cleaned.length ? Array.from(new Set(cleaned)) : null;
+}
+
 app.post('/api/internal-activities', async (req, res) => {
   try {
     await runStartupMigrations();
     if (!(await requireAdmin(req, res))) return;
-    const { name, description, sort_order } = req.body ?? {};
+    const { name, description, sort_order, roles } = req.body ?? {};
     if (!name?.trim()) return res.status(400).json({ error: 'Name is required' });
+    const cleanedRoles = normalizeActivityRoles(roles);
     const id = `act_${Date.now()}`;
     const row = (await sql`
-      INSERT INTO internal_activities (id, name, description, sort_order, created_by)
-      VALUES (${id}, ${name.trim()}, ${description?.trim() || null}, ${Number(sort_order) || 100}, ${req.header('x-user-id') ?? null})
+      INSERT INTO internal_activities (id, name, description, sort_order, created_by, roles)
+      VALUES (${id}, ${name.trim()}, ${description?.trim() || null}, ${Number(sort_order) || 100}, ${req.header('x-user-id') ?? null}, ${cleanedRoles}::text[])
       RETURNING *`)[0];
     res.status(201).json(row);
   } catch (err: any) {
@@ -3621,7 +3671,10 @@ app.post('/api/internal-activities', async (req, res) => {
 app.put('/api/internal-activities/:id', async (req, res) => {
   try {
     if (!(await requireAdmin(req, res))) return;
-    const { name, description, active, sort_order } = req.body ?? {};
+    const { name, description, active, sort_order, roles } = req.body ?? {};
+    // roles is intentionally three-state: undefined → don't touch; null →
+    // clear (visible to all); array → set. Use a separate UPDATE for that
+    // column to keep the COALESCE pattern simple for the others.
     const row = (await sql`
       UPDATE internal_activities SET
         name=COALESCE(${name?.trim() || null}, name),
@@ -3631,6 +3684,14 @@ app.put('/api/internal-activities/:id', async (req, res) => {
       WHERE id=${req.params.id}
       RETURNING *`)[0];
     if (!row) return res.status(404).json({ error: 'Activity not found' });
+    if (roles !== undefined) {
+      const cleanedRoles = roles === null ? null : normalizeActivityRoles(roles);
+      const updated = (await sql`
+        UPDATE internal_activities SET roles=${cleanedRoles}::text[]
+        WHERE id=${req.params.id}
+        RETURNING *`)[0];
+      return res.json(updated);
+    }
     res.json(row);
   } catch (err: any) { res.status(500).json({ error: err.message ?? 'Server error' }); }
 });

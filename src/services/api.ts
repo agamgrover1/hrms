@@ -683,11 +683,15 @@ export const api = {
   },
 
   // ── Internal activities + non-project hour logs ─────────────────────
+  // `roles` scopes which roles see the activity in the picker. NULL or
+  // an empty array means visible to everyone. Valid values:
+  //   'admin' | 'hr_manager' | 'project_coordinator' | 'manager' | 'employee'
+  // 'manager' is computed at request time (employee has direct reports).
   getInternalActivities: () =>
-    request<Array<{ id: string; name: string; description: string | null; active: boolean; sort_order: number }>>(`/internal-activities`),
-  addInternalActivity: (data: { name: string; description?: string; sort_order?: number }) =>
+    request<Array<{ id: string; name: string; description: string | null; active: boolean; sort_order: number; roles: string[] | null }>>(`/internal-activities`),
+  addInternalActivity: (data: { name: string; description?: string; sort_order?: number; roles?: string[] | null }) =>
     request(`/internal-activities`, { method: 'POST', body: JSON.stringify(data) }),
-  updateInternalActivity: (id: string, data: { name?: string; description?: string; active?: boolean; sort_order?: number }) =>
+  updateInternalActivity: (id: string, data: { name?: string; description?: string; active?: boolean; sort_order?: number; roles?: string[] | null }) =>
     request(`/internal-activities/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
   deleteInternalActivity: (id: string) =>
     request(`/internal-activities/${id}`, { method: 'DELETE' }),
