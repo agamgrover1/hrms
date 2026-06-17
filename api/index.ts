@@ -1527,12 +1527,18 @@ async function runStartupMigrations() {
     await sql`ALTER TABLE employees ADD COLUMN IF NOT EXISTS date_of_birth DATE`;
     // Exit date — last working day for separated employees. NULL = still
     // on the payroll. Drives salary proration in finComputeMonth: an
-    // employee who left on day 10 of a 30-day month counts at salary *
-    // 10/30 in that month, not 0 (which understated cost) or full salary
-    // (which overstated). From the month AFTER their exit they're
-    // automatically excluded from the salary roll-up without admin
-    // having to remember to flip fin_employee_meta.active.
+    // employee who left on day 10 counts at salary * (worked working
+    // days / total working days in the month), not 0 (which understated
+    // cost) or full salary (which overstated). From the month AFTER
+    // their exit they're automatically excluded from the salary roll-up
+    // without admin having to remember to flip fin_employee_meta.active.
     await sql`ALTER TABLE employees ADD COLUMN IF NOT EXISTS exit_date DATE`;
+    // Manual override for the exit-month salary in case admin needs to
+    // bake in leave encashment, bonuses, gratuity, deductions etc. that
+    // the working-day proration can't compute. NULL = let the
+    // proration math decide. Stored as the FULL INR amount to credit
+    // that month, not a delta.
+    await sql`ALTER TABLE employees ADD COLUMN IF NOT EXISTS exit_salary_override NUMERIC`;
     await sql`ALTER TABLE attendance_records ADD COLUMN IF NOT EXISTS source TEXT DEFAULT 'manual'`;
     await sql`ALTER TABLE attendance_records ADD COLUMN IF NOT EXISTS biometric_sync_id TEXT`;
     await sql`ALTER TABLE attendance_records ADD COLUMN IF NOT EXISTS extension_hours NUMERIC DEFAULT 0`;
@@ -1777,9 +1783,16 @@ app.post('/api/employees', async (req, res) => {
 
 app.put('/api/employees/:id', async (req, res) => {
   try {
-    const { name, email, phone, department, designation, join_date, location, manager, reporting_manager_id, status, salary, ctc, biometric_id, shift, next_appraisal_month, next_appraisal_year, date_of_birth, exit_date } = req.body;
+    const { name, email, phone, department, designation, join_date, location, manager, reporting_manager_id, status, salary, ctc, biometric_id, shift, next_appraisal_month, next_appraisal_year, date_of_birth, exit_date, exit_salary_override } = req.body;
     await sql`ALTER TABLE employees ADD COLUMN IF NOT EXISTS date_of_birth DATE`.catch(()=>{});
     await sql`ALTER TABLE employees ADD COLUMN IF NOT EXISTS exit_date DATE`.catch(()=>{});
+    await sql`ALTER TABLE employees ADD COLUMN IF NOT EXISTS exit_salary_override NUMERIC`.catch(()=>{});
+    // Normalize override: empty string / undefined → NULL (use auto math).
+    // Numeric → store as-is. Negative gets coerced to 0 so the rollup
+    // never goes the wrong direction.
+    const overrideVal = (exit_salary_override === undefined || exit_salary_override === null || exit_salary_override === '' )
+      ? null
+      : Math.max(0, Number(exit_salary_override));
     const rows = await sql`
       UPDATE employees SET name=${name}, email=${email}, phone=${phone}, department=${department},
         designation=${designation}, join_date=${join_date || null},
@@ -1789,7 +1802,8 @@ app.put('/api/employees/:id', async (req, res) => {
         biometric_id=${biometric_id ?? null}, shift=${shift ?? 'day'},
         next_appraisal_month=${next_appraisal_month ?? null}, next_appraisal_year=${next_appraisal_year ?? null},
         date_of_birth=${date_of_birth || null},
-        exit_date=${exit_date || null}
+        exit_date=${exit_date || null},
+        exit_salary_override=${overrideVal}
       WHERE id=${req.params.id} RETURNING *`;
     // Keep the linked app_users row in sync — name / department / designation are
     // denormalized there for the employee's own portal. Without this, HR can edit
@@ -8853,7 +8867,8 @@ async function finComputeMonth(month: number, year: number) {
   const employees = (await sql`
     SELECT e.id, e.name, e.designation, e.department, e.reporting_manager_id,
            COALESCE(e.salary,0) AS salary, m.cost_type, m.capacity_hours,
-           e.exit_date::text AS exit_date
+           e.exit_date::text AS exit_date,
+           e.exit_salary_override
     FROM employees e
     LEFT JOIN fin_employee_meta m ON m.employee_id = e.id
     WHERE (
@@ -8863,25 +8878,55 @@ async function finComputeMonth(month: number, year: number) {
               AND e.exit_date >= ${periodFirstDay}::date
               AND e.exit_date <= ${periodLastDay}::date)
           )`) as any[];
-  // Apply proration: salary becomes salary * days_in_period_worked /
-  // total_days_in_period when the employee exited inside this period.
-  // Using calendar days (the standard for separation pay) rather than
-  // working days — easier to explain to people who'll question the
-  // number. `salary_factor` is preserved so the dashboard can render
-  // a "prorated to X/30 days" hint next to the cost.
-  const daysInMonth = new Date(Date.UTC(year, month, 0)).getUTCDate();
+  // Proration: when an employee exited inside this period we recompute
+  // their salary contribution. Two paths:
+  //   1. exit_salary_override is set → use it verbatim. Admin used this
+  //      to bake in leave encashment, bonuses, deductions etc. that
+  //      working-day proration can't compute.
+  //   2. otherwise → salary × worked_working_days / total_working_days
+  //      where working days = Mon-Fri excluding holidays in this period.
+  //      Matches "1 day = salary / 22" math the user described.
+  // salary_factor and salary_prorated_* are preserved on the row so a
+  // future UI hint can render "prorated to 12 of 22 working days
+  // (₹X)" without recomputing.
+  const monthHolidays = (await sql`
+    SELECT date::text AS d FROM holidays
+    WHERE date::date >= ${periodFirstDay}::date
+      AND date::date <= ${periodLastDay}::date`) as any[];
+  const holidaySet = new Set<string>(monthHolidays.map(r => r.d));
+  // Count Mon-Fri days in [from, to] inclusive that aren't holidays.
+  const countWorkingDays = (from: Date, to: Date): number => {
+    let n = 0;
+    for (let d = new Date(from); d <= to; d.setUTCDate(d.getUTCDate() + 1)) {
+      const day = d.getUTCDay();
+      if (day === 0 || day === 6) continue; // Sun/Sat
+      const iso = d.toISOString().slice(0, 10);
+      if (holidaySet.has(iso)) continue;
+      n++;
+    }
+    return n;
+  };
+  const firstDay = new Date(Date.UTC(year, month - 1, 1));
+  const lastDay  = new Date(Date.UTC(year, month, 0));
+  const totalWorkingDays = countWorkingDays(firstDay, lastDay);
   for (const e of employees) {
-    if (e.exit_date) {
-      const ed = String(e.exit_date).slice(0, 10);
-      const [, , ddStr] = ed.split('-');
-      const exitDay = Number(ddStr);
-      const worked = Math.max(0, Math.min(exitDay, daysInMonth));
-      e.salary_factor = worked / daysInMonth;
-      e.salary_prorated_days = worked;
-      e.salary_prorated_total_days = daysInMonth;
-      e.salary = Number(e.salary) * e.salary_factor;
+    if (!e.exit_date) { e.salary_factor = 1; continue; }
+    const fullSalary = Number(e.salary);
+    if (e.exit_salary_override !== null && e.exit_salary_override !== undefined) {
+      // Manual override wins. Record the implied factor so downstream
+      // surfaces can show "X of Y working days" + the override flag.
+      const override = Number(e.exit_salary_override);
+      e.salary_factor = fullSalary > 0 ? override / fullSalary : 0;
+      e.salary_override_used = true;
+      e.salary = override;
     } else {
-      e.salary_factor = 1;
+      const ed = new Date(String(e.exit_date).slice(0, 10) + 'T00:00:00Z');
+      const exitDate = ed < firstDay ? firstDay : ed > lastDay ? lastDay : ed;
+      const workedDays = countWorkingDays(firstDay, exitDate);
+      e.salary_factor = totalWorkingDays > 0 ? workedDays / totalWorkingDays : 0;
+      e.salary_prorated_days = workedDays;
+      e.salary_prorated_total_days = totalWorkingDays;
+      e.salary = fullSalary * e.salary_factor;
     }
   }
   const projects = (await sql`SELECT id, name, client_name, project_lead_id, project_reporting_id FROM projects WHERE status='active'`) as any[];

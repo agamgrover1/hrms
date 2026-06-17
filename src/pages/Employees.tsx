@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Search, Filter, Plus, Mail, Phone, MapPin, ChevronRight, X, User, Pencil, Trash2, Eye, EyeOff, AlertTriangle, Shield } from 'lucide-react';
 import { api } from '../services/api';
@@ -392,6 +392,7 @@ const emptyForm = {
   reporting_manager_id: '',
   status: 'active',
   exit_date: '',
+  exit_salary_override: '',
   salary: '',
   ctc: '',
   password: '',
@@ -569,13 +570,18 @@ function AddEmployeeModal({ onClose, onSaved, existingEmployees, departments = [
             <div>
               <label className={labelCls}>Exit Date <span className="text-on-surface-subtle font-normal">(if separated)</span></label>
               <input type="date" value={form.exit_date ?? ''} onChange={e => set('exit_date', e.target.value)} className={inputCls} />
-              {form.exit_date && (
-                <p className="mt-1 text-[11px] text-on-surface-muted leading-snug">
-                  Salary for {new Date(form.exit_date).toLocaleDateString('en-IN', { month: 'long', year: 'numeric' })} will be prorated to days worked. From the next month they're auto-excluded from the cost roll-up.
-                </p>
-              )}
             </div>
           </div>
+          {form.exit_date && (
+            <ExitSalarySection
+              exitDate={form.exit_date}
+              salary={Number(form.salary) || 0}
+              override={form.exit_salary_override ?? ''}
+              onOverrideChange={v => set('exit_salary_override', v)}
+              inputCls={inputCls}
+              labelCls={labelCls}
+            />
+          )}
 
           <div>
             <p className="text-xs font-semibold text-on-surface-subtle uppercase tracking-wide mb-3">Compensation</p>
@@ -672,6 +678,10 @@ export function EditEmployeeModal({ emp, onClose, onSaved, allEmployees, departm
     // following month the employee disappears from the salary roll-up
     // without admin having to flip fin_employee_meta.active.
     exit_date: toDateStr(emp.exit_date) || '',
+    // Manual override for the exit-month salary. Empty string = let the
+    // working-day proration math decide; a number replaces it verbatim
+    // (used for leave encashment, bonuses, deductions etc.).
+    exit_salary_override: emp.exit_salary_override != null ? String(emp.exit_salary_override) : '',
     location: emp.location || '',
     manager: emp.manager || '',
     reporting_manager_id: emp.reporting_manager_id || '',
@@ -813,13 +823,18 @@ export function EditEmployeeModal({ emp, onClose, onSaved, allEmployees, departm
             <div>
               <label className={labelCls}>Exit Date <span className="text-on-surface-subtle font-normal">(if separated)</span></label>
               <input type="date" value={form.exit_date ?? ''} onChange={e => set('exit_date', e.target.value)} className={inputCls} />
-              {form.exit_date && (
-                <p className="mt-1 text-[11px] text-on-surface-muted leading-snug">
-                  Salary for {new Date(form.exit_date).toLocaleDateString('en-IN', { month: 'long', year: 'numeric' })} will be prorated to days worked. From the next month they're auto-excluded from the cost roll-up.
-                </p>
-              )}
             </div>
           </div>
+          {form.exit_date && (
+            <ExitSalarySection
+              exitDate={form.exit_date}
+              salary={Number(form.salary) || 0}
+              override={form.exit_salary_override ?? ''}
+              onOverrideChange={v => set('exit_salary_override', v)}
+              inputCls={inputCls}
+              labelCls={labelCls}
+            />
+          )}
 
           <div>
             <p className="text-xs font-semibold text-on-surface-subtle uppercase tracking-wide mb-3">Compensation</p>
@@ -1017,6 +1032,106 @@ export default function Employees() {
           }}
         />
       )}
+    </div>
+  );
+}
+
+// Shared exit-month salary widget: shows live working-day proration
+// based on the entered exit date + monthly salary, with an optional
+// manual override input. Working days = Mon-Fri minus org holidays in
+// that month (fetched via api.getHolidays). Matches the same math
+// finComputeMonth runs server-side, so what the admin sees here is
+// what'll land in the books.
+function ExitSalarySection({ exitDate, salary, override, onOverrideChange, inputCls, labelCls }: {
+  exitDate: string;
+  salary: number;
+  override: string;
+  onOverrideChange: (v: string) => void;
+  inputCls: string;
+  labelCls: string;
+}) {
+  const parsed = useMemo(() => {
+    const [y, m, d] = exitDate.split('-').map(Number);
+    if (!y || !m || !d) return null;
+    return { y, m, d };
+  }, [exitDate]);
+  const [holidaySet, setHolidaySet] = useState<Set<string>>(new Set());
+  useEffect(() => {
+    if (!parsed) return;
+    api.getHolidays(parsed.y)
+      .then(rows => {
+        const s = new Set<string>();
+        for (const r of rows) {
+          const iso = String(r.date).slice(0, 10);
+          if (Number(iso.slice(5, 7)) === parsed.m) s.add(iso);
+        }
+        setHolidaySet(s);
+      })
+      .catch(() => setHolidaySet(new Set()));
+  }, [parsed?.y, parsed?.m]);
+
+  const computed = useMemo(() => {
+    if (!parsed) return null;
+    const firstDay = new Date(Date.UTC(parsed.y, parsed.m - 1, 1));
+    const lastDay = new Date(Date.UTC(parsed.y, parsed.m, 0));
+    const exit = new Date(Date.UTC(parsed.y, parsed.m - 1, parsed.d));
+    const cappedExit = exit < firstDay ? firstDay : exit > lastDay ? lastDay : exit;
+    const countWorkingDays = (from: Date, to: Date) => {
+      let n = 0;
+      for (let d = new Date(from); d <= to; d.setUTCDate(d.getUTCDate() + 1)) {
+        const day = d.getUTCDay();
+        if (day === 0 || day === 6) continue;
+        const iso = d.toISOString().slice(0, 10);
+        if (holidaySet.has(iso)) continue;
+        n++;
+      }
+      return n;
+    };
+    const totalWorkingDays = countWorkingDays(firstDay, lastDay);
+    const workedDays = countWorkingDays(firstDay, cappedExit);
+    const factor = totalWorkingDays > 0 ? workedDays / totalWorkingDays : 0;
+    const autoAmount = Math.round(salary * factor);
+    const monthLabel = exit.toLocaleDateString('en-IN', { month: 'long', year: 'numeric' });
+    return { totalWorkingDays, workedDays, autoAmount, monthLabel };
+  }, [parsed, holidaySet, salary]);
+
+  const overrideNum = override.trim() === '' ? null : Number(override);
+  const willCount = overrideNum != null && !Number.isNaN(overrideNum) ? Math.max(0, overrideNum) : (computed?.autoAmount ?? 0);
+
+  return (
+    <div className="rounded-xl-2 border border-danger/30 bg-danger-container/20 p-4 space-y-3 mt-4">
+      <p className="text-xs font-semibold text-on-surface uppercase tracking-wide">Final-month salary · {computed?.monthLabel ?? '—'}</p>
+      {computed && (
+        <p className="text-xs text-on-surface-muted leading-snug">
+          Auto-computed at <b className="text-on-surface num-mono">₹{computed.autoAmount.toLocaleString('en-IN')}</b>
+          {' '}— <b className="text-on-surface num-mono">{computed.workedDays} of {computed.totalWorkingDays}</b> working days
+          {salary > 0 && (
+            <> ({(computed.workedDays / Math.max(1, computed.totalWorkingDays) * 100).toFixed(0)}% of <span className="num-mono">₹{salary.toLocaleString('en-IN')}</span>)</>
+          )}.
+          From the next month they're auto-excluded from the cost roll-up.
+        </p>
+      )}
+      <div>
+        <label className={labelCls}>Override (₹) <span className="text-on-surface-subtle font-normal">— optional, includes leave encashment, bonuses, deductions</span></label>
+        <input type="number" min="0" step="0.01" value={override} onChange={e => onOverrideChange(e.target.value)}
+          placeholder={computed ? String(computed.autoAmount) : 'Auto'}
+          className={inputCls + ' num-mono'} />
+        {overrideNum != null && !Number.isNaN(overrideNum) && computed && (
+          <p className="mt-1 text-[11px] text-on-surface-muted">
+            Will count <b className="text-on-surface num-mono">₹{Math.max(0, overrideNum).toLocaleString('en-IN')}</b> in {computed.monthLabel}
+            {' '}{overrideNum > computed.autoAmount
+              ? <>(<span className="text-success">+₹{Math.round(overrideNum - computed.autoAmount).toLocaleString('en-IN')}</span> over auto)</>
+              : overrideNum < computed.autoAmount
+                ? <>(<span className="text-danger">-₹{Math.round(computed.autoAmount - overrideNum).toLocaleString('en-IN')}</span> under auto)</>
+                : '(matches auto)'}.
+          </p>
+        )}
+        {(overrideNum == null || Number.isNaN(overrideNum)) && computed && (
+          <p className="mt-1 text-[11px] text-on-surface-subtle">
+            Leave blank to use the auto-computed <span className="num-mono">₹{willCount.toLocaleString('en-IN')}</span>.
+          </p>
+        )}
+      </div>
     </div>
   );
 }
