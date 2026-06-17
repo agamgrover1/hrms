@@ -92,15 +92,22 @@ export default function HoursApproval() {
       .catch(() => {});
   }, [user?.employee_id_ref]);
 
-  const load = useCallback(() => {
-    setLoading(true);
+  // load() supports a "silent" mode used by the 12s background poll —
+  // it refreshes the data without toggling `loading` to true. Without
+  // this, the live refresh kept replacing the table with the
+  // "Loading logs…" placeholder every 12 seconds and the whole screen
+  // appeared to flicker. The initial mount + filter / scope changes
+  // still go through the loud path so the user sees a clear loading
+  // signal when they explicitly asked for different data.
+  const load = useCallback((opts?: { silent?: boolean }) => {
+    if (!opts?.silent) setLoading(true);
     const params: any = {};
     if (filterStatus !== 'all') params.status = filterStatus;
     if (scope === 'mine' && reviewerEmpId) params.reviewer_id = reviewerEmpId;
     api.getHourLogs(params)
       .then(d => setLogs(d as HourLog[]))
       .catch(() => {})
-      .finally(() => setLoading(false));
+      .finally(() => { if (!opts?.silent) setLoading(false); });
   }, [filterStatus, scope, reviewerEmpId]);
 
   useEffect(() => {
@@ -108,10 +115,12 @@ export default function HoursApproval() {
     load();
   }, [load, scope, reviewerEmpId]);
 
-  // Live refresh on the queue. Manager / coordinator sees new submissions
-  // pop into Pending automatically, comments accrue on the rows without
-  // needing to refresh.
-  useLiveRefresh(load);
+  // Live refresh on the queue, silent mode so the placeholder doesn't
+  // flash every 12 seconds. Manager / coordinator sees new submissions
+  // pop into Pending automatically and comments accrue on the rows
+  // without the whole queue blinking.
+  const silentLoad = useCallback(() => load({ silent: true }), [load]);
+  useLiveRefresh(silentLoad);
 
   // Deep-link auto-open: a notification can land here with ?logId=…&discuss=1
   // (e.g. an employee replied on a held log) and we open the modal once the
