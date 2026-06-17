@@ -648,23 +648,67 @@ function ClearModal({ inv, onClose, onSaved }: { inv: FinInvoice; onClose: () =>
 }
 
 function EditModal({ inv, isAdmin, onClose, onSaved }: { inv: FinInvoice; isAdmin: boolean; onClose: () => void; onSaved: () => void }) {
+  const ccy = (inv.currency || 'INR').toUpperCase();
+  const isForeign = ccy !== 'INR';
+  const initialInr = Number(inv.amount_invoiced_inr ?? inv.amount_invoiced ?? 0);
+
   const [invoiceNumber, setInvoiceNumber] = useState(inv.invoice_number || '');
   const [invoiceDate, setInvoiceDate] = useState(inv.invoice_date ? inv.invoice_date.slice(0, 10) : '');
-  const [amountInvoiced, setAmountInvoiced] = useState(String(inv.amount_invoiced));
+  // Native = the currency the invoice was raised in (USD for Upwork etc.).
+  // Inr = the home-currency equivalent locked at billing time. For INR
+  // invoices native === inr; for foreign invoices they differ and admin
+  // can adjust EITHER side — the other recomputes via the fx_rate.
+  const [amountNative, setAmountNative] = useState(String(inv.amount_invoiced));
+  const [amountInr, setAmountInr] = useState(String(Math.round(initialInr * 100) / 100));
   const [amountReceived, setAmountReceived] = useState(inv.amount_received != null ? String(inv.amount_received) : '');
   const [notes, setNotes] = useState(inv.notes || '');
   const [saving, setSaving] = useState(false);
   const [err, setErr] = useState('');
 
+  // When native changes, recompute INR using the current fx_rate. When
+  // INR changes, treat it as an override that implicitly changes the
+  // rate (derived = inr / native) — we send that derived rate to the
+  // server so the stored amount_invoiced_inr matches what admin sees.
+  const onNativeChange = (v: string) => {
+    setAmountNative(v);
+    if (!isForeign) { setAmountInr(v); return; }
+    const n = Number(v);
+    const rate = Number(inv.fx_rate ?? 0);
+    if (n > 0 && rate > 0) setAmountInr(String(Math.round(n * rate * 100) / 100));
+  };
+  const onInrChange = (v: string) => {
+    setAmountInr(v);
+    if (!isForeign) setAmountNative(v);
+  };
+
+  // Derived rate to submit. INR invoices always use 1; foreign invoices
+  // use whatever the user's INR override implies. Falls back to the
+  // existing fx_rate if either side is empty / zero.
+  const derivedRate = (() => {
+    if (!isForeign) return 1;
+    const n = Number(amountNative), i = Number(amountInr);
+    if (n > 0 && i > 0) return i / n;
+    return Number(inv.fx_rate ?? 0) || 1;
+  })();
+
   const submit = async () => {
-    const ai = Number(amountInvoiced);
+    const ai = Number(amountNative);
     if (!(ai > 0)) { setErr('Invoiced amount must be > 0'); return; }
+    if (isForeign) {
+      const i = Number(amountInr);
+      if (!(i > 0)) { setErr('INR equivalent must be > 0'); return; }
+    }
     setSaving(true); setErr('');
     try {
       await financeApi.updateInvoice(inv.id, {
         invoice_number: invoiceNumber.trim() || undefined,
         invoice_date: invoiceDate || undefined,
         amount_invoiced: ai,
+        // Pass the derived rate so the server's recomputed
+        // amount_invoiced_inr matches the value admin saw at edit time.
+        // Without this the server would re-fetch a live FX rate and the
+        // dashboard could shift by a few % vs what was saved.
+        fx_rate: derivedRate,
         amount_received: isAdmin && inv.status === 'cleared' ? Number(amountReceived) : undefined,
         notes: notes.trim() || undefined,
       });
@@ -673,9 +717,17 @@ function EditModal({ inv, isAdmin, onClose, onSaved }: { inv: FinInvoice; isAdmi
     finally { setSaving(false); }
   };
 
+  const nativeSymbol = symbolOf(ccy).trim() || ccy;
+
   return (
     <Modal onClose={onClose} title={`Edit invoice · ${inv.project_name}`}>
       <div className="space-y-3">
+        {isForeign && (
+          <div className="rounded-lg bg-surface-2 border border-outline px-3 py-2 text-[11px] text-on-surface-muted">
+            Raised in <b className="text-on-surface">{ccy}</b> · locked at <b className="text-on-surface num-mono">1 {ccy} = ₹{Number(inv.fx_rate ?? 0).toFixed(4)}</b> on the invoice date.
+            Edit either field below — the other recomputes from your override so the dashboard never drifts from what you typed.
+          </div>
+        )}
         <div className="grid grid-cols-2 gap-3">
           <Field label="Invoice #">
             <input value={invoiceNumber} onChange={e => setInvoiceNumber(e.target.value)}
@@ -686,12 +738,28 @@ function EditModal({ inv, isAdmin, onClose, onSaved }: { inv: FinInvoice; isAdmi
               className="w-full px-3 py-2 rounded-lg bg-surface-2 border border-outline text-sm text-on-surface focus:outline-none focus:ring-2 focus:ring-accent/30" />
           </Field>
         </div>
-        <Field label="Amount invoiced (₹)" required>
-          <input type="number" min="0" step="0.01" value={amountInvoiced} onChange={e => setAmountInvoiced(e.target.value)}
-            className="w-full px-3 py-2 rounded-lg bg-surface-2 border border-outline text-sm text-on-surface num-mono focus:outline-none focus:ring-2 focus:ring-accent/30" />
-        </Field>
+        {isForeign ? (
+          <div className="grid grid-cols-2 gap-3">
+            <Field label={`Amount invoiced (${nativeSymbol})`} required>
+              <input type="number" min="0" step="0.01" value={amountNative} onChange={e => onNativeChange(e.target.value)}
+                className="w-full px-3 py-2 rounded-lg bg-surface-2 border border-outline text-sm text-on-surface num-mono focus:outline-none focus:ring-2 focus:ring-accent/30" />
+            </Field>
+            <Field label="Amount invoiced (₹)" required>
+              <input type="number" min="0" step="0.01" value={amountInr} onChange={e => onInrChange(e.target.value)}
+                className="w-full px-3 py-2 rounded-lg bg-surface-2 border border-outline text-sm text-on-surface num-mono focus:outline-none focus:ring-2 focus:ring-accent/30" />
+            </Field>
+            <div className="col-span-2 -mt-2 text-[11px] text-on-surface-subtle num-mono">
+              Implied rate: 1 {ccy} = ₹{derivedRate.toFixed(4)}
+            </div>
+          </div>
+        ) : (
+          <Field label="Amount invoiced (₹)" required>
+            <input type="number" min="0" step="0.01" value={amountNative} onChange={e => onNativeChange(e.target.value)}
+              className="w-full px-3 py-2 rounded-lg bg-surface-2 border border-outline text-sm text-on-surface num-mono focus:outline-none focus:ring-2 focus:ring-accent/30" />
+          </Field>
+        )}
         {isAdmin && inv.status === 'cleared' && (
-          <Field label="Amount received (₹)">
+          <Field label="Amount received (₹) — actual INR in your bank">
             <input type="number" min="0" step="0.01" value={amountReceived} onChange={e => setAmountReceived(e.target.value)}
               className="w-full px-3 py-2 rounded-lg bg-surface-2 border border-outline text-sm text-on-surface num-mono focus:outline-none focus:ring-2 focus:ring-accent/30" />
           </Field>
