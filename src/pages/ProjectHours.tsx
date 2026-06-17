@@ -764,7 +764,7 @@ function CapacityView({ summary, employees, loading, search, month, year, openDe
         <div>
           <h3 className="font-display text-xl font-bold tracking-tight text-on-surface">Per-employee capacity · {MONTHS[month-1]} {year}</h3>
           <p className="text-xs text-on-surface-muted mt-0.5">
-            Each cell stacks <span className="font-semibold">planned (top)</span> over <span className="font-semibold">logged ↓ (bottom)</span> so you can compare at a glance. <AlertTriangle size={10} className="inline -mt-0.5 text-warning" /> marks an over-plan log; <AlertTriangle size={10} className="inline -mt-0.5 text-danger" /> marks a short week. Click any cell to drill into the actual logs. Target: <span className="num-mono">{TARGET_WEEKLY}h</span>/week.
+            Each week splits into <span className="font-semibold">Plan</span> (allocated) and <span className="font-semibold">Log</span> (actual approved) side-by-side. The Log cell is tinted by status — <span className="text-success font-semibold">green</span> for a match, <span className="text-warning font-semibold">amber</span> when over-plan, <span className="text-danger font-semibold">red</span> when short. Click any cell to drill into the logs. Target: <span className="num-mono">{TARGET_WEEKLY}h</span>/week.
           </p>
         </div>
         <div className="flex items-center gap-3 text-[11px] text-on-surface-muted flex-wrap">
@@ -793,12 +793,29 @@ function CapacityView({ summary, employees, loading, search, month, year, openDe
       <div className="overflow-x-auto">
         <table className="w-full text-sm">
           <thead className="bg-surface-2 border-b border-outline">
+            {/* Grouped header — each week (and Month) splits into Plan + Log
+                sub-columns so the comparison is a side-by-side glance instead
+                of doing math against a stacked cell. The top row carries the
+                W1..W5 / Month labels with colspan=2; the second row carries
+                the per-side "Plan" / "Log" sub-labels. */}
             <tr className="text-left text-[10px] font-bold text-on-surface-muted uppercase tracking-[0.16em]">
-              <th className="px-5 py-3 sticky left-0 bg-surface-2">Employee</th>
-              {['W1','W2','W3','W4','W5'].map(w => <th key={w} className="px-4 py-3 text-center min-w-[88px]">{w}</th>)}
-              <th className="px-4 py-3 text-center bg-surface-3 min-w-[96px]">Month</th>
-              <th className="px-4 py-3 text-center min-w-[88px]">Over plan</th>
-              <th className="px-3 py-3"></th>
+              <th rowSpan={2} className="px-5 py-3 sticky left-0 bg-surface-2 align-bottom">Employee</th>
+              {['W1','W2','W3','W4','W5'].map(w => (
+                <th key={w} colSpan={2} className="px-3 py-2 text-center border-l border-outline">{w}</th>
+              ))}
+              <th colSpan={2} className="px-3 py-2 text-center bg-surface-3 border-l border-outline">Month</th>
+              <th rowSpan={2} className="px-3 py-3 text-center min-w-[88px] align-bottom border-l border-outline">Over plan</th>
+              <th rowSpan={2} className="px-3 py-3"></th>
+            </tr>
+            <tr className="text-[9px] font-semibold text-on-surface-subtle uppercase tracking-wider">
+              {['W1','W2','W3','W4','W5'].map(w => (
+                <Fragment key={w}>
+                  <th className="px-1 py-1.5 text-center min-w-[48px] border-l border-outline">Plan</th>
+                  <th className="px-1 py-1.5 text-center min-w-[52px]">Log</th>
+                </Fragment>
+              ))}
+              <th className="px-1 py-1.5 text-center min-w-[52px] bg-surface-3 border-l border-outline">Plan</th>
+              <th className="px-1 py-1.5 text-center min-w-[56px] bg-surface-3">Log</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-outline">
@@ -813,8 +830,8 @@ function CapacityView({ summary, employees, loading, search, month, year, openDe
                         <span className="num-mono text-[10px] font-semibold text-on-surface-muted bg-surface px-1.5 py-0.5 rounded-full">{g.headcount}</span>
                       </div>
                     </td>
-                    <td colSpan={5} className="px-4 py-2.5"></td>
-                    <td className="px-4 py-2.5 text-center bg-surface-3/50">
+                    <td colSpan={10} className="px-2 py-2.5"></td>
+                    <td colSpan={2} className="px-2 py-2.5 text-center bg-surface-3/50">
                       <span className="num-mono text-sm font-bold text-on-surface">{Math.round(g.subtotalMonth)}<span className="text-[10px] font-normal text-on-surface-muted ml-0.5">h</span></span>
                     </td>
                     <td className="px-4 py-2.5 text-center">
@@ -847,67 +864,70 @@ function CapacityView({ summary, employees, loading, search, month, year, openDe
                     const planN = Number(p);
                     const edits = Number((e as any)[`w${i+1}_edits`] ?? 0);
                     const lastEditAt = (e as any)[`w${i+1}_last_edit`] as string | null;
-                    // Under = approved less than planned (only meaningful if
-                    // employee actually logged something — a totally un-logged
-                    // week is just "yet to log", not "short of plan").
                     const under = (logged > 0 && logged < planN) ? planN - logged : 0;
-                    let cellCls: string;
-                    if (over > 0)        cellCls = 'bg-warning-container text-warning';
-                    else if (under > 0)  cellCls = 'bg-danger-container text-danger';
-                    else                 cellCls = varianceClass(planN);
-                    // Bottom line tone: success if logged matches plan,
-                    // warning if over, danger if short, dim if nothing logged
-                    // yet. Conveys the comparison without needing the user to
-                    // do mental math.
-                    const loggedTone =
-                      logged === 0 ? 'opacity-50' :
-                      over > 0 ? 'font-bold' :
-                      under > 0 ? 'font-bold' :
-                      'opacity-90';
+                    // Log cell tone — only the LOG side carries the
+                    // status color now, the Plan side stays neutral
+                    // (it's just "what was allocated"). Cleaner read
+                    // than tinting both halves.
+                    const logCls =
+                      over > 0  ? 'bg-warning-container text-warning'
+                      : under > 0 ? 'bg-danger-container text-danger'
+                      : logged === 0 ? 'text-on-surface-subtle'
+                      : logged === planN ? 'bg-success-container text-success'
+                      : 'text-on-surface';
+                    const planCls = varianceClass(planN);
+                    const tooltip = `Plan ${planN}h · Logged ${logged}h${over > 0 ? ` (+${over} over)` : under > 0 ? ` (−${under} short)` : ''}${edits > 0 ? ` · admin-edited ${edits}×` : ''}`;
                     return (
-                      <td key={i} className="px-2 py-2 text-center relative">
-                        <button
-                          onClick={() => openDetail(e.employee_id, e.employee_name || '—', i + 1)}
-                          title={`Plan ${planN}h · Logged ${logged}h${over > 0 ? ` (+${over} over)` : under > 0 ? ` (−${under} short of plan)` : ''}${edits > 0 ? ` · admin-edited ${edits}× (last ${formatAgo(lastEditAt)})` : ''}`}
-                          className={`group relative num-mono inline-flex flex-col items-center justify-center w-full px-2 py-2 rounded-lg font-semibold transition-all hover:shadow-elev-1 hover:scale-[1.04] ${cellCls}`}
-                        >
-                          {edits > 0 && (
-                            <span className="absolute top-0.5 right-0.5 inline-flex items-center justify-center w-3.5 h-3.5 rounded-full bg-warning text-on-accent text-[8px] font-bold">
-                              <Pencil size={7} strokeWidth={2.5} />
-                            </span>
-                          )}
-                          {/* Top: plan (allocated). Bottom: logged. The two
-                              numbers sitting side-by-side make the difference
-                              scannable without clicking through. The delta
-                              after the slash makes the magnitude explicit
-                              when it's non-zero. */}
-                          <span className="text-base leading-none">{planN}</span>
-                          <span className={`text-[10px] mt-1 ${loggedTone} inline-flex items-center gap-0.5`}>
-                            <span className="opacity-70">↓</span>{logged}
-                            {over > 0 && <span className="ml-1 inline-flex items-center gap-0.5"><AlertTriangle size={9} />+{Math.round(over)}</span>}
-                            {under > 0 && <span className="ml-1 inline-flex items-center gap-0.5"><AlertTriangle size={9} />−{Math.round(under)}</span>}
-                          </span>
-                          {edits > 0 && (
-                            <span className="text-[9px] font-medium mt-0.5 text-on-surface-subtle">edited {formatAgo(lastEditAt)}</span>
-                          )}
-                        </button>
-                      </td>
+                      <Fragment key={i}>
+                        {/* Plan sub-cell — neutral, just the allocated number. */}
+                        <td className="px-1 py-2 text-center border-l border-outline relative">
+                          <button onClick={() => openDetail(e.employee_id, e.employee_name || '—', i + 1)}
+                            title={tooltip}
+                            className={`group num-mono inline-flex items-center justify-center w-full px-1.5 py-1.5 rounded-md text-sm font-semibold transition-colors hover:shadow-elev-1 ${planCls}`}>
+                            {planN}
+                            {edits > 0 && (
+                              <span className="absolute top-0.5 right-0.5 inline-flex items-center justify-center w-3 h-3 rounded-full bg-warning text-on-accent text-[7px]">
+                                <Pencil size={6} strokeWidth={2.5} />
+                              </span>
+                            )}
+                          </button>
+                        </td>
+                        {/* Log sub-cell — coloured by status (warning over /
+                            danger short / success match / muted zero) and
+                            carries the over/under delta inline. */}
+                        <td className="px-1 py-2 text-center">
+                          <button onClick={() => openDetail(e.employee_id, e.employee_name || '—', i + 1)}
+                            title={tooltip}
+                            className={`num-mono inline-flex items-center justify-center w-full px-1.5 py-1.5 rounded-md text-sm font-semibold transition-colors hover:shadow-elev-1 ${logCls}`}>
+                            {logged}
+                            {over > 0 && <span className="ml-0.5 text-[9px] font-bold inline-flex items-center gap-0.5"><AlertTriangle size={8} />+{Math.round(over)}</span>}
+                            {under > 0 && <span className="ml-0.5 text-[9px] font-bold inline-flex items-center gap-0.5"><AlertTriangle size={8} />−{Math.round(under)}</span>}
+                          </button>
+                        </td>
+                      </Fragment>
                     );
                   })}
-                  <td className="px-2 py-2 text-center bg-surface-2">
+                  {/* Month plan / log pair — same split as the weekly cells. */}
+                  <td className="px-1 py-2 text-center bg-surface-2 border-l border-outline">
                     <button onClick={() => openDetail(e.employee_id, e.employee_name || '—')}
                       title={`Plan ${monthPlan}h · Logged ${Math.round(monthLogged)}h${monthOver > 0 ? ` (+${Math.round(monthOver)} over)` : monthUnder > 0 ? ` (−${Math.round(monthUnder)} short)` : ''}`}
-                      className={`num-mono inline-flex flex-col items-center justify-center w-full px-2 py-2 rounded-lg font-bold transition-all ${
-                        monthOver > 0 ? 'text-warning hover:bg-warning-container hover:scale-[1.04]'
-                        : monthUnder > 0 ? 'text-danger hover:bg-danger-container hover:scale-[1.04]'
-                        : 'text-on-surface hover:bg-surface-3 hover:scale-[1.04]'
+                      className="num-mono inline-flex items-center justify-center w-full px-2 py-2 rounded-md text-base font-bold text-on-surface hover:bg-surface-3 transition-colors">
+                      {monthPlan}
+                    </button>
+                  </td>
+                  <td className="px-1 py-2 text-center bg-surface-2">
+                    <button onClick={() => openDetail(e.employee_id, e.employee_name || '—')}
+                      title={`Plan ${monthPlan}h · Logged ${Math.round(monthLogged)}h${monthOver > 0 ? ` (+${Math.round(monthOver)} over)` : monthUnder > 0 ? ` (−${Math.round(monthUnder)} short)` : ''}`}
+                      className={`num-mono inline-flex items-center justify-center w-full px-2 py-2 rounded-md text-base font-bold transition-colors ${
+                        monthOver > 0 ? 'bg-warning-container text-warning'
+                        : monthUnder > 0 ? 'bg-danger-container text-danger'
+                        : monthLogged === 0 ? 'text-on-surface-subtle'
+                        : monthLogged === monthPlan ? 'bg-success-container text-success'
+                        : 'text-on-surface hover:bg-surface-3'
                       }`}>
-                      <span className="text-lg leading-none">{monthPlan}</span>
-                      <span className={`text-[10px] mt-1 inline-flex items-center gap-0.5 ${monthLogged === 0 ? 'opacity-50' : 'opacity-90'}`}>
-                        <span className="opacity-70">↓</span>{Math.round(monthLogged)}
-                        {monthOver > 0 && <span className="ml-1">+{Math.round(monthOver)}</span>}
-                        {monthUnder > 0 && <span className="ml-1">−{Math.round(monthUnder)}</span>}
-                      </span>
+                      {Math.round(monthLogged)}
+                      {monthOver > 0 && <span className="ml-0.5 text-[9px] font-bold">+{Math.round(monthOver)}</span>}
+                      {monthUnder > 0 && <span className="ml-0.5 text-[9px] font-bold">−{Math.round(monthUnder)}</span>}
                     </button>
                   </td>
                   <td className="px-2 py-2 text-center">
@@ -1068,17 +1088,40 @@ function MineView({ summary, assignments, myProjects, reportsToIds, loading, mon
           <div className="overflow-x-auto">
             <table className="w-full text-sm">
               <thead className="bg-surface-2 border-b border-outline">
+                {/* Grouped header — same Plan/Log split as the main
+                    Capacity view so the two tables read the same. The
+                    SortableTh on the top-level W label keeps its row by
+                    spanning both subcolumns; sort still operates on the
+                    week's planned total. */}
                 <tr className="text-left text-[10px] font-bold text-on-surface-muted uppercase tracking-[0.16em]">
-                  <SortableTh label="Employee" sortKey="name" current={teamSort} onSort={onSort}
-                    className="px-5 py-3" align="left" />
+                  <th rowSpan={2} className="px-5 py-3 align-bottom">
+                    <SortableTh label="Employee" sortKey="name" current={teamSort} onSort={onSort}
+                      className="" align="left" />
+                  </th>
                   {(['w1','w2','w3','w4','w5'] as const).map(k => (
-                    <SortableTh key={k} label={k.toUpperCase()} sortKey={k} current={teamSort} onSort={onSort}
-                      className="px-3 py-3 min-w-[72px]" align="center" />
+                    <th key={k} colSpan={2} className="px-2 py-2 text-center border-l border-outline">
+                      <SortableTh label={k.toUpperCase()} sortKey={k} current={teamSort} onSort={onSort}
+                        className="" align="center" />
+                    </th>
                   ))}
-                  <SortableTh label="Month" sortKey="month" current={teamSort} onSort={onSort}
-                    className="px-3 py-3 bg-surface-3 min-w-[88px]" align="center" />
-                  <SortableTh label="Over plan" sortKey="over" current={teamSort} onSort={onSort}
-                    className="px-3 py-3 min-w-[80px]" align="center" />
+                  <th colSpan={2} className="px-2 py-2 text-center bg-surface-3 border-l border-outline">
+                    <SortableTh label="Month" sortKey="month" current={teamSort} onSort={onSort}
+                      className="" align="center" />
+                  </th>
+                  <th rowSpan={2} className="px-3 py-3 min-w-[80px] align-bottom border-l border-outline">
+                    <SortableTh label="Over plan" sortKey="over" current={teamSort} onSort={onSort}
+                      className="" align="center" />
+                  </th>
+                </tr>
+                <tr className="text-[9px] font-semibold text-on-surface-subtle uppercase tracking-wider">
+                  {(['w1','w2','w3','w4','w5'] as const).map(k => (
+                    <Fragment key={k}>
+                      <th className="px-1 py-1.5 text-center min-w-[44px] border-l border-outline">Plan</th>
+                      <th className="px-1 py-1.5 text-center min-w-[48px]">Log</th>
+                    </Fragment>
+                  ))}
+                  <th className="px-1 py-1.5 text-center min-w-[48px] bg-surface-3 border-l border-outline">Plan</th>
+                  <th className="px-1 py-1.5 text-center min-w-[52px] bg-surface-3">Log</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-outline">
@@ -1102,47 +1145,55 @@ function MineView({ summary, assignments, myProjects, reportsToIds, loading, mon
                         const planN = Number(p);
                         const logged = Number(weekLogged[i]);
                         const under = (logged > 0 && logged < planN) ? planN - logged : 0;
-                        let cls: string;
-                        if (over > 0)        cls = 'bg-warning-container text-warning';
-                        else if (under > 0)  cls = 'bg-danger-container text-danger';
-                        else                 cls = varianceClass(planN);
-                        const loggedTone =
-                          logged === 0 ? 'opacity-50' :
-                          over > 0 || under > 0 ? 'font-bold' :
-                          'opacity-90';
+                        const logCls =
+                          over > 0  ? 'bg-warning-container text-warning'
+                          : under > 0 ? 'bg-danger-container text-danger'
+                          : logged === 0 ? 'text-on-surface-subtle'
+                          : logged === planN ? 'bg-success-container text-success'
+                          : 'text-on-surface';
+                        const planCls = varianceClass(planN);
+                        const tooltip = `Plan ${planN}h · Logged ${logged}h${over > 0 ? ` (+${over} over)` : under > 0 ? ` (−${under} short)` : ''}`;
                         return (
-                          <td key={i} className="px-2 py-2 text-center">
-                            <button onClick={() => openDetail(e.employee_id, e.employee_name || '—', i + 1)}
-                              title={`Plan ${planN}h · Logged ${logged}h${over > 0 ? ` (+${over} over)` : under > 0 ? ` (−${under} short)` : ''}`}
-                              className={`num-mono inline-flex flex-col items-center justify-center w-full px-2 py-1.5 rounded-md font-semibold transition-colors ${cls}`}>
-                              {/* Top: plan. Bottom: logged ↓ with delta. Same
-                                  stack as the main Capacity tab so a manager
-                                  who switches between Capacity and Mine doesn't
-                                  see two different cell formats. */}
-                              <span className="text-sm leading-none">{planN}</span>
-                              <span className={`text-[10px] mt-0.5 ${loggedTone} inline-flex items-center gap-0.5`}>
-                                <span className="opacity-70">↓</span>{logged}
-                                {over > 0 && <span className="ml-1 inline-flex items-center gap-0.5"><AlertTriangle size={9} />+{Math.round(over)}</span>}
-                                {under > 0 && <span className="ml-1 inline-flex items-center gap-0.5"><AlertTriangle size={9} />−{Math.round(under)}</span>}
-                              </span>
-                            </button>
-                          </td>
+                          <Fragment key={i}>
+                            <td className="px-1 py-2 text-center border-l border-outline">
+                              <button onClick={() => openDetail(e.employee_id, e.employee_name || '—', i + 1)}
+                                title={tooltip}
+                                className={`num-mono inline-flex items-center justify-center w-full px-1.5 py-1 rounded-md text-sm font-semibold transition-colors ${planCls}`}>
+                                {planN}
+                              </button>
+                            </td>
+                            <td className="px-1 py-2 text-center">
+                              <button onClick={() => openDetail(e.employee_id, e.employee_name || '—', i + 1)}
+                                title={tooltip}
+                                className={`num-mono inline-flex items-center justify-center w-full px-1.5 py-1 rounded-md text-sm font-semibold transition-colors ${logCls}`}>
+                                {logged}
+                                {over > 0 && <span className="ml-0.5 text-[9px] font-bold inline-flex items-center gap-0.5"><AlertTriangle size={8} />+{Math.round(over)}</span>}
+                                {under > 0 && <span className="ml-0.5 text-[9px] font-bold inline-flex items-center gap-0.5"><AlertTriangle size={8} />−{Math.round(under)}</span>}
+                              </button>
+                            </td>
+                          </Fragment>
                         );
                       })}
-                      <td className="px-2 py-2 text-center bg-surface-2">
+                      <td className="px-1 py-2 text-center bg-surface-2 border-l border-outline">
+                        <button onClick={() => openDetail(e.employee_id, e.employee_name || '—')}
+                          title={`Plan ${monthPlan}h · Logged ${Math.round(monthLogged)}h`}
+                          className="num-mono inline-flex items-center justify-center w-full px-2 py-1 rounded-md text-base font-bold text-on-surface hover:bg-surface-3 transition-colors">
+                          {monthPlan}
+                        </button>
+                      </td>
+                      <td className="px-1 py-2 text-center bg-surface-2">
                         <button onClick={() => openDetail(e.employee_id, e.employee_name || '—')}
                           title={`Plan ${monthPlan}h · Logged ${Math.round(monthLogged)}h${monthOver > 0 ? ` (+${Math.round(monthOver)} over)` : monthUnder > 0 ? ` (−${Math.round(monthUnder)} short)` : ''}`}
-                          className={`num-mono inline-flex flex-col items-center justify-center w-full font-bold ${
-                            monthOver > 0 ? 'text-warning'
-                            : monthUnder > 0 ? 'text-danger'
-                            : 'text-on-surface'
+                          className={`num-mono inline-flex items-center justify-center w-full px-2 py-1 rounded-md text-base font-bold transition-colors ${
+                            monthOver > 0 ? 'bg-warning-container text-warning'
+                            : monthUnder > 0 ? 'bg-danger-container text-danger'
+                            : monthLogged === 0 ? 'text-on-surface-subtle'
+                            : monthLogged === monthPlan ? 'bg-success-container text-success'
+                            : 'text-on-surface hover:bg-surface-3'
                           }`}>
-                          <span className="text-base leading-none">{monthPlan}</span>
-                          <span className={`text-[10px] mt-0.5 inline-flex items-center gap-0.5 ${monthLogged === 0 ? 'opacity-50' : 'opacity-90'}`}>
-                            <span className="opacity-70">↓</span>{Math.round(monthLogged)}
-                            {monthOver > 0 && <span className="ml-1">+{Math.round(monthOver)}</span>}
-                            {monthUnder > 0 && <span className="ml-1">−{Math.round(monthUnder)}</span>}
-                          </span>
+                          {Math.round(monthLogged)}
+                          {monthOver > 0 && <span className="ml-0.5 text-[9px] font-bold">+{Math.round(monthOver)}</span>}
+                          {monthUnder > 0 && <span className="ml-0.5 text-[9px] font-bold">−{Math.round(monthUnder)}</span>}
                         </button>
                       </td>
                       <td className="px-2 py-2 text-center">
