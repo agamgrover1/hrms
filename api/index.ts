@@ -9071,7 +9071,7 @@ async function finComputeMonth(month: number, year: number) {
   // in. Archived projects only show when they had monthly_hours > 0,
   // an approved log, or a non-cancelled invoice this month.
   const projects = (await sql`
-    SELECT id, name, client_name, project_lead_id, project_reporting_id, status
+    SELECT id, name, client_name, project_lead_id, project_reporting_id, status, billing_source
     FROM projects
     WHERE status='active'
        OR id IN (
@@ -9146,6 +9146,14 @@ async function finComputeMonth(month: number, year: number) {
     // gross/net profit instead of hiding behind the accrual number.
     const inv = invoiceByProj.get(p.id);
     if (inv && Number(inv.invoiced) > 0) return Number(inv.realized);
+    // For direct / retainer projects, INVOICES are the only revenue path.
+    // The Billing Setup tab in the UI filters to Upwork-only, so any
+    // fin_project_revenue row that exists for a non-Upwork project is a
+    // legacy entry admin can't see or maintain. Counting it would surface
+    // phantom revenue (₹4,786 on an empty client) that doesn't belong in
+    // the books for this month. So we only consult fin_project_revenue
+    // for projects whose billing_source is explicitly 'upwork'.
+    if (p.billing_source !== 'upwork') return 0;
     const r = revByProj.get(p.id);
     if (!r) return 0;
     // Billing Setup (Upwork): mirror invoice behavior — cleared rows count at
@@ -9326,11 +9334,16 @@ async function finComputeMonth(month: number, year: number) {
       // activity (allocation / logs / invoices) — finance still owes
       // a row for the cost they incurred before closure.
       status: p.status || 'active',
-      // Did fin_project_revenue carry a row for this period? Used by
-      // the drilldown to render a "Billing setup" section so admin can
-      // see why revenue exists even when the Invoices section is empty
-      // (legacy direct projects fall into this path).
-      has_billing_setup: !!r,
+      // Did fin_project_revenue carry a row counted toward revenue for
+      // this period? Only true for Upwork projects — direct/retainer
+      // projects use the Invoices flow and any fin_project_revenue row
+      // they have is legacy and ignored by the roll-up.
+      has_billing_setup: !!r && p.billing_source === 'upwork',
+      // Flag a legacy direct-project row separately so the drilldown
+      // can warn admin that a phantom entry exists in the table even
+      // though it doesn't affect revenue.
+      has_legacy_billing_row: !!r && p.billing_source !== 'upwork',
+      billing_source: p.billing_source || 'direct',
       billing_currency: r?.currency || 'INR',
       billing_fx_rate: Number(r?.fx_rate || 1),
       billing_revenue_inr: Number(r?.revenue_inr || 0),
