@@ -9063,7 +9063,30 @@ async function finComputeMonth(month: number, year: number) {
       e.salary = fullSalary * e.salary_factor;
     }
   }
-  const projects = (await sql`SELECT id, name, client_name, project_lead_id, project_reporting_id FROM projects WHERE status='active'`) as any[];
+  // Include archived projects that had ANY activity in the period —
+  // allocations, logged hours, or invoices. A project closed mid-month
+  // still incurred salary cost and may have raised invoices before
+  // closure; dropping it from the roll-up understates direct cost and
+  // hides revenue that was actually earned. Active projects are always
+  // in. Archived projects only show when they had monthly_hours > 0,
+  // an approved log, or a non-cancelled invoice this month.
+  const projects = (await sql`
+    SELECT id, name, client_name, project_lead_id, project_reporting_id, status
+    FROM projects
+    WHERE status='active'
+       OR id IN (
+         SELECT project_id FROM project_assignments
+           WHERE month=${month} AND year=${year} AND COALESCE(monthly_hours,0) > 0
+         UNION
+         SELECT project_id FROM hour_logs
+           WHERE month=${month} AND year=${year} AND status='approved'
+         UNION
+         SELECT project_id FROM fin_project_invoices
+           WHERE month=${month} AND year=${year} AND status <> 'cancelled'
+         UNION
+         SELECT project_id FROM fin_project_revenue
+           WHERE month=${month} AND year=${year}
+       )`) as any[];
   // For the org-wide INVOICED / RECEIVED / PENDING tiles we need every
   // non-cancelled invoice in the period — not just those tied to an active
   // project. Otherwise an invoice on an archived project shows on the
@@ -9298,6 +9321,11 @@ async function finComputeMonth(month: number, year: number) {
     const inv = invoiceByProj.get(p.id);
     return {
       id: p.id, name: p.name, client_name: p.client_name,
+      // Surface project status so the dashboard can badge archived
+      // rows. Archived projects only land here when they had period
+      // activity (allocation / logs / invoices) — finance still owes
+      // a row for the cost they incurred before closure.
+      status: p.status || 'active',
       billing_type: r?.billing_type || 'fixed', hourly_rate: Number(r?.hourly_rate || 0),
       billable_hours: Number(r?.billable_hours || 0), fixed_amount: Number(r?.fixed_amount || 0),
       revenue, directCost, directHours, projectExpenses,

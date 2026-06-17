@@ -113,6 +113,12 @@ export default function DashboardTab({ month, year, rev }: { month: number; year
                       <div className="font-medium text-on-surface inline-flex items-center gap-2 group-hover:text-accent transition-colors">
                         {p.name}
                         <ChevronRight size={12} className="text-on-surface-subtle group-hover:text-accent transition-colors" />
+                        {(p as any).status === 'archived' && (
+                          <span className="inline-flex items-center px-1.5 py-0.5 rounded-full text-[10px] font-bold bg-surface-3 text-on-surface-muted border border-outline"
+                            title="Project was archived but had cost or revenue this month. Still counted in the books for that activity.">
+                            Archived
+                          </span>
+                        )}
                         {p.pendingCount > 0 && (
                           <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full text-[10px] font-bold bg-warning-container text-warning" title={`${p.pendingCount} pending invoice${p.pendingCount === 1 ? '' : 's'}`}>
                             ⏳ {p.pendingCount}
