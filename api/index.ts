@@ -9156,13 +9156,19 @@ async function finComputeMonth(month: number, year: number) {
     if (p.billing_source !== 'upwork') return 0;
     const r = revByProj.get(p.id);
     if (!r) return 0;
-    // Billing Setup (Upwork): mirror invoice behavior — cleared rows count at
-    // received_inr (real money), pending rows at revenue_inr (invoiced).
-    // received_inr was locked at clearance using the FX rate of that day, so
-    // variance vs invoiced flows through to net profit on clearance.
+    // Billing Setup (Upwork): only CLEARED rows count toward revenue.
+    // Unlike invoices — where raising the invoice is an explicit "money
+    // is owed" event that should hit accrual revenue even before
+    // clearance — an Upwork billing-setup row is a recurring contract
+    // template. Until admin marks the row cleared with the actual
+    // received_inr, the real Upwork payout is unknown (fees, FX swing,
+    // withdrawal timing all swing it). Counting the expected
+    // revenue_inr before clearance shows phantom income for any month
+    // where the money hasn't actually landed in the bank yet.
+    // cleared_pending is also excluded — coord submitted but admin
+    // hasn't confirmed. Only status='cleared' contributes.
     if (r.status === 'cleared' && r.received_inr != null) return Number(r.received_inr);
-    if (r.revenue_inr != null) return Number(r.revenue_inr);
-    return r.billing_type === 'hourly' ? Number(r.hourly_rate) * Number(r.billable_hours) : Number(r.fixed_amount);
+    return 0;
   };
 
   const activeAllocs = assignments.filter(
@@ -9344,6 +9350,12 @@ async function finComputeMonth(month: number, year: number) {
       // though it doesn't affect revenue.
       has_legacy_billing_row: !!r && p.billing_source !== 'upwork',
       billing_source: p.billing_source || 'direct',
+      // Status of the Billing-setup row (pending / cleared_pending /
+      // cleared). Counts toward revenue ONLY when cleared. Surfaced so
+      // the drilldown can explain "₹0 — awaiting clearance" instead of
+      // silently showing the expected amount.
+      billing_status: r?.status || null,
+      billing_received_inr: r?.received_inr != null ? Number(r.received_inr) : null,
       billing_currency: r?.currency || 'INR',
       billing_fx_rate: Number(r?.fx_rate || 1),
       billing_revenue_inr: Number(r?.revenue_inr || 0),

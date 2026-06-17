@@ -617,16 +617,40 @@ function ProjectDrilldownModal({ project: p, model, month, year, onClose }: {
                       </>
                     )}
                     {(p as any).billing_currency && (p as any).billing_currency !== 'INR' && (
-                      <>
-                        <tr><td className="px-3 py-2 text-on-surface-muted">FX rate</td><td className="px-3 py-2 text-right font-semibold text-on-surface num-mono">1 {(p as any).billing_currency} = ₹{Number((p as any).billing_fx_rate || 1).toFixed(4)}</td></tr>
-                        <tr><td className="px-3 py-2 text-on-surface-muted">Revenue (INR)</td><td className="px-3 py-2 text-right font-bold text-on-surface num-mono">{money((p as any).billing_revenue_inr || p.revenue, c)}</td></tr>
-                      </>
+                      <tr><td className="px-3 py-2 text-on-surface-muted">FX rate</td><td className="px-3 py-2 text-right font-semibold text-on-surface num-mono">1 {(p as any).billing_currency} = ₹{Number((p as any).billing_fx_rate || 1).toFixed(4)}</td></tr>
                     )}
+                    <tr><td className="px-3 py-2 text-on-surface-muted">Status</td><td className="px-3 py-2 text-right font-semibold capitalize">
+                      <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider ${
+                        (p as any).billing_status === 'cleared' ? 'bg-success-container text-success'
+                        : (p as any).billing_status === 'cleared_pending' ? 'bg-accent-container text-accent'
+                        : 'bg-warning-container text-warning'
+                      }`}>
+                        {(p as any).billing_status === 'cleared_pending' ? 'Awaiting approval' : (p as any).billing_status || 'pending'}
+                      </span>
+                    </td></tr>
+                    <tr>
+                      <td className="px-3 py-2 text-on-surface-muted">Counted as revenue</td>
+                      <td className="px-3 py-2 text-right font-bold num-mono">
+                        {(p as any).billing_status === 'cleared' && (p as any).billing_received_inr != null
+                          ? <span className="text-success">{money((p as any).billing_received_inr, c)}</span>
+                          : <span className="text-on-surface-subtle">₹0 — not cleared</span>}
+                      </td>
+                    </tr>
                   </tbody>
                 </table>
-                {p.invoiceCount === 0 && (
+                {(p as any).billing_status !== 'cleared' && (
+                  <div className="mx-3 mt-3 rounded-lg border border-warning/40 bg-warning-container/30 p-3 text-[11px] text-on-surface-muted">
+                    <p className="font-semibold text-warning mb-1">
+                      {(p as any).billing_status === 'cleared_pending' ? 'Awaiting admin approval' : 'Awaiting clearance'}
+                    </p>
+                    <p>
+                      This Upwork Billing-setup row contributes <b className="text-on-surface">₹0</b> until it's marked Cleared with the actual received amount. The {(p as any).billing_currency || 'INR'} {(p as any).billing_type === 'fixed' ? (p as any).fixed_amount : `${(p as any).hourly_rate}/h × ${(p as any).billable_hours}h`} above is the expected/contract amount, not realized revenue. Open Finance → Billing setup to clear this row.
+                    </p>
+                  </div>
+                )}
+                {p.invoiceCount === 0 && (p as any).billing_status === 'cleared' && (
                   <p className="px-3 pt-3 text-[11px] text-on-surface-muted italic">
-                    No invoices for this period — revenue above is coming from this Billing-setup row directly. For direct/retainer clients, raising an invoice on the Invoices tab will take precedence over this row in the roll-up.
+                    Revenue above is the cleared Upwork billing amount. Raising an invoice on the Invoices tab would take precedence over this row.
                   </p>
                 )}
               </div>
