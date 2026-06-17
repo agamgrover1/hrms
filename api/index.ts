@@ -9156,19 +9156,16 @@ async function finComputeMonth(month: number, year: number) {
     if (p.billing_source !== 'upwork') return 0;
     const r = revByProj.get(p.id);
     if (!r) return 0;
-    // Billing Setup (Upwork): only CLEARED rows count toward revenue.
-    // Unlike invoices — where raising the invoice is an explicit "money
-    // is owed" event that should hit accrual revenue even before
-    // clearance — an Upwork billing-setup row is a recurring contract
-    // template. Until admin marks the row cleared with the actual
-    // received_inr, the real Upwork payout is unknown (fees, FX swing,
-    // withdrawal timing all swing it). Counting the expected
-    // revenue_inr before clearance shows phantom income for any month
-    // where the money hasn't actually landed in the bank yet.
-    // cleared_pending is also excluded — coord submitted but admin
-    // hasn't confirmed. Only status='cleared' contributes.
+    // Billing Setup (Upwork): same accrual rule as invoices — the
+    // configured monthly amount counts as expected revenue from the
+    // moment it's set up. Clearance converts expected → actual.
+    //   cleared    → received_inr  (real INR that landed in the bank)
+    //   anything   → revenue_inr   (expected INR for the period)
+    // The variance between expected and received (Upwork fees, FX swing,
+    // withdrawal timing) flows through to net profit on clearance.
     if (r.status === 'cleared' && r.received_inr != null) return Number(r.received_inr);
-    return 0;
+    if (r.revenue_inr != null) return Number(r.revenue_inr);
+    return r.billing_type === 'hourly' ? Number(r.hourly_rate) * Number(r.billable_hours) : Number(r.fixed_amount);
   };
 
   const activeAllocs = assignments.filter(

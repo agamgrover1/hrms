@@ -631,22 +631,19 @@ function ProjectDrilldownModal({ project: p, model, month, year, onClose }: {
                     <tr>
                       <td className="px-3 py-2 text-on-surface-muted">Counted as revenue</td>
                       <td className="px-3 py-2 text-right font-bold num-mono">
-                        {(p as any).billing_status === 'cleared' && (p as any).billing_received_inr != null
-                          ? <span className="text-success">{money((p as any).billing_received_inr, c)}</span>
-                          : <span className="text-on-surface-subtle">₹0 — not cleared</span>}
+                        {(p as any).billing_status === 'cleared' && (p as any).billing_received_inr != null ? (
+                          <span className="text-success">{money((p as any).billing_received_inr, c)} <span className="text-[10px] font-normal text-on-surface-muted">(received)</span></span>
+                        ) : (
+                          <span className="text-on-surface">{money((p as any).billing_revenue_inr || p.revenue, c)} <span className="text-[10px] font-normal text-warning">(expected)</span></span>
+                        )}
                       </td>
                     </tr>
                   </tbody>
                 </table>
                 {(p as any).billing_status !== 'cleared' && (
-                  <div className="mx-3 mt-3 rounded-lg border border-warning/40 bg-warning-container/30 p-3 text-[11px] text-on-surface-muted">
-                    <p className="font-semibold text-warning mb-1">
-                      {(p as any).billing_status === 'cleared_pending' ? 'Awaiting admin approval' : 'Awaiting clearance'}
-                    </p>
-                    <p>
-                      This Upwork Billing-setup row contributes <b className="text-on-surface">₹0</b> until it's marked Cleared with the actual received amount. The {(p as any).billing_currency || 'INR'} {(p as any).billing_type === 'fixed' ? (p as any).fixed_amount : `${(p as any).hourly_rate}/h × ${(p as any).billable_hours}h`} above is the expected/contract amount, not realized revenue. Open Finance → Billing setup to clear this row.
-                    </p>
-                  </div>
+                  <p className="px-3 pt-3 text-[11px] text-on-surface-muted italic">
+                    Counted at the configured (expected) amount. Once admin marks this row Cleared with the actual received Upwork payout, the variance (Upwork fees, FX swing) flows through to net profit.
+                  </p>
                 )}
                 {p.invoiceCount === 0 && (p as any).billing_status === 'cleared' && (
                   <p className="px-3 pt-3 text-[11px] text-on-surface-muted italic">
