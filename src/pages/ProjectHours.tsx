@@ -1085,7 +1085,11 @@ function MineView({ summary, assignments, myProjects, reportsToIds, loading, mon
                 {teamRows.map((e: any) => {
                   const weekPlans = [e.w1, e.w2, e.w3, e.w4, e.w5];
                   const weekOvers = [e.w1_over ?? 0, e.w2_over ?? 0, e.w3_over ?? 0, e.w4_over ?? 0, e.w5_over ?? 0];
-                  const monthlyDisplay = Number(e.monthly) + Number(e.logged_over_plan ?? 0);
+                  const weekLogged = [e.w1_logged ?? 0, e.w2_logged ?? 0, e.w3_logged ?? 0, e.w4_logged ?? 0, e.w5_logged ?? 0];
+                  const monthPlan = Number(e.monthly);
+                  const monthLogged = weekLogged.reduce((s, v) => s + Number(v), 0);
+                  const monthOver = Number(e.logged_over_plan ?? 0);
+                  const monthUnder = (monthLogged > 0 && monthLogged < monthPlan && monthOver === 0) ? monthPlan - monthLogged : 0;
                   return (
                     <tr key={e.employee_id} className="hover:bg-surface-2/60 transition-colors">
                       <td className="px-5 py-3 font-semibold text-on-surface">
@@ -1096,39 +1100,55 @@ function MineView({ summary, assignments, myProjects, reportsToIds, loading, mon
                       {weekPlans.map((p: number, i: number) => {
                         const over = Number(weekOvers[i]);
                         const planN = Number(p);
-                        // Approved logged for this week (from summary, fallback 0). We may not have it
-                        // for Mine view if not joined, but employee row from summary always carries it.
-                        const logged = Number((e as any)[`w${i+1}_logged`] ?? 0);
+                        const logged = Number(weekLogged[i]);
                         const under = (logged > 0 && logged < planN) ? planN - logged : 0;
-                        const display = planN + over;
                         let cls: string;
                         if (over > 0)        cls = 'bg-warning-container text-warning';
                         else if (under > 0)  cls = 'bg-danger-container text-danger';
-                        else                 cls = varianceClass(display);
+                        else                 cls = varianceClass(planN);
+                        const loggedTone =
+                          logged === 0 ? 'opacity-50' :
+                          over > 0 || under > 0 ? 'font-bold' :
+                          'opacity-90';
                         return (
                           <td key={i} className="px-2 py-2 text-center">
                             <button onClick={() => openDetail(e.employee_id, e.employee_name || '—', i + 1)}
                               title={`Plan ${planN}h · Logged ${logged}h${over > 0 ? ` (+${over} over)` : under > 0 ? ` (−${under} short)` : ''}`}
-                              className={`num-mono inline-flex items-center justify-center w-full px-2 py-1.5 rounded-md font-semibold transition-colors ${cls}`}>
-                              {display}
-                              {over > 0 && <span className="text-[9px] ml-0.5 font-bold">+{Math.round(over)}</span>}
-                              {under > 0 && <span className="text-[9px] ml-0.5 font-bold">−{Math.round(under)}</span>}
+                              className={`num-mono inline-flex flex-col items-center justify-center w-full px-2 py-1.5 rounded-md font-semibold transition-colors ${cls}`}>
+                              {/* Top: plan. Bottom: logged ↓ with delta. Same
+                                  stack as the main Capacity tab so a manager
+                                  who switches between Capacity and Mine doesn't
+                                  see two different cell formats. */}
+                              <span className="text-sm leading-none">{planN}</span>
+                              <span className={`text-[10px] mt-0.5 ${loggedTone} inline-flex items-center gap-0.5`}>
+                                <span className="opacity-70">↓</span>{logged}
+                                {over > 0 && <span className="ml-1 inline-flex items-center gap-0.5"><AlertTriangle size={9} />+{Math.round(over)}</span>}
+                                {under > 0 && <span className="ml-1 inline-flex items-center gap-0.5"><AlertTriangle size={9} />−{Math.round(under)}</span>}
+                              </span>
                             </button>
                           </td>
                         );
                       })}
                       <td className="px-2 py-2 text-center bg-surface-2">
                         <button onClick={() => openDetail(e.employee_id, e.employee_name || '—')}
-                          className={`num-mono inline-flex items-center justify-center w-full font-bold ${
-                            (e.logged_over_plan ?? 0) > 0 ? 'text-warning' : 'text-on-surface'
+                          title={`Plan ${monthPlan}h · Logged ${Math.round(monthLogged)}h${monthOver > 0 ? ` (+${Math.round(monthOver)} over)` : monthUnder > 0 ? ` (−${Math.round(monthUnder)} short)` : ''}`}
+                          className={`num-mono inline-flex flex-col items-center justify-center w-full font-bold ${
+                            monthOver > 0 ? 'text-warning'
+                            : monthUnder > 0 ? 'text-danger'
+                            : 'text-on-surface'
                           }`}>
-                          {monthlyDisplay}
+                          <span className="text-base leading-none">{monthPlan}</span>
+                          <span className={`text-[10px] mt-0.5 inline-flex items-center gap-0.5 ${monthLogged === 0 ? 'opacity-50' : 'opacity-90'}`}>
+                            <span className="opacity-70">↓</span>{Math.round(monthLogged)}
+                            {monthOver > 0 && <span className="ml-1">+{Math.round(monthOver)}</span>}
+                            {monthUnder > 0 && <span className="ml-1">−{Math.round(monthUnder)}</span>}
+                          </span>
                         </button>
                       </td>
                       <td className="px-2 py-2 text-center">
-                        {(e.logged_over_plan ?? 0) > 0 ? (
+                        {monthOver > 0 ? (
                           <span className="num-mono inline-flex items-center gap-1 font-bold text-warning bg-warning-container px-2 py-0.5 rounded-full text-xs">
-                            <AlertTriangle size={10} />+{Math.round(e.logged_over_plan ?? 0)}h
+                            <AlertTriangle size={10} />+{Math.round(monthOver)}h
                           </span>
                         ) : <span className="num-mono text-on-surface-subtle text-xs">—</span>}
                       </td>
