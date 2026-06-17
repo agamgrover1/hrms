@@ -764,7 +764,7 @@ function CapacityView({ summary, employees, loading, search, month, year, openDe
         <div>
           <h3 className="font-display text-xl font-bold tracking-tight text-on-surface">Per-employee capacity · {MONTHS[month-1]} {year}</h3>
           <p className="text-xs text-on-surface-muted mt-0.5">
-            Cells show <span className="font-semibold">plan + approved over-plan</span>. Click any cell to drill into the actual logs. Target: <span className="num-mono">{TARGET_WEEKLY}h</span>/week.
+            Each cell stacks <span className="font-semibold">planned (top)</span> over <span className="font-semibold">logged ↓ (bottom)</span> so you can compare at a glance. <AlertTriangle size={10} className="inline -mt-0.5 text-warning" /> marks an over-plan log; <AlertTriangle size={10} className="inline -mt-0.5 text-danger" /> marks a short week. Click any cell to drill into the actual logs. Target: <span className="num-mono">{TARGET_WEEKLY}h</span>/week.
           </p>
         </div>
         <div className="flex items-center gap-3 text-[11px] text-on-surface-muted flex-wrap">
@@ -829,7 +829,10 @@ function CapacityView({ summary, employees, loading, search, month, year, openDe
               const weekPlans = [e.w1, e.w2, e.w3, e.w4, e.w5];
               const weekOvers = [e.w1_over ?? 0, e.w2_over ?? 0, e.w3_over ?? 0, e.w4_over ?? 0, e.w5_over ?? 0];
               const weekLogged = [e.w1_logged ?? 0, e.w2_logged ?? 0, e.w3_logged ?? 0, e.w4_logged ?? 0, e.w5_logged ?? 0];
-              const monthlyDisplay = Number(e.monthly) + Number(e.logged_over_plan ?? 0);
+              const monthPlan = Number(e.monthly);
+              const monthLogged = weekLogged.reduce((s, v) => s + Number(v), 0);
+              const monthOver = Number(e.logged_over_plan ?? 0);
+              const monthUnder = (monthLogged > 0 && monthLogged < monthPlan && monthOver === 0) ? monthPlan - monthLogged : 0;
               return (
                 <tr key={e.employee_id} className="hover:bg-surface-2/60 transition-colors">
                   <td className="px-5 py-3 font-semibold text-on-surface whitespace-nowrap sticky left-0 bg-surface hover:bg-surface-2/60">
@@ -844,13 +847,23 @@ function CapacityView({ summary, employees, loading, search, month, year, openDe
                     const planN = Number(p);
                     const edits = Number((e as any)[`w${i+1}_edits`] ?? 0);
                     const lastEditAt = (e as any)[`w${i+1}_last_edit`] as string | null;
-                    // Under = approved less than planned (only meaningful if employee actually logged something)
+                    // Under = approved less than planned (only meaningful if
+                    // employee actually logged something — a totally un-logged
+                    // week is just "yet to log", not "short of plan").
                     const under = (logged > 0 && logged < planN) ? planN - logged : 0;
-                    const display = planN + over; // plan + overage; under doesn't change the visible total
                     let cellCls: string;
                     if (over > 0)        cellCls = 'bg-warning-container text-warning';
                     else if (under > 0)  cellCls = 'bg-danger-container text-danger';
-                    else                 cellCls = varianceClass(display);
+                    else                 cellCls = varianceClass(planN);
+                    // Bottom line tone: success if logged matches plan,
+                    // warning if over, danger if short, dim if nothing logged
+                    // yet. Conveys the comparison without needing the user to
+                    // do mental math.
+                    const loggedTone =
+                      logged === 0 ? 'opacity-50' :
+                      over > 0 ? 'font-bold' :
+                      under > 0 ? 'font-bold' :
+                      'opacity-90';
                     return (
                       <td key={i} className="px-2 py-2 text-center relative">
                         <button
@@ -863,16 +876,17 @@ function CapacityView({ summary, employees, loading, search, month, year, openDe
                               <Pencil size={7} strokeWidth={2.5} />
                             </span>
                           )}
-                          <span className="text-base leading-none">{display}</span>
-                          {over > 0 ? (
-                            <span className="text-[10px] font-bold mt-1 inline-flex items-center gap-0.5"><AlertTriangle size={9} />+{Math.round(over)}</span>
-                          ) : under > 0 ? (
-                            <span className="text-[10px] font-bold mt-1 inline-flex items-center gap-0.5"><AlertTriangle size={9} />−{Math.round(under)}</span>
-                          ) : logged > 0 && logged !== planN ? (
-                            <span className="text-[10px] font-normal mt-1 opacity-70">{logged}/{planN}</span>
-                          ) : (
-                            <span className="text-[10px] font-normal mt-1 opacity-0">·</span>
-                          )}
+                          {/* Top: plan (allocated). Bottom: logged. The two
+                              numbers sitting side-by-side make the difference
+                              scannable without clicking through. The delta
+                              after the slash makes the magnitude explicit
+                              when it's non-zero. */}
+                          <span className="text-base leading-none">{planN}</span>
+                          <span className={`text-[10px] mt-1 ${loggedTone} inline-flex items-center gap-0.5`}>
+                            <span className="opacity-70">↓</span>{logged}
+                            {over > 0 && <span className="ml-1 inline-flex items-center gap-0.5"><AlertTriangle size={9} />+{Math.round(over)}</span>}
+                            {under > 0 && <span className="ml-1 inline-flex items-center gap-0.5"><AlertTriangle size={9} />−{Math.round(under)}</span>}
+                          </span>
                           {edits > 0 && (
                             <span className="text-[9px] font-medium mt-0.5 text-on-surface-subtle">edited {formatAgo(lastEditAt)}</span>
                           )}
@@ -882,12 +896,18 @@ function CapacityView({ summary, employees, loading, search, month, year, openDe
                   })}
                   <td className="px-2 py-2 text-center bg-surface-2">
                     <button onClick={() => openDetail(e.employee_id, e.employee_name || '—')}
-                      title={`Plan ${e.monthly}h${(e.logged_over_plan ?? 0) > 0 ? ` + ${Math.round(e.logged_over_plan ?? 0)}h over` : ''}`}
+                      title={`Plan ${monthPlan}h · Logged ${Math.round(monthLogged)}h${monthOver > 0 ? ` (+${Math.round(monthOver)} over)` : monthUnder > 0 ? ` (−${Math.round(monthUnder)} short)` : ''}`}
                       className={`num-mono inline-flex flex-col items-center justify-center w-full px-2 py-2 rounded-lg font-bold transition-all ${
-                        (e.logged_over_plan ?? 0) > 0 ? 'text-warning hover:bg-warning-container hover:scale-[1.04]' : 'text-on-surface hover:bg-surface-3 hover:scale-[1.04]'
+                        monthOver > 0 ? 'text-warning hover:bg-warning-container hover:scale-[1.04]'
+                        : monthUnder > 0 ? 'text-danger hover:bg-danger-container hover:scale-[1.04]'
+                        : 'text-on-surface hover:bg-surface-3 hover:scale-[1.04]'
                       }`}>
-                      <span className="text-lg leading-none">{monthlyDisplay}</span>
-                      {(e.logged_over_plan ?? 0) > 0 && <span className="text-[10px] font-bold mt-1">+{Math.round(e.logged_over_plan ?? 0)}</span>}
+                      <span className="text-lg leading-none">{monthPlan}</span>
+                      <span className={`text-[10px] mt-1 inline-flex items-center gap-0.5 ${monthLogged === 0 ? 'opacity-50' : 'opacity-90'}`}>
+                        <span className="opacity-70">↓</span>{Math.round(monthLogged)}
+                        {monthOver > 0 && <span className="ml-1">+{Math.round(monthOver)}</span>}
+                        {monthUnder > 0 && <span className="ml-1">−{Math.round(monthUnder)}</span>}
+                      </span>
                     </button>
                   </td>
                   <td className="px-2 py-2 text-center">
