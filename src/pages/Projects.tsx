@@ -29,6 +29,8 @@ const PROJECT_TYPES = [
   { value: 'offpage', label: 'Off-page SEO' },
   { value: 'technical', label: 'Technical SEO' },
   { value: 'local', label: 'Local SEO' },
+  { value: 'ppc', label: 'PPC' },
+  { value: 'social_media', label: 'Social Media' },
   { value: 'web_dev', label: 'Web Development' },
   { value: 'other', label: 'Other' },
 ];
