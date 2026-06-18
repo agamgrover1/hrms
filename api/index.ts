@@ -8454,7 +8454,12 @@ app.post('/api/hour-logs/:id/comments', async (req, res) => {
   try {
     const { author_id, author_name, author_role, body } = req.body ?? {};
     if (!body?.trim()) return res.status(400).json({ error: 'Body is required' });
-    const log = (await sql`SELECT employee_id, employee_name, project_id, week_num, reviewed_by_id, hours_logged FROM hour_logs WHERE id=${req.params.id}`)[0] as any;
+    // Fetch id + month + year too so the deep-link in the notification
+    // resolves correctly. Without these, /my?tab=my-hours&logId=…&m=…&y=…
+    // was being built with all three slots as `undefined`, and the
+    // employee's bell click landed on an empty MyHoursTab that couldn't
+    // find a log to open the discussion modal against.
+    const log = (await sql`SELECT id, month, year, employee_id, employee_name, project_id, week_num, reviewed_by_id, hours_logged FROM hour_logs WHERE id=${req.params.id}`)[0] as any;
     if (!log) return res.status(404).json({ error: 'Log not found' });
     const id = `hlc_${Date.now()}`;
     const row = (await sql`
