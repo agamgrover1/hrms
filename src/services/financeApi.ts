@@ -279,15 +279,21 @@ export const financeApi = {
   deleteProjectExpense: (id: number) => request<any>(`/project-expenses/${id}`, { method: 'DELETE' }),
   // Bulk template download — returns CSV text seeded with active
   // projects for the period. Admin fills the amount column and
-  // re-uploads via uploadProjectExpenses below.
+  // re-uploads via uploadProjectExpenses below. Uses the same
+  // currentUserId() helper as `request` above so the
+  // requireAdminOrCoord gate on the backend resolves. Previous
+  // implementation read from localStorage['user'] which doesn't
+  // exist (the session is stored at digitalleap_hrms_session), so
+  // the x-user-id header went out empty and the server returned
+  // "Not authenticated."
   downloadProjectExpenseTemplate: async (month: number, year: number): Promise<string> => {
-    const headers: Record<string, string> = {};
-    try {
-      const uid = JSON.parse(localStorage.getItem('user') || '{}')?.id;
-      if (uid) headers['x-user-id'] = uid;
-    } catch {/* ignore */}
-    const r = await fetch(`/api/finance/project-expenses/template?month=${month}&year=${year}`, { headers });
-    if (!r.ok) throw new Error((await r.json().catch(() => ({})))?.error || `HTTP ${r.status}`);
+    const r = await fetch(`${BASE}/project-expenses/template?month=${month}&year=${year}`, {
+      headers: { 'x-user-id': currentUserId() },
+    });
+    if (!r.ok) {
+      const errBody = await r.json().catch(() => ({}));
+      throw new Error(errBody?.error || `HTTP ${r.status}`);
+    }
     return await r.text();
   },
   uploadProjectExpenses: (rows: Array<{ project_id: string; month?: number; year?: number; vendor?: string; description: string; amount: number; category?: string }>) =>
