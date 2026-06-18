@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
-import { Users as UsersIcon, AlertTriangle, Calendar } from 'lucide-react';
+import { Users as UsersIcon, AlertTriangle, Calendar, ChevronRight } from 'lucide-react';
 import { api } from '../services/api';
+import EmployeeHoursDetailModal from '../components/EmployeeHoursDetailModal';
 
 type UtilGroupKey = 'none' | 'manager' | 'department';
 
@@ -23,6 +24,9 @@ export default function HoursUtilization() {
   const [data, setData] = useState<Awaited<ReturnType<typeof api.getHoursUtilization>> | null>(null);
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState('');
+  // Drill-in modal — clicking an employee row opens their full hours
+  // detail (project assignments, weekly breakdown, logged + internal).
+  const [detail, setDetail] = useState<{ id: string; name: string } | null>(null);
 
   useEffect(() => {
     setLoading(true); setErr('');
@@ -107,10 +111,23 @@ export default function HoursUtilization() {
           tone={(orgTotal?.utilization ?? 0) >= 0.8 ? 'text-success' : (orgTotal?.utilization ?? 0) >= 0.6 ? 'text-warning' : 'text-danger'} />
       </div>
 
+      {/* Drill-in modal — clicking a row opens project + weekly breakdown
+          for that employee in the selected month. */}
+      {detail && (
+        <EmployeeHoursDetailModal
+          employeeId={detail.id}
+          employeeName={detail.name}
+          month={month}
+          year={year}
+          onClose={() => setDetail(null)}
+        />
+      )}
+
       {/* Per-employee list */}
       <div className="rounded-xl-2 border border-outline bg-surface overflow-hidden">
-        <div className="px-5 py-3 border-b border-outline text-sm font-semibold text-on-surface">
-          Per-employee utilization
+        <div className="px-5 py-3 border-b border-outline flex items-center justify-between">
+          <p className="text-sm font-semibold text-on-surface">Per-employee utilization</p>
+          <p className="text-[11px] text-on-surface-subtle">Click any row for the project + weekly breakdown.</p>
         </div>
         {loading ? (
           <div className="p-12 text-center text-sm text-on-surface-subtle">Loading…</div>
@@ -143,9 +160,12 @@ export default function HoursUtilization() {
                   const barColor = u > 1 ? 'bg-danger' : u >= 0.8 ? 'bg-success' : u >= 0.6 ? 'bg-warning' : 'bg-danger/60';
                   const isOver = u > 1;
                   return (
-                    <div key={e.id} className="flex items-center gap-4 px-5 py-2.5">
+                    <button key={e.id}
+                      onClick={() => setDetail({ id: e.id, name: e.name })}
+                      title={`Open ${e.name}'s hours detail — projects, weekly breakdown, and logs`}
+                      className="w-full flex items-center gap-4 px-5 py-2.5 text-left hover:bg-surface-2 transition-colors group">
                       <div className="w-44 shrink-0">
-                        <div className="text-sm font-medium text-on-surface truncate">{e.name}</div>
+                        <div className="text-sm font-medium text-on-surface truncate group-hover:text-accent transition-colors">{e.name}</div>
                         <div className="text-xs text-on-surface-subtle truncate">{e.designation || e.department || '—'}</div>
                       </div>
                       <div className="flex-1 h-2 rounded-full bg-surface-3 overflow-hidden">
@@ -158,7 +178,8 @@ export default function HoursUtilization() {
                       <div className="w-40 text-right text-xs text-on-surface-subtle num-mono">
                         {hrs(e.allocatedHours)}/{hrs(e.capacity)} · bench {hrs(e.benchHours)}
                       </div>
-                    </div>
+                      <ChevronRight size={14} className="text-on-surface-subtle group-hover:text-accent transition-colors flex-shrink-0" />
+                    </button>
                   );
                 })}
               </div>
