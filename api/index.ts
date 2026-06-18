@@ -10355,6 +10355,108 @@ app.delete('/api/finance/project-expenses/:id', async (req, res) => {
   } catch (err: any) { res.status(500).json({ error: err.message || 'Server error' }); }
 });
 
+// GET /api/finance/project-expenses/template?month=&year= — returns a CSV
+// template seeded with every active project for the given period. Admin
+// fills the amount + description + (optional) vendor / category columns
+// and uploads back via POST /bulk. Leaving a row's amount blank just
+// means "no expense for this project this month" and is silently
+// skipped on import.
+app.get('/api/finance/project-expenses/template', async (req, res) => {
+  await runStartupMigrations();
+  const gate = await requireAdminOrCoord(req, res);
+  if (!gate.ok) return;
+  try {
+    const month = Number(req.query.month) || (new Date().getMonth() + 1);
+    const year  = Number(req.query.year)  || (new Date().getFullYear());
+    const projects = await sql`
+      SELECT id, name, client_name FROM projects
+      WHERE status='active'
+      ORDER BY name` as any[];
+    const csvField = (v: any): string => {
+      const s = (v ?? '').toString();
+      return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+    };
+    const header = ['project_id','project_name','client_name','month','year','vendor','description','amount','category'].join(',');
+    const lines = [header];
+    for (const p of projects) {
+      lines.push([
+        csvField(p.id), csvField(p.name), csvField(p.client_name || ''),
+        month, year, '', '', '', 'outsource',
+      ].join(','));
+    }
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+    res.setHeader('Content-Disposition',
+      `attachment; filename="project-expenses-${year}-${String(month).padStart(2,'0')}.csv"`);
+    res.send(lines.join('\n'));
+  } catch (err: any) { res.status(500).json({ error: err.message || 'Server error' }); }
+});
+
+// POST /api/finance/project-expenses/bulk — body: { rows: [...] }. Each
+// row gets validated and inserted independently — bad rows don't block
+// the rest. Response: { inserted, skipped, errors: [up to 20] }.
+//   - Rows with empty / zero amount are silently skipped (intentional
+//     "no expense this month" blanks from the template).
+//   - Rows with unknown project_id or missing description go to errors.
+//   - month/year fall back to today's period when blank.
+//   - category defaults to 'outsource' to match the single-row POST.
+app.post('/api/finance/project-expenses/bulk', async (req, res) => {
+  await runStartupMigrations();
+  const gate = await requireAdminOrCoord(req, res);
+  if (!gate.ok) return;
+  try {
+    const rows = Array.isArray(req.body?.rows) ? req.body.rows : null;
+    if (!rows) return res.status(400).json({ error: 'rows array required' });
+    const validProjects = new Set<string>(
+      ((await sql`SELECT id FROM projects`) as any[]).map(r => r.id)
+    );
+    const defM = new Date().getMonth() + 1;
+    const defY = new Date().getFullYear();
+    let inserted = 0;
+    let skipped = 0;
+    const errors: string[] = [];
+    for (let i = 0; i < rows.length; i++) {
+      const r = rows[i];
+      const lineNo = i + 2; // header is line 1
+      const project_id = String(r.project_id ?? '').trim();
+      if (!project_id) { skipped++; continue; }
+      if (!validProjects.has(project_id)) {
+        skipped++;
+        if (errors.length < 20) errors.push(`Row ${lineNo}: unknown project_id "${project_id}"`);
+        continue;
+      }
+      const amountRaw = r.amount;
+      if (amountRaw === '' || amountRaw == null) { skipped++; continue; }
+      const amount = Number(amountRaw);
+      if (!isFinite(amount) || amount <= 0) {
+        skipped++;
+        if (errors.length < 20) errors.push(`Row ${lineNo}: invalid amount "${amountRaw}"`);
+        continue;
+      }
+      const description = String(r.description ?? '').trim();
+      if (!description) {
+        skipped++;
+        if (errors.length < 20) errors.push(`Row ${lineNo}: description required`);
+        continue;
+      }
+      const month = Number(r.month) || defM;
+      const year = Number(r.year) || defY;
+      const vendor = (r.vendor ?? '').toString().trim() || null;
+      const category = (r.category ?? '').toString().trim() || 'outsource';
+      try {
+        await sql`
+          INSERT INTO fin_project_expenses (project_id, month, year, vendor, description, amount, category, created_by, created_by_role)
+          VALUES (${project_id}, ${month}, ${year}, ${vendor}, ${description}, ${amount}, ${category},
+                  ${gate.user?.name ?? null}, ${gate.user?.role ?? null})`;
+        inserted++;
+      } catch (e: any) {
+        skipped++;
+        if (errors.length < 20) errors.push(`Row ${lineNo}: ${e?.message || 'insert failed'}`);
+      }
+    }
+    res.json({ inserted, skipped, errors });
+  } catch (err: any) { res.status(500).json({ error: err.message || 'Server error' }); }
+});
+
 // ── FX rates (Frankfurter, cached per business day) ──────────────────────
 // Coordinator raises invoices in USD (or other foreign currency) but the
 // company's home currency is INR — every dashboard number rolls up in INR.

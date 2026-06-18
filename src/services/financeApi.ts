@@ -277,6 +277,24 @@ export const financeApi = {
   updateProjectExpense: (id: number, data: { vendor?: string; description?: string; amount?: number; category?: string; month?: number; year?: number }) =>
     request<FinProjectExpense>(`/project-expenses/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
   deleteProjectExpense: (id: number) => request<any>(`/project-expenses/${id}`, { method: 'DELETE' }),
+  // Bulk template download — returns CSV text seeded with active
+  // projects for the period. Admin fills the amount column and
+  // re-uploads via uploadProjectExpenses below.
+  downloadProjectExpenseTemplate: async (month: number, year: number): Promise<string> => {
+    const headers: Record<string, string> = {};
+    try {
+      const uid = JSON.parse(localStorage.getItem('user') || '{}')?.id;
+      if (uid) headers['x-user-id'] = uid;
+    } catch {/* ignore */}
+    const r = await fetch(`/api/finance/project-expenses/template?month=${month}&year=${year}`, { headers });
+    if (!r.ok) throw new Error((await r.json().catch(() => ({})))?.error || `HTTP ${r.status}`);
+    return await r.text();
+  },
+  uploadProjectExpenses: (rows: Array<{ project_id: string; month?: number; year?: number; vendor?: string; description: string; amount: number; category?: string }>) =>
+    request<{ inserted: number; skipped: number; errors: string[] }>(
+      '/project-expenses/bulk',
+      { method: 'POST', body: JSON.stringify({ rows }) },
+    ),
 
   // ── Invoices (coordinator raises → admin clears) ──
   getInvoices: (params: { project_id?: string; month?: number; year?: number; status?: 'pending' | 'cleared' | 'cancelled' }) => {

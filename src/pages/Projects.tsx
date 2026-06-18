@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo } from 'react';
-import { Plus, Pencil, Trash2, X, Search, Briefcase, ExternalLink, Flag, AlertTriangle, IndianRupee, CalendarDays } from 'lucide-react';
+import { Plus, Pencil, Trash2, X, Search, Briefcase, ExternalLink, Flag, AlertTriangle, IndianRupee, CalendarDays, Download, Upload } from 'lucide-react';
 import { api } from '../services/api';
 import { useAuth } from '../context/AuthContext';
 import { financeApi, type FinProjectExpense } from '../services/financeApi';
@@ -68,6 +68,83 @@ export default function Projects() {
   const [projects, setProjects] = useState<Project[]>([]);
   const [employees, setEmployees] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
+  // Bulk expense import busy flag — prevents double-clicks while the
+  // CSV upload is in flight.
+  const [bulkBusy, setBulkBusy] = useState(false);
+  // Period used for the template download AND the upload's default
+  // month/year on rows that don't carry their own. Defaults to "now."
+  const today = new Date();
+  const [bulkMonth, setBulkMonth] = useState(today.getMonth() + 1);
+  const [bulkYear, setBulkYear] = useState(today.getFullYear());
+
+  // CSV → array of row objects. Minimal parser — handles quoted fields
+  // with embedded commas and "" escapes. No fancy dialect support
+  // because the template we emit is plain RFC-4180-ish.
+  const parseCsv = (text: string): Array<Record<string, string>> => {
+    const lines: string[][] = [];
+    let row: string[] = [];
+    let field = '';
+    let inQuotes = false;
+    for (let i = 0; i < text.length; i++) {
+      const ch = text[i];
+      if (inQuotes) {
+        if (ch === '"') {
+          if (text[i + 1] === '"') { field += '"'; i++; } else { inQuotes = false; }
+        } else { field += ch; }
+      } else {
+        if (ch === '"') inQuotes = true;
+        else if (ch === ',') { row.push(field); field = ''; }
+        else if (ch === '\n' || ch === '\r') {
+          if (field !== '' || row.length > 0) { row.push(field); lines.push(row); row = []; field = ''; }
+          if (ch === '\r' && text[i + 1] === '\n') i++;
+        } else { field += ch; }
+      }
+    }
+    if (field !== '' || row.length > 0) { row.push(field); lines.push(row); }
+    if (lines.length < 1) return [];
+    const header = lines[0].map(s => s.trim());
+    return lines.slice(1).map(cells => {
+      const o: Record<string, string> = {};
+      for (let i = 0; i < header.length; i++) o[header[i]] = (cells[i] ?? '').trim();
+      return o;
+    });
+  };
+
+  const downloadTemplate = async () => {
+    try {
+      const csv = await financeApi.downloadProjectExpenseTemplate(bulkMonth, bulkYear);
+      const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `project-expenses-${bulkYear}-${String(bulkMonth).padStart(2,'0')}.csv`;
+      document.body.appendChild(a); a.click(); document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    } catch (e: any) { alert(`Couldn't download template: ${e?.message || e}`); }
+  };
+
+  const uploadCsv = async (file: File) => {
+    setBulkBusy(true);
+    try {
+      const text = await file.text();
+      const parsed = parseCsv(text);
+      const rows = parsed.map(r => ({
+        project_id: r.project_id,
+        month: Number(r.month) || bulkMonth,
+        year: Number(r.year) || bulkYear,
+        vendor: r.vendor || undefined,
+        description: r.description,
+        amount: Number(r.amount),
+        category: r.category || undefined,
+      }));
+      const result = await financeApi.uploadProjectExpenses(rows as any);
+      const errBlurb = result.errors.length > 0
+        ? `\n\nIssues:\n${result.errors.slice(0, 10).join('\n')}${result.errors.length > 10 ? `\n…and ${result.errors.length - 10} more` : ''}`
+        : '';
+      alert(`Imported ${result.inserted} expense${result.inserted === 1 ? '' : 's'}.\nSkipped ${result.skipped} row${result.skipped === 1 ? '' : 's'} (blank amount = intentional skip).${errBlurb}`);
+    } catch (e: any) { alert(`Upload failed: ${e?.message || e}`); }
+    finally { setBulkBusy(false); }
+  };
 
   const [search, setSearch] = useState('');
   const [typeFilter, setTypeFilter] = useState('');
@@ -196,12 +273,45 @@ export default function Projects() {
             )}
           </button>
           {canEdit && (
-            <button
-              onClick={() => { setEditing(null); setShowForm(true); }}
-              className="inline-flex items-center gap-2 px-4 py-2.5 rounded-lg text-sm font-semibold bg-accent text-on-accent hover:opacity-90 shadow-elev-1 hover:shadow-elev-2 transition-all"
-            >
-              <Plus size={15} /> New Project
-            </button>
+            <>
+              {/* Bulk expense flow: pick month/year → download template
+                  (one row per active project, pre-filled with project_id)
+                  → fill the amount column externally → upload the same
+                  file back. Skip-blank-amount semantics mean admin can
+                  leave projects with no expense alone. */}
+              <div className="inline-flex items-center gap-1 bg-surface-2 border border-outline rounded-lg px-2 py-1 text-xs">
+                <span className="text-on-surface-subtle font-semibold pr-1">Expenses</span>
+                <select value={bulkMonth} onChange={e => setBulkMonth(Number(e.target.value))}
+                  className="bg-transparent text-on-surface font-semibold focus:outline-none">
+                  {['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'].map((m, i) => (
+                    <option key={m} value={i + 1}>{m}</option>
+                  ))}
+                </select>
+                <select value={bulkYear} onChange={e => setBulkYear(Number(e.target.value))}
+                  className="bg-transparent text-on-surface font-semibold num-mono focus:outline-none">
+                  {[bulkYear - 1, bulkYear, bulkYear + 1].map(y => <option key={y} value={y}>{y}</option>)}
+                </select>
+                <button onClick={downloadTemplate}
+                  title={`Download CSV template for ${['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'][bulkMonth-1]} ${bulkYear} — one row per active project`}
+                  className="inline-flex items-center gap-1 px-2 py-1 rounded text-on-surface-muted hover:text-on-surface hover:bg-surface-3">
+                  <Download size={13} /> CSV
+                </button>
+                <label
+                  title="Upload a filled CSV — non-empty amounts insert as expenses; bad rows surface in the result toast"
+                  className={`inline-flex items-center gap-1 px-2 py-1 rounded cursor-pointer ${bulkBusy ? 'opacity-50 cursor-not-allowed' : 'text-on-surface-muted hover:text-on-surface hover:bg-surface-3'}`}>
+                  <Upload size={13} /> {bulkBusy ? 'Uploading…' : 'Upload'}
+                  <input type="file" accept=".csv,text/csv" disabled={bulkBusy}
+                    onChange={e => { const f = e.target.files?.[0]; if (f) { uploadCsv(f); e.target.value = ''; } }}
+                    className="hidden" />
+                </label>
+              </div>
+              <button
+                onClick={() => { setEditing(null); setShowForm(true); }}
+                className="inline-flex items-center gap-2 px-4 py-2.5 rounded-lg text-sm font-semibold bg-accent text-on-accent hover:opacity-90 shadow-elev-1 hover:shadow-elev-2 transition-all"
+              >
+                <Plus size={15} /> New Project
+              </button>
+            </>
           )}
         </div>
 
