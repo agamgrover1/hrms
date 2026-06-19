@@ -275,7 +275,11 @@ export default function Attendance() {
   // Keyed by date (YYYY-MM-DD) so render-time lookup is O(1).
   const [attendanceNotes, setAttendanceNotes] = useState<Record<string, { note: string; author_name: string | null; author_role: string | null; updated_at: string }>>({});
   const [editingNoteDate, setEditingNoteDate] = useState<string | null>(null);
-  useEffect(() => {
+  // Pulled out as a callback so the sync handler can refresh notes too —
+  // notes live in their own table and are NEVER touched by the biometric
+  // sync, but the user expected the panel to stay coherent so we re-fetch
+  // alongside attendance records.
+  const fetchAttendanceNotes = useCallback(() => {
     if (!selectedEmpId) { setAttendanceNotes({}); return; }
     api.getAttendanceNotes(selectedEmpId, viewMonth + 1, viewYear)
       .then(rows => {
@@ -285,6 +289,7 @@ export default function Attendance() {
       })
       .catch(() => setAttendanceNotes({}));
   }, [selectedEmpId, viewMonth, viewYear]);
+  useEffect(() => { fetchAttendanceNotes(); }, [fetchAttendanceNotes]);
 
   const fetchSyncHistory = useCallback(() => {
     api.getBiometricSyncHistory().then(setSyncHistory).catch(() => {});
@@ -334,6 +339,9 @@ export default function Attendance() {
       fetchSyncHistory();
       fetchRecords();
       fetchLeaves();
+      // Notes are persisted in their own table and not affected by sync,
+      // but reload them so the panel never shows stale state.
+      fetchAttendanceNotes();
     } catch (err: any) {
       setSyncError(err.message ?? 'Sync failed');
     } finally {
@@ -744,7 +752,13 @@ export default function Attendance() {
                       {isShortDay && (
                         <span className="text-xs px-2 py-0.5 rounded-full font-semibold border border-warning/40 bg-warning-container text-warning flex-shrink-0">Short Day</span>
                       )}
-                      {(isShortDay || (r.status === 'late' && !r.check_out)) && (() => {
+                      {/* Chip is visible whenever a note already exists OR
+                          when the day qualifies for adding one. Without the
+                          "note exists" branch a biometric sync that bumps
+                          worked hours over the short-day threshold would
+                          hide the chip — the note row below still renders,
+                          but losing the chip looked like the note was wiped. */}
+                      {(!!attendanceNotes[r.date] || isShortDay || (r.status === 'late' && !r.check_out)) && (() => {
                         const has = !!attendanceNotes[r.date];
                         return (
                           <button onClick={(e) => { e.stopPropagation(); setEditingNoteDate(r.date); }}
