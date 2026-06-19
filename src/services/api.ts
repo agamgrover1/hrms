@@ -771,6 +771,27 @@ export const api = {
   deleteAnnouncementComment: (id: string, commentId: string) =>
     request<any>(`/announcements/${id}/comments/${commentId}`, { method: 'DELETE' }),
 
+  // ── Template Hub — email + letter boilerplates ────────────────────────
+  getTemplates: (params: { category?: string; format?: 'email' | 'letter' } = {}) => {
+    const qs = new URLSearchParams();
+    if (params.category) qs.set('category', params.category);
+    if (params.format)   qs.set('format',   params.format);
+    return request<Array<{
+      id: string; title: string; category: string | null;
+      format: 'email' | 'letter'; subject: string | null; body: string;
+      description: string | null; tags: string[] | null; active: boolean;
+      created_by_id: string | null; created_by_name: string | null;
+      updated_by_id: string | null; updated_by_name: string | null;
+      created_at: string; updated_at: string;
+    }>>(`/templates${qs.toString() ? `?${qs}` : ''}`);
+  },
+  addTemplate: (data: { title: string; category?: string; format?: 'email' | 'letter'; subject?: string; body: string; description?: string; tags?: string[] }) =>
+    request<any>(`/templates`, { method: 'POST', body: JSON.stringify(data) }),
+  updateTemplate: (id: string, data: Partial<{ title: string; category: string | null; format: 'email' | 'letter'; subject: string | null; body: string; description: string | null; tags: string[] | null; active: boolean }>) =>
+    request<any>(`/templates/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
+  deleteTemplate: (id: string) =>
+    request<any>(`/templates/${id}`, { method: 'DELETE' }),
+
   // ── Upcoming events (holidays + birthdays + anniversaries) ───────────
   getUpcomingEvents: (days = 30) =>
     request<Array<{

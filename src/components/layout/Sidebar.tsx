@@ -2,7 +2,7 @@ import { NavLink, useLocation } from 'react-router-dom';
 import {
   LayoutDashboard, Users, Clock3, CalendarDays, Wallet, Sparkles,
   ChevronLeft, ChevronRight, UserCog, User, SlidersHorizontal, TrendingUp, Wrench,
-  Briefcase, ClipboardCheck, Layers, LineChart, AlertTriangle, Activity, Megaphone, BookOpen, HelpCircle, type LucideIcon,
+  Briefcase, ClipboardCheck, Layers, LineChart, AlertTriangle, Activity, Megaphone, BookOpen, HelpCircle, Mail, type LucideIcon,
 } from 'lucide-react';
 import { useState, useEffect, useRef } from 'react';
 import { useAuth } from '../../context/AuthContext';
@@ -184,6 +184,16 @@ export default function Sidebar({ mobileOpen = false, onMobileClose }: { mobileO
     ],
   } : null;
   if (personalGroup) groups.push(personalGroup);
+
+  // Resources — HR-curated reference material that anyone signed in can read.
+  // Template Hub lives here because it's a copy-paste library, not a workflow.
+  groups.push({
+    id: 'resources',
+    label: 'Resources',
+    items: [
+      { to: '/templates', icon: Mail, label: 'Templates' },
+    ],
+  });
 
   // Help group at the bottom — visible to everyone signed in. Single source
   // of truth for "what does this card mean?" + Pulse rubric.

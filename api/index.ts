@@ -1287,6 +1287,33 @@ async function runStartupMigrations() {
   }
 
   // ── Feature announcements ───────────────────────────────────────────────
+  // Template Hub — HR-curated email/letter templates anyone can copy +
+  // paste. Body is plain text with {{placeholders}} the user fills in
+  // manually after pasting. format='email' carries an optional subject;
+  // format='letter' is just body. category groups them on the list
+  // (offer, leave, warning, appraisal, misc, etc.) but is free-text
+  // so HR can introduce new buckets without a migration. Soft-delete
+  // via active=false keeps historical references usable.
+  await sql`
+    CREATE TABLE IF NOT EXISTS templates (
+      id TEXT PRIMARY KEY,
+      title TEXT NOT NULL,
+      category TEXT,
+      format TEXT NOT NULL DEFAULT 'email',
+      subject TEXT,
+      body TEXT NOT NULL,
+      description TEXT,
+      tags TEXT[],
+      active BOOLEAN NOT NULL DEFAULT TRUE,
+      created_by_id TEXT,
+      created_by_name TEXT,
+      updated_by_id TEXT,
+      updated_by_name TEXT,
+      created_at TIMESTAMPTZ DEFAULT NOW(),
+      updated_at TIMESTAMPTZ DEFAULT NOW()
+    )`;
+  await sql`CREATE INDEX IF NOT EXISTS idx_templates_category ON templates(category, active)`.catch(()=>{});
+
   // Lightweight "What's new" mechanism. Anyone with admin/HR draft access
   // can write an announcement (title + body + optional image). Admin
   // publishes it. On publish, every user sees a one-time modal popup
@@ -4388,6 +4415,105 @@ app.delete('/api/announcements/:id/comments/:commentId', async (req, res) => {
     const isOwn = c.posted_by_id === uid;
     if (!isAdminOrHR && !isOwn) return res.status(403).json({ error: 'You can only delete your own comments.' });
     await sql`DELETE FROM announcement_comments WHERE id=${req.params.commentId}`;
+    res.json({ ok: true });
+  } catch (err: any) { res.status(500).json({ error: err.message ?? 'Server error' }); }
+});
+
+// ── Template Hub ─────────────────────────────────────────────────────────
+// HR-maintained library of email + letter templates. Read is open to any
+// signed-in user so anyone composing an official email can grab the
+// right boilerplate; write is admin / HR only.
+
+app.get('/api/templates', async (req, res) => {
+  try {
+    await runStartupMigrations();
+    const uid = req.header('x-user-id');
+    if (!uid) return res.status(401).json({ error: 'Sign in required' });
+    const u = (await sql`SELECT id, role FROM app_users WHERE id=${uid}`)[0] as any;
+    if (!u) return res.status(401).json({ error: 'Unknown user' });
+    // Admin / HR see inactive entries too (so they can re-activate them).
+    const showAll = u.role === 'admin' || u.role === 'hr_manager';
+    const cat = (req.query.category as string) || null;
+    const fmt = (req.query.format as string) || null;
+    const rows = await sql`
+      SELECT * FROM templates
+      WHERE (${showAll}::boolean OR active=TRUE)
+        AND (${cat}::text IS NULL OR category=${cat})
+        AND (${fmt}::text IS NULL OR format=${fmt})
+      ORDER BY category NULLS LAST, title`;
+    res.json(rows);
+  } catch (err: any) { res.status(500).json({ error: err.message ?? 'Server error' }); }
+});
+
+app.post('/api/templates', async (req, res) => {
+  try {
+    await runStartupMigrations();
+    const uid = req.header('x-user-id');
+    if (!uid) return res.status(401).json({ error: 'Sign in required' });
+    const u = (await sql`SELECT id, name, role FROM app_users WHERE id=${uid}`)[0] as any;
+    if (!u) return res.status(401).json({ error: 'Unknown user' });
+    if (u.role !== 'admin' && u.role !== 'hr_manager') {
+      return res.status(403).json({ error: 'Admin / HR only' });
+    }
+    const { title, category, format, subject, body, description, tags } = req.body ?? {};
+    if (!title?.trim() || !body?.trim()) {
+      return res.status(400).json({ error: 'Title and body are required' });
+    }
+    const fmt = (format === 'letter') ? 'letter' : 'email';
+    const id = `tpl_${Date.now()}`;
+    const row = (await sql`
+      INSERT INTO templates (id, title, category, format, subject, body, description, tags,
+        created_by_id, created_by_name, updated_by_id, updated_by_name)
+      VALUES (${id}, ${title.trim()}, ${category?.trim() || null}, ${fmt},
+              ${subject?.trim() || null}, ${body}, ${description?.trim() || null},
+              ${Array.isArray(tags) && tags.length ? tags : null}::text[],
+              ${u.id}, ${u.name}, ${u.id}, ${u.name})
+      RETURNING *`)[0];
+    res.status(201).json(row);
+  } catch (err: any) { res.status(500).json({ error: err.message ?? 'Server error' }); }
+});
+
+app.put('/api/templates/:id', async (req, res) => {
+  try {
+    const uid = req.header('x-user-id');
+    if (!uid) return res.status(401).json({ error: 'Sign in required' });
+    const u = (await sql`SELECT id, name, role FROM app_users WHERE id=${uid}`)[0] as any;
+    if (!u) return res.status(401).json({ error: 'Unknown user' });
+    if (u.role !== 'admin' && u.role !== 'hr_manager') {
+      return res.status(403).json({ error: 'Admin / HR only' });
+    }
+    const { title, category, format, subject, body, description, tags, active } = req.body ?? {};
+    const row = (await sql`
+      UPDATE templates SET
+        title       = COALESCE(${title?.trim() || null}, title),
+        category    = ${category === undefined ? null : (category?.trim() || null)},
+        format      = COALESCE(${format === 'email' || format === 'letter' ? format : null}, format),
+        subject     = ${subject === undefined ? null : (subject?.trim() || null)},
+        body        = COALESCE(${body || null}, body),
+        description = ${description === undefined ? null : (description?.trim() || null)},
+        tags        = ${tags === undefined ? null : (Array.isArray(tags) && tags.length ? tags : null)}::text[],
+        active      = COALESCE(${active === undefined ? null : !!active}, active),
+        updated_by_id   = ${u.id},
+        updated_by_name = ${u.name},
+        updated_at  = NOW()
+      WHERE id=${req.params.id}
+      RETURNING *`)[0];
+    if (!row) return res.status(404).json({ error: 'Template not found' });
+    res.json(row);
+  } catch (err: any) { res.status(500).json({ error: err.message ?? 'Server error' }); }
+});
+
+app.delete('/api/templates/:id', async (req, res) => {
+  try {
+    const uid = req.header('x-user-id');
+    if (!uid) return res.status(401).json({ error: 'Sign in required' });
+    const u = (await sql`SELECT role FROM app_users WHERE id=${uid}`)[0] as any;
+    if (!u) return res.status(401).json({ error: 'Unknown user' });
+    if (u.role !== 'admin' && u.role !== 'hr_manager') {
+      return res.status(403).json({ error: 'Admin / HR only' });
+    }
+    // Soft-delete via active=false so existing references keep resolving.
+    await sql`UPDATE templates SET active=FALSE, updated_at=NOW() WHERE id=${req.params.id}`;
     res.json({ ok: true });
   } catch (err: any) { res.status(500).json({ error: err.message ?? 'Server error' }); }
 });
