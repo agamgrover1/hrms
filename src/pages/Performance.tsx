@@ -11,6 +11,7 @@ import {
 import { api } from '../services/api';
 import { useAuth } from '../context/AuthContext';
 import PulseContextPanel from '../components/PulseContextPanel';
+import ReviewSignalsPanel from '../components/ReviewSignalsPanel';
 
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 const CATEGORIES = [
@@ -21,6 +22,11 @@ const CATEGORIES = [
   { key: 'initiative',          label: 'Initiative' },
   { key: 'client_satisfaction', label: 'Client Handling', hint: 'Messaging quality · handling tough clients · interaction · retention. Feeds the Client Handling pillar on Pulse.' },
   { key: 'ai_usage',            label: 'AI Usage' },
+  // Phase-1 additions — dimensions the original 7 missed.
+  { key: 'communication',       label: 'Communication',     hint: 'Responsiveness to project queries, approval pings, and team messages. Separate from teamwork — this is about reachability and clarity.' },
+  { key: 'ownership',           label: 'Ownership',         hint: 'Drives existing work to closure without nudging. Different from Initiative (starts new things) — this is about following through.' },
+  { key: 'planning_accuracy',   label: 'Planning Accuracy', hint: 'How close were their week-1 estimates to actuals? Tracks self-awareness and ability to scope work.' },
+  { key: 'learning_growth',     label: 'Learning & Growth', hint: 'What did they level up this month? Anchors retention conversations.' },
 ] as const;
 
 type CategoryKey = typeof CATEGORIES[number]['key'];
@@ -203,6 +209,10 @@ function AddReviewModal({
     initiative:          existing?.initiative          ?? 75,
     client_satisfaction: existing?.client_satisfaction ?? 75,
     ai_usage:            existing?.ai_usage            ?? 75,
+    communication:       existing?.communication       ?? 75,
+    ownership:           existing?.ownership           ?? 75,
+    planning_accuracy:   existing?.planning_accuracy   ?? 75,
+    learning_growth:     existing?.learning_growth     ?? 75,
   });
   const [paramNotes, setParamNotes] = useState<Record<string, string>>(existing?.parameter_notes ?? {});
   const [comments, setComments] = useState(existing?.comments ?? '');
@@ -255,8 +265,59 @@ function AddReviewModal({
             <p className="text-xs text-on-surface-subtle mt-1">Average of <span className="num-mono">{CATEGORIES.length}</span> parameters</p>
           </div>
 
-          {/* Pulse context — automated data view to reference while rating */}
+          {/* Pulse pillars (computed view) + raw signals (facts view).
+              Together these give the reviewer everything they need to
+              score against data instead of memory. */}
           <PulseContextPanel employeeId={employee?.id ?? null} />
+          <ReviewSignalsPanel employeeId={employee?.id ?? null} month={month} year={year} />
+
+          {/* Self-review summary — shown only if the employee submitted
+              theirs. Helps the reviewer spot blind spots both ways
+              before locking in their numbers. */}
+          {existing?.self_submitted_at && existing?.self_scores && (
+            <div className="rounded-xl-2 border border-brand/30 bg-brand-container/30 p-4">
+              <div className="flex items-center justify-between mb-2">
+                <p className="text-xs font-bold uppercase tracking-[0.14em] text-on-brand-container">Self-review on file</p>
+                <span className="text-[10px] text-on-surface-subtle">
+                  Submitted {new Date(existing.self_submitted_at).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' })}
+                </span>
+              </div>
+              <div className="grid grid-cols-2 gap-2 text-[11px]">
+                {CATEGORIES.map(({ key, label }) => {
+                  const self = Number(existing.self_scores?.[key] ?? 75);
+                  const mine = scores[key];
+                  const delta = mine - self;
+                  return (
+                    <div key={key} className="flex items-center justify-between bg-surface rounded px-2 py-1">
+                      <span className="text-on-surface-muted truncate">{label}</span>
+                      <span className="num-mono font-semibold">
+                        <span className="text-on-surface-subtle">{self}</span>
+                        <span className="text-on-surface-subtle mx-1">→</span>
+                        <span className="text-on-surface">{mine}</span>
+                        {delta !== 0 && (
+                          <span className={`ml-1 text-[10px] ${delta > 0 ? 'text-success' : 'text-danger'}`}>
+                            {delta > 0 ? '+' : ''}{delta}
+                          </span>
+                        )}
+                      </span>
+                    </div>
+                  );
+                })}
+              </div>
+              {existing.self_went_well && (
+                <div className="mt-3 text-[11px]">
+                  <p className="font-semibold text-on-brand-container mb-0.5">What went well (their words):</p>
+                  <p className="text-on-surface italic whitespace-pre-line">"{existing.self_went_well}"</p>
+                </div>
+              )}
+              {existing.self_would_do_differently && (
+                <div className="mt-2 text-[11px]">
+                  <p className="font-semibold text-on-brand-container mb-0.5">What they'd do differently:</p>
+                  <p className="text-on-surface italic whitespace-pre-line">"{existing.self_would_do_differently}"</p>
+                </div>
+              )}
+            </div>
+          )}
 
           {CATEGORIES.map(({ key, label, hint }: any) => (
             <div key={key}>

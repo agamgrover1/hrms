@@ -1503,6 +1503,28 @@ async function runStartupMigrations() {
   await sql`ALTER TABLE performance_score_snapshots ADD COLUMN IF NOT EXISTS client_handling NUMERIC`.catch(()=>{});
   await sql`ALTER TABLE performance_monthly_snapshots ADD COLUMN IF NOT EXISTS client_handling NUMERIC`.catch(()=>{});
 
+  // ── New rating dimensions on the monthly review (Phase 1) ─────────────
+  // Communication, Ownership, Planning Accuracy and Learning & Growth are
+  // axes the original 7 categories missed. They're scored 0-100 like the
+  // others. Default 75 mirrors what the form sends today for un-touched
+  // dimensions so historical rows stay in a sane band on first read.
+  await sql`ALTER TABLE monthly_performance ADD COLUMN IF NOT EXISTS communication NUMERIC DEFAULT 75`.catch(()=>{});
+  await sql`ALTER TABLE monthly_performance ADD COLUMN IF NOT EXISTS ownership NUMERIC DEFAULT 75`.catch(()=>{});
+  await sql`ALTER TABLE monthly_performance ADD COLUMN IF NOT EXISTS planning_accuracy NUMERIC DEFAULT 75`.catch(()=>{});
+  await sql`ALTER TABLE monthly_performance ADD COLUMN IF NOT EXISTS learning_growth NUMERIC DEFAULT 75`.catch(()=>{});
+
+  // ── Self-review pass ────────────────────────────────────────────────────
+  // The employee fills a self-review first (own scores per category +
+  // "went well" / "would do differently"). Reviewer sees it side-by-side
+  // while filling theirs. Stored on the SAME row so we keep a single
+  // source of truth per (employee, month, year). NULL means "not
+  // submitted yet" — reviewer can still file their review without it.
+  await sql`ALTER TABLE monthly_performance ADD COLUMN IF NOT EXISTS self_scores JSONB`.catch(()=>{});
+  await sql`ALTER TABLE monthly_performance ADD COLUMN IF NOT EXISTS self_went_well TEXT`.catch(()=>{});
+  await sql`ALTER TABLE monthly_performance ADD COLUMN IF NOT EXISTS self_would_do_differently TEXT`.catch(()=>{});
+  await sql`ALTER TABLE monthly_performance ADD COLUMN IF NOT EXISTS self_submitted_at TIMESTAMPTZ`.catch(()=>{});
+  await sql`ALTER TABLE monthly_performance ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ`.catch(()=>{});
+
   await sql`
     CREATE TABLE IF NOT EXISTS performance_manager_pulse (
       id SERIAL PRIMARY KEY,
@@ -6031,7 +6053,14 @@ app.patch('/api/performance/monthly/:id/lock', async (req, res) => {
 
 app.post('/api/performance/monthly', async (req, res) => {
   try {
-    const { employee_id, reviewer_id, reviewer_name, month, year, productivity, quality, teamwork, attendance_score, initiative, client_satisfaction, ai_usage, overall_score, comments, parameter_notes, requester_role } = req.body;
+    const {
+      employee_id, reviewer_id, reviewer_name, month, year,
+      productivity, quality, teamwork, attendance_score, initiative,
+      client_satisfaction, ai_usage,
+      // Phase 1 additions — dimensions the old 7 missed.
+      communication, ownership, planning_accuracy, learning_growth,
+      overall_score, comments, parameter_notes, requester_role,
+    } = req.body;
     const paramNotesJson = JSON.stringify(parameter_notes ?? {});
     // Ensure columns exist (idempotent)
     await sql`ALTER TABLE monthly_performance ADD COLUMN IF NOT EXISTS ai_usage INTEGER DEFAULT 75`.catch(() => {});
@@ -6044,15 +6073,24 @@ app.post('/api/performance/monthly', async (req, res) => {
     };
     const rows = await sql`
       INSERT INTO monthly_performance
-        (employee_id, reviewer_id, reviewer_name, month, year, productivity, quality, teamwork, attendance_score, initiative, client_satisfaction, ai_usage, overall_score, comments, parameter_notes, updated_at)
+        (employee_id, reviewer_id, reviewer_name, month, year,
+         productivity, quality, teamwork, attendance_score, initiative,
+         client_satisfaction, ai_usage,
+         communication, ownership, planning_accuracy, learning_growth,
+         overall_score, comments, parameter_notes, updated_at)
       VALUES
         (${employee_id}, ${reviewer_id ?? null}, ${reviewer_name ?? null}, ${month}, ${year},
-         ${productivity}, ${quality}, ${teamwork}, ${attendance_score}, ${initiative}, ${client_satisfaction ?? 0}, ${ai_usage ?? 75}, ${overall_score}, ${comments ?? null}, ${paramNotesJson}, NOW())
+         ${productivity}, ${quality}, ${teamwork}, ${attendance_score}, ${initiative},
+         ${client_satisfaction ?? 0}, ${ai_usage ?? 75},
+         ${communication ?? 75}, ${ownership ?? 75}, ${planning_accuracy ?? 75}, ${learning_growth ?? 75},
+         ${overall_score}, ${comments ?? null}, ${paramNotesJson}, NOW())
       ON CONFLICT (employee_id, month, year) DO UPDATE SET
         reviewer_id=EXCLUDED.reviewer_id, reviewer_name=EXCLUDED.reviewer_name,
         productivity=EXCLUDED.productivity, quality=EXCLUDED.quality, teamwork=EXCLUDED.teamwork,
         attendance_score=EXCLUDED.attendance_score, initiative=EXCLUDED.initiative,
         client_satisfaction=EXCLUDED.client_satisfaction, ai_usage=EXCLUDED.ai_usage,
+        communication=EXCLUDED.communication, ownership=EXCLUDED.ownership,
+        planning_accuracy=EXCLUDED.planning_accuracy, learning_growth=EXCLUDED.learning_growth,
         overall_score=EXCLUDED.overall_score, comments=EXCLUDED.comments,
         parameter_notes=EXCLUDED.parameter_notes, updated_at=NOW()
       RETURNING *`;
@@ -6063,6 +6101,306 @@ app.post('/api/performance/monthly', async (req, res) => {
     );
     res.json(rec);
   } catch (err) { res.status(500).json({ error: 'Server error' }); }
+});
+
+// ── Review signals ────────────────────────────────────────────────────────
+// One-shot endpoint that returns every hard data signal the reviewer
+// should see on the monthly form. Each block fails soft to {available:false}
+// so a missing table or empty period doesn't kill the panel — the form
+// still renders the categories that DO have data.
+app.get('/api/performance/review-signals', async (req, res) => {
+  try {
+    await runStartupMigrations();
+    const employee_id = (req.query.employee_id as string) || '';
+    const month = Number(req.query.month);
+    const year  = Number(req.query.year);
+    if (!employee_id || !month || !year) {
+      return res.status(400).json({ error: 'employee_id, month, year required' });
+    }
+
+    // Period bounds (inclusive). Used by every block below.
+    const periodStart = `${year}-${String(month).padStart(2, '0')}-01`;
+    const periodEndDt = new Date(year, month, 0); // day 0 of next month = last day of this month
+    const periodEnd   = periodEndDt.toISOString().slice(0, 10);
+
+    const safe = async <T>(fn: () => Promise<T>): Promise<T | null> => {
+      try { return await fn(); } catch { return null; }
+    };
+
+    // 1. Hours discipline — % of working days with a logged hour entry
+    //    *on the day itself* vs. backfilled later. We approximate "on time"
+    //    as created_at within +1 calendar day of log_date (covers next-morning
+    //    catch-up which is normal). A day with zero hours logged still
+    //    counts as "missed" unless it was a holiday / leave.
+    const hoursDiscipline = await safe(async () => {
+      const rows = await sql`
+        SELECT log_date::text AS log_date, MIN(created_at) AS first_logged
+        FROM hour_log_days
+        WHERE employee_id=${employee_id}
+          AND month=${month} AND year=${year}
+        GROUP BY log_date`;
+      const internal = await sql`
+        SELECT log_date::text AS log_date, MIN(created_at) AS first_logged
+        FROM internal_hour_logs
+        WHERE employee_id=${employee_id}
+          AND log_date BETWEEN ${periodStart}::date AND ${periodEnd}::date
+        GROUP BY log_date`;
+      // Treat the union — any log on a day means the day is covered.
+      const byDate = new Map<string, Date>();
+      for (const r of [...(rows as any[]), ...(internal as any[])]) {
+        const d = String(r.log_date).slice(0, 10);
+        const t = r.first_logged ? new Date(r.first_logged) : null;
+        if (!t) continue;
+        const cur = byDate.get(d);
+        if (!cur || t < cur) byDate.set(d, t);
+      }
+      // Working days = weekdays in the period up to today (don't penalise the future).
+      const today = new Date();
+      const todayIso = today.toISOString().slice(0, 10);
+      const isWeekend = (iso: string) => {
+        const d = new Date(iso + 'T00:00:00Z');
+        const dow = d.getUTCDay();
+        return dow === 0 || dow === 6;
+      };
+      let workingDays = 0, logged = 0, onTime = 0;
+      for (let day = 1; day <= periodEndDt.getDate(); day++) {
+        const iso = `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+        if (iso > todayIso) break;
+        if (isWeekend(iso)) continue;
+        workingDays++;
+        const firstLogged = byDate.get(iso);
+        if (firstLogged) {
+          logged++;
+          // "on time" = entry created on or by the next calendar day.
+          const cutoff = new Date(iso + 'T23:59:59');
+          cutoff.setDate(cutoff.getDate() + 1);
+          if (firstLogged <= cutoff) onTime++;
+        }
+      }
+      return { working_days: workingDays, logged_days: logged, on_time_days: onTime,
+               coverage_pct: workingDays ? Math.round(logged * 100 / workingDays) : null,
+               on_time_pct: logged ? Math.round(onTime * 100 / logged) : null };
+    });
+
+    // 2. Allocation accuracy — planned hours vs logged hours, per week.
+    //    Variance closer to 0 = good planning. Sourced from project assignments.
+    const allocation = await safe(async () => {
+      const planned = await sql`
+        SELECT COALESCE(SUM(a.allocated_hours), 0)::numeric AS planned
+        FROM project_assignments a
+        WHERE a.employee_id=${employee_id}
+          AND ((a.month = ${month} AND a.year = ${year})
+            OR (a.start_date IS NOT NULL AND a.start_date <= ${periodEnd}::date
+                AND (a.end_date IS NULL OR a.end_date >= ${periodStart}::date)))` as any[];
+      const logged = await sql`
+        SELECT COALESCE(SUM(hours), 0)::numeric AS logged
+        FROM hour_log_days
+        WHERE employee_id=${employee_id} AND month=${month} AND year=${year}` as any[];
+      const p = Number(planned?.[0]?.planned ?? 0);
+      const l = Number(logged?.[0]?.logged ?? 0);
+      if (p <= 0 && l <= 0) return null;
+      return { planned: p, logged: l,
+               variance_hours: Math.round((l - p) * 10) / 10,
+               variance_pct: p > 0 ? Math.round((l - p) * 100 / p) : null };
+    });
+
+    // 3. Internal-hours mix — what % of approved hours were internal vs billable.
+    const internalMix = await safe(async () => {
+      const billable = await sql`
+        SELECT COALESCE(SUM(hours), 0)::numeric AS h FROM hour_log_days
+        WHERE employee_id=${employee_id} AND month=${month} AND year=${year}` as any[];
+      const internal = await sql`
+        SELECT COALESCE(SUM(hours), 0)::numeric AS h FROM internal_hour_logs
+        WHERE employee_id=${employee_id}
+          AND log_date BETWEEN ${periodStart}::date AND ${periodEnd}::date
+          AND COALESCE(status, 'approved') = 'approved'` as any[];
+      const b = Number(billable?.[0]?.h ?? 0);
+      const i = Number(internal?.[0]?.h ?? 0);
+      const total = b + i;
+      if (total === 0) return null;
+      return { billable_hours: b, internal_hours: i, total_hours: total,
+               internal_pct: Math.round(i * 100 / total) };
+    });
+
+    // 4. Attendance breakdown — late / short / absent counts. "with note"
+    //    vs "without note" answers the unspoken question: did they explain?
+    const attendance = await safe(async () => {
+      const att = await sql`
+        SELECT status, date::text AS date, total_hours
+        FROM attendance_records
+        WHERE employee_id=${employee_id}
+          AND date BETWEEN ${periodStart}::date AND ${periodEnd}::date` as any[];
+      const notes = await sql`
+        SELECT date::text AS date FROM attendance_notes
+        WHERE employee_id=${employee_id}
+          AND date BETWEEN ${periodStart}::date AND ${periodEnd}::date
+          AND COALESCE(status, 'approved') = 'approved'` as any[];
+      const notedSet = new Set((notes as any[]).map(n => String(n.date).slice(0, 10)));
+      let late = 0, short = 0, absent = 0;
+      let lateNoted = 0, shortNoted = 0, absentNoted = 0;
+      for (const r of att) {
+        const isShort = (r.status === 'present' || r.status === 'late') &&
+                        Number(r.total_hours) > 0 && Number(r.total_hours) < 8;
+        if (r.status === 'late')   { late++;   if (notedSet.has(r.date)) lateNoted++; }
+        if (isShort)               { short++;  if (notedSet.has(r.date)) shortNoted++; }
+        if (r.status === 'absent') { absent++; if (notedSet.has(r.date)) absentNoted++; }
+      }
+      return { late_count: late, short_day_count: short, absent_count: absent,
+               late_noted: lateNoted, short_noted: shortNoted, absent_noted: absentNoted };
+    });
+
+    // 5. Leave pattern — counts by type + Monday-Friday distribution. A
+    //    "Friday spike" is the kind of pattern a reviewer wants to see at a
+    //    glance.
+    const leaves = await safe(async () => {
+      const rows = await sql`
+        SELECT type, from_date::text AS from_date, to_date::text AS to_date, days, status
+        FROM leave_requests
+        WHERE employee_id=${employee_id}
+          AND status NOT IN ('rejected', 'cancelled')
+          AND from_date <= ${periodEnd}::date AND to_date >= ${periodStart}::date` as any[];
+      const byType: Record<string, number> = {};
+      const dowCount = [0, 0, 0, 0, 0, 0, 0]; // Sun..Sat
+      for (const r of rows) {
+        byType[r.type] = (byType[r.type] ?? 0) + Number(r.days ?? 1);
+        // Walk every day in the leave intersected with the period.
+        const from = r.from_date > periodStart ? r.from_date : periodStart;
+        const to   = r.to_date   < periodEnd   ? r.to_date   : periodEnd;
+        let cur = new Date(from + 'T00:00:00Z');
+        const end = new Date(to + 'T00:00:00Z');
+        while (cur <= end) {
+          dowCount[cur.getUTCDay()]++;
+          cur.setUTCDate(cur.getUTCDate() + 1);
+        }
+      }
+      return { by_type: byType,
+               total_days: Object.values(byType).reduce((a, b) => a + b, 0),
+               by_dow: { mon: dowCount[1], tue: dowCount[2], wed: dowCount[3],
+                         thu: dowCount[4], fri: dowCount[5] } };
+    });
+
+    // 6. Comment responsiveness — for employees, median time from a
+    //    manager's comment on their hour log to their reply on the same log.
+    const responsiveness = await safe(async () => {
+      const rows = await sql`
+        SELECT c.hour_log_id, c.author_id, c.author_role, c.created_at, h.employee_id
+        FROM hour_log_comments c
+        JOIN hour_logs h ON h.id = c.hour_log_id
+        WHERE h.employee_id=${employee_id}
+          AND h.month=${month} AND h.year=${year}
+        ORDER BY c.hour_log_id, c.created_at` as any[];
+      const byLog = new Map<string, any[]>();
+      for (const r of rows) {
+        const arr = byLog.get(r.hour_log_id) ?? [];
+        arr.push(r); byLog.set(r.hour_log_id, arr);
+      }
+      const responseHours: number[] = [];
+      let promptsReceived = 0;
+      for (const thread of byLog.values()) {
+        for (let i = 0; i < thread.length - 1; i++) {
+          const cur  = thread[i];
+          const next = thread[i + 1];
+          if (cur.author_id !== employee_id && next.author_id === employee_id) {
+            promptsReceived++;
+            const ms = new Date(next.created_at).getTime() - new Date(cur.created_at).getTime();
+            responseHours.push(ms / 36e5);
+          }
+        }
+        // Last comment unanswered by the employee = an open prompt.
+        const last = thread[thread.length - 1];
+        if (last && last.author_id !== employee_id) promptsReceived++;
+      }
+      const median = (xs: number[]) => {
+        if (!xs.length) return null;
+        const s = [...xs].sort((a, b) => a - b);
+        const m = Math.floor(s.length / 2);
+        return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2;
+      };
+      const med = median(responseHours);
+      return { prompts_received: promptsReceived,
+               replies_sent: responseHours.length,
+               median_response_hours: med != null ? Math.round(med * 10) / 10 : null };
+    });
+
+    // 7. Pulse trend — last 90 days of monthly snapshots so the reviewer
+    //    sees trajectory, not just a snapshot of the current month.
+    const pulse = await safe(async () => {
+      const rows = await sql`
+        SELECT month, year, total_score, band
+        FROM performance_monthly_snapshots
+        WHERE employee_id=${employee_id}
+        ORDER BY year DESC, month DESC
+        LIMIT 6` as any[];
+      if (!rows.length) return null;
+      const ordered = rows.reverse();
+      const cur = ordered[ordered.length - 1];
+      const prev = ordered.length >= 2 ? ordered[ordered.length - 2] : null;
+      return { current: Number(cur.total_score), band: cur.band,
+               delta_vs_prev_month: prev ? Math.round((Number(cur.total_score) - Number(prev.total_score)) * 10) / 10 : null,
+               trend: ordered.map((r: any) => ({ month: r.month, year: r.year, score: Number(r.total_score), band: r.band })) };
+    });
+
+    res.json({
+      employee_id, month, year,
+      hours_discipline: hoursDiscipline,
+      allocation, internal_mix: internalMix,
+      attendance, leaves, responsiveness, pulse,
+    });
+  } catch (err: any) { res.status(500).json({ error: err.message ?? 'Server error' }); }
+});
+
+// ── Self-review submit ────────────────────────────────────────────────────
+// Employee files their own scores + a "what went well / what I'd do
+// differently" reflection. Lands on the same monthly_performance row so
+// the reviewer sees it alongside their own ratings. Idempotent — the
+// employee can re-submit until the reviewer locks the row.
+app.post('/api/performance/monthly/self', async (req, res) => {
+  try {
+    await runStartupMigrations();
+    const uid = req.header('x-user-id');
+    if (!uid) return res.status(401).json({ error: 'Sign in required' });
+    const u = (await sql`SELECT id, name, role, employee_id_ref FROM app_users WHERE id=${uid}`)[0] as any;
+    if (!u) return res.status(401).json({ error: 'Unknown user' });
+
+    const { employee_id, month, year, self_scores, self_went_well, self_would_do_differently } = req.body ?? {};
+    if (!employee_id || !month || !year) {
+      return res.status(400).json({ error: 'employee_id, month, year required' });
+    }
+
+    // Only the employee themself (or admin/HR on their behalf) can submit.
+    const actorEmpId = await resolveUserToEmployee(u);
+    const isPrivileged = u.role === 'admin' || u.role === 'hr_manager';
+    if (!isPrivileged && actorEmpId !== employee_id) {
+      return res.status(403).json({ error: "You can only file your own self-review." });
+    }
+
+    const existing = (await sql`SELECT id, is_locked FROM monthly_performance WHERE employee_id=${employee_id} AND month=${month} AND year=${year}`)[0] as any;
+    if (existing?.is_locked) {
+      return res.status(403).json({ error: 'Review is locked — self-review window closed.' });
+    }
+
+    const scoresJson = self_scores ? JSON.stringify(self_scores) : null;
+    const row = (await sql`
+      INSERT INTO monthly_performance
+        (employee_id, month, year, self_scores, self_went_well, self_would_do_differently, self_submitted_at, updated_at)
+      VALUES
+        (${employee_id}, ${month}, ${year}, ${scoresJson}::jsonb, ${self_went_well ?? null}, ${self_would_do_differently ?? null}, NOW(), NOW())
+      ON CONFLICT (employee_id, month, year) DO UPDATE SET
+        self_scores               = ${scoresJson}::jsonb,
+        self_went_well            = ${self_went_well ?? null},
+        self_would_do_differently = ${self_would_do_differently ?? null},
+        self_submitted_at         = NOW(),
+        updated_at                = NOW()
+      RETURNING *`)[0] as any;
+
+    // Ping the reporting manager so they know the self-review is ready.
+    try {
+      notifyManagerOfEmployee(employee_id, 'self_review_submitted',
+        'Self-review submitted',
+        `${u.name ?? 'Employee'} filed their self-review for ${['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'][month - 1]} ${year}.`);
+    } catch {}
+    res.json(row);
+  } catch (err: any) { res.status(500).json({ error: err.message ?? 'Server error' }); }
 });
 
 // ── Performance Notes ─────────────────────────────────────────────────────

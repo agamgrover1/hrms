@@ -8,6 +8,7 @@ import { leaveTypeLabel } from '../../utils/leaveLabel';
 import HourLogCommentsModal from '../../components/HourLogCommentsModal';
 import { toast } from '../../components/Toaster';
 import AttendanceNoteModal from '../../components/AttendanceNoteModal';
+import SelfReviewModal from '../../components/SelfReviewModal';
 import { useLiveRefresh } from '../../hooks/useLiveRefresh';
 import { useAuth } from '../../context/AuthContext';
 import { api } from '../../services/api';
@@ -634,6 +635,9 @@ export default function MyPortal() {
   const [balance, setBalance] = useState<any>({ casual: 0, sick: 0, earned: 0 });
   const [monthlyPerf, setMonthlyPerf] = useState<any[]>([]);
   const [empDbId, setEmpDbId] = useState('');
+  // Self-review modal — employee files their own scores before the
+  // manager closes the review. Anchored to the prior calendar month.
+  const [showSelfReview, setShowSelfReview] = useState(false);
   // Performance Pulse — automated score
   const [pulse, setPulse] = useState<any | null>(null);
   const [pulseTrend, setPulseTrend] = useState<Array<{ snapshot_date: string; total_score: number; band: string }>>([]);
@@ -2573,6 +2577,61 @@ export default function MyPortal() {
               ));
             })()}
           </div>
+
+          {/* Self-review banner — points at last full month.
+              Disappears once the reviewer locks the row. */}
+          {(() => {
+            const now = new Date();
+            const lastMonth = now.getMonth() === 0 ? 12 : now.getMonth();
+            const lastYear  = now.getMonth() === 0 ? now.getFullYear() - 1 : now.getFullYear();
+            const row = monthlyPerf.find(r => r.month === lastMonth && r.year === lastYear);
+            if (row?.is_locked) return null;
+            const filed = !!row?.self_submitted_at;
+            const MONTHS_FULL = ['January','February','March','April','May','June','July','August','September','October','November','December'];
+            return (
+              <div className={`rounded-2xl p-4 border ${filed ? 'border-success/30 bg-success/5' : 'border-accent/30 bg-accent/5'}`}>
+                <div className="flex items-start justify-between gap-3 flex-wrap">
+                  <div className="min-w-0">
+                    <p className="text-sm font-bold text-on-surface">
+                      {filed ? `Self-review filed for ${MONTHS_FULL[lastMonth - 1]} ${lastYear}` : `Your turn: file your self-review for ${MONTHS_FULL[lastMonth - 1]} ${lastYear}`}
+                    </p>
+                    <p className="text-xs text-on-surface-muted mt-0.5">
+                      {filed
+                        ? 'You can update it until your manager closes the review.'
+                        : 'Score yourself + jot what went well and what you\'d do differently. Your manager sees it side-by-side.'}
+                    </p>
+                  </div>
+                  <button onClick={() => setShowSelfReview(true)} disabled={!empDbId}
+                    className={`px-3 py-1.5 rounded-lg text-xs font-bold shadow-elev-1 ${filed ? 'bg-success text-white' : 'bg-accent text-on-accent'} disabled:opacity-50`}>
+                    {filed ? 'Update self-review' : 'File self-review'}
+                  </button>
+                </div>
+              </div>
+            );
+          })()}
+
+          {showSelfReview && empDbId && (() => {
+            const now = new Date();
+            const lastMonth = now.getMonth() === 0 ? 12 : now.getMonth();
+            const lastYear  = now.getMonth() === 0 ? now.getFullYear() - 1 : now.getFullYear();
+            const row = monthlyPerf.find(r => r.month === lastMonth && r.year === lastYear);
+            return (
+              <SelfReviewModal
+                employeeId={empDbId}
+                employeeName={user?.name ?? ''}
+                month={lastMonth}
+                year={lastYear}
+                existingSelf={row ? {
+                  self_scores: row.self_scores,
+                  self_went_well: row.self_went_well,
+                  self_would_do_differently: row.self_would_do_differently,
+                  self_submitted_at: row.self_submitted_at,
+                } : null}
+                onClose={() => setShowSelfReview(false)}
+                onSaved={() => api.getMonthlyPerformance(empDbId, currentYear).then(setMonthlyPerf).catch(() => {})}
+              />
+            );
+          })()}
 
           {/* Bar chart */}
           <div className="bg-surface rounded-xl border border-outline shadow-sm p-5">

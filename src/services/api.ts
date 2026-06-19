@@ -212,9 +212,31 @@ export const api = {
     employee_id: string; reviewer_id?: string; reviewer_name?: string;
     month: number; year: number;
     productivity: number; quality: number; teamwork: number; attendance_score: number; initiative: number; client_satisfaction: number; ai_usage: number;
+    communication?: number; ownership?: number; planning_accuracy?: number; learning_growth?: number;
     overall_score: number; comments?: string; parameter_notes?: Record<string, string>;
     requester_role?: string;
   }) => request<any>('/performance/monthly', { method: 'POST', body: JSON.stringify(data) }),
+
+  // Phase 1: hard signals shown alongside the review form so the reviewer
+  // anchors on facts. Each block may be null if data is missing.
+  getReviewSignals: (employee_id: string, month: number, year: number) =>
+    request<{
+      employee_id: string; month: number; year: number;
+      hours_discipline: { working_days: number; logged_days: number; on_time_days: number; coverage_pct: number | null; on_time_pct: number | null } | null;
+      allocation: { planned: number; logged: number; variance_hours: number; variance_pct: number | null } | null;
+      internal_mix: { billable_hours: number; internal_hours: number; total_hours: number; internal_pct: number } | null;
+      attendance: { late_count: number; short_day_count: number; absent_count: number; late_noted: number; short_noted: number; absent_noted: number } | null;
+      leaves: { by_type: Record<string, number>; total_days: number; by_dow: { mon: number; tue: number; wed: number; thu: number; fri: number } } | null;
+      responsiveness: { prompts_received: number; replies_sent: number; median_response_hours: number | null } | null;
+      pulse: { current: number; band: string; delta_vs_prev_month: number | null; trend: Array<{ month: number; year: number; score: number; band: string }> } | null;
+    }>(`/performance/review-signals?employee_id=${employee_id}&month=${month}&year=${year}`),
+
+  submitSelfReview: (data: {
+    employee_id: string; month: number; year: number;
+    self_scores: Record<string, number>;
+    self_went_well?: string;
+    self_would_do_differently?: string;
+  }) => request<any>('/performance/monthly/self', { method: 'POST', body: JSON.stringify(data) }),
 
   // Performance notes (private)
   getPerformanceNotes: (employee_id: string) =>
