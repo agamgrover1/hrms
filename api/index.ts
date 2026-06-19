@@ -4431,14 +4431,16 @@ app.get('/api/templates', async (req, res) => {
     if (!uid) return res.status(401).json({ error: 'Sign in required' });
     const u = (await sql`SELECT id, role FROM app_users WHERE id=${uid}`)[0] as any;
     if (!u) return res.status(401).json({ error: 'Unknown user' });
-    // Admin / HR see inactive entries too (so they can re-activate them).
-    const showAll = u.role === 'admin' || u.role === 'hr_manager';
+    // Template Hub is HR/admin-only for now — coordinators and employees
+    // can be opened up later by relaxing this gate (no client changes needed).
+    if (u.role !== 'admin' && u.role !== 'hr_manager') {
+      return res.status(403).json({ error: 'Admin / HR only' });
+    }
     const cat = (req.query.category as string) || null;
     const fmt = (req.query.format as string) || null;
     const rows = await sql`
       SELECT * FROM templates
-      WHERE (${showAll}::boolean OR active=TRUE)
-        AND (${cat}::text IS NULL OR category=${cat})
+      WHERE (${cat}::text IS NULL OR category=${cat})
         AND (${fmt}::text IS NULL OR format=${fmt})
       ORDER BY category NULLS LAST, title`;
     res.json(rows);

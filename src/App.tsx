@@ -87,8 +87,8 @@ function AppRoutes() {
         {/* Utilization: server enforces role-based scoping + cost stripping */}
         <Route path="hours/utilization" element={<ProtectedRoute><HoursUtilization /></ProtectedRoute>} />
         <Route path="notifications" element={<ProtectedRoute><Notifications /></ProtectedRoute>} />
-        {/* Template Hub — HR maintains, everyone reads. */}
-        <Route path="templates" element={<ProtectedRoute><TemplatesHub /></ProtectedRoute>} />
+        {/* Template Hub — HR / admin only for now. */}
+        <Route path="templates" element={<ProtectedRoute roles={['admin', 'hr_manager']}><TemplatesHub /></ProtectedRoute>} />
         <Route path="features" element={<ProtectedRoute roles={['admin', 'hr_manager']}><Features /></ProtectedRoute>} />
 
         {/* Employee routes — project_coordinator is also an employee */}

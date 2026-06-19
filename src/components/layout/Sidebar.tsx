@@ -185,15 +185,18 @@ export default function Sidebar({ mobileOpen = false, onMobileClose }: { mobileO
   } : null;
   if (personalGroup) groups.push(personalGroup);
 
-  // Resources — HR-curated reference material that anyone signed in can read.
-  // Template Hub lives here because it's a copy-paste library, not a workflow.
-  groups.push({
-    id: 'resources',
-    label: 'Resources',
-    items: [
-      { to: '/templates', icon: Mail, label: 'Templates' },
-    ],
-  });
+  // Resources — HR-curated reference material. Template Hub is gated to
+  // admin / HR for now; opening it to coordinators / employees is a one-line
+  // change in the role check below + the matching route + GET in api/index.ts.
+  if (isAdminLike) {
+    groups.push({
+      id: 'resources',
+      label: 'Resources',
+      items: [
+        { to: '/templates', icon: Mail, label: 'Templates' },
+      ],
+    });
+  }
 
   // Help group at the bottom — visible to everyone signed in. Single source
   // of truth for "what does this card mean?" + Pulse rubric.

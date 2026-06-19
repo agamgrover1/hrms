@@ -73,7 +73,7 @@ export default function TemplatesHub() {
         <div>
           <h1 className="font-display text-2xl font-bold tracking-tight text-on-surface">Template Hub</h1>
           <p className="text-sm text-on-surface-muted mt-0.5">
-            Official emails + letters, ready to copy and paste. {isEditor ? 'HR / admin manage the library.' : 'Maintained by HR.'}
+            Official emails + letters, ready to copy and paste. HR / admin only for now.
           </p>
         </div>
         {isEditor && (
