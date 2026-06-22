@@ -1,4 +1,4 @@
-import { Bell, ChevronDown, LogOut, CheckCircle, Calendar, TrendingUp, FileText, Target, X, XCircle, Award, Check, Trash2, AlertTriangle, ShieldAlert, KeyRound, Eye, EyeOff, Wrench, Clock as ClockIcon, Search, Megaphone, Sparkles, Menu } from 'lucide-react';
+import { Bell, ChevronDown, LogOut, CheckCircle, Calendar, TrendingUp, FileText, Target, X, XCircle, Award, Check, Trash2, AlertTriangle, ShieldAlert, KeyRound, Eye, EyeOff, Wrench, Clock as ClockIcon, Search, Megaphone, Sparkles, Menu, AtSign } from 'lucide-react';
 import { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../../context/AuthContext';
@@ -105,6 +105,7 @@ export function getNotifRoute(type: string, role: string): string {
     case 'hours_rejected':
     case 'hours_on_hold':
     case 'hours_comment':
+    case 'hours_mention':
     case 'hours_admin_edited':
       // Personal events → recipient's own My Hours tab.
       // HR/admin only get these as side-effects → master grid.
@@ -230,6 +231,7 @@ export const TYPE_CONFIG: Record<string, { icon: any; color: string; bg: string 
   hours_rejected:          { icon: XCircle,        color: '#dc2626', bg: '#fef2f2' },
   hours_on_hold:           { icon: ClockIcon,      color: '#7c3aed', bg: '#f5f3ff' },
   hours_comment:           { icon: FileText,       color: '#7c3aed', bg: '#f5f3ff' },
+  hours_mention:           { icon: AtSign,         color: '#ea580c', bg: '#fff7ed' },
   hours_admin_edited:      { icon: AlertTriangle,  color: '#b45309', bg: '#fffbeb' },
   // Allocation change requests
   allocation_request:      { icon: ClockIcon,      color: '#b45309', bg: '#fffbeb' },

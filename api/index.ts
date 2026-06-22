@@ -8944,13 +8944,44 @@ app.post('/api/hour-logs/:id/comments', async (req, res) => {
       // a past month's log opened an empty page with no modal.
       const reviewerLink = `/hours/approvals?logId=${log.id}&discuss=1&m=${log.month}&y=${log.year}`;
       const employeeLink = `/my?tab=my-hours&logId=${log.id}&discuss=1&m=${log.month}&y=${log.year}`;
-      if (fromEmployee && log.reviewed_by_id) {
+
+      // ── @mentions ─────────────────────────────────────────────────────────
+      // Mentions are stored inline as `@[Display Name](emp_<id>)` — the
+      // format the client emits when the mention picker confirms a pick.
+      // We extract the emp ids, de-dupe, drop the comment author (no
+      // self-pings) and ping each via the standard notification helper.
+      // Anyone who would already have been pinged by the "other side" rule
+      // below is suppressed in `pinged` so they don't get two notifications.
+      const pinged = new Set<string>();
+      const mentionRe = /@\[[^\]]+\]\(([^)]+)\)/g;
+      const mentionedIds = new Set<string>();
+      let m: RegExpExecArray | null;
+      while ((m = mentionRe.exec(body)) !== null) {
+        const empId = m[1];
+        if (empId && empId !== author_id) mentionedIds.add(empId);
+      }
+      if (mentionedIds.size) {
+        // Strip the markup so the notification body reads cleanly.
+        const cleanBody = body.replace(/@\[([^\]]+)\]\([^)]+\)/g, '@$1').trim().slice(0, 140);
+        for (const empId of mentionedIds) {
+          notifyEmployeeUser(empId, 'hours_mention',
+            `${author_name || 'Someone'} mentioned you`,
+            `${author_name || 'Someone'} tagged you on ${projectName} (W${log.week_num}): ${cleanBody}`,
+            // Tagged people land on /my so they see their own /hours view;
+            // if they happen to be the reviewer for this log they can still
+            // open it from the bell. Cheap heuristic, works for both sides.
+            employeeLink).catch(() => {});
+          pinged.add(empId);
+        }
+      }
+
+      if (fromEmployee && log.reviewed_by_id && !pinged.has(log.reviewed_by_id)) {
         // Employee replied — ping the reviewer who held / reviewed it.
         notifyEmployeeUser(log.reviewed_by_id, 'hours_comment',
           `${log.employee_name || 'Employee'} replied on hours`,
           `${log.employee_name || 'Employee'} commented on ${projectName} (W${log.week_num}): ${body.trim().slice(0, 140)}`,
           reviewerLink).catch(()=>{});
-      } else if (!fromEmployee) {
+      } else if (!fromEmployee && !pinged.has(log.employee_id)) {
         // Reviewer/admin/HR commented — ping the employee.
         notifyEmployeeUser(log.employee_id, 'hours_comment',
           `New comment on your hours`,
