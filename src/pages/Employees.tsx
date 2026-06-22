@@ -1,6 +1,6 @@
 import { useState, useEffect, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Search, Filter, Plus, Mail, Phone, MapPin, ChevronRight, X, User, Pencil, Trash2, Eye, EyeOff, AlertTriangle, Shield } from 'lucide-react';
+import { Search, Filter, Plus, Mail, Phone, MapPin, ChevronRight, X, User, Pencil, Trash2, Eye, EyeOff, AlertTriangle, Shield, LayoutGrid, List as ListIcon, ArrowUpDown, ChevronUp, ChevronDown, ShieldCheck, Clock } from 'lucide-react';
 import { api } from '../services/api';
 import { useAuth } from '../context/AuthContext';
 // departments now loaded from API (Config → Departments)
@@ -13,6 +13,32 @@ const avatarColors = [
   'bg-accent-container text-on-accent-container',
   'bg-success-container text-success',
 ];
+
+// Stage helpers — derived from join_date + probation_end_date + exit_date.
+// Probation defaults to join_date + 90 days when no explicit end is set.
+// "On notice" means exit_date is set and hasn't passed yet (still working
+// through their notice period). Both only apply to active employees — an
+// inactive (already-left) row never reads as "on notice" or "on probation".
+function effectiveProbationEnd(emp: any): Date | null {
+  if (emp?.probation_end_date) return new Date(emp.probation_end_date);
+  if (emp?.join_date) {
+    const d = new Date(emp.join_date);
+    d.setDate(d.getDate() + 90);
+    return d;
+  }
+  return null;
+}
+function isOnProbation(emp: any): boolean {
+  if (emp?.status !== 'active') return false;
+  const end = effectiveProbationEnd(emp);
+  if (!end) return false;
+  return end.getTime() > Date.now();
+}
+function isOnNotice(emp: any): boolean {
+  if (emp?.status !== 'active') return false;
+  if (!emp?.exit_date) return false;
+  return new Date(emp.exit_date).getTime() >= new Date(new Date().toDateString()).getTime();
+}
 
 function EmployeeCard({ emp, index, onClick, warningCount = 0, onPip = false }: { emp: any; index: number; onClick: () => void; warningCount?: number; onPip?: boolean }) {
   const colorClass = avatarColors[index % avatarColors.length];
@@ -904,6 +930,117 @@ export function EditEmployeeModal({ emp, onClose, onSaved, allEmployees, departm
   );
 }
 
+// Compact tabular alternative to the card grid. Same filters apply on
+// the parent. Probation + Notice surface as inline chips so HR can scan
+// the bench at a glance — useful for monthly probation reviews and exit
+// pipeline tracking.
+function EmployeeListView({ rows, sort, onSort, onOpen }: {
+  rows: any[];
+  sort: { key: string; dir: 'asc' | 'desc' };
+  onSort: (k: any) => void;
+  onOpen: (emp: any) => void;
+}) {
+  const SortHeader = ({ k, label, align = 'left' }: { k: string; label: string; align?: 'left' | 'center' | 'right' }) => (
+    <th className={`px-4 py-3 ${align === 'right' ? 'text-right' : align === 'center' ? 'text-center' : 'text-left'} select-none`}>
+      <button onClick={() => onSort(k)}
+        className={`inline-flex items-center gap-1 hover:text-on-surface transition-colors ${sort.key === k ? 'text-accent' : ''}`}>
+        {label}
+        {sort.key === k
+          ? (sort.dir === 'asc' ? <ChevronUp size={11} /> : <ChevronDown size={11} />)
+          : <ArrowUpDown size={11} className="opacity-40" />}
+      </button>
+    </th>
+  );
+  if (rows.length === 0) {
+    return (
+      <div className="bg-surface rounded-xl-2 border border-outline shadow-elev-1 py-16 text-center">
+        <User size={28} className="mx-auto text-on-surface-subtle mb-2" />
+        <p className="text-sm text-on-surface-muted">No employees match the current filters.</p>
+      </div>
+    );
+  }
+  return (
+    <div className="bg-surface rounded-xl-2 border border-outline shadow-elev-1 overflow-x-auto">
+      <table className="w-full text-sm">
+        <thead className="bg-surface-2 border-b border-outline">
+          <tr className="text-xs font-semibold text-on-surface-muted uppercase tracking-wider">
+            <SortHeader k="name" label="Employee" />
+            <SortHeader k="employee_id" label="ID" />
+            <SortHeader k="department" label="Department" />
+            <SortHeader k="designation" label="Designation" />
+            <SortHeader k="probation" label="Probation ends" />
+            <SortHeader k="exit_date" label="Exit date" />
+            <SortHeader k="status" label="Status" />
+            <th className="px-4 py-3 text-right"></th>
+          </tr>
+        </thead>
+        <tbody className="divide-y divide-outline">
+          {rows.map(emp => {
+            const probEnd = effectiveProbationEnd(emp);
+            const onProb  = isOnProbation(emp);
+            const onNotice = isOnNotice(emp);
+            const probLabel = probEnd
+              ? probEnd.toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' })
+              : '—';
+            const exitLabel = emp.exit_date
+              ? new Date(emp.exit_date).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' })
+              : '—';
+            return (
+              <tr key={emp.id} onClick={() => onOpen(emp)}
+                className="cursor-pointer hover:bg-surface-2/60 transition-colors">
+                <td className="px-4 py-3">
+                  <div className="flex items-center gap-3">
+                    <div className="w-8 h-8 rounded-full bg-brand-container text-on-brand-container flex items-center justify-center text-xs font-bold shrink-0">
+                      {emp.name?.split(' ').map((p: string) => p[0]).slice(0, 2).join('').toUpperCase()}
+                    </div>
+                    <div className="min-w-0">
+                      <p className="font-semibold text-on-surface truncate">{emp.name}</p>
+                      <p className="text-[11px] text-on-surface-subtle truncate">{emp.email}</p>
+                    </div>
+                  </div>
+                </td>
+                <td className="px-4 py-3 num-mono text-on-surface-muted">{emp.employee_id || '—'}</td>
+                <td className="px-4 py-3 text-on-surface-muted">{emp.department || '—'}</td>
+                <td className="px-4 py-3 text-on-surface-muted">{emp.designation || '—'}</td>
+                <td className="px-4 py-3">
+                  <div className="flex items-center gap-2">
+                    <span className={`num-mono text-xs ${onProb ? 'text-warning font-semibold' : 'text-on-surface-subtle'}`}>{probLabel}</span>
+                    {onProb && (
+                      <span className="inline-flex items-center gap-1 text-[10px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded-full bg-warning-container text-warning border border-warning/30">
+                        <ShieldCheck size={9} /> Probation
+                      </span>
+                    )}
+                  </div>
+                </td>
+                <td className="px-4 py-3">
+                  <div className="flex items-center gap-2">
+                    <span className={`num-mono text-xs ${onNotice ? 'text-danger font-semibold' : 'text-on-surface-subtle'}`}>{exitLabel}</span>
+                    {onNotice && (
+                      <span className="inline-flex items-center gap-1 text-[10px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded-full bg-danger-container text-danger border border-danger/30">
+                        <Clock size={9} /> Notice
+                      </span>
+                    )}
+                  </div>
+                </td>
+                <td className="px-4 py-3">
+                  <span className={`inline-flex items-center text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded-full ${
+                    emp.status === 'active' ? 'bg-success-container text-success' : 'bg-surface-2 text-on-surface-muted'
+                  }`}>
+                    {emp.status || 'active'}
+                  </span>
+                </td>
+                <td className="px-4 py-3 text-right">
+                  <ChevronRight size={14} className="text-on-surface-subtle inline" />
+                </td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
 export default function Employees() {
   const navigate = useNavigate();
   const [employees, setEmployees] = useState<any[]>([]);
@@ -915,6 +1052,21 @@ export default function Employees() {
   const [search, setSearch] = useState('');
   const [deptFilter, setDeptFilter] = useState('All');
   const [statusFilter, setStatusFilter] = useState('All');
+  // Stage = employment lifecycle stage: confirmed / probation / notice. Pulled
+  // out as its own filter because HR commonly asks "who's still on probation?"
+  // or "who's serving notice this month?" — independent of department / status.
+  const [stageFilter, setStageFilter] = useState<'all' | 'confirmed' | 'probation' | 'notice'>('all');
+  // View toggle — card grid (default) or compact sortable table.
+  const [view, setView] = useState<'cards' | 'list'>('cards');
+  // Sort state for the list view only. Cards stay name-sorted by API order.
+  type ListSortKey = 'name' | 'employee_id' | 'department' | 'designation' | 'status' | 'probation' | 'exit_date';
+  const [listSort, setListSort] = useState<{ key: ListSortKey; dir: 'asc' | 'desc' }>({ key: 'name', dir: 'asc' });
+  const onListSort = (key: ListSortKey) => {
+    setListSort(prev => {
+      if (prev.key === key) return { key, dir: prev.dir === 'asc' ? 'desc' : 'asc' };
+      return { key, dir: 'asc' };
+    });
+  };
   const [showAdd, setShowAdd] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState<any | null>(null);
   const [deleting, setDeleting] = useState(false);
@@ -953,8 +1105,38 @@ export default function Employees() {
       (e.employee_id || '').toLowerCase().includes(search.toLowerCase());
     const matchDept = deptFilter === 'All' || e.department === deptFilter;
     const matchStatus = statusFilter === 'All' || e.status === statusFilter;
-    return matchSearch && matchDept && matchStatus;
+    const matchStage =
+      stageFilter === 'all' ? true :
+      stageFilter === 'probation' ? isOnProbation(e) :
+      stageFilter === 'notice'    ? isOnNotice(e) :
+      // 'confirmed' = active, off-probation, no exit date pending
+      (e.status === 'active' && !isOnProbation(e) && !isOnNotice(e));
+    return matchSearch && matchDept && matchStatus && matchStage;
   });
+
+  // List view sort. Cards keep their default API order so the grid stays
+  // visually predictable; the sortable table is the explicit power view.
+  const sortedList = useMemo(() => {
+    const stringKeys: ListSortKey[] = ['name', 'employee_id', 'department', 'designation', 'status'];
+    const copy = [...filtered];
+    copy.sort((a: any, b: any) => {
+      if (listSort.key === 'probation') {
+        const ae = effectiveProbationEnd(a)?.getTime() ?? Infinity;
+        const be = effectiveProbationEnd(b)?.getTime() ?? Infinity;
+        return ae - be;
+      }
+      if (listSort.key === 'exit_date') {
+        const ax = a.exit_date ? new Date(a.exit_date).getTime() : Infinity;
+        const bx = b.exit_date ? new Date(b.exit_date).getTime() : Infinity;
+        return ax - bx;
+      }
+      if (stringKeys.includes(listSort.key)) {
+        return String(a[listSort.key] ?? '').localeCompare(String(b[listSort.key] ?? ''));
+      }
+      return 0;
+    });
+    return listSort.dir === 'desc' ? copy.reverse() : copy;
+  }, [filtered, listSort]);
 
   return (
     <div className="space-y-5">
@@ -977,6 +1159,27 @@ export default function Employees() {
             <option>active</option>
             <option>inactive</option>
           </select>
+          {/* Stage — independent of status. Confirmed = active & off
+              probation & not serving notice. */}
+          <select value={stageFilter} onChange={e => setStageFilter(e.target.value as any)}
+            className="text-sm border border-outline rounded-lg px-3 py-2.5 bg-surface focus:outline-none focus:ring-2 focus:ring-accent/20 focus:border-accent text-on-surface-muted">
+            <option value="all">All stages</option>
+            <option value="confirmed">Confirmed</option>
+            <option value="probation">On probation</option>
+            <option value="notice">On notice period</option>
+          </select>
+        </div>
+        {/* View toggle — Cards (default) vs List (sortable table). Same
+            data, same filters, just a different read. */}
+        <div className="inline-flex items-center bg-surface-2 border border-outline rounded-lg p-0.5">
+          <button onClick={() => setView('cards')}
+            className={`inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-md text-xs font-semibold transition-colors ${view === 'cards' ? 'bg-accent text-on-accent' : 'text-on-surface-muted hover:text-on-surface'}`}>
+            <LayoutGrid size={12} /> Cards
+          </button>
+          <button onClick={() => setView('list')}
+            className={`inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-md text-xs font-semibold transition-colors ${view === 'list' ? 'bg-accent text-on-accent' : 'text-on-surface-muted hover:text-on-surface'}`}>
+            <ListIcon size={12} /> List
+          </button>
         </div>
         <button onClick={() => setShowAdd(true)}
           className="ml-auto flex items-center gap-2 px-4 py-2.5 bg-accent hover:opacity-90 text-on-accent text-sm font-medium rounded-lg transition-all shadow-elev-1 hover:shadow-elev-2">
@@ -991,12 +1194,17 @@ export default function Employees() {
       ) : (
         <>
           <p className="text-sm text-on-surface-subtle"><span className="num-mono">{filtered.length}</span> employee{filtered.length !== 1 ? 's' : ''} found</p>
-          <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-4">
-            {filtered.map((emp, i) => (
-              <EmployeeCard key={emp.id} emp={emp} index={i} onClick={() => navigate(`/employees/${emp.employee_id || emp.id}`)}
-                warningCount={warningCounts[emp.id] ?? 0} onPip={pipEmployees.has(emp.id)} />
-            ))}
-          </div>
+          {view === 'cards' ? (
+            <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-4">
+              {filtered.map((emp, i) => (
+                <EmployeeCard key={emp.id} emp={emp} index={i} onClick={() => navigate(`/employees/${emp.employee_id || emp.id}`)}
+                  warningCount={warningCounts[emp.id] ?? 0} onPip={pipEmployees.has(emp.id)} />
+              ))}
+            </div>
+          ) : (
+            <EmployeeListView rows={sortedList} sort={listSort} onSort={onListSort}
+              onOpen={(emp) => navigate(`/employees/${emp.employee_id || emp.id}`)} />
+          )}
         </>
       )}
 
