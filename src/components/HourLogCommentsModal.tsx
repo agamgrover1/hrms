@@ -53,7 +53,7 @@ function ago(ts: string | null | undefined): string {
 // Render a comment body with mention tokens as chips. We return an array of
 // nodes (strings + spans) rather than dangerously-set HTML — keeps XSS
 // concerns at zero.
-function renderBody(body: string, currentUserId: string): Array<React.ReactNode> {
+function renderBody(body: string, currentUserId: string, onAccentBubble: boolean): Array<React.ReactNode> {
   const out: React.ReactNode[] = [];
   let lastIndex = 0;
   let key = 0;
@@ -65,13 +65,18 @@ function renderBody(body: string, currentUserId: string): Array<React.ReactNode>
     const name = m[1];
     const empId = m[2];
     const isYou = empId === currentUserId;
+    // Chip style is parent-aware. Inside an accent-coloured bubble (the
+    // author's own message), the regular faint-accent fill blends in and
+    // the name disappears — we swap to a high-contrast inverted style
+    // (white-on-translucent-black) so the chip stays legible.
+    const chipClass = onAccentBubble
+      ? 'bg-white/20 text-white border border-white/40'
+      : isYou
+        ? 'bg-warning-container text-warning border border-warning/40'
+        : 'bg-accent/15 text-accent border border-accent/30';
     out.push(
       <span key={`mention-${key++}`}
-        className={`inline-flex items-center gap-0.5 px-1.5 py-px rounded-md text-[11px] font-semibold mx-px align-baseline ${
-          isYou
-            ? 'bg-warning-container text-warning border border-warning/40'
-            : 'bg-accent/15 text-accent border border-accent/30'
-        }`}>
+        className={`inline-flex items-center gap-0.5 px-1.5 py-px rounded-md text-[11px] font-semibold mx-px align-baseline ${chipClass}`}>
         <AtSign size={10} strokeWidth={2.5} />
         {name}
       </span>
@@ -242,7 +247,7 @@ export default function HourLogCommentsModal({
                       {c.author_name || 'Unknown'}{c.author_role ? ` · ${c.author_role}` : ''} · {ago(c.created_at)}
                     </div>
                     <div className="whitespace-pre-line leading-snug">
-                      {renderBody(c.body, currentUser.id)}
+                      {renderBody(c.body, currentUser.id, isMe)}
                     </div>
                   </div>
                 </div>
