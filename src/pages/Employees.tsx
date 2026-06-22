@@ -993,7 +993,7 @@ export default function Employees() {
           <p className="text-sm text-on-surface-subtle"><span className="num-mono">{filtered.length}</span> employee{filtered.length !== 1 ? 's' : ''} found</p>
           <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-4">
             {filtered.map((emp, i) => (
-              <EmployeeCard key={emp.id} emp={emp} index={i} onClick={() => navigate(`/employees/${emp.id}`)}
+              <EmployeeCard key={emp.id} emp={emp} index={i} onClick={() => navigate(`/employees/${emp.employee_id || emp.id}`)}
                 warningCount={warningCounts[emp.id] ?? 0} onPip={pipEmployees.has(emp.id)} />
             ))}
           </div>

@@ -238,7 +238,10 @@ export default function EmployeeProfile() {
       api.getConfigDepartments().catch(() => []),
       api.getConfigDesignations().catch(() => []),
     ]).then(([emps, depts, desigs]) => {
-      const found = (emps as any[]).find(e => e.id === id);
+      // URL param can be either the internal id (e_XX) or the human code
+      // (DL0076). Match against both so legacy bookmarks keep working
+      // alongside the new DL-coded URLs.
+      const found = (emps as any[]).find(e => e.id === id || e.employee_id === id);
       if (!found) { navigate('/employees'); return; }
       setEmp(found);
       setAllEmps(emps);

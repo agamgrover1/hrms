@@ -124,7 +124,9 @@ export default function CommandPalette() {
         hint: `${e.employee_id ?? ''}${e.department ? ' · ' + e.department : ''}`,
         group: 'People' as const,
         icon: User,
-        action: () => navigate(`/employees/${e.id}`),
+        // URL uses the human employee code (DL0076). Backend resolves either
+        // form, so old e_XX bookmarks still work.
+        action: () => navigate(`/employees/${e.employee_id || e.id}`),
       }));
   }, [query, employees, navigate]);
 

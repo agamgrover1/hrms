@@ -1907,11 +1907,15 @@ app.get('/api/employees', async (req, res) => {
   } catch (err) { res.status(500).json({ error: 'Server error' }); }
 });
 
+// Accept either the internal id (e_XX, the primary key) OR the human code
+// (DL0076, employees.employee_id). URLs surface the human code to users
+// going forward; internal FKs still use e_XX. This makes both forms
+// resolve forever so old bookmarks keep working.
 app.get('/api/employees/:id', async (req, res) => {
   try {
     const actorRole = await actorRoleOf(req);
     const ownEmpId = actorRole === 'hr_intern' ? await actorOwnEmployeeId(req) : null;
-    const rows = await sql`SELECT * FROM employees WHERE id = ${req.params.id}`;
+    const rows = await sql`SELECT * FROM employees WHERE id = ${req.params.id} OR employee_id = ${req.params.id} LIMIT 1`;
     if (!rows.length) return res.status(404).json({ error: 'Not found' });
     res.json(stripSalaryForIntern(actorRole, rows[0] as any, ownEmpId));
   } catch (err) { res.status(500).json({ error: 'Server error' }); }
@@ -1974,7 +1978,7 @@ app.put('/api/employees/:id', async (req, res) => {
         date_of_birth=${date_of_birth || null},
         exit_date=${exit_date || null},
         exit_salary_override=${overrideVal}
-      WHERE id=${req.params.id} RETURNING *`;
+      WHERE id=${req.params.id} OR employee_id=${req.params.id} RETURNING *`;
     // Keep the linked app_users row in sync — name / department / designation are
     // denormalized there for the employee's own portal. Without this, HR can edit
     // the employee record but the user's MyPortal stays showing the old values.
@@ -2017,7 +2021,7 @@ app.patch('/api/employees/:id/probation', async (req, res) => {
     if (!(await requireFullHR(req, res)).ok) return;
     const { probation_end_date } = req.body;
 
-    const empRows = await sql`SELECT join_date, probation_end_date FROM employees WHERE id=${req.params.id}`;
+    const empRows = await sql`SELECT join_date, probation_end_date FROM employees WHERE id=${req.params.id} OR employee_id=${req.params.id}`;
     if (!empRows.length) return res.status(404).json({ error: 'Not found' });
     const emp = empRows[0] as any;
     const defaultEnd = emp.join_date
@@ -2029,7 +2033,7 @@ app.patch('/api/employees/:id/probation', async (req, res) => {
       return res.status(400).json({ error: 'This employee has already completed probation and cannot be re-enrolled.' });
     }
 
-    const rows = await sql`UPDATE employees SET probation_end_date=${probation_end_date ?? null} WHERE id=${req.params.id} RETURNING *`;
+    const rows = await sql`UPDATE employees SET probation_end_date=${probation_end_date ?? null} WHERE id=${req.params.id} OR employee_id=${req.params.id} RETURNING *`;
     res.json(rows[0]);
   } catch (err: any) { res.status(500).json({ error: err.message || 'Server error' }); }
 });
@@ -2037,7 +2041,7 @@ app.patch('/api/employees/:id/probation', async (req, res) => {
 app.delete('/api/employees/:id', async (req, res) => {
   try {
     if (!(await requireFullHR(req, res)).ok) return;
-    await sql`DELETE FROM employees WHERE id=${req.params.id}`;
+    await sql`DELETE FROM employees WHERE id=${req.params.id} OR employee_id=${req.params.id}`;
     res.json({ success: true });
   } catch (err) { res.status(500).json({ error: 'Server error' }); }
 });
