@@ -95,6 +95,19 @@ export default function ProjectHours() {
   } | null>(null);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
+  // Sort state for the Plan view's main allocations table. Default: project
+  // name ASC. Clicking a header cycles ASC → DESC. Switching columns picks
+  // the natural starting direction (ASC for strings, DESC for hour totals
+  // since "biggest first" is the useful first read).
+  type PlanSortKey = 'project_name' | 'employee_name' | 'project_reporting_name' | 'monthly_hours' | 'w1_hours' | 'w2_hours' | 'w3_hours' | 'w4_hours' | 'w5_hours';
+  const [planSort, setPlanSort] = useState<{ key: PlanSortKey; dir: 'asc' | 'desc' }>({ key: 'project_name', dir: 'asc' });
+  const onPlanSort = (key: PlanSortKey) => {
+    setPlanSort(prev => {
+      if (prev.key === key) return { key, dir: prev.dir === 'asc' ? 'desc' : 'asc' };
+      const stringKeys: PlanSortKey[] = ['project_name', 'employee_name', 'project_reporting_name'];
+      return { key, dir: stringKeys.includes(key) ? 'asc' : 'desc' };
+    });
+  };
   const [showAdd, setShowAdd] = useState(false);
   const [detail, setDetail] = useState<{ employeeId: string; employeeName: string; focusWeek?: number } | null>(null);
   const [savingCell, setSavingCell] = useState<string | null>(null);
@@ -177,6 +190,20 @@ export default function ProjectHours() {
       (a.project_reporting_name ?? '').toLowerCase().includes(term)
     );
   }, [assignments, search]);
+
+  // Sorted view of the Plan rows — string keys use localeCompare, numeric
+  // keys (weekly + monthly hours) use straight numeric compare.
+  const sortedPlan = useMemo(() => {
+    const stringKeys: PlanSortKey[] = ['project_name', 'employee_name', 'project_reporting_name'];
+    const copy = [...filtered];
+    copy.sort((a: any, b: any) => {
+      if (stringKeys.includes(planSort.key)) {
+        return (a[planSort.key] ?? '').localeCompare(b[planSort.key] ?? '');
+      }
+      return Number(a[planSort.key] ?? 0) - Number(b[planSort.key] ?? 0);
+    });
+    return planSort.dir === 'desc' ? copy.reverse() : copy;
+  }, [filtered, planSort]);
 
   const updateCell = async (a: Assignment, key: keyof Assignment, value: number) => {
     setSavingCell(`${a.id}_${key}`);
@@ -392,21 +419,28 @@ export default function ProjectHours() {
           <table className="w-full text-sm">
             <thead className="bg-surface-2 border-b border-outline sticky top-0">
               <tr className="text-left text-xs font-semibold text-on-surface-muted uppercase tracking-wider">
-                <th className="px-3 py-3">Project</th>
-                <th className="px-3 py-3">Employee</th>
-                <th className="px-3 py-3">Reporting</th>
-                <th className="px-3 py-3 text-center bg-surface-3">M</th>
+                <SortableTh label="Project"   sortKey="project_name"          current={planSort} onSort={onPlanSort} className="px-3 py-3" align="left" />
+                <SortableTh label="Employee"  sortKey="employee_name"         current={planSort} onSort={onPlanSort} className="px-3 py-3" align="left" />
+                <SortableTh label="Reporting" sortKey="project_reporting_name" current={planSort} onSort={onPlanSort} className="px-3 py-3" align="left" />
+                <SortableTh label="M"         sortKey="monthly_hours"         current={planSort} onSort={onPlanSort} className="px-3 py-3 bg-surface-3" align="center" />
                 {[1,2,3,4,5].map(w => {
                   const empty = isEmptyWeek(month, year, w);
                   const cur   = isCurrentWeekOfMonth(month, year, w);
+                  const key   = (`w${w}_hours`) as PlanSortKey;
                   return (
-                    <th key={w} className={`px-3 py-2 text-center ${cur ? 'bg-accent/10' : ''}`}>
-                      <div className={`leading-tight ${empty ? 'opacity-40' : ''}`}>
-                        <div className={`text-xs font-bold ${cur ? 'text-accent' : ''}`}>W{w}</div>
-                        <div className={`text-[9px] font-normal normal-case tracking-normal ${cur ? 'text-accent' : 'text-on-surface-subtle'}`}>
-                          {empty ? '—' : formatWeekDays(month, year, w)}
+                    <th key={w} className={`px-3 py-2 text-center select-none ${cur ? 'bg-accent/10' : ''}`}>
+                      <button onClick={() => onPlanSort(key)}
+                        className={`inline-flex items-center gap-1 w-full justify-center hover:text-on-surface transition-colors ${planSort.key === key ? 'text-accent' : ''} ${empty ? 'opacity-40' : ''}`}>
+                        <div className="leading-tight">
+                          <div className={`text-xs font-bold ${cur ? 'text-accent' : ''}`}>W{w}</div>
+                          <div className={`text-[9px] font-normal normal-case tracking-normal ${cur ? 'text-accent' : 'text-on-surface-subtle'}`}>
+                            {empty ? '—' : formatWeekDays(month, year, w)}
+                          </div>
                         </div>
-                      </div>
+                        {planSort.key === key
+                          ? (planSort.dir === 'asc' ? <ChevronUp size={10} /> : <ChevronDown size={10} />)
+                          : <ArrowUpDown size={10} className="opacity-40" />}
+                      </button>
                     </th>
                   );
                 })}
@@ -416,13 +450,13 @@ export default function ProjectHours() {
             <tbody className="divide-y divide-outline">
               {loading ? (
                 <tr><td colSpan={10} className="px-3 py-8 text-center text-on-surface-subtle">Loading…</td></tr>
-              ) : filtered.length === 0 ? (
+              ) : sortedPlan.length === 0 ? (
                 <tr><td colSpan={10} className="px-3 py-12 text-center">
                   <ClipboardCheck size={28} className="mx-auto text-on-surface-subtle mb-2" />
                   <p className="text-sm text-on-surface-muted">No assignments for {MONTHS[month-1]} {year}.</p>
                   <p className="text-xs text-on-surface-subtle mt-0.5">Use "Add Assignment" or "Copy from previous month".</p>
                 </td></tr>
-              ) : filtered.map(a => {
+              ) : sortedPlan.map(a => {
                 const flagBg = a.project_flag === 'red' ? 'rgb(var(--danger-container) / 0.4)' : a.project_flag === 'yellow' ? 'rgb(var(--warning-container) / 0.4)' : 'transparent';
                 return (
                   <tr key={a.id} style={{ background: flagBg }}>
