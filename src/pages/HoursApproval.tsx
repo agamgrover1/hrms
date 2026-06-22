@@ -3,6 +3,7 @@ import { CheckCircle, XCircle, AlertTriangle, X, Filter, ClipboardCheck, ArrowUp
 import { api } from '../services/api';
 import { useAuth } from '../context/AuthContext';
 import HourLogCommentsModal from '../components/HourLogCommentsModal';
+import { formatWeekDays, isCurrentWeekOfMonth, isEmptyWeek } from '../utils/weekRange';
 import { toast } from '../components/Toaster';
 import { useLiveRefresh } from '../hooks/useLiveRefresh';
 
@@ -621,12 +622,19 @@ function AllocationRequestCard({ req: r, canApprove, canCancel, onApprove, onRej
         <div className="rounded-lg border border-outline bg-surface-2/50 p-3">
           <p className="text-[10px] uppercase tracking-wider font-bold text-on-surface-subtle mb-2">Current</p>
           <div className="flex gap-2 justify-between">
-            {weeks.map(w => (
-              <div key={w.i} className="flex flex-col items-center">
-                <span className="text-[9px] uppercase tracking-wider font-bold text-on-surface-subtle">W{w.i}</span>
-                <span className="num-mono text-sm text-on-surface-muted">{w.cur}</span>
-              </div>
-            ))}
+            {weeks.map(w => {
+              const empty = isEmptyWeek(r.month, r.year, w.i);
+              const cur   = isCurrentWeekOfMonth(r.month, r.year, w.i);
+              return (
+                <div key={w.i} className={`flex flex-col items-center ${empty ? 'opacity-40' : ''}`}>
+                  <span className={`text-[9px] uppercase tracking-wider font-bold ${cur ? 'text-accent' : 'text-on-surface-subtle'}`}>W{w.i}</span>
+                  <span className={`text-[8px] font-normal ${cur ? 'text-accent' : 'text-on-surface-subtle'}`}>
+                    {empty ? '—' : formatWeekDays(r.month, r.year, w.i)}
+                  </span>
+                  <span className="num-mono text-sm text-on-surface-muted">{w.cur}</span>
+                </div>
+              );
+            })}
             <div className="flex flex-col items-center pl-2 ml-2 border-l border-outline">
               <span className="text-[9px] uppercase tracking-wider font-bold text-on-surface-subtle">M</span>
               <span className="num-mono text-sm font-bold text-on-surface">{curMonthly}</span>
@@ -636,17 +644,24 @@ function AllocationRequestCard({ req: r, canApprove, canCancel, onApprove, onRej
         <div className="rounded-lg border border-accent/30 bg-accent/5 p-3">
           <p className="text-[10px] uppercase tracking-wider font-bold text-accent mb-2">Proposed</p>
           <div className="flex gap-2 justify-between">
-            {weeks.map(w => (
-              <div key={w.i} className="flex flex-col items-center">
-                <span className="text-[9px] uppercase tracking-wider font-bold text-on-surface-subtle">W{w.i}</span>
-                <span className={`num-mono text-sm font-bold ${w.changed ? 'text-accent' : 'text-on-surface-muted'}`}>{w.prop}</span>
-                {w.changed && (
-                  <span className={`text-[9px] font-bold ${w.prop > w.cur ? 'text-warning' : 'text-success'}`}>
-                    {w.prop > w.cur ? '+' : ''}{w.prop - w.cur}
+            {weeks.map(w => {
+              const empty = isEmptyWeek(r.month, r.year, w.i);
+              const cur   = isCurrentWeekOfMonth(r.month, r.year, w.i);
+              return (
+                <div key={w.i} className={`flex flex-col items-center ${empty ? 'opacity-40' : ''}`}>
+                  <span className={`text-[9px] uppercase tracking-wider font-bold ${cur ? 'text-accent' : 'text-on-surface-subtle'}`}>W{w.i}</span>
+                  <span className={`text-[8px] font-normal ${cur ? 'text-accent' : 'text-on-surface-subtle'}`}>
+                    {empty ? '—' : formatWeekDays(r.month, r.year, w.i)}
                   </span>
-                )}
-              </div>
-            ))}
+                  <span className={`num-mono text-sm font-bold ${w.changed ? 'text-accent' : 'text-on-surface-muted'}`}>{w.prop}</span>
+                  {w.changed && (
+                    <span className={`text-[9px] font-bold ${w.prop > w.cur ? 'text-warning' : 'text-success'}`}>
+                      {w.prop > w.cur ? '+' : ''}{w.prop - w.cur}
+                    </span>
+                  )}
+                </div>
+              );
+            })}
             <div className="flex flex-col items-center pl-2 ml-2 border-l border-accent/30">
               <span className="text-[9px] uppercase tracking-wider font-bold text-accent">M</span>
               <span className={`num-mono text-sm font-bold ${monthlyDelta !== 0 ? 'text-accent' : 'text-on-surface-muted'}`}>{propMonthly}</span>

@@ -3,6 +3,7 @@ import { X, AlertTriangle, CheckCircle, XCircle, Clock as ClockIcon, Pencil, Sav
 import { api } from '../services/api';
 import { useAuth } from '../context/AuthContext';
 import { toast } from './Toaster';
+import { formatWeekDays, isCurrentWeekOfMonth, isEmptyWeek } from '../utils/weekRange';
 
 interface Props {
   employeeId: string;
@@ -286,11 +287,18 @@ export default function EmployeeHoursDetailModal({ employeeId, employeeName, mon
                     <thead className="bg-surface-2/50 text-on-surface-subtle">
                       <tr>
                         <th className="px-4 py-2 text-left font-bold tracking-wider">Project</th>
-                        <th className="px-2 py-2 text-center font-bold">W1</th>
-                        <th className="px-2 py-2 text-center font-bold">W2</th>
-                        <th className="px-2 py-2 text-center font-bold">W3</th>
-                        <th className="px-2 py-2 text-center font-bold">W4</th>
-                        <th className="px-2 py-2 text-center font-bold">W5</th>
+                        {[1,2,3,4,5].map(w => {
+                          const empty = isEmptyWeek(month, year, w);
+                          const cur   = isCurrentWeekOfMonth(month, year, w);
+                          return (
+                            <th key={w} className={`px-2 py-2 text-center font-bold ${cur ? 'bg-accent/10' : ''} ${empty ? 'opacity-40' : ''}`}>
+                              <div className={cur ? 'text-accent' : ''}>W{w}</div>
+                              <div className={`text-[9px] font-normal normal-case tracking-normal ${cur ? 'text-accent' : 'text-on-surface-subtle'}`}>
+                                {empty ? '—' : formatWeekDays(month, year, w)}
+                              </div>
+                            </th>
+                          );
+                        })}
                         <th className="px-2 py-2 text-center font-bold bg-surface-3">M</th>
                         <th className="px-3 py-2 text-right font-bold">Logged / Plan</th>
                         {canRequestAlloc && <th className="px-2 py-2 text-right font-bold w-px">{/* edit column */}</th>}

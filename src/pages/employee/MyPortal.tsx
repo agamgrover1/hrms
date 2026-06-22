@@ -5,6 +5,7 @@ import MyRoleTab from '../../components/MyRoleTab';
 import TodoTab from '../../components/TodoTab';
 import MonthSelector, { monthLabel } from '../../components/MonthSelector';
 import { leaveTypeLabel } from '../../utils/leaveLabel';
+import { formatWeekDays, isCurrentWeekOfMonth, isEmptyWeek } from '../../utils/weekRange';
 import HourLogCommentsModal from '../../components/HourLogCommentsModal';
 import { toast } from '../../components/Toaster';
 import AttendanceNoteModal from '../../components/AttendanceNoteModal';
@@ -3604,7 +3605,18 @@ function MyHoursTab({ employeeId, employeeName }: { employeeId: string; employee
           <thead className="bg-surface-2 border-b border-outline">
             <tr className="text-left text-xs font-semibold text-on-surface-subtle uppercase tracking-wider">
               <th className="px-3 py-3">Project</th>
-              {[1,2,3,4,5].map(w => <th key={w} className="px-3 py-3 text-center">W{w}</th>)}
+              {[1,2,3,4,5].map(w => {
+                const empty = isEmptyWeek(month, year, w);
+                const cur   = isCurrentWeekOfMonth(month, year, w);
+                return (
+                  <th key={w} className={`px-3 py-2 text-center ${cur ? 'bg-accent/10' : ''} ${empty ? 'opacity-40' : ''}`}>
+                    <div className={cur ? 'text-accent' : ''}>W{w}</div>
+                    <div className={`text-[9px] font-normal normal-case tracking-normal ${cur ? 'text-accent' : 'text-on-surface-subtle'}`}>
+                      {empty ? '—' : formatWeekDays(month, year, w)}
+                    </div>
+                  </th>
+                );
+              })}
               <th className="px-3 py-3 text-center bg-surface-2">M total</th>
             </tr>
           </thead>

@@ -3,6 +3,7 @@ import { Plus, Trash2, X, Search, Copy, ExternalLink, Flag, ClipboardCheck, Layo
 import { Link } from 'react-router-dom';
 import { api } from '../services/api';
 import { useAuth } from '../context/AuthContext';
+import { formatWeekDays, isCurrentWeekOfMonth, isEmptyWeek } from '../utils/weekRange';
 import EmployeeHoursDetailModal from '../components/EmployeeHoursDetailModal';
 import { ProjectDailyActivityModal } from './Projects';
 
@@ -395,11 +396,20 @@ export default function ProjectHours() {
                 <th className="px-3 py-3">Employee</th>
                 <th className="px-3 py-3">Reporting</th>
                 <th className="px-3 py-3 text-center bg-surface-3">M</th>
-                <th className="px-3 py-3 text-center">W1</th>
-                <th className="px-3 py-3 text-center">W2</th>
-                <th className="px-3 py-3 text-center">W3</th>
-                <th className="px-3 py-3 text-center">W4</th>
-                <th className="px-3 py-3 text-center">W5</th>
+                {[1,2,3,4,5].map(w => {
+                  const empty = isEmptyWeek(month, year, w);
+                  const cur   = isCurrentWeekOfMonth(month, year, w);
+                  return (
+                    <th key={w} className={`px-3 py-2 text-center ${cur ? 'bg-accent/10' : ''}`}>
+                      <div className={`leading-tight ${empty ? 'opacity-40' : ''}`}>
+                        <div className={`text-xs font-bold ${cur ? 'text-accent' : ''}`}>W{w}</div>
+                        <div className={`text-[9px] font-normal normal-case tracking-normal ${cur ? 'text-accent' : 'text-on-surface-subtle'}`}>
+                          {empty ? '—' : formatWeekDays(month, year, w)}
+                        </div>
+                      </div>
+                    </th>
+                  );
+                })}
                 <th className="px-3 py-3"></th>
               </tr>
             </thead>
@@ -633,16 +643,23 @@ function AssignmentForm({
           <div>
             <label className="text-xs font-medium text-on-surface-muted mb-1.5 block">Weekly hours</label>
             <div className="grid grid-cols-5 gap-2">
-              {(['w1_hours','w2_hours','w3_hours','w4_hours','w5_hours'] as Array<keyof typeof form>).map((k, i) => (
-                <div key={k}>
-                  <p className="text-[10px] text-on-surface-subtle mb-1">W{i+1}</p>
-                  <input
-                    type="number" step="0.5" min="0"
-                    value={form[k]} onChange={e => setF(k, e.target.value)}
-                    className="num-mono w-full border border-outline rounded-lg px-2 py-2 text-sm text-center bg-surface"
-                  />
-                </div>
-              ))}
+              {(['w1_hours','w2_hours','w3_hours','w4_hours','w5_hours'] as Array<keyof typeof form>).map((k, i) => {
+                const w = i + 1;
+                const empty = isEmptyWeek(month, year, w);
+                const cur   = isCurrentWeekOfMonth(month, year, w);
+                return (
+                  <div key={k} className={cur ? 'rounded-lg ring-2 ring-accent/30 p-0.5 -m-0.5' : ''}>
+                    <p className={`text-[10px] mb-1 leading-tight ${cur ? 'text-accent font-semibold' : 'text-on-surface-subtle'} ${empty ? 'opacity-40' : ''}`}>
+                      W{w}<span className="ml-1 font-normal">{empty ? '—' : formatWeekDays(month, year, w)}</span>
+                    </p>
+                    <input
+                      type="number" step="0.5" min="0" disabled={empty}
+                      value={form[k]} onChange={e => setF(k, e.target.value)}
+                      className="num-mono w-full border border-outline rounded-lg px-2 py-2 text-sm text-center bg-surface disabled:opacity-40 disabled:cursor-not-allowed"
+                    />
+                  </div>
+                );
+              })}
             </div>
             <p className="text-xs text-on-surface-muted mt-2">Monthly total: <span className="num-mono font-semibold text-on-surface">{total} h</span></p>
           </div>
@@ -804,9 +821,19 @@ function CapacityView({ summary, employees, loading, search, month, year, openDe
                 the project-hours read stays clean. */}
             <tr className="text-left text-[10px] font-bold text-on-surface-muted uppercase tracking-[0.16em]">
               <th rowSpan={2} className="px-5 py-3 sticky left-0 bg-surface-2 align-bottom">Employee</th>
-              {['W1','W2','W3','W4','W5'].map(w => (
-                <th key={w} colSpan={3} className="px-3 py-2 text-center border-l border-outline">{w}</th>
-              ))}
+              {[1,2,3,4,5].map(w => {
+                const empty = isEmptyWeek(month, year, w);
+                const cur   = isCurrentWeekOfMonth(month, year, w);
+                return (
+                  <th key={w} colSpan={3}
+                      className={`px-3 py-2 text-center border-l border-outline ${cur ? 'bg-accent/10' : ''} ${empty ? 'opacity-40' : ''}`}>
+                    <div className={`${cur ? 'text-accent' : ''}`}>W{w}</div>
+                    <div className={`text-[9px] font-normal normal-case tracking-normal ${cur ? 'text-accent' : 'text-on-surface-subtle'}`}>
+                      {empty ? '—' : formatWeekDays(month, year, w)}
+                    </div>
+                  </th>
+                );
+              })}
               <th colSpan={3} className="px-3 py-2 text-center bg-surface-3 border-l border-outline">Month</th>
               <th rowSpan={2} className="px-3 py-3 text-center min-w-[88px] align-bottom border-l border-outline">Over plan</th>
               <th rowSpan={2} className="px-3 py-3"></th>
@@ -1387,7 +1414,18 @@ function ProjectDrillModal({ project, month, year, summary, openDetail, onClose 
               <thead className="bg-surface-2/40 sticky top-0">
                 <tr className="text-left text-[10px] font-bold text-on-surface-muted uppercase tracking-[0.16em] border-b border-outline">
                   <th className="px-5 py-3">Employee</th>
-                  {['W1','W2','W3','W4','W5'].map(w => <th key={w} className="px-2 py-3 text-center min-w-[56px]">{w}</th>)}
+                  {[1,2,3,4,5].map(w => {
+                    const empty = isEmptyWeek(month, year, w);
+                    const cur   = isCurrentWeekOfMonth(month, year, w);
+                    return (
+                      <th key={w} className={`px-2 py-3 text-center min-w-[56px] ${cur ? 'bg-accent/10' : ''} ${empty ? 'opacity-40' : ''}`}>
+                        <div className={cur ? 'text-accent' : ''}>W{w}</div>
+                        <div className={`text-[9px] font-normal normal-case tracking-normal ${cur ? 'text-accent' : 'text-on-surface-subtle'}`}>
+                          {empty ? '—' : formatWeekDays(month, year, w)}
+                        </div>
+                      </th>
+                    );
+                  })}
                   <th className="px-3 py-3 text-center bg-surface-3 min-w-[80px]">Plan</th>
                   <th className="px-3 py-3 text-right">Logged (month)</th>
                   <th className="px-3 py-3"></th>
