@@ -1154,12 +1154,21 @@ function MineView({ summary, assignments, myProjects, reportsToIds, loading, mon
                     <SortableTh label="Employee" sortKey="name" current={teamSort} onSort={onSort}
                       className="" align="left" />
                   </th>
-                  {(['w1','w2','w3','w4','w5'] as const).map(k => (
-                    <th key={k} colSpan={3} className="px-2 py-2 text-center border-l border-outline">
-                      <SortableTh label={k.toUpperCase()} sortKey={k} current={teamSort} onSort={onSort}
-                        className="" align="center" />
-                    </th>
-                  ))}
+                  {(['w1','w2','w3','w4','w5'] as const).map((k, i) => {
+                    const w = i + 1;
+                    const empty = isEmptyWeek(month, year, w);
+                    const cur   = isCurrentWeekOfMonth(month, year, w);
+                    return (
+                      <th key={k} colSpan={3}
+                          className={`px-2 py-2 text-center border-l border-outline ${cur ? 'bg-accent/10' : ''} ${empty ? 'opacity-40' : ''}`}>
+                        <SortableTh label={k.toUpperCase()} sortKey={k} current={teamSort} onSort={onSort}
+                          className={cur ? 'text-accent' : ''} align="center" />
+                        <div className={`text-[9px] font-normal normal-case tracking-normal ${cur ? 'text-accent' : 'text-on-surface-subtle'}`}>
+                          {empty ? '—' : formatWeekDays(month, year, w)}
+                        </div>
+                      </th>
+                    );
+                  })}
                   <th colSpan={3} className="px-2 py-2 text-center bg-surface-3 border-l border-outline">
                     <SortableTh label="Month" sortKey="month" current={teamSort} onSort={onSort}
                       className="" align="center" />
