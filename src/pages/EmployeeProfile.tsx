@@ -613,23 +613,26 @@ export default function EmployeeProfile() {
           </div>
 
           <div className="space-y-5">
-            {/* Compensation */}
-            <div className="group relative bg-surface rounded-xl-2 border border-outline shadow-elev-1 p-6 overflow-hidden animate-fade-up stagger-2">
-              <div className="absolute -top-8 -right-8 w-28 h-28 rounded-full bg-accent/15 blur-2xl opacity-50" />
-              <div className="relative">
-                <h3 className="font-display text-xl font-bold tracking-tight text-on-surface mb-4">Compensation</h3>
-                <div className="grid grid-cols-2 gap-4">
-                  <div className="bg-brand-container rounded-xl-2 p-4 text-center">
-                    <p className="text-xs text-on-brand-container font-medium">Monthly Gross</p>
-                    <p className="num-mono text-xl font-bold text-on-brand-container mt-1">₹{Number(emp.salary || 0).toLocaleString('en-IN')}</p>
-                  </div>
-                  <div className="bg-surface-2 border border-outline rounded-xl-2 p-4 text-center">
-                    <p className="text-xs text-on-surface-muted font-medium">Annual CTC</p>
-                    <p className="num-mono text-xl font-bold text-on-surface mt-1">₹{(Number(emp.ctc || 0)/100000).toFixed(1)}L</p>
+            {/* Compensation — hidden for hr_intern (server already strips
+                the values, but skipping the block keeps the UI clean too). */}
+            {me?.role !== 'hr_intern' && (
+              <div className="group relative bg-surface rounded-xl-2 border border-outline shadow-elev-1 p-6 overflow-hidden animate-fade-up stagger-2">
+                <div className="absolute -top-8 -right-8 w-28 h-28 rounded-full bg-accent/15 blur-2xl opacity-50" />
+                <div className="relative">
+                  <h3 className="font-display text-xl font-bold tracking-tight text-on-surface mb-4">Compensation</h3>
+                  <div className="grid grid-cols-2 gap-4">
+                    <div className="bg-brand-container rounded-xl-2 p-4 text-center">
+                      <p className="text-xs text-on-brand-container font-medium">Monthly Gross</p>
+                      <p className="num-mono text-xl font-bold text-on-brand-container mt-1">₹{Number(emp.salary || 0).toLocaleString('en-IN')}</p>
+                    </div>
+                    <div className="bg-surface-2 border border-outline rounded-xl-2 p-4 text-center">
+                      <p className="text-xs text-on-surface-muted font-medium">Annual CTC</p>
+                      <p className="num-mono text-xl font-bold text-on-surface mt-1">₹{(Number(emp.ctc || 0)/100000).toFixed(1)}L</p>
+                    </div>
                   </div>
                 </div>
               </div>
-            </div>
+            )}
 
             {/* Probation */}
             <div className="group relative bg-surface rounded-xl-2 border border-outline shadow-elev-1 p-6 overflow-hidden animate-fade-up stagger-3">

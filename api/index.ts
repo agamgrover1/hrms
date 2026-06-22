@@ -184,6 +184,64 @@ async function requireAdminOrCoord(req: any, res: any): Promise<{ ok: boolean; u
   }
 }
 
+// ── HR-stage gates ────────────────────────────────────────────────────────
+// Two helpers around the new `hr_intern` role:
+//  - requireHROrAbove: admin, hr_manager OR hr_intern. Use for everyday HR
+//    operations the intern legitimately handles (attendance ops, holidays,
+//    leave reads, announcement posts).
+//  - requireFullHR: admin OR hr_manager. The intern is BLOCKED. Use for
+//    sensitive things (employee CRUD, salary edits, payroll, warnings/PIPs,
+//    performance review writes, role/password admin).
+async function requireHROrAbove(req: any, res: any): Promise<{ ok: boolean; user?: any }> {
+  try {
+    const userId = req.header('x-user-id') || req.query.__uid;
+    if (!userId) { res.status(401).json({ error: 'Not authenticated' }); return { ok: false }; }
+    const rows = await sql`SELECT id, name, role, active FROM app_users WHERE id = ${userId} LIMIT 1`;
+    const u = (rows as any[])[0];
+    if (!u || u.active !== true || !['admin','hr_manager','hr_intern'].includes(u.role)) {
+      res.status(403).json({ error: 'HR only' });
+      return { ok: false };
+    }
+    return { ok: true, user: u };
+  } catch (err: any) {
+    res.status(500).json({ error: err?.message || 'Auth check failed' });
+    return { ok: false };
+  }
+}
+
+async function requireFullHR(req: any, res: any): Promise<{ ok: boolean; user?: any }> {
+  try {
+    const userId = req.header('x-user-id') || req.query.__uid;
+    if (!userId) { res.status(401).json({ error: 'Not authenticated' }); return { ok: false }; }
+    const rows = await sql`SELECT id, name, role, active FROM app_users WHERE id = ${userId} LIMIT 1`;
+    const u = (rows as any[])[0];
+    if (!u || u.active !== true || !['admin','hr_manager'].includes(u.role)) {
+      res.status(403).json({ error: 'Admin / HR Manager only — interns are blocked from this action' });
+      return { ok: false };
+    }
+    return { ok: true, user: u };
+  } catch (err: any) {
+    res.status(500).json({ error: err?.message || 'Auth check failed' });
+    return { ok: false };
+  }
+}
+
+// Strip salary / CTC / cost fields from an employee row (or array of rows)
+// when the requesting user is hr_intern. Defence-in-depth: even if a UI
+// surface tries to show the field, the API never emits it.
+function stripSalaryForIntern<T extends Record<string, any>>(actorRole: string, row: T | T[] | null): typeof row {
+  if (!row) return row;
+  if (actorRole !== 'hr_intern') return row;
+  const SALARY_KEYS = ['salary','ctc','basic_salary','hra','exit_salary_override','net_salary','gross_salary','allowances','deductions','cost_to_company'];
+  const cleanOne = (r: any) => {
+    if (!r || typeof r !== 'object') return r;
+    const c: any = { ...r };
+    for (const k of SALARY_KEYS) if (k in c) delete c[k];
+    return c;
+  };
+  return Array.isArray(row) ? row.map(cleanOne) as any : cleanOne(row);
+}
+
 // ── Startup migrations (idempotent — safe to run on every cold start) ────
 let _migrated = false;
 
@@ -1753,9 +1811,23 @@ app.post('/api/auth/login', async (req, res) => {
 });
 
 // ── Employees ─────────────────────────────────────────────────────────────
+// Resolve the requesting user's role from the x-user-id header. Used by
+// endpoints that need to differentiate hr_intern (limited HR) from full HR.
+// Returns '' if no header or unknown user — callers should treat that as
+// "no special handling" rather than blocking.
+async function actorRoleOf(req: any): Promise<string> {
+  try {
+    const userId = req.header('x-user-id') || req.query.__uid;
+    if (!userId) return '';
+    const u = (await sql`SELECT role FROM app_users WHERE id=${userId} LIMIT 1`)[0] as any;
+    return u?.role ?? '';
+  } catch { return ''; }
+}
+
 app.get('/api/employees', async (req, res) => {
   try {
     const { reporting_manager_id, descendants } = req.query as any;
+    const actorRole = await actorRoleOf(req);
     if (reporting_manager_id) {
       // Resolve the manager filter to BOTH columns (internal id + human code)
       // so the WHERE matches whichever form employees.reporting_manager_id
@@ -1795,30 +1867,34 @@ app.get('/api/employees', async (req, res) => {
               )
           )
           SELECT DISTINCT * FROM team ORDER BY name`;
-        res.json(rows);
+        res.json(stripSalaryForIntern(actorRole, rows as any));
       } else {
-        res.json(await sql`
+        const rows = await sql`
           SELECT * FROM employees
           WHERE reporting_manager_id = ANY(${cands}::text[])
             AND NULLIF(TRIM(reporting_manager_id), '') IS NOT NULL
-          ORDER BY name`);
+          ORDER BY name`;
+        res.json(stripSalaryForIntern(actorRole, rows as any));
       }
     } else {
-      res.json(await sql`SELECT * FROM employees ORDER BY name`);
+      const rows = await sql`SELECT * FROM employees ORDER BY name`;
+      res.json(stripSalaryForIntern(actorRole, rows as any));
     }
   } catch (err) { res.status(500).json({ error: 'Server error' }); }
 });
 
 app.get('/api/employees/:id', async (req, res) => {
   try {
+    const actorRole = await actorRoleOf(req);
     const rows = await sql`SELECT * FROM employees WHERE id = ${req.params.id}`;
     if (!rows.length) return res.status(404).json({ error: 'Not found' });
-    res.json(rows[0]);
+    res.json(stripSalaryForIntern(actorRole, rows[0] as any));
   } catch (err) { res.status(500).json({ error: 'Server error' }); }
 });
 
 app.post('/api/employees', async (req, res) => {
   try {
+    if (!(await requireFullHR(req, res)).ok) return;
     const { id, name, email, phone, department, designation, employee_id, join_date, location, manager, reporting_manager_id, status, avatar, salary, ctc, password, role, biometric_id, shift } = req.body;
     const rows = await sql`
       INSERT INTO employees (id, name, email, phone, department, designation, employee_id, join_date, location, manager, reporting_manager_id, status, avatar, salary, ctc, biometric_id, shift)
@@ -1851,6 +1927,7 @@ app.post('/api/employees', async (req, res) => {
 
 app.put('/api/employees/:id', async (req, res) => {
   try {
+    if (!(await requireFullHR(req, res)).ok) return;
     const { name, email, phone, department, designation, join_date, location, manager, reporting_manager_id, status, salary, ctc, biometric_id, shift, next_appraisal_month, next_appraisal_year, date_of_birth, exit_date, exit_salary_override } = req.body;
     await sql`ALTER TABLE employees ADD COLUMN IF NOT EXISTS date_of_birth DATE`.catch(()=>{});
     await sql`ALTER TABLE employees ADD COLUMN IF NOT EXISTS exit_date DATE`.catch(()=>{});
@@ -1912,6 +1989,7 @@ app.put('/api/employees/:id', async (req, res) => {
 app.patch('/api/employees/:id/probation', async (req, res) => {
   try {
     await runStartupMigrations();
+    if (!(await requireFullHR(req, res)).ok) return;
     const { probation_end_date } = req.body;
 
     const empRows = await sql`SELECT join_date, probation_end_date FROM employees WHERE id=${req.params.id}`;
@@ -1933,6 +2011,7 @@ app.patch('/api/employees/:id/probation', async (req, res) => {
 
 app.delete('/api/employees/:id', async (req, res) => {
   try {
+    if (!(await requireFullHR(req, res)).ok) return;
     await sql`DELETE FROM employees WHERE id=${req.params.id}`;
     res.json({ success: true });
   } catch (err) { res.status(500).json({ error: 'Server error' }); }
@@ -5975,6 +6054,7 @@ app.get('/api/leave/balances/:employee_id', async (req, res) => {
 
 // ── Payroll ───────────────────────────────────────────────────────────────
 app.get('/api/payroll', async (req, res) => {
+  if (!(await requireFullHR(req, res)).ok) return;
   try {
     const { month, year } = req.query as any;
     let rows;
@@ -5989,6 +6069,13 @@ app.get('/api/payroll', async (req, res) => {
 
 app.get('/api/payroll/:employee_id', async (req, res) => {
   try {
+    // Used by employees to view their own slip too — only block when the
+    // actor is hr_intern AND not querying their own row. (We can't tell
+    // if it's their own without joining app_users -> employees here, so
+    // simplest safe rule: hr_intern can't pull payroll for anyone via
+    // this endpoint. They have no UI surface for it anyway.)
+    const actorRole = await actorRoleOf(req);
+    if (actorRole === 'hr_intern') return res.status(403).json({ error: 'Interns cannot view payroll' });
     res.json(await sql`SELECT * FROM payroll_records WHERE employee_id=${req.params.employee_id} ORDER BY year DESC, month DESC`);
   } catch (err) { res.status(500).json({ error: 'Server error' }); }
 });
@@ -6035,6 +6122,7 @@ app.get('/api/performance/monthly', async (req, res) => {
 // Lock / unlock a review (HR locks, only admin unlocks)
 app.patch('/api/performance/monthly/:id/lock', async (req, res) => {
   try {
+    if (!(await requireFullHR(req, res)).ok) return;
     await sql`ALTER TABLE monthly_performance ADD COLUMN IF NOT EXISTS is_locked BOOLEAN DEFAULT FALSE`.catch(() => {});
     await sql`ALTER TABLE monthly_performance ADD COLUMN IF NOT EXISTS locked_by TEXT`.catch(() => {});
     await sql`ALTER TABLE monthly_performance ADD COLUMN IF NOT EXISTS locked_at TIMESTAMPTZ`.catch(() => {});
@@ -6053,6 +6141,12 @@ app.patch('/api/performance/monthly/:id/lock', async (req, res) => {
 
 app.post('/api/performance/monthly', async (req, res) => {
   try {
+    // Managers / project reviewers can write reviews for their own reports,
+    // so we don't gate to full HR here — only block hr_intern explicitly.
+    const actorRole = await actorRoleOf(req);
+    if (actorRole === 'hr_intern') {
+      return res.status(403).json({ error: 'Interns cannot file performance reviews' });
+    }
     const {
       employee_id, reviewer_id, reviewer_name, month, year,
       productivity, quality, teamwork, attendance_score, initiative,
@@ -7732,6 +7826,7 @@ app.get('/api/warnings', async (req, res) => {
 app.post('/api/warnings', async (req, res) => {
   try {
     await ensureWarningsTables();
+    if (!(await requireFullHR(req, res)).ok) return;
     const { employee_id, employee_name, reason, severity, issued_by, issued_by_role } = req.body;
     if (!employee_id || !reason?.trim()) return res.status(400).json({ error: 'employee_id and reason required' });
     const id = `warn_${Date.now()}`;
@@ -7777,7 +7872,10 @@ app.post('/api/warnings', async (req, res) => {
   } catch (e: any) { res.status(500).json({ error: e.message }); }
 });
 app.delete('/api/warnings/:id', async (req, res) => {
-  try { await sql`DELETE FROM employee_warnings WHERE id=${req.params.id}`; res.json({ success: true }); }
+  try {
+    if (!(await requireFullHR(req, res)).ok) return;
+    await sql`DELETE FROM employee_warnings WHERE id=${req.params.id}`; res.json({ success: true });
+  }
   catch { res.status(500).json({ error: 'Server error' }); }
 });
 app.get('/api/warnings/pips', async (req, res) => {
@@ -7790,6 +7888,7 @@ app.get('/api/warnings/pips', async (req, res) => {
 });
 app.patch('/api/warnings/pips/:id', async (req, res) => {
   try {
+    if (!(await requireFullHR(req, res)).ok) return;
     const { status, goals } = req.body;
     const rows = await sql`UPDATE employee_pips SET status=${status??'active'},goals=${goals??null} WHERE id=${req.params.id} RETURNING *`;
     if (!(rows as any[]).length) return res.status(404).json({ error: 'Not found' });
@@ -7972,6 +8071,7 @@ app.get('/api/users', async (_req, res) => {
 
 app.post('/api/users', async (req, res) => {
   try {
+    if (!(await requireFullHR(req, res)).ok) return;
     const { employee_id_ref, name, email, password, role, department, designation, avatar } = req.body;
     if (!name || !email || !password || !role) return res.status(400).json({ error: 'Required fields missing' });
     const existing = await sql`SELECT id FROM app_users WHERE LOWER(email)=LOWER(${email})`;
@@ -7989,6 +8089,7 @@ app.post('/api/users', async (req, res) => {
 
 app.put('/api/users/:id', async (req, res) => {
   try {
+    if (!(await requireFullHR(req, res)).ok) return;
     const { name, email, password, role, department, designation, avatar, active, employee_id_ref } = req.body;
     // Only touch the password column when an explicit password is provided.
     // Callers that just want to update profile fields (department, designation,
@@ -8054,6 +8155,7 @@ app.patch('/api/users/:id/change-password', async (req, res) => {
 
 app.patch('/api/users/:id/active', async (req, res) => {
   try {
+    if (!(await requireFullHR(req, res)).ok) return;
     const { active } = req.body;
     const rows = await sql`UPDATE app_users SET active=${active} WHERE id=${req.params.id} RETURNING id, active`;
     res.json(rows[0]);
@@ -8062,6 +8164,7 @@ app.patch('/api/users/:id/active', async (req, res) => {
 
 app.delete('/api/users/:id', async (req, res) => {
   try {
+    if (!(await requireFullHR(req, res)).ok) return;
     await sql`DELETE FROM app_users WHERE id=${req.params.id}`;
     res.json({ success: true });
   } catch (err) { res.status(500).json({ error: 'Server error' }); }

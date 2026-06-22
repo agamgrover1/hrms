@@ -56,10 +56,13 @@ function AppRoutes() {
         {/* Unified dashboard — landing page for every signed-in user.
             Dashboard.tsx renders role-aware content internally. */}
         <Route index element={<ProtectedRoute><Dashboard /></ProtectedRoute>} />
-        <Route path="employees" element={<ProtectedRoute roles={['admin', 'hr_manager']}><Employees /></ProtectedRoute>} />
-        <Route path="employees/:id" element={<ProtectedRoute roles={['admin', 'hr_manager']}><EmployeeProfile /></ProtectedRoute>} />
-        <Route path="attendance" element={<ProtectedRoute roles={['admin', 'hr_manager']}><Attendance /></ProtectedRoute>} />
-        <Route path="leave" element={<ProtectedRoute roles={['admin', 'hr_manager']}><Leave /></ProtectedRoute>} />
+        {/* hr_intern: gets read access to employees (no salary), attendance,
+            and leaves. Blocked from payroll, performance, user mgmt, config,
+            incentives. Backend strips salary fields and gates writes. */}
+        <Route path="employees" element={<ProtectedRoute roles={['admin', 'hr_manager', 'hr_intern']}><Employees /></ProtectedRoute>} />
+        <Route path="employees/:id" element={<ProtectedRoute roles={['admin', 'hr_manager', 'hr_intern']}><EmployeeProfile /></ProtectedRoute>} />
+        <Route path="attendance" element={<ProtectedRoute roles={['admin', 'hr_manager', 'hr_intern']}><Attendance /></ProtectedRoute>} />
+        <Route path="leave" element={<ProtectedRoute roles={['admin', 'hr_manager', 'hr_intern']}><Leave /></ProtectedRoute>} />
         <Route path="payroll" element={<ProtectedRoute roles={['admin', 'hr_manager']}><Payroll /></ProtectedRoute>} />
         <Route path="performance" element={<ProtectedRoute roles={['admin', 'hr_manager']}><Performance /></ProtectedRoute>} />
         <Route path="performance/pulse" element={<ProtectedRoute roles={['admin', 'hr_manager', 'project_coordinator']}><PerformancePulse /></ProtectedRoute>} />

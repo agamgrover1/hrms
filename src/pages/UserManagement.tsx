@@ -8,6 +8,7 @@ import { api } from '../services/api';
 const roleConfig: Record<Role, { label: string; color: string; icon: typeof Shield }> = {
   admin: { label: 'Admin', color: 'bg-danger-container text-danger border-danger/20', icon: Shield },
   hr_manager: { label: 'HR Manager', color: 'bg-brand-container text-on-brand-container border-brand/20', icon: UserCheck },
+  hr_intern: { label: 'HR Intern', color: 'bg-warning-container text-warning border-warning/30', icon: UserCheck },
   project_coordinator: { label: 'Project Coordinator', color: 'bg-brand-container text-on-brand-container border-brand/20', icon: Briefcase },
   employee: { label: 'Employee', color: 'bg-surface-2 text-on-surface-muted border-outline', icon: Users },
 };
@@ -108,6 +109,7 @@ function UserModal({
               <select value={form.role} onChange={e => set('role', e.target.value as Role)}
                 className="w-full border border-outline rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-brand/30 focus:border-brand bg-surface text-on-surface">
                 <option value="employee">Employee</option>
+                <option value="hr_intern">HR Intern</option>
                 <option value="hr_manager">HR Manager</option>
                 <option value="project_coordinator">Project Coordinator</option>
                 <option value="admin">Admin</option>
@@ -207,6 +209,7 @@ export default function UserManagement() {
     total: users.length,
     admin: users.filter(u => u.role === 'admin').length,
     hr_manager: users.filter(u => u.role === 'hr_manager').length,
+    hr_intern: users.filter(u => u.role === 'hr_intern').length,
     project_coordinator: users.filter(u => u.role === 'project_coordinator').length,
     employee: users.filter(u => u.role === 'employee').length,
   };
@@ -215,6 +218,7 @@ export default function UserManagement() {
     { label: 'Total Users',         value: counts.total,               valueColor: 'text-on-surface',          blobColor: 'bg-brand/15' },
     { label: 'Admins',              value: counts.admin,               valueColor: 'text-danger',              blobColor: 'bg-danger/15' },
     { label: 'HR Managers',         value: counts.hr_manager,          valueColor: 'text-on-brand-container',  blobColor: 'bg-brand/15' },
+    { label: 'HR Interns',          value: counts.hr_intern,           valueColor: 'text-warning',             blobColor: 'bg-warning/15' },
     { label: 'Project Coordinator', value: counts.project_coordinator, valueColor: 'text-on-brand-container',  blobColor: 'bg-brand/15' },
     { label: 'Employees',           value: counts.employee,            valueColor: 'text-on-surface-muted',    blobColor: 'bg-accent/15' },
   ];
@@ -263,6 +267,7 @@ export default function UserManagement() {
           <option value="all">All Roles</option>
           <option value="admin">Admin</option>
           <option value="hr_manager">HR Manager</option>
+          <option value="hr_intern">HR Intern</option>
           <option value="project_coordinator">Project Coordinator</option>
           <option value="employee">Employee</option>
         </select>

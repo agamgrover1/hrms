@@ -188,19 +188,21 @@ function EmployeeDetail({ emp, onClose, onEdit, onDelete }: { emp: any; onClose:
               </div>
             ))}
           </div>
-          <div className="mt-6 p-4 bg-surface-2 rounded-xl-2">
-            <p className="text-xs font-semibold text-on-surface-subtle mb-3 uppercase tracking-wide">Compensation</p>
-            <div className="grid grid-cols-2 gap-3">
-              <div>
-                <p className="text-xs text-on-surface-subtle">Monthly Gross</p>
-                <p className="num-mono text-sm font-semibold text-on-surface mt-0.5">₹{Number(emp.salary).toLocaleString('en-IN')}</p>
-              </div>
-              <div>
-                <p className="text-xs text-on-surface-subtle">Annual CTC</p>
-                <p className="num-mono text-sm font-semibold text-on-surface mt-0.5">₹{(Number(emp.ctc) / 100000).toFixed(1)}L</p>
+          {currentUser?.role !== 'hr_intern' && (
+            <div className="mt-6 p-4 bg-surface-2 rounded-xl-2">
+              <p className="text-xs font-semibold text-on-surface-subtle mb-3 uppercase tracking-wide">Compensation</p>
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <p className="text-xs text-on-surface-subtle">Monthly Gross</p>
+                  <p className="num-mono text-sm font-semibold text-on-surface mt-0.5">₹{Number(emp.salary).toLocaleString('en-IN')}</p>
+                </div>
+                <div>
+                  <p className="text-xs text-on-surface-subtle">Annual CTC</p>
+                  <p className="num-mono text-sm font-semibold text-on-surface mt-0.5">₹{(Number(emp.ctc) / 100000).toFixed(1)}L</p>
+                </div>
               </div>
             </div>
-          </div>
+          )}
 
           <div className="mt-4 p-4 border border-outline rounded-xl-2">
             <div className="flex items-center justify-between mb-3">

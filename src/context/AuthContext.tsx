@@ -9,7 +9,7 @@ const INACTIVITY_LIMIT_MS = 2 * 60 * 60 * 1000;   // 2 hours
 const ACTIVITY_KEY = 'digitalleap_hrms_last_activity';
 const CHECK_INTERVAL_MS = 30 * 1000;          // poll every 30s — fine granularity isn't needed
 
-export type Role = 'admin' | 'hr_manager' | 'project_coordinator' | 'employee';
+export type Role = 'admin' | 'hr_manager' | 'hr_intern' | 'project_coordinator' | 'employee';
 
 export interface AppUser {
   id: string;

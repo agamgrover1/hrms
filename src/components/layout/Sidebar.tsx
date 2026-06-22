@@ -77,6 +77,7 @@ const settingsGroup: NavGroup = {
 const ROLE_PILL: Record<string, { label: string; bg: string; color: string }> = {
   admin:               { label: 'Admin',         bg: 'rgba(255,109,168,0.18)', color: '#ffd7e4' },
   hr_manager:          { label: 'HR Manager',    bg: 'rgba(174,184,232,0.18)', color: '#dae0fa' },
+  hr_intern:           { label: 'HR Intern',     bg: 'rgba(251,191,36,0.18)',  color: '#fde68a' },
   project_coordinator: { label: 'Project Coord.', bg: 'rgba(103,232,249,0.16)', color: '#a5f3fc' },
   employee:            { label: 'Employee',      bg: 'rgba(255,255,255,0.08)', color: 'rgba(255,255,255,0.7)' },
 };
@@ -105,6 +106,9 @@ export default function Sidebar({ mobileOpen = false, onMobileClose }: { mobileO
   const isEmployee = role === 'employee';
   const isCoord = role === 'project_coordinator';
   const isAdminLike = role === 'admin' || role === 'hr_manager';
+  // HR Intern: scoped HR — gets only the people-ops surfaces they're
+  // allowed on (People, Attendance, Time off). Everything else is hidden.
+  const isHRIntern = role === 'hr_intern';
 
   // Is this user a project lead (project_lead_id) on any active project?
   // Same gate as project reviewer — both relationships should unlock the
@@ -147,6 +151,18 @@ export default function Sidebar({ mobileOpen = false, onMobileClose }: { mobileO
     if (role === 'admin') groups.push(projectGroup);
     if (role === 'admin') groups.push(financeGroup); // admin-only finance module
     groups.push(settingsGroup);
+  } else if (isHRIntern) {
+    // Trimmed-down Workspace — no Payroll, no Performance, no Settings.
+    groups.push({
+      id: 'workspace-intern',
+      label: 'Workspace',
+      items: [
+        { to: '/', icon: LayoutDashboard, label: 'Overview', end: true },
+        { to: '/employees', icon: Users, label: 'People' },
+        { to: '/attendance', icon: Clock3, label: 'Attendance' },
+        { to: '/leave', icon: CalendarDays, label: 'Time off' },
+      ],
+    });
   } else if (isCoord) {
     // Coord sees Project Mgmt + Invoices + their own personal nav (rendered below)
     groups.push(projectGroup);
@@ -162,6 +178,8 @@ export default function Sidebar({ mobileOpen = false, onMobileClose }: { mobileO
 
   // Personal nav — everyone with an employee profile (including admin) gets
   // a "You" section, so they can log internal hours and see their own pulse.
+  // HR Intern is intentionally excluded — they don't have their own employee
+  // record / portal in this v1.
   const showPersonal = isEmployee || isCoord || role === 'hr_manager' || role === 'admin';
   const personalGroup: NavGroup | null = showPersonal ? {
     id: 'personal',
