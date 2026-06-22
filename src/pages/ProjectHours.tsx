@@ -755,6 +755,17 @@ function CapacityView({ summary, employees, loading, search, month, year, openDe
   openDetail: (employeeId: string, employeeName: string, focusWeek?: number) => void;
 }) {
   const [groupBy, setGroupBy] = useState<GroupKey>('none');
+  // Sort state for the Capacity table. Header click cycles ASC <-> DESC;
+  // switching columns picks the natural first direction (ASC for name,
+  // DESC for numeric so the biggest values come up first).
+  type CapSortKey = 'name' | 'w1' | 'w2' | 'w3' | 'w4' | 'w5' | 'month' | 'over';
+  const [capSort, setCapSort] = useState<{ key: CapSortKey; dir: 'asc' | 'desc' }>({ key: 'name', dir: 'asc' });
+  const onCapSort = (key: CapSortKey) => {
+    setCapSort(prev => {
+      if (prev.key === key) return { key, dir: prev.dir === 'asc' ? 'desc' : 'asc' };
+      return { key, dir: key === 'name' ? 'asc' : 'desc' };
+    });
+  };
 
   // Map employee_id → manager name (the reporting manager defines the team).
   const empMeta = useMemo(() => {
@@ -772,11 +783,33 @@ function CapacityView({ summary, employees, loading, search, month, year, openDe
     const base = !term
       ? summary.employees
       : summary.employees.filter((e: any) => (e.employee_name ?? '').toLowerCase().includes(term));
-    return base.map((e: any) => {
+    const decorated = base.map((e: any) => {
       const meta = empMeta.get(e.employee_id);
       return { ...e, _manager: meta?.manager || 'No manager' };
     });
-  }, [summary, search, empMeta]);
+    // Apply sort. For each week we sort by Plan + Log + Int combined (what
+    // the user sees as the "all activity for that week" total). Month uses
+    // the same. Over uses the over-plan number directly.
+    const numFor = (r: any, k: CapSortKey): number => {
+      switch (k) {
+        case 'w1': return Number(r.w1 ?? 0) + Number(r.w1_logged ?? 0) + Number(r.w1_internal ?? 0);
+        case 'w2': return Number(r.w2 ?? 0) + Number(r.w2_logged ?? 0) + Number(r.w2_internal ?? 0);
+        case 'w3': return Number(r.w3 ?? 0) + Number(r.w3_logged ?? 0) + Number(r.w3_internal ?? 0);
+        case 'w4': return Number(r.w4 ?? 0) + Number(r.w4_logged ?? 0) + Number(r.w4_internal ?? 0);
+        case 'w5': return Number(r.w5 ?? 0) + Number(r.w5_logged ?? 0) + Number(r.w5_internal ?? 0);
+        case 'month': return Number(r.monthly ?? 0) + Number(r.logged_over_plan ?? 0);
+        case 'over':  return Number(r.logged_over_plan ?? 0);
+        default: return 0;
+      }
+    };
+    const sorted = [...decorated].sort((a: any, b: any) => {
+      if (capSort.key === 'name') {
+        return (a.employee_name ?? '').localeCompare(b.employee_name ?? '');
+      }
+      return numFor(a, capSort.key) - numFor(b, capSort.key);
+    });
+    return capSort.dir === 'desc' ? sorted.reverse() : sorted;
+  }, [summary, search, empMeta, capSort]);
 
   // Group rows by reporting manager (when Team is on). Returns
   // [{ name, rows, subtotalMonth, subtotalOver, headcount }, …]
@@ -854,22 +887,55 @@ function CapacityView({ summary, employees, loading, search, month, year, openDe
                 (training, recruiting, admin, etc.) — kept separate so
                 the project-hours read stays clean. */}
             <tr className="text-left text-[10px] font-bold text-on-surface-muted uppercase tracking-[0.16em]">
-              <th rowSpan={2} className="px-5 py-3 sticky left-0 bg-surface-2 align-bottom">Employee</th>
+              <th rowSpan={2} className="px-5 py-3 sticky left-0 bg-surface-2 align-bottom select-none">
+                <button onClick={() => onCapSort('name')}
+                  className={`inline-flex items-center gap-1 hover:text-on-surface transition-colors ${capSort.key === 'name' ? 'text-accent' : ''}`}>
+                  Employee
+                  {capSort.key === 'name'
+                    ? (capSort.dir === 'asc' ? <ChevronUp size={10} /> : <ChevronDown size={10} />)
+                    : <ArrowUpDown size={10} className="opacity-40" />}
+                </button>
+              </th>
               {[1,2,3,4,5].map(w => {
                 const empty = isEmptyWeek(month, year, w);
                 const cur   = isCurrentWeekOfMonth(month, year, w);
+                const key   = (`w${w}`) as CapSortKey;
                 return (
                   <th key={w} colSpan={3}
-                      className={`px-3 py-2 text-center border-l border-outline ${cur ? 'bg-accent/10' : ''} ${empty ? 'opacity-40' : ''}`}>
-                    <div className={`${cur ? 'text-accent' : ''}`}>W{w}</div>
-                    <div className={`text-[9px] font-normal normal-case tracking-normal ${cur ? 'text-accent' : 'text-on-surface-subtle'}`}>
-                      {empty ? '—' : formatWeekDays(month, year, w)}
-                    </div>
+                      className={`px-3 py-2 text-center border-l border-outline select-none ${cur ? 'bg-accent/10' : ''} ${empty ? 'opacity-40' : ''}`}>
+                    <button onClick={() => onCapSort(key)}
+                      className={`inline-flex items-center gap-1 w-full justify-center hover:text-on-surface transition-colors ${capSort.key === key ? 'text-accent' : ''}`}>
+                      <div className={cur ? 'text-accent' : ''}>
+                        <div>W{w}</div>
+                        <div className={`text-[9px] font-normal normal-case tracking-normal ${cur ? 'text-accent' : 'text-on-surface-subtle'}`}>
+                          {empty ? '—' : formatWeekDays(month, year, w)}
+                        </div>
+                      </div>
+                      {capSort.key === key
+                        ? (capSort.dir === 'asc' ? <ChevronUp size={10} /> : <ChevronDown size={10} />)
+                        : <ArrowUpDown size={10} className="opacity-40" />}
+                    </button>
                   </th>
                 );
               })}
-              <th colSpan={3} className="px-3 py-2 text-center bg-surface-3 border-l border-outline">Month</th>
-              <th rowSpan={2} className="px-3 py-3 text-center min-w-[88px] align-bottom border-l border-outline">Over plan</th>
+              <th colSpan={3} className="px-3 py-2 text-center bg-surface-3 border-l border-outline select-none">
+                <button onClick={() => onCapSort('month')}
+                  className={`inline-flex items-center gap-1 w-full justify-center hover:text-on-surface transition-colors ${capSort.key === 'month' ? 'text-accent' : ''}`}>
+                  Month
+                  {capSort.key === 'month'
+                    ? (capSort.dir === 'asc' ? <ChevronUp size={10} /> : <ChevronDown size={10} />)
+                    : <ArrowUpDown size={10} className="opacity-40" />}
+                </button>
+              </th>
+              <th rowSpan={2} className="px-3 py-3 text-center min-w-[88px] align-bottom border-l border-outline select-none">
+                <button onClick={() => onCapSort('over')}
+                  className={`inline-flex items-center gap-1 w-full justify-center hover:text-on-surface transition-colors ${capSort.key === 'over' ? 'text-accent' : ''}`}>
+                  Over plan
+                  {capSort.key === 'over'
+                    ? (capSort.dir === 'asc' ? <ChevronUp size={10} /> : <ChevronDown size={10} />)
+                    : <ArrowUpDown size={10} className="opacity-40" />}
+                </button>
+              </th>
               <th rowSpan={2} className="px-3 py-3"></th>
             </tr>
             <tr className="text-[9px] font-semibold text-on-surface-subtle uppercase tracking-wider">
