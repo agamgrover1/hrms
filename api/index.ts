@@ -444,6 +444,28 @@ async function runStartupMigrations() {
   // mid-migration failure / timeout doesn't lock subsequent calls into
   // skipping the remaining statements.
 
+  // Fast path: each new Lambda instance arrives with _migrated=false, so
+  // the full block below would run on every cold start. That's ~30+ ALTERs
+  // worth of Postgres round-trips — burning Active CPU for no reason if
+  // the schema is already current. Probe ONE column from the most recent
+  // migration; if it exists, the rest were run on a previous deploy and we
+  // can flip the flag and return. Only on a truly missing column (fresh
+  // DB, OR a new column added after this deploy) do we fall back to the
+  // full migration block.
+  //
+  // KEEP THIS PROBE POINTED AT THE MOST RECENT MIGRATION when you add one.
+  // Right now: monthly_performance.learning_growth (added in Phase-1 of
+  // the monthly review). If you add a newer column / table, update this
+  // SELECT to reference it so cold starts re-run migrations once after
+  // each deploy.
+  try {
+    await sql`SELECT learning_growth FROM monthly_performance LIMIT 0`;
+    _migrated = true;
+    return;
+  } catch {
+    // Schema is stale (or DB is fresh) — fall through to the full block.
+  }
+
   // ── Core tables (CREATE IF NOT EXISTS — works on a fresh database) ──────
   await sql`
     CREATE TABLE IF NOT EXISTS employees (

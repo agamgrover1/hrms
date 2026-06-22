@@ -17,7 +17,10 @@ import { RefreshCw, X } from 'lucide-react';
 // leave reason or filing an hour log shouldn't have the tab yanked out
 // from under them. Show + let them choose.
 
-const POLL_MS = 60_000;
+// 5-minute poll. Was 60s, which was hitting /api/__version every minute
+// per open tab — heavy on Vercel Active CPU for very little gain. Most
+// deploys aren't so urgent that users need a "5-min-stale" banner.
+const POLL_MS = 5 * 60_000;
 
 export default function VersionCheck() {
   const [stale, setStale] = useState(false);

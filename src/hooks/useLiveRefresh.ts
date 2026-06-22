@@ -3,8 +3,11 @@ import { useEffect, useRef } from 'react';
 // Page-level "feels live" helper. Calls the provided refetch:
 //   1. Immediately on mount (most callers also do this themselves — safe
 //      to omit the initial call here if it would double-fetch).
-//   2. On a polling interval (default 12s — short enough to feel live,
-//      long enough to not melt the API).
+//   2. On a polling interval (default 45s — was 12s, which was burning
+//      Vercel Active CPU on every signed-in tab. The focus +
+//      visibilitychange handlers below mean returning to the tab still
+//      refetches instantly, so the only delay is for users who STAY on
+//      the same tab for 45s — fine for the surfaces that use this).
 //   3. The moment the tab regains focus / visibility (via the focus +
 //      visibilitychange events). If the user was on a different tab for
 //      five minutes, they get fresh state IMMEDIATELY on return — no
@@ -21,7 +24,7 @@ export function useLiveRefresh(
   refetch: () => void,
   opts: { intervalMs?: number; enabled?: boolean; initial?: boolean } = {}
 ) {
-  const { intervalMs = 12000, enabled = true, initial = false } = opts;
+  const { intervalMs = 45000, enabled = true, initial = false } = opts;
   const refetchRef = useRef(refetch);
   // Keep the latest callback without re-subscribing the effect each render.
   useEffect(() => { refetchRef.current = refetch; }, [refetch]);

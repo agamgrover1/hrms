@@ -326,9 +326,12 @@ export default function TopBar({ title, onMenuClick }: Props) {
 
   useEffect(() => {
     fetchNotifications();
-    // 30s was "feels stale" — comments / approvals / leave requests took
-    // half a minute to surface. 8s feels live without burning bandwidth.
-    pollRef.current = setInterval(fetchNotifications, 8000);
+    // 30s poll — was 8s, which was burning Vercel Fluid Active CPU much
+    // faster than the perceived "live" benefit justified. 30s still
+    // surfaces comments / approvals / leave requests reasonably fast and
+    // the visibilitychange handler below means returning to the tab
+    // refetches immediately anyway.
+    pollRef.current = setInterval(fetchNotifications, 30000);
     // Bonus: refetch the moment the tab regains focus. If the user was
     // away from the tab for 5 minutes, they don't have to wait another
     // poll cycle — they get fresh state immediately on return.

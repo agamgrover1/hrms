@@ -29,9 +29,10 @@ export default function FeaturePopup() {
   };
   useEffect(() => {
     fetchNext();
-    // 15s poll so a freshly-published announcement pops within seconds
-    // of admin clicking Publish — no page refresh required.
-    const id = setInterval(fetchNext, 15000);
+    // 60s poll (was 15s). The focus refetch below still gives "instant"
+    // surfacing when a user switches back to the tab, so the only delay
+    // is for users who stay on a static tab for over a minute — fine.
+    const id = setInterval(fetchNext, 60000);
     const onFocus = () => fetchNext();
     window.addEventListener('focus', onFocus);
     return () => {
