@@ -94,9 +94,9 @@ function AppRoutes() {
         <Route path="templates" element={<ProtectedRoute roles={['admin', 'hr_manager']}><TemplatesHub /></ProtectedRoute>} />
         <Route path="features" element={<ProtectedRoute roles={['admin', 'hr_manager']}><Features /></ProtectedRoute>} />
 
-        {/* Employee routes — project_coordinator is also an employee */}
-        <Route path="my" element={<ProtectedRoute roles={['employee', 'project_coordinator', 'hr_manager', 'admin']}><MyPortal /></ProtectedRoute>} />
-        <Route path="my-team" element={<ProtectedRoute roles={['employee', 'project_coordinator', 'hr_manager', 'admin']}><MyTeam /></ProtectedRoute>} />
+        {/* Employee routes — project_coordinator + hr_intern are also employees */}
+        <Route path="my" element={<ProtectedRoute roles={['employee', 'project_coordinator', 'hr_intern', 'hr_manager', 'admin']}><MyPortal /></ProtectedRoute>} />
+        <Route path="my-team" element={<ProtectedRoute roles={['employee', 'project_coordinator', 'hr_intern', 'hr_manager', 'admin']}><MyTeam /></ProtectedRoute>} />
       </Route>
 
       {/* Catch-all */}

@@ -117,10 +117,10 @@ export default function Sidebar({ mobileOpen = false, onMobileClose }: { mobileO
 
   useEffect(() => {
     // Detect "has direct reports" for ANY role that gets a personal area
-    // (employee, coord, HR, admin). An admin who's also a reporting manager
-    // for some employees should see team links — My team / Team compliance /
-    // Team utilization — just like a regular manager.
-    const showPersonal = isEmployee || isCoord || role === 'hr_manager' || role === 'admin';
+    // (employee, coord, HR, admin, hr_intern). An admin who's also a reporting
+    // manager for some employees should see team links — My team / Team
+    // compliance / Team utilization — just like a regular manager.
+    const showPersonal = isEmployee || isCoord || isHRIntern || role === 'hr_manager' || role === 'admin';
     if (!showPersonal || !user?.employee_id_ref) return;
     api.getEmployees()
       .then(emps => {
@@ -178,9 +178,10 @@ export default function Sidebar({ mobileOpen = false, onMobileClose }: { mobileO
 
   // Personal nav — everyone with an employee profile (including admin) gets
   // a "You" section, so they can log internal hours and see their own pulse.
-  // HR Intern is intentionally excluded — they don't have their own employee
-  // record / portal in this v1.
-  const showPersonal = isEmployee || isCoord || role === 'hr_manager' || role === 'admin';
+  // HR Intern is included: she's also an employee with her own portal, leaves,
+  // hours, pulse — the role just gates what she can do FOR OTHERS, not what
+  // she can see about herself.
+  const showPersonal = isEmployee || isCoord || isHRIntern || role === 'hr_manager' || role === 'admin';
   const personalGroup: NavGroup | null = showPersonal ? {
     id: 'personal',
     label: 'You',
@@ -188,6 +189,7 @@ export default function Sidebar({ mobileOpen = false, onMobileClose }: { mobileO
       // Home is the unified Dashboard landing — only show in the You group
       // for non-admin/HR (admin/HR already see it under Workspace as
       // "Overview"). Keeps the nav from duplicating the same link twice.
+      // HR Intern already has Overview in her Workspace group above — no Home duplicate here.
       ...(isEmployee || isCoord ? [{ to: '/', icon: LayoutDashboard, label: 'Home', end: true } as NavItem] : []),
       { to: '/my', icon: User, label: 'My portal', end: true },
       ...(isManager ? [{ to: '/my-team', icon: Users, label: 'My team' } as NavItem] : []),

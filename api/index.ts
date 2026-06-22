@@ -227,19 +227,42 @@ async function requireFullHR(req: any, res: any): Promise<{ ok: boolean; user?: 
 }
 
 // Strip salary / CTC / cost fields from an employee row (or array of rows)
-// when the requesting user is hr_intern. Defence-in-depth: even if a UI
-// surface tries to show the field, the API never emits it.
-function stripSalaryForIntern<T extends Record<string, any>>(actorRole: string, row: T | T[] | null): typeof row {
+// when the requesting user is hr_intern AND the row isn't her own. Defence-
+// in-depth: even if a UI surface tries to render the field, the API never
+// emits it. The "own row" exception lets her see her own payslip / profile
+// like any regular employee.
+function stripSalaryForIntern<T extends Record<string, any>>(
+  actorRole: string,
+  row: T | T[] | null,
+  actorOwnEmployeeId?: string | null,
+): typeof row {
   if (!row) return row;
   if (actorRole !== 'hr_intern') return row;
   const SALARY_KEYS = ['salary','ctc','basic_salary','hra','exit_salary_override','net_salary','gross_salary','allowances','deductions','cost_to_company'];
   const cleanOne = (r: any) => {
     if (!r || typeof r !== 'object') return r;
+    // Own row pass-through: she can see her own salary like every employee.
+    if (actorOwnEmployeeId && (r.id === actorOwnEmployeeId || r.employee_id === actorOwnEmployeeId)) return r;
     const c: any = { ...r };
     for (const k of SALARY_KEYS) if (k in c) delete c[k];
     return c;
   };
   return Array.isArray(row) ? row.map(cleanOne) as any : cleanOne(row);
+}
+
+// Resolve the actor's own internal employee id (from employees.id) so the
+// salary-strip can grant a self-row exception. Cheaper to fetch once at the
+// top of an endpoint than to redo the join in stripSalaryForIntern.
+async function actorOwnEmployeeId(req: any): Promise<string | null> {
+  try {
+    const userId = req.header('x-user-id') || req.query.__uid;
+    if (!userId) return null;
+    const row = (await sql`
+      SELECT e.id FROM app_users u
+      JOIN employees e ON e.employee_id = u.employee_id_ref OR e.id = u.employee_id_ref
+      WHERE u.id = ${userId} LIMIT 1`)[0] as any;
+    return row?.id ?? null;
+  } catch { return null; }
 }
 
 // ── Startup migrations (idempotent — safe to run on every cold start) ────
@@ -1828,6 +1851,7 @@ app.get('/api/employees', async (req, res) => {
   try {
     const { reporting_manager_id, descendants } = req.query as any;
     const actorRole = await actorRoleOf(req);
+    const ownEmpId = actorRole === 'hr_intern' ? await actorOwnEmployeeId(req) : null;
     if (reporting_manager_id) {
       // Resolve the manager filter to BOTH columns (internal id + human code)
       // so the WHERE matches whichever form employees.reporting_manager_id
@@ -1867,18 +1891,18 @@ app.get('/api/employees', async (req, res) => {
               )
           )
           SELECT DISTINCT * FROM team ORDER BY name`;
-        res.json(stripSalaryForIntern(actorRole, rows as any));
+        res.json(stripSalaryForIntern(actorRole, rows as any, ownEmpId));
       } else {
         const rows = await sql`
           SELECT * FROM employees
           WHERE reporting_manager_id = ANY(${cands}::text[])
             AND NULLIF(TRIM(reporting_manager_id), '') IS NOT NULL
           ORDER BY name`;
-        res.json(stripSalaryForIntern(actorRole, rows as any));
+        res.json(stripSalaryForIntern(actorRole, rows as any, ownEmpId));
       }
     } else {
       const rows = await sql`SELECT * FROM employees ORDER BY name`;
-      res.json(stripSalaryForIntern(actorRole, rows as any));
+      res.json(stripSalaryForIntern(actorRole, rows as any, ownEmpId));
     }
   } catch (err) { res.status(500).json({ error: 'Server error' }); }
 });
@@ -1886,9 +1910,10 @@ app.get('/api/employees', async (req, res) => {
 app.get('/api/employees/:id', async (req, res) => {
   try {
     const actorRole = await actorRoleOf(req);
+    const ownEmpId = actorRole === 'hr_intern' ? await actorOwnEmployeeId(req) : null;
     const rows = await sql`SELECT * FROM employees WHERE id = ${req.params.id}`;
     if (!rows.length) return res.status(404).json({ error: 'Not found' });
-    res.json(stripSalaryForIntern(actorRole, rows[0] as any));
+    res.json(stripSalaryForIntern(actorRole, rows[0] as any, ownEmpId));
   } catch (err) { res.status(500).json({ error: 'Server error' }); }
 });
 
@@ -6069,13 +6094,16 @@ app.get('/api/payroll', async (req, res) => {
 
 app.get('/api/payroll/:employee_id', async (req, res) => {
   try {
-    // Used by employees to view their own slip too — only block when the
-    // actor is hr_intern AND not querying their own row. (We can't tell
-    // if it's their own without joining app_users -> employees here, so
-    // simplest safe rule: hr_intern can't pull payroll for anyone via
-    // this endpoint. They have no UI surface for it anyway.)
+    // Employees see their own payslip via this endpoint. HR Intern is
+    // dual-role (intern + employee), so block her from looking up anyone
+    // ELSE's payroll but let her see her own.
     const actorRole = await actorRoleOf(req);
-    if (actorRole === 'hr_intern') return res.status(403).json({ error: 'Interns cannot view payroll' });
+    if (actorRole === 'hr_intern') {
+      const ownEmpId = await actorOwnEmployeeId(req);
+      if (!ownEmpId || ownEmpId !== req.params.employee_id) {
+        return res.status(403).json({ error: 'Interns can only view their own payslip' });
+      }
+    }
     res.json(await sql`SELECT * FROM payroll_records WHERE employee_id=${req.params.employee_id} ORDER BY year DESC, month DESC`);
   } catch (err) { res.status(500).json({ error: 'Server error' }); }
 });
