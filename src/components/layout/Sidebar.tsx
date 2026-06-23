@@ -153,6 +153,9 @@ export default function Sidebar({ mobileOpen = false, onMobileClose }: { mobileO
     groups.push(settingsGroup);
   } else if (isHRIntern) {
     // Trimmed-down Workspace — no Payroll, no Performance, no Settings.
+    // IT & Repairs is full access (same backend endpoints as HR Manager
+    // gets — assets, vendors, repair tickets aren't role-gated at the
+    // API layer, only at the route).
     groups.push({
       id: 'workspace-intern',
       label: 'Workspace',
@@ -161,6 +164,7 @@ export default function Sidebar({ mobileOpen = false, onMobileClose }: { mobileO
         { to: '/employees', icon: Users, label: 'People' },
         { to: '/attendance', icon: Clock3, label: 'Attendance' },
         { to: '/leave', icon: CalendarDays, label: 'Time off' },
+        { to: '/asset-repairs', icon: Wrench, label: 'IT & Repairs' },
       ],
     });
   } else if (isCoord) {
