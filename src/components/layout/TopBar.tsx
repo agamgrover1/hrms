@@ -296,21 +296,26 @@ export default function TopBar({ title, onMenuClick }: Props) {
 
   const unread = notifications.filter(n => !n.is_read).length;
 
-  const fetchNotifications = () => {
+  const fetchNotifications = (opts: { showToasts?: boolean } = {}) => {
     if (!user?.id) return;
     api.getNotifications(user.id)
       .then(rows => {
         setNotifications(rows);
-        // First fetch after sign-in / refresh: just seed the high-water mark
-        // so we don't blast a history of unread items as toasts. Subsequent
-        // polls compare against this mark.
         const maxId = Math.max(0, ...rows.map((n: any) => Number(n.id) || 0));
         if (!seededRef.current) {
-          // Restore the last-seen id from localStorage if present so a tab
-          // refresh while signed in doesn't replay everything.
+          // First fetch after sign-in / refresh: just seed the high-water
+          // mark so we don't blast a history of unread items as toasts.
           const stored = Number(localStorage.getItem(`notif_seen_${user.id}`) || 0);
           lastSeenIdRef.current = Math.max(stored, maxId);
           seededRef.current = true;
+          return;
+        }
+        // Toast pop-ups only fire if the caller asked for them. With the
+        // background poll removed, the only caller (bell click) suppresses
+        // toasts because the dropdown already shows the same content.
+        if (!opts.showToasts) {
+          lastSeenIdRef.current = maxId;
+          try { localStorage.setItem(`notif_seen_${user.id}`, String(maxId)); } catch { /* quota */ }
           return;
         }
         const fresh = rows.filter((n: any) => Number(n.id) > lastSeenIdRef.current);
@@ -325,25 +330,14 @@ export default function TopBar({ title, onMenuClick }: Props) {
   };
 
   useEffect(() => {
+    // Background notification poll removed entirely (was every 30s × every
+    // signed-in tab — ~46k requests / workday for 40 users, ~25 min of
+    // Vercel Active CPU + matching Neon egress every day). The bell now
+    // fetches on demand: once on mount + each time the user clicks it.
+    // No interval, no focus listener, no toast pop-ups for "new since last
+    // poll". If you want live notifications back, switch to SSE on the
+    // server side; polling won't scale on a free-tier compute budget.
     fetchNotifications();
-    // 30s poll — was 8s, which was burning Vercel Fluid Active CPU much
-    // faster than the perceived "live" benefit justified. 30s still
-    // surfaces comments / approvals / leave requests reasonably fast and
-    // the visibilitychange handler below means returning to the tab
-    // refetches immediately anyway.
-    pollRef.current = setInterval(fetchNotifications, 30000);
-    // Bonus: refetch the moment the tab regains focus. If the user was
-    // away from the tab for 5 minutes, they don't have to wait another
-    // poll cycle — they get fresh state immediately on return.
-    const onFocus = () => fetchNotifications();
-    const onVisible = () => { if (document.visibilityState === 'visible') fetchNotifications(); };
-    window.addEventListener('focus', onFocus);
-    document.addEventListener('visibilitychange', onVisible);
-    return () => {
-      if (pollRef.current) clearInterval(pollRef.current);
-      window.removeEventListener('focus', onFocus);
-      document.removeEventListener('visibilitychange', onVisible);
-    };
   }, [user?.id]);
 
   // Per-toast dismiss + auto-dismiss after 7s. Click-to-navigate uses the
@@ -392,6 +386,9 @@ export default function TopBar({ title, onMenuClick }: Props) {
   };
 
   const handleBellClick = () => {
+    // Refetch on each open so the list is fresh — replaces the old
+    // background poll. Cheap: one query per bell open, not every 30s.
+    if (!showNotifs) fetchNotifications();
     setShowNotifs(v => !v);
     setShowMenu(false);
   };
@@ -435,13 +432,10 @@ export default function TopBar({ title, onMenuClick }: Props) {
             className="relative p-2 rounded-full hover:bg-surface-2 transition-colors"
             title="Notifications"
           >
-            <Bell size={18} className={unread ? 'text-on-surface' : 'text-on-surface-muted'} />
-            {unread > 0 && (
-              <span className="absolute -top-0.5 -right-0.5 min-w-[18px] h-[18px] px-1 flex items-center justify-center rounded-full text-[10px] font-bold text-white"
-                style={{ background: '#EE2770' }}>
-                {unread > 99 ? '99+' : unread}
-              </span>
-            )}
+            {/* Bell count badge removed — relied on a 30s background poll
+                that was eating Active CPU + Neon egress. The list still
+                refreshes when the user opens it. */}
+            <Bell size={18} className="text-on-surface-muted" />
           </button>
 
           {showNotifs && (

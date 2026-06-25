@@ -265,6 +265,40 @@ async function actorOwnEmployeeId(req: any): Promise<string | null> {
   } catch { return null; }
 }
 
+// ── Tiny in-memory TTL cache ─────────────────────────────────────────────
+// Used to short-circuit heavy aggregation endpoints (hours-summary, finance
+// compute, pulse/team) — each one of those was running multi-table JOINs +
+// per-employee work on EVERY page load. Caching the result for 60s on a
+// per-key basis cuts CPU + Neon egress for those endpoints by an order of
+// magnitude without any meaningful staleness.
+//
+// Lives in module scope so it survives within a Lambda instance. Vercel
+// kills idle instances after ~10 min, so the cache effectively self-clears
+// on quiet periods. No background timer / no Set TTL — entries lazily
+// expire when read.
+//
+// CAVEAT: serverless = multiple Lambda instances. Each instance has its
+// own cache, so a write on instance A doesn't invalidate instance B. For
+// these aggregation endpoints that's fine — they're read-only and a
+// stale 60s window across instances doesn't matter. If you ever cache a
+// write-sensitive result, expose an invalidate() helper.
+type CacheEntry<T> = { value: T; expiresAt: number };
+const _memoCache = new Map<string, CacheEntry<any>>();
+async function memoTtl<T>(key: string, ttlMs: number, compute: () => Promise<T>): Promise<T> {
+  const now = Date.now();
+  const hit = _memoCache.get(key);
+  if (hit && hit.expiresAt > now) return hit.value as T;
+  const value = await compute();
+  _memoCache.set(key, { value, expiresAt: now + ttlMs });
+  // Keep the cache bounded — if it grows too large, drop the oldest.
+  // 200 entries covers ~all month/year combos × all unique query keys.
+  if (_memoCache.size > 200) {
+    const firstKey = _memoCache.keys().next().value;
+    if (firstKey) _memoCache.delete(firstKey);
+  }
+  return value;
+}
+
 // ── Startup migrations (idempotent — safe to run on every cold start) ────
 let _migrated = false;
 
@@ -3662,7 +3696,15 @@ app.get('/api/performance/pulse/team', async (req, res) => {
     const now = new Date();
     const isCurrent = !reqMonth || !reqYear ||
       (reqMonth === now.getUTCMonth() + 1 && reqYear === now.getUTCFullYear());
-    const team = isCurrent ? await sql`
+    // 60s in-memory cache keyed by (manager, month/year). Same manager hitting
+    // refresh on the pulse page rapidly: only the first call runs the JOIN-
+    // heavy snapshot lookup; subsequent calls within 60s return the cached
+    // payload. Pulse snapshots are computed nightly so 60s freshness is fine.
+    const result = await memoTtl(
+      `pulseTeam:${mgrEmpId}:${isCurrent ? 'current' : `${reqMonth}-${reqYear}`}`,
+      60_000,
+      async () => {
+        const team = isCurrent ? await sql`
       SELECT e.id, e.name, e.avatar, e.department, e.designation,
              s.total_score, s.band, s.discipline, s.hours_hygiene, s.output, s.contribution,
              s.manager_pulse, s.team_stewardship, s.project_hygiene, s.client_handling, s.is_baseline, s.snapshot_date
@@ -3692,10 +3734,13 @@ app.get('/api/performance/pulse/team', async (req, res) => {
       SELECT employee_id, rating FROM performance_manager_pulse
       WHERE manager_id=${mgrEmpId} AND week_start=${weekStart}::date` as any[];
     const rated = new Set(pulses.map(p => p.employee_id));
-    res.json({
-      team: team.map(t => ({ ...t, pulse_rated_this_week: rated.has(t.id), week_start: weekStart })),
-      week_start: weekStart,
-    });
+        return {
+          team: team.map(t => ({ ...t, pulse_rated_this_week: rated.has(t.id), week_start: weekStart })),
+          week_start: weekStart,
+        };
+      }
+    );
+    res.json(result);
   } catch (err: any) { res.status(500).json({ error: err.message ?? 'Server error' }); }
 });
 
@@ -9225,7 +9270,12 @@ app.get('/api/hours-summary', async (req, res) => {
     const month = req.query.month ? Number(req.query.month) : null;
     const year = req.query.year ? Number(req.query.year) : null;
     if (!month || !year) return res.status(400).json({ error: 'month and year are required' });
-    const byEmployee = await sql`
+    // 60s in-memory cache — this endpoint runs ~6 aggregations and a per-
+    // employee map every call, and is hit on every Project Hours page
+    // load. The underlying hour logs / assignments don't change second-
+    // to-second; 60s freshness is plenty for a capacity grid.
+    const result = await memoTtl(`hoursSummary:${month}:${year}`, 60_000, async () => {
+      const byEmployee = await sql`
       SELECT employee_id, COALESCE(MAX(employee_name),'') AS employee_name,
         SUM(COALESCE(w1_hours,0))::numeric AS w1,
         SUM(COALESCE(w2_hours,0))::numeric AS w2,
@@ -9392,17 +9442,19 @@ app.get('/api/hours-summary', async (req, res) => {
         total_admin_edits: Number(edits.total_admin_edits ?? 0),
       };
     });
-    res.json({
-      month, year,
-      employees: employeeRows,
-      total_allocated: Number((totals as any[])[0]?.total_allocated || 0),
-      total_logged_approved: Number((logTotals as any[])[0]?.total_approved || 0),
-      total_logged_pending: Number((logTotals as any[])[0]?.total_pending || 0),
-      total_logged_within_plan: Number((logTotals as any[])[0]?.total_within_plan || 0),
-      total_logged_over_plan: Number((logTotals as any[])[0]?.total_over_plan || 0),
-      over_plan_log_count: Number((logTotals as any[])[0]?.over_plan_log_count || 0),
-      pending_review_count: Number((logTotals as any[])[0]?.pending_count || 0),
+      return {
+        month, year,
+        employees: employeeRows,
+        total_allocated: Number((totals as any[])[0]?.total_allocated || 0),
+        total_logged_approved: Number((logTotals as any[])[0]?.total_approved || 0),
+        total_logged_pending: Number((logTotals as any[])[0]?.total_pending || 0),
+        total_logged_within_plan: Number((logTotals as any[])[0]?.total_within_plan || 0),
+        total_logged_over_plan: Number((logTotals as any[])[0]?.total_over_plan || 0),
+        over_plan_log_count: Number((logTotals as any[])[0]?.over_plan_log_count || 0),
+        pending_review_count: Number((logTotals as any[])[0]?.pending_count || 0),
+      };
     });
+    res.json(result);
   } catch (err: any) { res.status(500).json({ error: err.message || 'Server error' }); }
 });
 
@@ -9641,7 +9693,15 @@ async function finGetSettings() {
 }
 
 // The CFO engine for a single month — mirrors the standalone finance app.
+// Wrapped in a 60s in-memory cache because EVERY finance page load
+// (dashboard, P&L, snapshots, year view) calls this and recomputes the
+// same JOIN-heavy aggregation. The underlying data (invoices, expenses,
+// salary, etc.) doesn't change second-to-second; 60s freshness is plenty.
 async function finComputeMonth(month: number, year: number) {
+  return memoTtl(`finComputeMonth:${month}:${year}`, 60_000, () => _finComputeMonthUncached(month, year));
+}
+
+async function _finComputeMonthUncached(month: number, year: number) {
   const settings = await finGetSettings();
   const defCap = settings.working_hours_per_month;
 
