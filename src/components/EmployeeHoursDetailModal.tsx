@@ -4,6 +4,7 @@ import { api } from '../services/api';
 import { useAuth } from '../context/AuthContext';
 import { toast } from './Toaster';
 import { formatWeekDays, isCurrentWeekOfMonth, isEmptyWeek } from '../utils/weekRange';
+import { ProjectDailyActivityModal } from '../pages/Projects';
 
 interface Props {
   employeeId: string;
@@ -91,6 +92,11 @@ export default function EmployeeHoursDetailModal({ employeeId, employeeName, mon
     user?.role === 'admin' || user?.role === 'hr_manager' ||
     user?.role === 'project_coordinator' || user?.role === 'employee';
   const [editingAlloc, setEditingAlloc] = useState<AssignmentRow | null>(null);
+  // Drill-in further — clicking the project name on a row opens the
+  // ProjectDailyActivityModal so the viewer can see the full project's
+  // month (who's allocated, per-day logged hours, plan-vs-actual). Same
+  // modal pattern as the Projects page so the visual stays consistent.
+  const [openProject, setOpenProject] = useState<{ id: string; name: string; client_name: string | null } | null>(null);
   const [pendingAllocs, setPendingAllocs] = useState<Set<string>>(new Set());
 
   const reload = () => {
@@ -323,13 +329,22 @@ export default function EmployeeHoursDetailModal({ employeeId, employeeName, mon
                           return (
                             <tr key={a.id} className="hover:bg-surface-2/40 transition-colors">
                               <td className="px-4 py-2">
-                                <p className="font-semibold text-on-surface leading-tight">
-                                  {a.project_flag && (
-                                    <span className={`inline-block w-1.5 h-1.5 rounded-full mr-1.5 align-middle ${a.project_flag === 'red' ? 'bg-danger' : 'bg-warning'}`} />
-                                  )}
-                                  {a.project_name}
-                                </p>
-                                {a.project_client_name && <p className="text-[10px] text-on-surface-muted">{a.project_client_name}</p>}
+                                <button
+                                  onClick={() => setOpenProject({
+                                    id: a.project_id,
+                                    name: a.project_name ?? '',
+                                    client_name: a.project_client_name ?? null,
+                                  })}
+                                  title="Open project — see who's allocated, logged hours, plan vs actual"
+                                  className="text-left group">
+                                  <p className="font-semibold text-on-surface leading-tight group-hover:text-accent transition-colors">
+                                    {a.project_flag && (
+                                      <span className={`inline-block w-1.5 h-1.5 rounded-full mr-1.5 align-middle ${a.project_flag === 'red' ? 'bg-danger' : 'bg-warning'}`} />
+                                    )}
+                                    {a.project_name}
+                                  </p>
+                                  {a.project_client_name && <p className="text-[10px] text-on-surface-muted">{a.project_client_name}</p>}
+                                </button>
                               </td>
                               {[a.w1_hours, a.w2_hours, a.w3_hours, a.w4_hours, a.w5_hours].map((h, i) => (
                                 <td key={i} className="px-2 py-2 text-center">
@@ -696,6 +711,15 @@ export default function EmployeeHoursDetailModal({ employeeId, employeeName, mon
           year={year}
           onClose={() => setEditingAlloc(null)}
           onSubmitted={() => { setEditingAlloc(null); reload(); }}
+        />
+      )}
+      {/* Project drill-in. Reuses the same daily-activity modal the
+          /projects page exposes, so HR / managers / coords see one
+          consistent layout regardless of where they jumped in from. */}
+      {openProject && (
+        <ProjectDailyActivityModal
+          project={openProject as any}
+          onClose={() => setOpenProject(null)}
         />
       )}
     </div>
