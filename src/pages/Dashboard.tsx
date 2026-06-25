@@ -1,4 +1,4 @@
-import { useEffect, useState, type ReactNode } from 'react';
+import { useEffect, useMemo, useState, type ReactNode } from 'react';
 import {
   AreaChart, Area, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, PieChart, Pie, Cell
 } from 'recharts';
@@ -44,6 +44,148 @@ function toDateStr(val: any): string {
     return d.toISOString().slice(0, 10);
   }
   return s.slice(0, 10);
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// "Out today" widget — surfaces who is on leave / short leave / half day
+// for the current calendar day. Visible to every signed-in user (both
+// admin Dashboard and the employee landing) so the org knows who is
+// reachable before pinging them.
+//
+// Data path: parent passes in the already-loaded leaveRequests array +
+// employees lookup so we don't hit the API again. We filter:
+//   - status NOT IN ('rejected', 'cancelled') AND today between
+//     from_date and to_date (inclusive). Half-day / short-leave rows
+//     still surface — they are partially out, which the chip makes clear.
+//   - HR-stage rejection or any rejection drops the row entirely.
+// ─────────────────────────────────────────────────────────────────────────
+
+const LEAVE_TONE: Record<string, { bg: string; text: string; ring: string; dot: string }> = {
+  full_day:    { bg: 'bg-brand/10',    text: 'text-brand',    ring: 'ring-brand/20',    dot: 'bg-brand' },
+  casual:      { bg: 'bg-success/10',  text: 'text-success',  ring: 'ring-success/20',  dot: 'bg-success' },
+  sick:        { bg: 'bg-danger/10',   text: 'text-danger',   ring: 'ring-danger/20',   dot: 'bg-danger' },
+  earned:      { bg: 'bg-accent/10',   text: 'text-accent',   ring: 'ring-accent/20',   dot: 'bg-accent' },
+  half_day:    { bg: 'bg-warning/10',  text: 'text-warning',  ring: 'ring-warning/20',  dot: 'bg-warning' },
+  short_leave: { bg: 'bg-warning/10',  text: 'text-warning',  ring: 'ring-warning/20',  dot: 'bg-warning' },
+  unpaid:      { bg: 'bg-surface-3',   text: 'text-on-surface-muted', ring: 'ring-outline', dot: 'bg-on-surface-subtle' },
+};
+
+function OutTodayCard({ leaveRequests, employees, todayStr }: {
+  leaveRequests: any[];
+  employees: any[];
+  todayStr: string;
+}) {
+  const empById = useMemo(() => {
+    const m = new Map<string, any>();
+    for (const e of employees) m.set(e.id, e);
+    return m;
+  }, [employees]);
+
+  const out = useMemo(() => {
+    const rows = leaveRequests
+      .filter((l: any) => l.status !== 'rejected' && l.status !== 'cancelled')
+      .filter((l: any) => {
+        const from = (l.from_date ?? '').slice(0, 10);
+        const to   = (l.to_date   ?? '').slice(0, 10);
+        return from && to && from <= todayStr && todayStr <= to;
+      })
+      .map((l: any) => {
+        const emp = empById.get(l.employee_id);
+        return {
+          id: l.id,
+          name: emp?.name ?? l.employee_name ?? 'Employee',
+          designation: emp?.designation ?? '',
+          avatar: emp?.avatar,
+          type: l.type,
+          slot: l.slot,
+          to_date: (l.to_date ?? '').slice(0, 10),
+          isPending: l.status === 'pending',
+        };
+      })
+      // Sort alphabetically — stable, predictable scan order.
+      .sort((a, b) => a.name.localeCompare(b.name));
+    return rows;
+  }, [leaveRequests, empById, todayStr]);
+
+  // Compute a friendly "back …" label. Same day = back tomorrow,
+  // otherwise show the calendar return day.
+  const returnLabel = (toDateStr: string): string => {
+    if (!toDateStr) return '';
+    // Treat to_date as INCLUSIVE — employee is back the day after.
+    const back = new Date(toDateStr + 'T00:00:00');
+    back.setDate(back.getDate() + 1);
+    // Skip Sundays — if they'd "return" on a Sunday, push to Monday.
+    if (back.getDay() === 0) back.setDate(back.getDate() + 1);
+    const today = new Date(todayStr + 'T00:00:00');
+    const diffDays = Math.round((back.getTime() - today.getTime()) / 86_400_000);
+    if (diffDays <= 1) return 'back tomorrow';
+    if (diffDays <= 7) return `back ${back.toLocaleDateString('en-IN', { weekday: 'short' })}`;
+    return `back ${back.toLocaleDateString('en-IN', { day: 'numeric', month: 'short' })}`;
+  };
+
+  return (
+    <div className="bg-surface rounded-xl-2 border border-outline shadow-elev-1 overflow-hidden flex flex-col">
+      <div className="flex items-center justify-between px-5 py-4 border-b border-outline">
+        <div>
+          <p className="text-[10px] uppercase tracking-[0.18em] font-bold text-on-surface-subtle">Out today</p>
+          <h3 className="font-display text-base font-bold text-on-surface mt-0.5">
+            {out.length === 0
+              ? "Full house"
+              : out.length === 1
+                ? "1 person away"
+                : `${out.length} people away`}
+          </h3>
+        </div>
+        {out.length > 0 && (
+          <span className="inline-flex items-center gap-1 text-[10px] font-semibold text-on-surface-subtle">
+            <span className="num-mono">{new Date().toLocaleDateString('en-IN', { weekday: 'short', day: 'numeric', month: 'short' })}</span>
+          </span>
+        )}
+      </div>
+
+      {out.length === 0 ? (
+        <div className="flex-1 flex flex-col items-center justify-center px-5 py-10 text-center">
+          <div className="w-12 h-12 rounded-full bg-success-container flex items-center justify-center mb-3">
+            <CheckCircle2 size={20} className="text-success" />
+          </div>
+          <p className="text-sm font-semibold text-on-surface">Everyone's in today.</p>
+          <p className="text-xs text-on-surface-subtle mt-0.5">No approved or pending leaves on the books.</p>
+        </div>
+      ) : (
+        <ul className="divide-y divide-outline max-h-[280px] overflow-y-auto">
+          {out.map(r => {
+            const tone = LEAVE_TONE[r.type] ?? LEAVE_TONE.full_day;
+            const back = returnLabel(r.to_date);
+            return (
+              <li key={r.id} className="px-5 py-3 flex items-center gap-3 hover:bg-surface-2/50 transition-colors">
+                <div className="w-9 h-9 rounded-full bg-brand-container text-on-brand-container flex items-center justify-center text-xs font-bold flex-shrink-0">
+                  {r.avatar || r.name.split(' ').map((n: string) => n[0]).slice(0, 2).join('').toUpperCase()}
+                </div>
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-center gap-1.5 min-w-0">
+                    <p className="text-sm font-semibold text-on-surface truncate">{r.name}</p>
+                    {r.isPending && (
+                      <span className="text-[9px] font-bold uppercase tracking-wider text-warning bg-warning-container px-1.5 py-0.5 rounded-full">Pending</span>
+                    )}
+                  </div>
+                  {r.designation && (
+                    <p className="text-[11px] text-on-surface-subtle truncate">{r.designation}</p>
+                  )}
+                </div>
+                <div className="flex flex-col items-end gap-1 flex-shrink-0">
+                  <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-semibold capitalize ring-1 ${tone.bg} ${tone.text} ${tone.ring}`}>
+                    <span className={`w-1.5 h-1.5 rounded-full ${tone.dot}`} />
+                    {leaveTypeLabel(r.type, r.slot)}
+                  </span>
+                  <span className="text-[10px] text-on-surface-subtle">{back}</span>
+                </div>
+              </li>
+            );
+          })}
+        </ul>
+      )}
+    </div>
+  );
 }
 
 export default function Dashboard() {
@@ -226,6 +368,9 @@ export default function Dashboard() {
     <EmployeeDashboardView
       announcements={announcements}
       upcomingEvents={upcomingEvents}
+      leaveRequests={leaveRequests}
+      employees={employees}
+      todayStr={todayStr}
     />
   );
 
@@ -450,6 +595,10 @@ export default function Dashboard() {
           </div>
         </div>
       </div>
+
+      {/* Who's out today — surfaced above the headcount band so it's the
+          first "team availability" read after the KPI hero. */}
+      <OutTodayCard leaveRequests={leaveRequests} employees={employees} todayStr={todayStr} />
 
       {/* Headcount growth + Pending leaves + Recent activity */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
@@ -1011,8 +1160,12 @@ function ManageAnnouncementsModal({ isAdminOrHR, currentItems, onClose, onChange
 // same Company Announcements + Coming up widgets the admin Dashboard has.
 // ─────────────────────────────────────────────────────────────────────────
 
-function EmployeeDashboardView({ announcements, upcomingEvents }: {
+function EmployeeDashboardView({ announcements, upcomingEvents, leaveRequests, employees, todayStr: outTodayStr }: {
   announcements: any[]; upcomingEvents: any[];
+  // Pre-loaded org-wide data from the parent Dashboard so we don't refetch.
+  // Used by the "Out today" widget — visible to employees so they know who
+  // on the team is unreachable before pinging.
+  leaveRequests: any[]; employees: any[]; todayStr: string;
 }) {
   const { user } = useAuth();
   const isAdminOrHR = user?.role === 'admin' || user?.role === 'hr_manager';
@@ -1141,6 +1294,9 @@ function EmployeeDashboardView({ announcements, upcomingEvents }: {
           </div>
         </div>
       </section>
+
+      {/* ── Who's out today — visible to everyone for team availability ───── */}
+      <OutTodayCard leaveRequests={leaveRequests} employees={employees} todayStr={outTodayStr} />
 
       {/* ── Personal KPI tiles ──────────────────────────────────────────────── */}
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
