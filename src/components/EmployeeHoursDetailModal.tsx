@@ -232,13 +232,17 @@ export default function EmployeeHoursDetailModal({ employeeId, employeeName, mon
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-bg/60 backdrop-blur-sm p-4" onClick={onClose}>
       <div className="bg-surface rounded-2xl shadow-elev-4 border border-outline w-full max-w-3xl max-h-[88vh] overflow-hidden flex flex-col"
         onClick={e => e.stopPropagation()}>
-        {/* Header */}
-        <div className="relative aurora-bg text-white px-6 py-5 overflow-hidden">
-          <div className="absolute inset-0 grain-overlay pointer-events-none" />
+        {/* Header — aurora background lives on the wrapper, but the
+            grain overlay is the one that needs clipping (it tiles with a
+            mix-blend-mode and would otherwise leak past the rounded
+            corners). Removing overflow-hidden from the wrapper means
+            long names with descenders no longer get bottom-clipped. */}
+        <div className="relative aurora-bg text-white px-6 py-5">
+          <div className="absolute inset-0 grain-overlay pointer-events-none overflow-hidden" />
           <div className="relative flex items-start justify-between gap-3">
-            <div>
+            <div className="min-w-0 flex-1">
               <p className="text-[10px] uppercase tracking-[0.18em] font-semibold text-white/70">Project hours · {MONTHS[month - 1]} {year}</p>
-              <h3 className="font-display text-2xl font-bold tracking-tight mt-1">{employeeName}</h3>
+              <h3 className="font-display text-2xl font-bold tracking-tight leading-snug mt-1 break-words">{employeeName}</h3>
               <div className="flex items-center gap-4 mt-3">
                 <div>
                   <p className="text-[10px] uppercase tracking-[0.16em] text-white/55 font-semibold">Approved</p>

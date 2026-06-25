@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { Users as UsersIcon, AlertTriangle, Calendar, ChevronRight } from 'lucide-react';
 import { api } from '../services/api';
 import EmployeeHoursDetailModal from '../components/EmployeeHoursDetailModal';
+import { formatWeekDays, isCurrentWeekOfMonth, isEmptyWeek } from '../utils/weekRange';
 
 type UtilGroupKey = 'none' | 'manager' | 'department';
 
@@ -21,6 +22,11 @@ export default function HoursUtilization() {
   const [month, setMonth] = useState(now.getMonth() + 1);
   const [year, setYear] = useState(now.getFullYear());
   const [groupBy, setGroupBy] = useState<UtilGroupKey>('none');
+  // Scope = whether the page reads the whole month or a single W1..W5
+  // bucket. Default to monthly because that's the most common ask;
+  // weekly is the "is anyone overloaded right now" view.
+  const [scope, setScope] = useState<'month' | 'week'>('month');
+  const [week, setWeek] = useState<number>(Math.min(5, Math.max(1, Math.ceil(now.getDate() / 7))));
   const [data, setData] = useState<Awaited<ReturnType<typeof api.getHoursUtilization>> | null>(null);
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState('');
@@ -30,11 +36,11 @@ export default function HoursUtilization() {
 
   useEffect(() => {
     setLoading(true); setErr('');
-    api.getHoursUtilization(month, year)
+    api.getHoursUtilization(month, year, scope === 'week' ? week : undefined)
       .then(setData)
       .catch(e => setErr(e.message))
       .finally(() => setLoading(false));
-  }, [month, year]);
+  }, [month, year, scope, week]);
 
   const groups = useMemo(() => {
     if (!data) return [];
@@ -66,9 +72,11 @@ export default function HoursUtilization() {
         <div>
           <h1 className="font-display text-2xl font-bold tracking-tight text-on-surface">Direct staff utilization</h1>
           <p className="text-sm text-on-surface-muted mt-0.5">
-            {data?.scope === 'team'
-              ? <>Your team's planned hours vs. monthly capacity. <span className="text-on-surface-subtle">No salary or cost data shown.</span></>
-              : <>Everyone on direct-cost work this month. <span className="text-on-surface-subtle">Hours only — no salary breakdown.</span></>}
+            {scope === 'week'
+              ? <>Planned hours vs. capacity for <span className="font-semibold text-on-surface">W{week}</span> {data?.week_range ? <span className="text-on-surface-subtle">({FULL_MONTHS[month - 1]} {data.week_range.start_day}–{data.week_range.end_day} · {data.week_range.working_days} working days · {data.total?.capacity ?? 0}h/person target)</span> : null}</>
+              : data?.scope === 'team'
+                ? <>Your team's planned hours vs. monthly capacity. <span className="text-on-surface-subtle">No salary or cost data shown.</span></>
+                : <>Everyone on direct-cost work this month. <span className="text-on-surface-subtle">Hours only — no salary breakdown.</span></>}
           </p>
         </div>
         <div className="flex items-center gap-2 flex-wrap">
@@ -83,6 +91,48 @@ export default function HoursUtilization() {
               {[year - 1, year, year + 1].map(y => <option key={y} value={y}>{y}</option>)}
             </select>
           </div>
+          {/* Scope toggle — Month (default) vs Week. Weekly mode reveals a
+              W1..W5 selector. The selected week's date range + working-day
+              count is surfaced in the subtitle so it's clear which days
+              the capacity number is built from. */}
+          <div className="inline-flex items-center gap-1 bg-surface-2 border border-outline rounded-lg p-0.5">
+            <span className="text-[10px] uppercase tracking-[0.14em] font-bold text-on-surface-subtle pl-1.5">View</span>
+            {([
+              { key: 'month', label: 'Month' },
+              { key: 'week',  label: 'Week'  },
+            ] as Array<{ key: 'month' | 'week'; label: string }>).map(opt => (
+              <button key={opt.key} onClick={() => setScope(opt.key)}
+                className={`px-3 py-1.5 rounded-md text-xs font-semibold transition-colors ${
+                  scope === opt.key ? 'bg-accent text-on-accent' : 'text-on-surface-muted hover:text-on-surface'
+                }`}>{opt.label}</button>
+            ))}
+          </div>
+          {scope === 'week' && (
+            <div className="inline-flex items-center gap-0.5 bg-surface-2 border border-outline rounded-lg p-0.5">
+              {[1, 2, 3, 4, 5].map(w => {
+                const empty = isEmptyWeek(month, year, w);
+                const cur   = isCurrentWeekOfMonth(month, year, w);
+                const active = week === w;
+                return (
+                  <button key={w}
+                    onClick={() => !empty && setWeek(w)}
+                    disabled={empty}
+                    title={empty ? `${FULL_MONTHS[month - 1]} has no W${w} days` : `W${w} · ${formatWeekDays(month, year, w)}`}
+                    className={`px-2.5 py-1.5 rounded-md text-xs font-semibold transition-colors leading-tight text-center ${
+                      empty ? 'opacity-30 cursor-not-allowed'
+                      : active ? 'bg-accent text-on-accent'
+                      : cur ? 'text-accent hover:bg-accent/10'
+                      : 'text-on-surface-muted hover:text-on-surface'
+                    }`}>
+                    <div>W{w}</div>
+                    <div className="text-[9px] font-normal opacity-80 normal-case tracking-normal">
+                      {empty ? '—' : formatWeekDays(month, year, w)}
+                    </div>
+                  </button>
+                );
+              })}
+            </div>
+          )}
           <div className="inline-flex items-center gap-1 bg-surface-2 border border-outline rounded-lg p-0.5">
             <span className="text-[10px] uppercase tracking-[0.14em] font-bold text-on-surface-subtle pl-1.5">Group</span>
             {([
@@ -103,7 +153,7 @@ export default function HoursUtilization() {
 
       {/* Headline tiles */}
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-        <Tile label="Headcount" value={String(orgTotal?.headcount ?? 0)} sub="direct staff this month" />
+        <Tile label="Headcount" value={String(orgTotal?.headcount ?? 0)} sub={scope === 'week' ? `direct staff in W${week}` : 'direct staff this month'} />
         <Tile label="Allocated" value={hrs(orgTotal?.allocated ?? 0)} sub={`of ${hrs(orgTotal?.capacity ?? 0)} capacity`} tone="text-on-surface" />
         <Tile label="Bench" value={hrs(orgTotal?.bench ?? 0)} sub="hours not yet planned"
           tone={(orgTotal?.bench ?? 0) > 0 ? 'text-warning' : 'text-on-surface-subtle'} />

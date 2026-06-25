@@ -611,12 +611,15 @@ export const api = {
 
   // Direct staff utilization — admin / HR / coord see everyone (admin sees
   // costs; others get them stripped). Managers see their sub-tree only.
-  getHoursUtilization: (month?: number, year?: number) => {
+  getHoursUtilization: (month?: number, year?: number, week?: number) => {
     const qs = new URLSearchParams();
     if (month) qs.set('month', String(month));
     if (year) qs.set('year', String(year));
+    if (week)  qs.set('week',  String(week));
     return request<{
       month: number; year: number;
+      week?: number;
+      week_range?: { start_day: number; end_day: number; working_days: number };
       scope: 'org' | 'team';
       employees: Array<{
         id: string; name: string; designation: string | null; department: string | null;

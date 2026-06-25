@@ -9518,6 +9518,12 @@ app.get('/api/hours-utilization', async (req, res) => {
     await runStartupMigrations();
     const month = Number(req.query.month) || (new Date().getMonth() + 1);
     const year = Number(req.query.year) || new Date().getFullYear();
+    // Optional weekly view. When ?week=1..5 is passed, capacity / allocated
+    // / bench / utilization are computed for that week of the given month
+    // instead of the whole month. Useful for catching short-week
+    // overload that the monthly average hides.
+    const weekParam = req.query.week ? Number(req.query.week) : null;
+    const week = weekParam && weekParam >= 1 && weekParam <= 5 ? weekParam : null;
 
     // Identify caller
     const userId = req.header('x-user-id') || (req.query.__uid as string);
@@ -9552,6 +9558,75 @@ app.get('/api/hours-utilization', async (req, res) => {
       const ids = (subTree as any[]).map(r => r.id);
       if (ids.length === 0) return res.json({ month, year, employees: [], scope: 'team', total: { allocated: 0, capacity: 0, bench: 0, utilization: 0, headcount: 0 } });
       visibleIds = new Set(ids);
+    }
+
+    // ── Weekly view ─────────────────────────────────────────────────────
+    // Capacity is prorated by the actual weekday count in that bucket so
+    // a short W5 (e.g. days 29-30 only) returns realistic numbers, not
+    // 35h capacity against a 2-day window.
+    if (week !== null) {
+      // Reuse the monthly model to identify direct-cost employees (so the
+      // weekly view shows the SAME set of people as the monthly view —
+      // no surprises). We only need ids + meta here, not the costed nums.
+      const model = await finComputeMonth(month, year);
+      let baseRows = (model.employeeRows as any[]).filter(e => e.cost_type === 'direct');
+      if (visibleIds) baseRows = baseRows.filter(e => visibleIds!.has(e.id));
+
+      // Compute the week's working-day count: weekdays in
+      // [startDay, endDay] of month. Mon-Fri count; Sat/Sun excluded.
+      // (If your org works Saturdays, swap to (dow !== 0).)
+      const lastDay = new Date(year, month, 0).getDate();
+      const startDay = (week - 1) * 7 + 1;
+      const endDay = Math.min(week * 7, lastDay);
+      let workingDays = 0;
+      for (let d = startDay; d <= endDay; d++) {
+        const dow = new Date(year, month - 1, d).getDay(); // 0=Sun..6=Sat
+        if (dow !== 0 && dow !== 6) workingDays++;
+      }
+      const weeklyCapacity = workingDays * 7; // 7h/day target
+
+      // Pull the per-employee allocated hours for THIS week in one shot.
+      // Branch on the week so we only sum the relevant column — single
+      // round-trip, no dynamic SQL gymnastics.
+      const empIds = baseRows.map(e => e.id);
+      const sumByWeek = async (w: number) => {
+        if (empIds.length === 0) return [] as any[];
+        if (w === 1) return await sql`SELECT employee_id, COALESCE(SUM(w1_hours),0)::numeric AS alloc FROM project_assignments WHERE month=${month} AND year=${year} AND employee_id=ANY(${empIds}::text[]) GROUP BY employee_id` as any[];
+        if (w === 2) return await sql`SELECT employee_id, COALESCE(SUM(w2_hours),0)::numeric AS alloc FROM project_assignments WHERE month=${month} AND year=${year} AND employee_id=ANY(${empIds}::text[]) GROUP BY employee_id` as any[];
+        if (w === 3) return await sql`SELECT employee_id, COALESCE(SUM(w3_hours),0)::numeric AS alloc FROM project_assignments WHERE month=${month} AND year=${year} AND employee_id=ANY(${empIds}::text[]) GROUP BY employee_id` as any[];
+        if (w === 4) return await sql`SELECT employee_id, COALESCE(SUM(w4_hours),0)::numeric AS alloc FROM project_assignments WHERE month=${month} AND year=${year} AND employee_id=ANY(${empIds}::text[]) GROUP BY employee_id` as any[];
+        return await sql`SELECT employee_id, COALESCE(SUM(w5_hours),0)::numeric AS alloc FROM project_assignments WHERE month=${month} AND year=${year} AND employee_id=ANY(${empIds}::text[]) GROUP BY employee_id` as any[];
+      };
+      const allocRows = await sumByWeek(week);
+      const allocBy = new Map<string, number>();
+      for (const r of allocRows) allocBy.set(r.employee_id, Number(r.alloc) || 0);
+
+      const weeklyRows = baseRows.map(e => {
+        const allocatedHours = allocBy.get(e.id) ?? 0;
+        const capacity = weeklyCapacity;
+        const benchHours = Math.max(0, capacity - allocatedHours);
+        const utilization = capacity > 0 ? allocatedHours / capacity : 0;
+        // Strip cost / salary for everyone except admin (mirrors monthly).
+        const { salary, rate, allocatedCost, benchCost, ...rest } = e;
+        const safe = isAdmin ? e : rest;
+        return { ...safe, allocatedHours, capacity, benchHours, utilization };
+      });
+      const totalAlloc = weeklyRows.reduce((s, e) => s + Number(e.allocatedHours), 0);
+      const totalCap = weeklyRows.reduce((s, e) => s + Number(e.capacity), 0);
+      const totalBench = weeklyRows.reduce((s, e) => s + Number(e.benchHours), 0);
+      return res.json({
+        month, year, week,
+        week_range: { start_day: startDay, end_day: endDay, working_days: workingDays },
+        scope: isAdminish ? 'org' : 'team',
+        employees: weeklyRows.sort((a, b) => (b.utilization ?? 0) - (a.utilization ?? 0)),
+        total: {
+          allocated: totalAlloc,
+          capacity: totalCap,
+          bench: totalBench,
+          utilization: totalCap > 0 ? totalAlloc / totalCap : 0,
+          headcount: weeklyRows.length,
+        },
+      });
     }
 
     const model = await finComputeMonth(month, year);
