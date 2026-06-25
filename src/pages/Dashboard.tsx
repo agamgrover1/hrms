@@ -205,15 +205,35 @@ export default function Dashboard() {
   const currentMonthName = MONTH_FULL[now.getMonth()];
   const todayStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
 
-  // Refetch leaves + attendance live so the "Pending leaves" widget,
-  // "Today's Attendance" tile, and "Recent activity" track current state
-  // without manual refresh.
+  // Live refresh on the dashboard used to refetch leaves + attendance on
+  // every tick. With ~40 employees and a workday window, those two queries
+  // alone were ~325KB per refresh and were burning the Neon 5GB monthly
+  // egress cap in days. They don't actually change second-to-second on a
+  // dashboard, so the background poll now only pulls the small "company
+  // news" surfaces (announcements + upcoming events).
   useLiveRefresh(() => {
-    api.getLeaveRequests().then(setLeaveRequests).catch(() => {});
-    api.getAttendance({ month: currentMonth, year: currentYear }).then(setAttendance).catch(() => {});
     api.getAnnouncements().then(setAnnouncements).catch(() => {});
     api.getUpcomingEvents(30).then(setUpcomingEvents).catch(() => {});
-  }, { intervalMs: 15000 });
+  });
+
+  // Heavy queries (leaves + attendance) fire ONCE on mount (the Promise.all
+  // below), then ONLY on tab refocus — so a user returning after lunch
+  // still gets fresh state, but an open-but-idle tab doesn't hammer Neon
+  // every 45s. Listening to both focus + visibilitychange covers tab-
+  // switching and window-switching.
+  useEffect(() => {
+    const refetchHeavy = () => {
+      api.getLeaveRequests().then(setLeaveRequests).catch(() => {});
+      api.getAttendance({ month: currentMonth, year: currentYear }).then(setAttendance).catch(() => {});
+    };
+    const onVisible = () => { if (document.visibilityState === 'visible') refetchHeavy(); };
+    window.addEventListener('focus', refetchHeavy);
+    document.addEventListener('visibilitychange', onVisible);
+    return () => {
+      window.removeEventListener('focus', refetchHeavy);
+      document.removeEventListener('visibilitychange', onVisible);
+    };
+  }, [currentMonth, currentYear]);
 
   // Company news widget state + upcoming events
   const [announcements, setAnnouncements] = useState<Array<any>>([]);
