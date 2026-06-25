@@ -330,14 +330,28 @@ export default function TopBar({ title, onMenuClick }: Props) {
   };
 
   useEffect(() => {
-    // Background notification poll removed entirely (was every 30s × every
-    // signed-in tab — ~46k requests / workday for 40 users, ~25 min of
-    // Vercel Active CPU + matching Neon egress every day). The bell now
-    // fetches on demand: once on mount + each time the user clicks it.
-    // No interval, no focus listener, no toast pop-ups for "new since last
-    // poll". If you want live notifications back, switch to SSE on the
-    // server side; polling won't scale on a free-tier compute budget.
-    fetchNotifications();
+    if (!user?.id) return;
+    fetchNotifications({ showToasts: true });
+    // 3-minute poll. Tuned for cost, not "live feel":
+    //   30s × every tab → ~46k requests / workday (the original, before
+    //                     anything was cut).
+    //   3min × every tab → ~3.2k requests / workday for 40 users x 2 tabs
+    //                      (~14× cheaper). A notification arriving up to 3
+    //                      min late is still functional — anything urgent
+    //                      lives on Slack / a direct ping.
+    // Focus + visibility listeners cover the "tab returned from background"
+    // case so a user coming back gets fresh state immediately. The bell
+    // click also refetches, so opening the dropdown is always current.
+    pollRef.current = setInterval(() => fetchNotifications({ showToasts: true }), 180_000);
+    const onFocus = () => fetchNotifications({ showToasts: true });
+    const onVisible = () => { if (document.visibilityState === 'visible') fetchNotifications({ showToasts: true }); };
+    window.addEventListener('focus', onFocus);
+    document.addEventListener('visibilitychange', onVisible);
+    return () => {
+      if (pollRef.current) clearInterval(pollRef.current);
+      window.removeEventListener('focus', onFocus);
+      document.removeEventListener('visibilitychange', onVisible);
+    };
   }, [user?.id]);
 
   // Per-toast dismiss + auto-dismiss after 7s. Click-to-navigate uses the
@@ -432,10 +446,13 @@ export default function TopBar({ title, onMenuClick }: Props) {
             className="relative p-2 rounded-full hover:bg-surface-2 transition-colors"
             title="Notifications"
           >
-            {/* Bell count badge removed — relied on a 30s background poll
-                that was eating Active CPU + Neon egress. The list still
-                refreshes when the user opens it. */}
-            <Bell size={18} className="text-on-surface-muted" />
+            <Bell size={18} className={unread ? 'text-on-surface' : 'text-on-surface-muted'} />
+            {unread > 0 && (
+              <span className="absolute -top-0.5 -right-0.5 min-w-[18px] h-[18px] px-1 flex items-center justify-center rounded-full text-[10px] font-bold text-white"
+                style={{ background: '#EE2770' }}>
+                {unread > 99 ? '99+' : unread}
+              </span>
+            )}
           </button>
 
           {showNotifs && (
