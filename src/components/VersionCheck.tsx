@@ -17,10 +17,33 @@ import { RefreshCw, X } from 'lucide-react';
 // leave reason or filing an hour log shouldn't have the tab yanked out
 // from under them. Show + let them choose.
 
-// 5-minute poll. Was 60s, which was hitting /api/__version every minute
-// per open tab — heavy on Vercel Active CPU for very little gain. Most
-// deploys aren't so urgent that users need a "5-min-stale" banner.
-const POLL_MS = 5 * 60_000;
+// Scheduled checks at 12:00 IST + 16:00 IST only — two fixed slots per
+// day instead of a continuous poll. Combined with the focus listener
+// below, that covers:
+//   - tabs left open through the workday → catch a morning deploy at noon,
+//     an afternoon deploy at 4pm
+//   - tab switched back at any time → instant check on focus
+// What we lose: real-time "deploy just landed" prompt mid-session. In
+// practice that's a Slack ping if it ever matters. Drops total polls
+// from ~7700/workday to ~2 scheduled + a handful of focus refetches per
+// user — roughly 50x fewer requests.
+const CHECK_HOURS_IST = [12, 16];
+
+// Milliseconds until the next IST hour-of-day slot. Returns a positive
+// integer; never zero (so consecutive scheduling can't deadlock).
+function msUntilNextIstSlot(hoursIST: number[]): number {
+  const IST_OFFSET_MIN = 5 * 60 + 30;
+  const now = new Date();
+  const nowIstMs = now.getTime() + IST_OFFSET_MIN * 60_000;
+  const nowIst = new Date(nowIstMs);
+  const currentMinute = nowIst.getUTCHours() * 60 + nowIst.getUTCMinutes();
+  const slotsMin = hoursIST.map(h => h * 60).sort((a, b) => a - b);
+  let nextMin = slotsMin.find(m => m > currentMinute);
+  // If no slot remains today, fall through to the first slot tomorrow.
+  if (nextMin == null) nextMin = slotsMin[0] + 24 * 60;
+  const minutesUntil = nextMin - currentMinute;
+  return Math.max(60_000, minutesUntil * 60_000 - nowIst.getUTCSeconds() * 1000);
+}
 
 export default function VersionCheck() {
   const [stale, setStale] = useState(false);
@@ -55,8 +78,27 @@ export default function VersionCheck() {
       } catch {/* network blip — try again next tick */}
     };
 
+    // Initial check on mount so the banner appears immediately if the tab
+    // is loading bytes that are already a deploy behind.
     check();
-    const id = window.setInterval(check, POLL_MS);
+
+    // Schedule check() at the next IST slot, then re-schedule after each
+    // fire. Using a chained setTimeout (not setInterval) means the slot
+    // calculation re-runs every time — so the schedule self-heals after
+    // a DST change, a laptop wake, or a tab that was paused by the
+    // browser's background-throttling. cancelled stops the chain on
+    // unmount.
+    let timeoutId: number;
+    const scheduleNext = () => {
+      const wait = msUntilNextIstSlot(CHECK_HOURS_IST);
+      timeoutId = window.setTimeout(() => {
+        if (cancelled) return;
+        check();
+        scheduleNext();
+      }, wait);
+    };
+    scheduleNext();
+
     // Re-check when the tab regains focus; an open tab left overnight is
     // exactly the case that benefits most from this prompt.
     const onFocus = () => check();
@@ -64,7 +106,7 @@ export default function VersionCheck() {
 
     return () => {
       cancelled = true;
-      window.clearInterval(id);
+      window.clearTimeout(timeoutId);
       window.removeEventListener('focus', onFocus);
     };
   }, [dismissedFor]);
