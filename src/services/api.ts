@@ -169,6 +169,17 @@ export const api = {
   managerApproveLeave: (id: string, data: { status: 'approved' | 'rejected'; manager_id: string; manager_name?: string; rejection_reason?: string; approver_note?: string }) =>
     request<any>(`/leave/requests/${id}/manager-approve`, { method: 'PATCH', body: JSON.stringify(data) }),
   getLeaveBalance: (employee_id: string) => request<any>(`/leave/balances/${employee_id}`),
+  // Lightweight org-wide "who's out today" lookup. Drives the dashboard
+  // widget on every signed-in landing page. Server caches the result for
+  // 60s so refreshes within the same minute return instantly.
+  getOutToday: () => request<{
+    today: string;
+    out: Array<{
+      id: string; employee_id: string;
+      name: string; designation: string; avatar: string;
+      type: string; slot: string | null; to_date: string;
+    }>;
+  }>(`/leaves/out-today`),
   updateLeaveBalance: (employee_id: string, data: { full_day?: number; short_leave?: number }) =>
     request<any>(`/leave/balances/${employee_id}`, { method: 'PATCH', body: JSON.stringify(data) }),
   backfillOptionalLeave: (data: { employee_id: string; date: string; reason?: string }) =>

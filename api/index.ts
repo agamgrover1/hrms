@@ -5819,6 +5819,49 @@ async function clearLeaveAttendance(employeeId: string, fromDate: string, toDate
 }
 
 // ── Leave ─────────────────────────────────────────────────────────────────
+// Lightweight "who's out today" endpoint. Used by the dashboard widget on
+// every signed-in user's landing page. Replaces the previous approach of
+// loading ALL leave requests + ALL employees client-side and filtering
+// there — which was ~150KB+ of payload and pulled history nobody needed.
+// Now:
+//   - Single SQL join, only columns the widget actually renders
+//   - Server-side filter to leaves that intersect today AND aren't
+//     rejected / cancelled
+//   - 60s in-memory cache (multi-tenant — same payload for all viewers,
+//     so one query per Lambda per minute regardless of how many users
+//     refresh)
+app.get('/api/leaves/out-today', async (req, res) => {
+  try {
+    // Compute "today" in IST since the org operates on IST and leave
+    // dates are stored as DATE (no time). Without IST, a user opening
+    // the dashboard at 1am IST (= 7:30pm UTC the previous day) would
+    // see yesterday's leaves as "today".
+    const istNow = new Date(Date.now() + (5 * 60 + 30) * 60_000);
+    const todayIso = istNow.toISOString().slice(0, 10);
+    const result = await memoTtl(`outToday:${todayIso}`, 60_000, async () => {
+      const rows = await sql`
+        SELECT lr.id,
+               lr.employee_id,
+               COALESCE(e.name, lr.employee_name)  AS name,
+               COALESCE(e.designation, '')          AS designation,
+               COALESCE(e.avatar, '')               AS avatar,
+               lr.type,
+               lr.slot,
+               lr.to_date::text                     AS to_date
+        FROM leave_requests lr
+        LEFT JOIN employees e ON e.id = lr.employee_id
+        WHERE lr.status NOT IN ('rejected', 'cancelled')
+          AND lr.from_date <= ${todayIso}::date
+          AND lr.to_date   >= ${todayIso}::date
+        ORDER BY COALESCE(e.name, lr.employee_name) ASC`;
+      return { today: todayIso, out: rows };
+    });
+    res.json(result);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message || 'Server error' });
+  }
+});
+
 app.get('/api/leave/requests', async (req, res) => {
   try {
     const { employee_id, status, reporting_manager_id } = req.query as any;

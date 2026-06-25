@@ -70,51 +70,30 @@ const LEAVE_TONE: Record<string, { bg: string; text: string; ring: string; dot: 
   unpaid:      { bg: 'bg-surface-3',   text: 'text-on-surface-muted', ring: 'ring-outline', dot: 'bg-on-surface-subtle' },
 };
 
-function OutTodayCard({ leaveRequests, employees, todayStr }: {
-  leaveRequests: any[];
-  employees: any[];
-  todayStr: string;
-}) {
-  const empById = useMemo(() => {
-    const m = new Map<string, any>();
-    for (const e of employees) m.set(e.id, e);
-    return m;
-  }, [employees]);
+function OutTodayCard() {
+  // Self-fetching — no longer depends on parent props. The dedicated
+  // /api/leaves/out-today endpoint returns only today's intersecting
+  // leaves with the columns the widget renders, and is 60s-cached
+  // server-side. Even a slow client gets a near-instant payload once
+  // the cache is warm (first user this minute primes it).
+  const [data, setData] = useState<Awaited<ReturnType<typeof api.getOutToday>> | null>(null);
+  const [loading, setLoading] = useState(true);
 
-  const out = useMemo(() => {
-    const rows = leaveRequests
-      .filter((l: any) => l.status !== 'rejected' && l.status !== 'cancelled')
-      .filter((l: any) => {
-        const from = (l.from_date ?? '').slice(0, 10);
-        const to   = (l.to_date   ?? '').slice(0, 10);
-        return from && to && from <= todayStr && todayStr <= to;
-      })
-      .map((l: any) => {
-        const emp = empById.get(l.employee_id);
-        return {
-          id: l.id,
-          name: emp?.name ?? l.employee_name ?? 'Employee',
-          designation: emp?.designation ?? '',
-          avatar: emp?.avatar,
-          type: l.type,
-          slot: l.slot,
-          to_date: (l.to_date ?? '').slice(0, 10),
-          isPending: l.status === 'pending',
-        };
-      })
-      // Sort alphabetically — stable, predictable scan order.
-      .sort((a, b) => a.name.localeCompare(b.name));
-    return rows;
-  }, [leaveRequests, empById, todayStr]);
+  useEffect(() => {
+    let cancelled = false;
+    api.getOutToday()
+      .then(d => { if (!cancelled) setData(d); })
+      .catch(() => { if (!cancelled) setData({ today: '', out: [] }); })
+      .finally(() => { if (!cancelled) setLoading(false); });
+    return () => { cancelled = true; };
+  }, []);
 
-  // Compute a friendly "back …" label. Same day = back tomorrow,
-  // otherwise show the calendar return day.
-  const returnLabel = (toDateStr: string): string => {
-    if (!toDateStr) return '';
-    // Treat to_date as INCLUSIVE — employee is back the day after.
+  // "back …" label. We accept the server-supplied `today` so we don't
+  // have to recompute IST vs UTC client-side.
+  const returnLabel = (toDateStr: string, todayStr: string): string => {
+    if (!toDateStr || !todayStr) return '';
     const back = new Date(toDateStr + 'T00:00:00');
     back.setDate(back.getDate() + 1);
-    // Skip Sundays — if they'd "return" on a Sunday, push to Monday.
     if (back.getDay() === 0) back.setDate(back.getDate() + 1);
     const today = new Date(todayStr + 'T00:00:00');
     const diffDays = Math.round((back.getTime() - today.getTime()) / 86_400_000);
@@ -123,51 +102,67 @@ function OutTodayCard({ leaveRequests, employees, todayStr }: {
     return `back ${back.toLocaleDateString('en-IN', { day: 'numeric', month: 'short' })}`;
   };
 
+  const out = data?.out ?? [];
+
   return (
     <div className="bg-surface rounded-xl-2 border border-outline shadow-elev-1 overflow-hidden flex flex-col">
       <div className="flex items-center justify-between px-5 py-4 border-b border-outline">
         <div>
           <p className="text-[10px] uppercase tracking-[0.18em] font-bold text-on-surface-subtle">Out today</p>
           <h3 className="font-display text-base font-bold text-on-surface mt-0.5">
-            {out.length === 0
-              ? "Full house"
-              : out.length === 1
-                ? "1 person away"
-                : `${out.length} people away`}
+            {loading
+              ? <span className="inline-block w-32 h-4 bg-surface-2 rounded animate-pulse" />
+              : out.length === 0
+                ? "Full house"
+                : out.length === 1
+                  ? "1 person away"
+                  : `${out.length} people away`}
           </h3>
         </div>
-        {out.length > 0 && (
+        {!loading && out.length > 0 && (
           <span className="inline-flex items-center gap-1 text-[10px] font-semibold text-on-surface-subtle">
             <span className="num-mono">{new Date().toLocaleDateString('en-IN', { weekday: 'short', day: 'numeric', month: 'short' })}</span>
           </span>
         )}
       </div>
 
-      {out.length === 0 ? (
+      {loading ? (
+        // Skeleton — 2 muted rows so the layout doesn't shift when data
+        // lands. Picks the same row height as a real entry.
+        <ul className="divide-y divide-outline">
+          {[0, 1].map(i => (
+            <li key={i} className="px-5 py-3 flex items-center gap-3">
+              <div className="w-9 h-9 rounded-full bg-surface-2 animate-pulse flex-shrink-0" />
+              <div className="flex-1 space-y-1.5">
+                <div className="h-3 w-32 bg-surface-2 rounded animate-pulse" />
+                <div className="h-2.5 w-20 bg-surface-2 rounded animate-pulse" />
+              </div>
+              <div className="space-y-1.5 flex flex-col items-end">
+                <div className="h-3.5 w-16 bg-surface-2 rounded-full animate-pulse" />
+                <div className="h-2.5 w-12 bg-surface-2 rounded animate-pulse" />
+              </div>
+            </li>
+          ))}
+        </ul>
+      ) : out.length === 0 ? (
         <div className="flex-1 flex flex-col items-center justify-center px-5 py-10 text-center">
           <div className="w-12 h-12 rounded-full bg-success-container flex items-center justify-center mb-3">
             <CheckCircle2 size={20} className="text-success" />
           </div>
           <p className="text-sm font-semibold text-on-surface">Everyone's in today.</p>
-          <p className="text-xs text-on-surface-subtle mt-0.5">No approved or pending leaves on the books.</p>
         </div>
       ) : (
         <ul className="divide-y divide-outline max-h-[280px] overflow-y-auto">
           {out.map(r => {
             const tone = LEAVE_TONE[r.type] ?? LEAVE_TONE.full_day;
-            const back = returnLabel(r.to_date);
+            const back = returnLabel(r.to_date, data?.today ?? '');
             return (
               <li key={r.id} className="px-5 py-3 flex items-center gap-3 hover:bg-surface-2/50 transition-colors">
                 <div className="w-9 h-9 rounded-full bg-brand-container text-on-brand-container flex items-center justify-center text-xs font-bold flex-shrink-0">
                   {r.avatar || r.name.split(' ').map((n: string) => n[0]).slice(0, 2).join('').toUpperCase()}
                 </div>
                 <div className="min-w-0 flex-1">
-                  <div className="flex items-center gap-1.5 min-w-0">
-                    <p className="text-sm font-semibold text-on-surface truncate">{r.name}</p>
-                    {r.isPending && (
-                      <span className="text-[9px] font-bold uppercase tracking-wider text-warning bg-warning-container px-1.5 py-0.5 rounded-full">Pending</span>
-                    )}
-                  </div>
+                  <p className="text-sm font-semibold text-on-surface truncate">{r.name}</p>
                   {r.designation && (
                     <p className="text-[11px] text-on-surface-subtle truncate">{r.designation}</p>
                   )}
@@ -388,9 +383,6 @@ export default function Dashboard() {
     <EmployeeDashboardView
       announcements={announcements}
       upcomingEvents={upcomingEvents}
-      leaveRequests={leaveRequests}
-      employees={employees}
-      todayStr={todayStr}
     />
   );
 
@@ -618,7 +610,7 @@ export default function Dashboard() {
 
       {/* Who's out today — surfaced above the headcount band so it's the
           first "team availability" read after the KPI hero. */}
-      <OutTodayCard leaveRequests={leaveRequests} employees={employees} todayStr={todayStr} />
+      <OutTodayCard />
 
       {/* Headcount growth + Pending leaves + Recent activity */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
@@ -1180,12 +1172,8 @@ function ManageAnnouncementsModal({ isAdminOrHR, currentItems, onClose, onChange
 // same Company Announcements + Coming up widgets the admin Dashboard has.
 // ─────────────────────────────────────────────────────────────────────────
 
-function EmployeeDashboardView({ announcements, upcomingEvents, leaveRequests, employees, todayStr: outTodayStr }: {
+function EmployeeDashboardView({ announcements, upcomingEvents }: {
   announcements: any[]; upcomingEvents: any[];
-  // Pre-loaded org-wide data from the parent Dashboard so we don't refetch.
-  // Used by the "Out today" widget — visible to employees so they know who
-  // on the team is unreachable before pinging.
-  leaveRequests: any[]; employees: any[]; todayStr: string;
 }) {
   const { user } = useAuth();
   const isAdminOrHR = user?.role === 'admin' || user?.role === 'hr_manager';
@@ -1316,7 +1304,7 @@ function EmployeeDashboardView({ announcements, upcomingEvents, leaveRequests, e
       </section>
 
       {/* ── Who's out today — visible to everyone for team availability ───── */}
-      <OutTodayCard leaveRequests={leaveRequests} employees={employees} todayStr={outTodayStr} />
+      <OutTodayCard />
 
       {/* ── Personal KPI tiles ──────────────────────────────────────────────── */}
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
