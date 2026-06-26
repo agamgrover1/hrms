@@ -23,9 +23,10 @@ export default function HoursUtilization() {
   const [year, setYear] = useState(now.getFullYear());
   const [groupBy, setGroupBy] = useState<UtilGroupKey>('none');
   // Scope = whether the page reads the whole month or a single W1..W5
-  // bucket. Default to monthly because that's the most common ask;
-  // weekly is the "is anyone overloaded right now" view.
-  const [scope, setScope] = useState<'month' | 'week'>('month');
+  // bucket. Default to weekly because the "is anyone overloaded RIGHT
+  // NOW" view is what people open this page for. The current week is
+  // auto-selected so the first read is immediately actionable.
+  const [scope, setScope] = useState<'month' | 'week'>('week');
   const [week, setWeek] = useState<number>(Math.min(5, Math.max(1, Math.ceil(now.getDate() / 7))));
   const [data, setData] = useState<Awaited<ReturnType<typeof api.getHoursUtilization>> | null>(null);
   const [loading, setLoading] = useState(true);
