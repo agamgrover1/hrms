@@ -54,6 +54,12 @@ async function notifyUser(userId: string, type: string, title: string, body?: st
   try {
     await sql`INSERT INTO notifications (user_id, type, title, body, link)
               VALUES (${userId}, ${type}, ${title}, ${body ?? null}, ${link ?? null})`;
+    // Purge the user's notifications cache so the next bell fetch
+    // surfaces this row instead of waiting up to 30s for the TTL.
+    // Inlined to avoid a forward reference to invalidateNotificationsCache.
+    for (const k of Array.from(_memoCache.keys())) {
+      if (k.startsWith(`notifications:${userId}:`)) _memoCache.delete(k);
+    }
   } catch { /* non-fatal */ }
 }
 
@@ -5932,30 +5938,48 @@ app.get('/api/leaves/out-today', async (req, res) => {
 app.get('/api/leave/requests', async (req, res) => {
   try {
     const { employee_id, status, reporting_manager_id } = req.query as any;
-    let rows;
-    if (reporting_manager_id) {
-      // Widen match to internal id + human code — see /api/employees for why.
-      const mgrRow = (await sql`SELECT id, employee_id FROM employees WHERE id=${reporting_manager_id} OR employee_id=${reporting_manager_id} LIMIT 1`)[0] as any;
-      const cands = mgrRow ? [mgrRow.id, mgrRow.employee_id].filter(Boolean) : [reporting_manager_id];
-      rows = await sql`
-        SELECT lr.* FROM leave_requests lr
-        JOIN employees e ON e.id = lr.employee_id
-        WHERE e.reporting_manager_id = ANY(${cands}::text[])
-          AND lr.manager_status = 'pending' AND lr.status = 'pending'
-        ORDER BY lr.applied_on DESC`;
-    } else if (employee_id) {
-      rows = await sql`SELECT * FROM leave_requests WHERE employee_id=${employee_id} ORDER BY applied_on DESC`;
-    } else if (status) {
-      rows = await sql`SELECT * FROM leave_requests WHERE status=${status} ORDER BY applied_on DESC`;
-    } else {
-      rows = await sql`SELECT * FROM leave_requests ORDER BY applied_on DESC`;
-    }
+    // 60s memo per filter set. The no-filter case (dashboard mount) is
+    // the biggest hitter — it returns the full leave history (often 100KB+
+    // once a team has accumulated requests). Cache key includes every
+    // filter so manager / employee / status views each get their own
+    // bucket. Invalidated by the POST / PATCH / DELETE / cancel handlers
+    // below so a fresh action surfaces immediately.
+    const cacheKey = `leaveRequests:${reporting_manager_id ?? ''}:${employee_id ?? ''}:${status ?? ''}`;
+    const rows = await memoTtl(cacheKey, 60_000, async () => {
+      if (reporting_manager_id) {
+        const mgrRow = (await sql`SELECT id, employee_id FROM employees WHERE id=${reporting_manager_id} OR employee_id=${reporting_manager_id} LIMIT 1`)[0] as any;
+        const cands = mgrRow ? [mgrRow.id, mgrRow.employee_id].filter(Boolean) : [reporting_manager_id];
+        return await sql`
+          SELECT lr.* FROM leave_requests lr
+          JOIN employees e ON e.id = lr.employee_id
+          WHERE e.reporting_manager_id = ANY(${cands}::text[])
+            AND lr.manager_status = 'pending' AND lr.status = 'pending'
+          ORDER BY lr.applied_on DESC`;
+      } else if (employee_id) {
+        return await sql`SELECT * FROM leave_requests WHERE employee_id=${employee_id} ORDER BY applied_on DESC`;
+      } else if (status) {
+        return await sql`SELECT * FROM leave_requests WHERE status=${status} ORDER BY applied_on DESC`;
+      }
+      return await sql`SELECT * FROM leave_requests ORDER BY applied_on DESC`;
+    });
     res.json((rows as any[]).map(normDateV));
   } catch (err) { res.status(500).json({ error: 'Server error' }); }
 });
 
+// Invalidate every leaveRequests:* + outToday cache entry. Called from
+// every endpoint that mutates leave_requests so the dashboard widget +
+// approvals view see fresh state on the next fetch.
+function invalidateLeaveCaches() {
+  for (const k of Array.from(_memoCache.keys())) {
+    if (k.startsWith('leaveRequests:') || k.startsWith('outToday:')) {
+      _memoCache.delete(k);
+    }
+  }
+}
+
 app.post('/api/leave/requests', async (req, res) => {
   try {
+    invalidateLeaveCaches();
     let { employee_id, employee_name, type, from_date, to_date, days, reason, slot } = req.body;
     // Slot validation: required for half_day / short_leave so the reviewer
     // knows WHEN in the day; ignored for full-day types.
@@ -6057,6 +6081,7 @@ app.post('/api/leave/requests', async (req, res) => {
 // Manager first-level approval
 app.patch('/api/leave/requests/:id/manager-approve', async (req, res) => {
   try {
+    invalidateLeaveCaches();
     const { status, manager_id, manager_name, rejection_reason, approver_note } = req.body;
     if (status === 'rejected') {
       const rows = await sql`
@@ -6100,6 +6125,7 @@ app.patch('/api/leave/requests/:id/manager-approve', async (req, res) => {
 // HR final approval
 app.patch('/api/leave/requests/:id', async (req, res) => {
   try {
+    invalidateLeaveCaches();
     const { status, actioner_name, rejection_reason, approver_note } = req.body;
     const rows = await sql`
       UPDATE leave_requests
@@ -6134,6 +6160,7 @@ app.patch('/api/leave/requests/:id', async (req, res) => {
 // Cancel an approved leave — restores balance and clears attendance
 app.patch('/api/leave/requests/:id/cancel', async (req, res) => {
   try {
+    invalidateLeaveCaches();
     const { cancelled_by, cancellation_reason } = req.body;
     const existing = await sql`SELECT * FROM leave_requests WHERE id=${req.params.id}`;
     if (!existing.length) return res.status(404).json({ error: 'Not found' });
@@ -6156,6 +6183,7 @@ app.patch('/api/leave/requests/:id/cancel', async (req, res) => {
 
 app.delete('/api/leave/requests/:id', async (req, res) => {
   try {
+    invalidateLeaveCaches();
     await sql`DELETE FROM leave_requests WHERE id=${req.params.id}`;
     res.json({ success: true });
   } catch (err) { res.status(500).json({ error: 'Server error' }); }
@@ -6822,14 +6850,27 @@ app.put('/api/performance/appraisal-goals/admin', async (req, res) => {
 });
 
 // ── Notifications ─────────────────────────────────────────────────────────
+// Drop EVERY cache entry for a given user. We can't selectively invalidate
+// because mark-read mutations change the payload silently. Cheap to do
+// since each user has at most 1-2 entries.
+function invalidateNotificationsCache(userId: string) {
+  for (const k of Array.from(_memoCache.keys())) {
+    if (k.startsWith(`notifications:${userId}:`)) _memoCache.delete(k);
+  }
+}
+
 app.get('/api/notifications', async (req, res) => {
   try {
     const { user_id, limit } = req.query as any;
     if (!user_id) return res.status(400).json({ error: 'user_id required' });
-    // The bell-icon dropdown uses 50; the dedicated /notifications page asks
-    // for more so users can scroll their full history.
     const lim = Math.max(1, Math.min(500, Number(limit) || 50));
-    const rows = await sql`SELECT * FROM notifications WHERE user_id=${user_id} ORDER BY created_at DESC LIMIT ${lim}`;
+    // 30s per-user cache. The bell polls at 3 min so the cache rarely
+    // matters for ONE tab — but the focus + visibilitychange refetches
+    // (which fire every time the user switches back) are the heavy hitters
+    // and they're typically <30s apart on an active workday.
+    const rows = await memoTtl(`notifications:${user_id}:${lim}`, 30_000, async () =>
+      sql`SELECT * FROM notifications WHERE user_id=${user_id} ORDER BY created_at DESC LIMIT ${lim}`
+    );
     res.json(rows);
   } catch (err) { res.status(500).json({ error: 'Server error' }); }
 });
@@ -6838,6 +6879,7 @@ app.patch('/api/notifications/read-all', async (req, res) => {
   try {
     const { user_id } = req.query as any;
     if (!user_id) return res.status(400).json({ error: 'user_id required' });
+    invalidateNotificationsCache(String(user_id));
     await sql`UPDATE notifications SET is_read=TRUE WHERE user_id=${user_id} AND is_read=FALSE`;
     res.json({ success: true });
   } catch (err) { res.status(500).json({ error: 'Server error' }); }
@@ -6845,6 +6887,10 @@ app.patch('/api/notifications/read-all', async (req, res) => {
 
 app.patch('/api/notifications/:id/read', async (req, res) => {
   try {
+    // We don't know the user_id here without an extra query, so just purge
+    // any notifications:* entry whose tuple contains this id. Cheap.
+    const owner = (await sql`SELECT user_id FROM notifications WHERE id=${req.params.id} LIMIT 1`)[0] as any;
+    if (owner?.user_id) invalidateNotificationsCache(String(owner.user_id));
     const rows = await sql`UPDATE notifications SET is_read=TRUE WHERE id=${req.params.id} RETURNING *`;
     res.json(rows[0] ?? { success: true });
   } catch (err) { res.status(500).json({ error: 'Server error' }); }
@@ -6854,6 +6900,7 @@ app.delete('/api/notifications/clear-all', async (req, res) => {
   try {
     const { user_id } = req.query;
     if (!user_id) return res.status(400).json({ error: 'user_id required' });
+    invalidateNotificationsCache(String(user_id));
     await sql`DELETE FROM notifications WHERE user_id=${user_id}`;
     res.json({ success: true });
   } catch (err) { res.status(500).json({ error: 'Server error' }); }
@@ -6861,6 +6908,8 @@ app.delete('/api/notifications/clear-all', async (req, res) => {
 
 app.delete('/api/notifications/:id', async (req, res) => {
   try {
+    const owner = (await sql`SELECT user_id FROM notifications WHERE id=${req.params.id} LIMIT 1`)[0] as any;
+    if (owner?.user_id) invalidateNotificationsCache(String(owner.user_id));
     await sql`DELETE FROM notifications WHERE id=${req.params.id}`;
     res.json({ success: true });
   } catch (err) { res.status(500).json({ error: 'Server error' }); }
