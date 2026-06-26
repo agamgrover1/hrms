@@ -2097,9 +2097,38 @@ app.patch('/api/employees/:id/probation', async (req, res) => {
 app.delete('/api/employees/:id', async (req, res) => {
   try {
     if (!(await requireFullHR(req, res)).ok) return;
-    await sql`DELETE FROM employees WHERE id=${req.params.id} OR employee_id=${req.params.id}`;
-    res.json({ success: true });
-  } catch (err) { res.status(500).json({ error: 'Server error' }); }
+    // Look up the employee FIRST so we can find their linked app_users
+    // row (the link lives on app_users.employee_id_ref, which holds
+    // either the human code DL0076 or the legacy internal id e_xxx —
+    // we match either form). Without this cascade the login account
+    // outlived the employee record and the ex-employee could keep
+    // signing in.
+    const emp = (await sql`
+      SELECT id, employee_id FROM employees
+      WHERE id=${req.params.id} OR employee_id=${req.params.id}
+      LIMIT 1`)[0] as any;
+    if (!emp) {
+      // Nothing to delete; respond idempotently so a double-click on
+      // Delete doesn't 404 the UI.
+      return res.json({ success: true, deleted: 0 });
+    }
+    // Delete the linked user account(s) first. We also clean up any
+    // notifications addressed to those user ids so the queue doesn't
+    // hold dangling rows. Each table is best-effort so a missing one
+    // (fresh schema, partial deploy) doesn't fail the whole delete.
+    const userIds = (await sql`
+      SELECT id FROM app_users
+      WHERE employee_id_ref = ${emp.id} OR employee_id_ref = ${emp.employee_id}` as any[])
+      .map(u => u.id);
+    if (userIds.length) {
+      await sql`DELETE FROM notifications WHERE user_id = ANY(${userIds}::text[])`.catch(() => {});
+      await sql`DELETE FROM app_users WHERE id = ANY(${userIds}::text[])`;
+    }
+    await sql`DELETE FROM employees WHERE id=${emp.id}`;
+    res.json({ success: true, deleted: 1, users_removed: userIds.length });
+  } catch (err: any) {
+    res.status(500).json({ error: err?.message || 'Server error' });
+  }
 });
 
 function normDateV(row: any): any {
