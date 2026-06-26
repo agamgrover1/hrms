@@ -1957,7 +1957,15 @@ app.get('/api/employees', async (req, res) => {
         res.json(stripSalaryForIntern(actorRole, rows as any, ownEmpId));
       }
     } else {
-      const rows = await sql`SELECT * FROM employees ORDER BY name`;
+      // 60s memo on the no-filter case — this is hit by every dashboard,
+      // sidebar, command palette mount and the result is identical for
+      // everyone. Cache the RAW rows (unstripped) and apply the per-
+      // request salary strip on emit so the cache survives across viewer
+      // roles. ~40 rows × all columns; one fresh query per minute per
+      // Lambda instead of one per page load.
+      const rows = await memoTtl('employees:all', 60_000, async () =>
+        sql`SELECT * FROM employees ORDER BY name`
+      );
       res.json(stripSalaryForIntern(actorRole, rows as any, ownEmpId));
     }
   } catch (err) { res.status(500).json({ error: 'Server error' }); }
@@ -2146,9 +2154,15 @@ function normDateV(row: any): any {
 app.get('/api/attendance', async (req, res) => {
   try {
     const { employee_id, month, year } = req.query as any;
+    // 60s memo when the call is the common (employee_id + month + year)
+    // shape — that's what MyPortal + the dashboard's per-user attendance
+    // call fire on every focus refetch. Wider queries (org-wide) aren't
+    // cached because they're admin-only and rare.
     let rows;
     if (employee_id && month && year) {
-      rows = await sql`SELECT * FROM attendance_records WHERE employee_id=${employee_id} AND EXTRACT(MONTH FROM date)=${Number(month)} AND EXTRACT(YEAR FROM date)=${Number(year)} ORDER BY date`;
+      rows = await memoTtl(`attendance:${employee_id}:${month}:${year}`, 60_000, async () =>
+        sql`SELECT * FROM attendance_records WHERE employee_id=${employee_id} AND EXTRACT(MONTH FROM date)=${Number(month)} AND EXTRACT(YEAR FROM date)=${Number(year)} ORDER BY date`
+      );
     } else if (employee_id) {
       rows = await sql`SELECT * FROM attendance_records WHERE employee_id=${employee_id} ORDER BY date DESC`;
     } else if (month && year) {
@@ -4257,27 +4271,30 @@ app.get('/api/features/unseen', async (req, res) => {
     await runStartupMigrations();
     const uid = req.header('x-user-id');
     if (!uid) return res.status(401).json({ error: 'Sign in required' });
-    const u = (await sql`SELECT id, role, employee_id_ref FROM app_users WHERE id=${uid}`)[0] as any;
-    if (!u) return res.status(401).json({ error: 'Unknown user' });
-    // Pull all unseen published features for this user — we then filter
-    // by audience in JS so the JSONB containment + manager-pseudo logic
-    // stays out of SQL. Limit a bit higher than 1 to keep the query
-    // efficient while leaving headroom for skipped non-matches.
-    const rows = await sql`
-      SELECT f.* FROM feature_announcements f
-      WHERE f.status = 'published'
-        AND NOT EXISTS (
-          SELECT 1 FROM feature_acks a
-          WHERE a.feature_id = f.id AND a.user_id = ${uid}
-        )
-      ORDER BY f.published_at ASC
-      LIMIT 20`;
-    for (const r of (rows as any[])) {
-      if (await userMatchesFeatureAudience(u, r.target_roles)) {
-        return res.json(r);
+    // 5-minute per-user memo. This endpoint is hit on every dashboard
+    // mount and tab focus — but its result only changes when a feature
+    // is published OR the user acks one. Acks invalidate via the POST
+    // /features/:id/ack handler below; publish doesn't auto-invalidate
+    // (acceptable 5-min lag for a banner that lives on the dashboard).
+    const result = await memoTtl(`featuresUnseen:${uid}`, 300_000, async () => {
+      const u = (await sql`SELECT id, role, employee_id_ref FROM app_users WHERE id=${uid}`)[0] as any;
+      if (!u) return { _err: 401 } as any;
+      const rows = await sql`
+        SELECT f.* FROM feature_announcements f
+        WHERE f.status = 'published'
+          AND NOT EXISTS (
+            SELECT 1 FROM feature_acks a
+            WHERE a.feature_id = f.id AND a.user_id = ${uid}
+          )
+        ORDER BY f.published_at ASC
+        LIMIT 20`;
+      for (const r of (rows as any[])) {
+        if (await userMatchesFeatureAudience(u, r.target_roles)) return r;
       }
-    }
-    res.json(null);
+      return null;
+    });
+    if (result && (result as any)._err === 401) return res.status(401).json({ error: 'Unknown user' });
+    res.json(result);
   } catch (err: any) { res.status(500).json({ error: err.message ?? 'Server error' }); }
 });
 
@@ -4352,6 +4369,15 @@ app.patch('/api/features/:id', async (req, res) => {
         updated_at       = NOW()
       WHERE id=${req.params.id}
       RETURNING *`)[0];
+    // A publish flip (or any edit on a live feature) potentially
+    // surfaces something new for every user — purge every per-user
+    // featuresUnseen entry so the next mount / focus refetch picks
+    // it up.
+    if (goingLive || cur.status === 'published') {
+      for (const k of Array.from(_memoCache.keys())) {
+        if (k.startsWith('featuresUnseen:')) _memoCache.delete(k);
+      }
+    }
     // Special-case the COALESCE pattern: when audience isn't being
     // updated, keep the old value. Done as a separate UPDATE because the
     // tagged-template + ::jsonb cast trick above can't easily express
@@ -4429,6 +4455,9 @@ app.post('/api/features/:id/ack', async (req, res) => {
       INSERT INTO feature_acks (user_id, feature_id)
       VALUES (${uid}, ${req.params.id})
       ON CONFLICT (user_id, feature_id) DO NOTHING`;
+    // Invalidate the per-user features/unseen cache so the next mount /
+    // focus refetch doesn't keep returning the just-dismissed feature.
+    _memoCache.delete(`featuresUnseen:${uid}`);
     res.json({ ok: true });
   } catch (err: any) { res.status(500).json({ error: err.message ?? 'Server error' }); }
 });
@@ -4488,13 +4517,17 @@ app.get('/api/announcements', async (req, res) => {
         ON CONFLICT (id) DO NOTHING`.catch(()=>{});
     } catch {}
 
-    // Active = not expired (expires_at is null or in the future). Pinned
-    // sorts first, then newest first.
-    const rows = await sql`
-      SELECT * FROM company_announcements
-      WHERE expires_at IS NULL OR expires_at > NOW()
-      ORDER BY pinned DESC, created_at DESC
-      LIMIT 50`;
+    // 60s memo — same payload for every viewer, hit by every dashboard
+    // and the useLiveRefresh poll. Birthday / anniversary auto-posts
+    // above are still idempotent and run before the cache check so the
+    // first hit per minute primes the list with today's auto-entries.
+    const rows = await memoTtl('announcements:active', 60_000, async () =>
+      sql`
+        SELECT * FROM company_announcements
+        WHERE expires_at IS NULL OR expires_at > NOW()
+        ORDER BY pinned DESC, created_at DESC
+        LIMIT 50`
+    );
     res.json(rows);
   } catch (err: any) { res.status(500).json({ error: err.message ?? 'Server error' }); }
 });
@@ -4781,6 +4814,9 @@ app.get('/api/upcoming-events', async (req, res) => {
     const uid = req.header('x-user-id');
     if (!uid) return res.status(401).json({ error: 'Sign in required' });
     const horizonDays = Math.min(60, Math.max(7, Number(req.query.days) || 30));
+    // 5-minute memo — payload is identical across viewers and the data
+    // (holidays + birthdays + anniversaries) only changes day-to-day.
+    const events = await memoTtl(`upcomingEvents:${horizonDays}`, 300_000, async () => {
     // Lookback window for "just happened" events so today's birthday
     // doesn't vanish from the widget the moment the day rolls over.
     // The user kept missing Sahil's birthday post-deploy because at
@@ -4852,6 +4888,8 @@ app.get('/api/upcoming-events', async (req, res) => {
         })),
     ].sort((a, b) => a.event_date.localeCompare(b.event_date));
 
+      return events;
+    });
     res.json(events);
   } catch (err: any) { res.status(500).json({ error: err.message ?? 'Server error' }); }
 });
@@ -8981,16 +9019,23 @@ app.get('/api/hour-log-days', async (req, res) => {
     const employee_id = (req.query.employee_id as string) || null;
     const assignment_id = (req.query.assignment_id as string) || null;
     const project_id = (req.query.project_id as string) || null;
-    const rows = await sql`
-      SELECT d.*, p.name AS project_name, p.client_name AS project_client_name
-      FROM hour_log_days d
-      JOIN projects p ON p.id = d.project_id
-      WHERE (${month}::int IS NULL OR d.month=${month})
-        AND (${year}::int  IS NULL OR d.year=${year})
-        AND (${employee_id}::text IS NULL OR d.employee_id=${employee_id})
-        AND (${assignment_id}::text IS NULL OR d.assignment_id=${assignment_id})
-        AND (${project_id}::text IS NULL OR d.project_id=${project_id})
-      ORDER BY d.log_date ASC`;
+    // 60s memo keyed by the full filter set. MyPortal and the drill-in
+    // modal both refetch on every focus, and the query is the same one
+    // shape each time. Cache hit rate is very high for an idle user
+    // re-focusing the tab.
+    const cacheKey = `hourLogDays:${employee_id ?? ''}:${assignment_id ?? ''}:${project_id ?? ''}:${month ?? ''}:${year ?? ''}`;
+    const rows = await memoTtl(cacheKey, 60_000, async () =>
+      sql`
+        SELECT d.*, p.name AS project_name, p.client_name AS project_client_name
+        FROM hour_log_days d
+        JOIN projects p ON p.id = d.project_id
+        WHERE (${month}::int IS NULL OR d.month=${month})
+          AND (${year}::int  IS NULL OR d.year=${year})
+          AND (${employee_id}::text IS NULL OR d.employee_id=${employee_id})
+          AND (${assignment_id}::text IS NULL OR d.assignment_id=${assignment_id})
+          AND (${project_id}::text IS NULL OR d.project_id=${project_id})
+        ORDER BY d.log_date ASC`
+    );
     res.json(rows);
   } catch (err: any) { res.status(500).json({ error: err.message || 'Server error' }); }
 });
