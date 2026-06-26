@@ -3458,6 +3458,14 @@ async function autoCloseLastMonthIfDue(): Promise<{ closed?: number; month?: num
 
 // Cron entry point — Vercel hits this nightly. Reuses CRON_SECRET / x-vercel-cron auth.
 app.all('/api/performance/pulse/cron', async (req, res) => {
+  // Auto pulse cron disabled — was scheduled at 3am IST but wasn't running
+  // reliably and was eating Vercel compute when it did. Use the manual
+  // POST /api/performance/pulse/recompute endpoint (admin "Recompute"
+  // button on /performance/pulse) to refresh on demand. If you want the
+  // auto run back, add the cron entry to vercel.json AND drop this guard.
+  if (process.env.CRON_ENABLED !== 'true') {
+    return res.status(410).json({ error: 'Pulse cron disabled. Use POST /api/performance/pulse/recompute.' });
+  }
   try {
     const auth = req.header('authorization') || '';
     const platformCron = !!req.header('x-vercel-cron');
@@ -5697,6 +5705,14 @@ app.delete('/api/internal-hour-logs/:id', async (req, res) => {
 // project's env vars). We accept either that, or the Vercel platform's own
 // 'x-vercel-cron' header, so the endpoint can't be triggered externally.
 app.all('/api/attendance/biometric-sync/cron', async (req, res) => {
+  // Auto biometric cron disabled — was scheduled at 2:30am IST but wasn't
+  // running reliably. HR triggers a sync manually via the "Sync now"
+  // button on the Attendance page (POST /api/attendance/biometric-sync).
+  // If you want the auto run back, add the cron entry to vercel.json AND
+  // set CRON_ENABLED=true in the env to drop this guard.
+  if (process.env.CRON_ENABLED !== 'true') {
+    return res.status(410).json({ error: 'Biometric cron disabled. Use POST /api/attendance/biometric-sync.' });
+  }
   try {
     const auth = req.header('authorization') || '';
     const platformCron = !!req.header('x-vercel-cron');
