@@ -59,16 +59,13 @@ export default function Finance() {
 
   // Privacy mask — blurs every monetary / numeric value across the
   // Finance surface so the page is safe to leave open in a meeting
-  // or screen-share. Default ON so a fresh login doesn't expose
-  // anything until the admin chooses to. Persisted to localStorage
-  // so the choice survives reloads but stays per-device.
-  const [masked, setMasked] = useState<boolean>(() => {
-    try { return localStorage.getItem('financeMasked') !== 'false'; }
-    catch { return true; }
-  });
-  useEffect(() => {
-    try { localStorage.setItem('financeMasked', String(masked)); } catch {/* private mode */}
-  }, [masked]);
+  // or screen-share. ALWAYS starts hidden on a fresh page load so a
+  // walk-by viewer never sees revenue numbers. The Show / Hide click
+  // only affects the current session; closing the tab and reopening
+  // re-masks. Previously persisted via localStorage but that meant a
+  // "show" choice could outlive its usefulness across days — explicit
+  // reveal-per-session is safer for a finance page.
+  const [masked, setMasked] = useState<boolean>(true);
 
   const showPeriod = tab !== 'people' && tab !== 'settings';
 
