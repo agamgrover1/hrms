@@ -3489,6 +3489,81 @@ app.all('/api/performance/pulse/cron', async (req, res) => {
 // Runs migrations defensively in case this is the first hit since deploy and
 // the pulse tables haven't been created yet — saves a "why is it empty?"
 // debugging round-trip.
+// Admin-only: re-bucket every hour_log_days row by the current week
+// rule and re-aggregate hour_logs to match. Idempotent — running it
+// twice produces the same result. Used once after switching from
+// CEIL(day/7) to Mon-Sun-aligned weeks, and re-runnable any time the
+// rule is tweaked again.
+app.post('/api/admin/recompute-week-buckets', async (req, res) => {
+  if (!(await requireAdmin(req, res))) return;
+  const t0 = Date.now();
+  try {
+    // Step 1: pull every (id, log_date) and figure out the correct week.
+    const allDays = await sql`SELECT id, log_date::text AS log_date FROM hour_log_days` as any[];
+    let updates = 0;
+    // Batch updates with UNNEST so we don't issue N SQL round-trips.
+    const ids: string[] = [];
+    const newWeeks: number[] = [];
+    for (const d of allDays) {
+      const iso = String(d.log_date).slice(0, 10);
+      ids.push(d.id);
+      newWeeks.push(weekNumOfDate(iso));
+    }
+    // Chunked UPDATE — Neon caps single statements at ~16k params.
+    const CHUNK = 1000;
+    for (let i = 0; i < ids.length; i += CHUNK) {
+      const idChunk = ids.slice(i, i + CHUNK);
+      const wChunk  = newWeeks.slice(i, i + CHUNK);
+      if (!idChunk.length) break;
+      const result = await sql`
+        UPDATE hour_log_days SET week_num = u.new_week
+        FROM UNNEST(${idChunk}::text[], ${wChunk}::int[]) AS u(id, new_week)
+        WHERE hour_log_days.id = u.id AND hour_log_days.week_num <> u.new_week`;
+      updates += (result as any)?.length ?? (result as any)?.count ?? 0;
+    }
+    // Step 2: re-aggregate hour_logs for every affected
+    // (assignment, year, month). The helper handles INSERT / UPDATE /
+    // DELETE on hour_logs and is the same one the day write path uses,
+    // so the post-migration state matches what new logs would build.
+    const tuples = await sql`
+      SELECT DISTINCT assignment_id, year, month
+      FROM hour_log_days
+      ORDER BY year DESC, month DESC, assignment_id` as any[];
+    let weeksRecomputed = 0;
+    for (const t of tuples) {
+      for (let w = 1; w <= 5; w++) {
+        await recomputeWeeklyFromDays(t.assignment_id, w);
+        weeksRecomputed++;
+      }
+    }
+    // Step 3: clean up any hour_logs row whose assignment+week no
+    // longer has matching day entries (rare — happens when a week
+    // bucket's contents all moved to a different bucket). The
+    // recomputeWeeklyFromDays helper above already deletes these when
+    // it sees zero days, so this is a belt-and-braces sweep.
+    const orphans = await sql`
+      DELETE FROM hour_logs h
+      WHERE NOT EXISTS (
+        SELECT 1 FROM hour_log_days d
+        WHERE d.assignment_id = h.assignment_id
+          AND d.month = h.month AND d.year = h.year AND d.week_num = h.week_num
+      )
+      RETURNING id` as any[];
+    res.json({
+      ok: true,
+      day_rows_inspected: allDays.length,
+      day_rows_updated: updates,
+      assignment_month_tuples: tuples.length,
+      weeks_recomputed: weeksRecomputed,
+      orphan_hour_logs_deleted: orphans.length,
+      took_ms: Date.now() - t0,
+      note: 'project_assignments.w1_hours..w5_hours are UNCHANGED. HR should review per-week allocations on the Plan view because the bucket boundaries shifted.',
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message ?? 'Migration failed', took_ms: Date.now() - t0 });
+  }
+});
+
 app.post('/api/performance/pulse/recompute', async (req, res) => {
   if (!(await requireAdmin(req, res))) return;
   const t0 = Date.now();
@@ -9013,9 +9088,30 @@ app.put('/api/hour-logs/:id', async (req, res) => {
 // Each row is one day for one assignment. Weekly hour_logs row is the rollup
 // that gets reviewed/approved — kept in sync by recomputeWeeklyFromDays.
 function weekNumOfDate(iso: string): number {
-  // CEIL(day_of_month / 7) — gives 1..5
+  // Mon-Sun aligned weeks within a calendar month.
+  //   W1 = day 1 → first Sunday of the month (partial when the month
+  //                doesn't start on a Sunday).
+  //   W2 = first Monday → its Sunday (always 7 days when fully inside
+  //                the month).
+  //   W3 / W4 = subsequent Mon-Sun spans.
+  //   W5 = last Monday → end of month (partial; absorbs any orphan
+  //                day at the tail when the month spills past 5 Monday
+  //                anchors — e.g. a Sat-start 31-day month).
+  // Keeps the 5-bucket-per-month schema (w1..w5 columns on
+  // project_assignments) so the rest of the model is unchanged.
   const d = new Date(iso + 'T12:00:00Z');
-  return Math.ceil(d.getUTCDate() / 7);
+  const day = d.getUTCDate();
+  const dow1 = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), 1)).getUTCDay(); // 0=Sun..6=Sat
+  // Day-of-month of the first Sunday. If month starts on Sunday it's
+  // day 1; otherwise it's 8 - dow1 (Mon→7, Tue→6, ..., Sat→2).
+  const firstSundayDay = dow1 === 0 ? 1 : 8 - dow1;
+  if (day <= firstSundayDay) return 1;
+  // W2 starts on the day after the first Sunday and runs 7 days.
+  const w2Start = firstSundayDay + 1;
+  if (day < w2Start + 7)  return 2;
+  if (day < w2Start + 14) return 3;
+  if (day < w2Start + 21) return 4;
+  return 5;
 }
 
 async function recomputeWeeklyFromDays(assignment_id: string, week_num: number): Promise<string | null> {
