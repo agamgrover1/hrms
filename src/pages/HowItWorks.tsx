@@ -277,6 +277,25 @@ const SECTIONS: Section[] = [
     blurb: 'Plan, log, and review project work.',
     cards: [
       {
+        title: 'How W1-W5 weeks work (read this first)',
+        page: 'Project Hours · Plan / Capacity / Mine views',
+        whoSees: ['coord', 'manager', 'reviewer', 'admin'],
+        shows: 'Each month splits into 5 Mon-Sun calendar weeks, NOT fixed 7-day chunks. W1 and W5 can be partial — check the date under the W label.',
+        howItWorks: [
+          'W1 = day 1 of the month → first Sunday (partial if the month doesn\'t start on a Monday)',
+          'W2 = first Monday → its Sunday (always 7 days when fully inside the month)',
+          'W3 / W4 = subsequent full Mon-Sun spans',
+          'W5 = last Monday → end of month (partial; absorbs any orphan day)',
+          'Example — July 2026 (Jul 1 = Wed):',
+          '  W1 = Jul 1-5 (Wed-Sun, 3 working days)',
+          '  W2 = Jul 6-12 (full, 5 working days)',
+          '  W3 = Jul 13-19 · W4 = Jul 20-26 · W5 = Jul 27-31',
+          'Every grid (Plan, Capacity, Mine, Hours Utilization) shows the actual date range under the W label so you never have to compute it',
+          'The bucket containing today is highlighted in pink — that\'s "this week"',
+        ],
+        useIt: 'Before allocating, look at the date range under the W. A "full week" of 35h fits W2-W4 cleanly. For partial W1/W5, prorate by working days — e.g., a 3-weekday W1 maxes out around 21h, not 35h. When using "Copy from previous month", review the first and last weeks before saving — the bucket lengths usually shift across months.',
+      },
+      {
         title: 'My team\'s capacity',
         page: 'Project Hours · Mine view',
         whoSees: ['manager', 'reviewer'],
