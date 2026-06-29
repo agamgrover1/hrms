@@ -60,6 +60,9 @@ export default function MemberCalendarModal({ member, attendance, leaves, onClos
   currentUser?: { name?: string | null; role?: string | null };
 }) {
   const today = new Date();
+  // Local YYYY-MM-DD. toISOString() would shift IST late-night users back
+  // a day (same root cause as the leave-bucket bug below).
+  const todayStr = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`;
   const [cursor, setCursor] = useState<{ m: number; y: number }>({ m: today.getMonth() + 1, y: today.getFullYear() });
   // Attendance notes for the visible month. Loaded lazily on month change
   // so flipping back/forward doesn't refetch the entire history.
@@ -95,14 +98,31 @@ export default function MemberCalendarModal({ member, attendance, leaves, onClos
 
   // Pre-compute the set of dates that overlap an approved leave, so days
   // without an attendance row but inside a leave span still show as leave.
+  //
+  // PREVIOUSLY: built `new Date('YYYY-MM-DD' + 'T00:00:00')` and walked it
+  // with toISOString().slice(0,10). That round-trip is timezone-poisoned:
+  // the Date constructor reads the string as LOCAL midnight, then
+  // toISOString() converts to UTC, so in IST (UTC+5:30) the date silently
+  // shifts back one day — Jun 26 local → Jun 25 UTC. Result: a Jun 26
+  // leave was keyed against Jun 25 in this map, and Jun 26 itself fell
+  // through to the attendance row (showing "absent" instead of "leave").
+  // Fix: iterate the date strings directly with no Date / TZ math.
   const leaveDates = useMemo(() => {
     const out = new Map<string, LeaveRow>();
+    const addDayStr = (s: string): string => {
+      const [y, m, d] = s.split('-').map(Number);
+      // Construct with local components, read back with local components —
+      // both ends stay in the same calendar so DST / TZ never enters.
+      const next = new Date(y, m - 1, d + 1);
+      return `${next.getFullYear()}-${String(next.getMonth() + 1).padStart(2, '0')}-${String(next.getDate()).padStart(2, '0')}`;
+    };
     for (const l of leaves) {
       if (l.status !== 'approved') continue;
-      const from = new Date((l.from_date ?? '').slice(0, 10) + 'T00:00:00');
-      const to = new Date((l.to_date ?? '').slice(0, 10) + 'T00:00:00');
-      for (let d = new Date(from); d <= to; d.setDate(d.getDate() + 1)) {
-        out.set(d.toISOString().slice(0, 10), l);
+      const from = (l.from_date ?? '').slice(0, 10);
+      const to   = (l.to_date   ?? '').slice(0, 10);
+      if (!from || !to || from > to) continue;
+      for (let cur = from; cur <= to; cur = addDayStr(cur)) {
+        out.set(cur, l);
       }
     }
     return out;
@@ -194,9 +214,9 @@ export default function MemberCalendarModal({ member, attendance, leaves, onClos
               const leaveRow = leaveDates.get(c.date);
               const status = leaveRow ? 'leave_full' : rec?.status;
               const info = dayLabel(status);
-              const isToday = c.date === today.toISOString().slice(0, 10);
+              const isToday = c.date === todayStr;
               const note = notesByDate[c.date];
-              const isFuture = c.date > today.toISOString().slice(0, 10);
+              const isFuture = c.date > todayStr;
               const clickable = !!currentUser && !isFuture;
               return (
                 <button key={i} type="button"
