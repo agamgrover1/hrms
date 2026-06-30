@@ -70,6 +70,146 @@ const LEAVE_TONE: Record<string, { bg: string; text: string; ring: string; dot: 
   unpaid:      { bg: 'bg-surface-3',   text: 'text-on-surface-muted', ring: 'ring-outline', dot: 'bg-on-surface-subtle' },
 };
 
+// ─────────────────────────────────────────────────────────────────────────
+// Holidays widget — surfaces the company's Fixed holidays alongside the
+// Optional pool that employees can pick from (2/year cap). Visible on
+// both Dashboard variants so everyone in the org can plan around the
+// next few off-days without digging into Settings.
+//
+// Past dates fall off automatically. We pull the current and next year
+// in one shot so the "next 90 days" view still surfaces something
+// useful when the user lands in December.
+// ─────────────────────────────────────────────────────────────────────────
+
+interface HolidayRow {
+  date: string;
+  name: string;
+}
+
+function HolidaysCard() {
+  const [fixed, setFixed] = useState<HolidayRow[]>([]);
+  const [optional, setOptional] = useState<HolidayRow[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    const thisYear = new Date().getFullYear();
+    const todayIso = new Date().toISOString().slice(0, 10);
+    let cancelled = false;
+    Promise.all([
+      // Fixed — official company holidays. Pull current + next year and
+      // filter to "today or later" so the list stays forward-looking.
+      Promise.all([
+        api.getHolidays(thisYear).catch(() => []),
+        api.getHolidays(thisYear + 1).catch(() => []),
+      ]).then(([a, b]) => [...(a as any[]), ...(b as any[])]
+        .map(h => ({ date: String(h.date).slice(0, 10), name: h.name }))
+        .filter(h => h.date >= todayIso)
+        .sort((a, b) => a.date.localeCompare(b.date))),
+      // Optional — the pool employees pick from. Same forward-looking
+      // filter.
+      Promise.all([
+        api.getOptionalLeaveDates(thisYear).catch(() => []),
+        api.getOptionalLeaveDates(thisYear + 1).catch(() => []),
+      ]).then(([a, b]) => [...(a as any[]), ...(b as any[])]
+        .map(h => ({ date: String(h.date).slice(0, 10), name: h.label }))
+        .filter(h => h.date >= todayIso)
+        .sort((a, b) => a.date.localeCompare(b.date))),
+    ])
+      .then(([f, o]) => { if (!cancelled) { setFixed(f); setOptional(o); } })
+      .catch(() => { if (!cancelled) { setFixed([]); setOptional([]); } })
+      .finally(() => { if (!cancelled) setLoading(false); });
+    return () => { cancelled = true; };
+  }, []);
+
+  const fmt = (iso: string): { date: string; weekday: string; daysAway: string } => {
+    const d = new Date(iso + 'T12:00:00');
+    const today = new Date();
+    today.setHours(12, 0, 0, 0);
+    const diff = Math.round((d.getTime() - today.getTime()) / 86_400_000);
+    return {
+      date: d.toLocaleDateString('en-IN', { day: 'numeric', month: 'short' }),
+      weekday: d.toLocaleDateString('en-IN', { weekday: 'short' }),
+      daysAway: diff === 0 ? 'today' : diff === 1 ? 'tomorrow'
+                : diff < 7 ? `in ${diff}d`
+                : d.toLocaleDateString('en-IN', { year: 'numeric' }) !== String(today.getFullYear())
+                  ? d.toLocaleDateString('en-IN', { year: 'numeric' }) : `in ${diff}d`,
+    };
+  };
+
+  const renderList = (rows: HolidayRow[], emptyText: string, dotClass: string) => {
+    if (loading) return (
+      <ul className="space-y-2">
+        {[0, 1, 2].map(i => (
+          <li key={i} className="flex items-center gap-3">
+            <div className="w-9 h-9 rounded-lg bg-surface-2 animate-pulse flex-shrink-0" />
+            <div className="flex-1 space-y-1.5">
+              <div className="h-3 w-32 bg-surface-2 rounded animate-pulse" />
+              <div className="h-2.5 w-20 bg-surface-2 rounded animate-pulse" />
+            </div>
+          </li>
+        ))}
+      </ul>
+    );
+    if (rows.length === 0) return (
+      <p className="text-xs text-on-surface-subtle text-center py-6">{emptyText}</p>
+    );
+    return (
+      <ul className="space-y-2 max-h-[260px] overflow-y-auto pr-1 -mr-1">
+        {rows.slice(0, 8).map(h => {
+          const f = fmt(h.date);
+          return (
+            <li key={h.date + h.name} className="flex items-center gap-3 px-2 py-1.5 rounded-lg hover:bg-surface-2/40">
+              <div className="w-9 h-9 rounded-lg bg-surface-2 border border-outline flex flex-col items-center justify-center flex-shrink-0">
+                <span className="text-[8px] uppercase font-bold text-on-surface-subtle leading-none">{f.weekday}</span>
+                <span className="num-mono text-xs font-bold text-on-surface leading-none mt-0.5">{f.date.split(' ')[0]}</span>
+              </div>
+              <div className="min-w-0 flex-1">
+                <div className="flex items-center gap-1.5">
+                  <span className={`w-1.5 h-1.5 rounded-full ${dotClass} flex-shrink-0`} />
+                  <p className="text-sm font-semibold text-on-surface truncate">{h.name}</p>
+                </div>
+                <p className="text-[11px] text-on-surface-subtle">{f.date} · {f.daysAway}</p>
+              </div>
+            </li>
+          );
+        })}
+      </ul>
+    );
+  };
+
+  return (
+    <div className="relative bg-surface rounded-xl-3 p-6 border border-outline shadow-elev-2 overflow-hidden">
+      <div className="absolute -top-10 -right-10 w-40 h-40 rounded-full bg-warning/15 blur-2xl opacity-50" />
+      <div className="relative">
+        <div className="flex items-center justify-between mb-4">
+          <div>
+            <h3 className="font-display text-xl font-bold text-on-surface tracking-tight inline-flex items-center gap-2">
+              🌴 Holidays
+            </h3>
+            <p className="text-xs text-on-surface-muted mt-0.5">Fixed days off + the optional pool you can pick from (2/year).</p>
+          </div>
+        </div>
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <div>
+            <div className="flex items-center justify-between mb-2">
+              <p className="text-[10px] uppercase tracking-[0.16em] font-bold text-on-surface-subtle">Fixed</p>
+              {!loading && <span className="text-[10px] num-mono text-on-surface-subtle">{fixed.length}</span>}
+            </div>
+            {renderList(fixed, 'No upcoming fixed holidays.', 'bg-danger')}
+          </div>
+          <div>
+            <div className="flex items-center justify-between mb-2">
+              <p className="text-[10px] uppercase tracking-[0.16em] font-bold text-on-surface-subtle">Optional</p>
+              {!loading && <span className="text-[10px] num-mono text-on-surface-subtle">{optional.length}</span>}
+            </div>
+            {renderList(optional, 'No optional dates published yet.', 'bg-warning')}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function OutTodayCard() {
   // Self-fetching — no longer depends on parent props. The dedicated
   // /api/leaves/out-today endpoint returns only today's intersecting
@@ -611,6 +751,11 @@ export default function Dashboard() {
       {/* Who's out today — surfaced above the headcount band so it's the
           first "team availability" read after the KPI hero. */}
       <OutTodayCard />
+
+      {/* Fixed + Optional holidays — same row as Out Today's vibe:
+          team-wide availability info that everyone benefits from
+          seeing on the landing page. */}
+      <HolidaysCard />
 
       {/* Headcount growth + Pending leaves + Recent activity */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
@@ -1305,6 +1450,9 @@ function EmployeeDashboardView({ announcements, upcomingEvents }: {
 
       {/* ── Who's out today — visible to everyone for team availability ───── */}
       <OutTodayCard />
+
+      {/* ── Fixed + Optional holidays — so everyone can plan around them ──── */}
+      <HolidaysCard />
 
       {/* ── Personal KPI tiles ──────────────────────────────────────────────── */}
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
