@@ -28,15 +28,15 @@ export default function FeaturePopup() {
     api.getUnseenFeature().then(setFeature).catch(() => setFeature(null));
   };
   useEffect(() => {
+    // Mount fetch + focus refetch — no setInterval. Every poll counted
+    // as an edge request, and the popup is a passive surface (it pops
+    // when there's something new; it doesn't need to feel "live"). A
+    // freshly-published feature surfaces the next time the user opens
+    // the tab or switches back to it, which is usually within minutes.
     fetchNext();
-    // 60s poll (was 15s). The focus refetch below still gives "instant"
-    // surfacing when a user switches back to the tab, so the only delay
-    // is for users who stay on a static tab for over a minute — fine.
-    const id = setInterval(fetchNext, 60000);
     const onFocus = () => fetchNext();
     window.addEventListener('focus', onFocus);
     return () => {
-      clearInterval(id);
       window.removeEventListener('focus', onFocus);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps

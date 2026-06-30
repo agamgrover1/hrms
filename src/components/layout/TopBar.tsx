@@ -331,24 +331,23 @@ export default function TopBar({ title, onMenuClick }: Props) {
 
   useEffect(() => {
     if (!user?.id) return;
+    // No background polling — every interval poll counted as an edge
+    // request against the Vercel quota and the org was approaching the
+    // 5k-edge-request target. Three triggers keep the bell useful
+    // without polling:
+    //   1. Mount fetch — fresh state when the user opens the app.
+    //   2. Focus / visibilitychange — fresh state when the user returns
+    //      to the tab (most common refresh path during a workday).
+    //   3. Bell click — handleBellClick below also refetches.
+    // Toasts only fire on the focus / visibility paths (showToasts:true)
+    // so a returning user still gets a popup for anything that landed
+    // while they were away.
     fetchNotifications({ showToasts: true });
-    // 3-minute poll. Tuned for cost, not "live feel":
-    //   30s × every tab → ~46k requests / workday (the original, before
-    //                     anything was cut).
-    //   3min × every tab → ~3.2k requests / workday for 40 users x 2 tabs
-    //                      (~14× cheaper). A notification arriving up to 3
-    //                      min late is still functional — anything urgent
-    //                      lives on Slack / a direct ping.
-    // Focus + visibility listeners cover the "tab returned from background"
-    // case so a user coming back gets fresh state immediately. The bell
-    // click also refetches, so opening the dropdown is always current.
-    pollRef.current = setInterval(() => fetchNotifications({ showToasts: true }), 180_000);
     const onFocus = () => fetchNotifications({ showToasts: true });
     const onVisible = () => { if (document.visibilityState === 'visible') fetchNotifications({ showToasts: true }); };
     window.addEventListener('focus', onFocus);
     document.addEventListener('visibilitychange', onVisible);
     return () => {
-      if (pollRef.current) clearInterval(pollRef.current);
       window.removeEventListener('focus', onFocus);
       document.removeEventListener('visibilitychange', onVisible);
     };

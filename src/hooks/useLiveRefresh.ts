@@ -1,46 +1,45 @@
 import { useEffect, useRef } from 'react';
 
-// Page-level "feels live" helper. Calls the provided refetch:
-//   1. Immediately on mount (most callers also do this themselves — safe
-//      to omit the initial call here if it would double-fetch).
-//   2. On a polling interval (default 45s — was 12s, which was burning
-//      Vercel Active CPU on every signed-in tab. The focus +
-//      visibilitychange handlers below mean returning to the tab still
-//      refetches instantly, so the only delay is for users who STAY on
-//      the same tab for 45s — fine for the surfaces that use this).
-//   3. The moment the tab regains focus / visibility (via the focus +
-//      visibilitychange events). If the user was on a different tab for
-//      five minutes, they get fresh state IMMEDIATELY on return — no
-//      "wait for the next poll" pause.
+// Page-level refresh helper. Calls the provided refetch on:
+//   1. Tab focus (window 'focus' event)
+//   2. Tab visibility regained ('visibilitychange' → visible)
+//   3. Mount, if opts.initial is true (most callers do their own mount
+//      fetch via a separate useEffect, so this is opt-in)
 //
-// Pass a stable refetch (useCallback or a module-level function) so the
+// The polling interval was REMOVED. Each tick used to be a fetch() →
+// edge request, and at 40 users × multiple tabs × 8h workday it was
+// dominating the Vercel edge-request quota. The two event listeners
+// catch every realistic "I just came back to this tab" case — for a
+// dashboard / list page that's plenty of freshness.
+//
+// `intervalMs` is accepted-but-ignored for backwards compatibility so
+// existing callers don't break. If you ever genuinely need polling
+// somewhere, use a dedicated setInterval inline and accept the cost.
+//
+// `enabled: false` skips both listeners — useful for SPA tabs that
+// aren't currently visible inside the page.
+//
+// Pass a stable refetch (useCallback or module-level function) so the
 // effect doesn't tear down + reattach on every render.
-//
-// Skip the poll entirely by passing `enabled: false` — useful for tabs
-// that aren't currently visible inside the page (a SPA tab switcher), so
-// background pages don't waste cycles.
 
 export function useLiveRefresh(
   refetch: () => void,
   opts: { intervalMs?: number; enabled?: boolean; initial?: boolean } = {}
 ) {
-  const { intervalMs = 45000, enabled = true, initial = false } = opts;
+  const { enabled = true, initial = false } = opts;
   const refetchRef = useRef(refetch);
-  // Keep the latest callback without re-subscribing the effect each render.
   useEffect(() => { refetchRef.current = refetch; }, [refetch]);
 
   useEffect(() => {
     if (!enabled) return;
     if (initial) refetchRef.current();
-    const id = window.setInterval(() => refetchRef.current(), intervalMs);
     const onFocus = () => refetchRef.current();
     const onVisible = () => { if (document.visibilityState === 'visible') refetchRef.current(); };
     window.addEventListener('focus', onFocus);
     document.addEventListener('visibilitychange', onVisible);
     return () => {
-      window.clearInterval(id);
       window.removeEventListener('focus', onFocus);
       document.removeEventListener('visibilitychange', onVisible);
     };
-  }, [enabled, intervalMs, initial]);
+  }, [enabled, initial]);
 }
