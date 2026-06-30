@@ -9593,33 +9593,48 @@ app.patch('/api/hour-logs/:id/approve', async (req, res) => {
   try {
     invalidateHourLogsCache();
     const { reviewer_id, reviewer_name } = req.body;
-    const pre = await sql`SELECT hours_logged, status, work_description FROM hour_logs WHERE id=${req.params.id}`;
-    const cur = (pre as any[])[0];
-    const rows = await sql`
-      UPDATE hour_logs SET status='approved',
-        rejection_reason=NULL,
-        reviewed_by_id=${reviewer_id ?? null}, reviewed_by_name=${reviewer_name ?? null},
-        reviewed_at=NOW(), updated_at=NOW()
-      WHERE id=${req.params.id} RETURNING *`;
+    // Fetch pre-state AND run the UPDATE in parallel — the pre-state is
+    // only needed for the audit row, which fires after the response.
+    // Saves ~50ms by removing one sequential round-trip from the critical
+    // path.
+    const [pre, rows] = await Promise.all([
+      sql`SELECT hours_logged, status, work_description FROM hour_logs WHERE id=${req.params.id}` as Promise<any[]>,
+      sql`
+        UPDATE hour_logs SET status='approved',
+          rejection_reason=NULL,
+          reviewed_by_id=${reviewer_id ?? null}, reviewed_by_name=${reviewer_name ?? null},
+          reviewed_at=NOW(), updated_at=NOW()
+        WHERE id=${req.params.id} RETURNING *` as Promise<any[]>,
+    ]);
     if (!rows.length) return res.status(404).json({ error: 'Log not found' });
+    const cur = pre[0];
     const r = rows[0];
-    await recordHourLogAudit({
-      hour_log_id: r.id,
-      action: 'approved',
-      actor_id: reviewer_id ?? null,
-      actor_name: reviewer_name ?? null,
-      actor_role: 'reviewer',
-      before: cur ? { hours_logged: cur.hours_logged, status: cur.status, work_description: cur.work_description } : null,
-      after: { hours_logged: r.hours_logged, status: r.status, work_description: r.work_description },
-    });
-    try {
-      const proj = await sql`SELECT name FROM projects WHERE id=${r.project_id}`;
-      const projectName = (proj as any[])[0]?.name || 'a project';
-      notifyEmployeeUser(r.employee_id, 'hours_approved',
-        'Hours Approved',
-        `Your ${r.hours_logged}h on ${projectName} (W${r.week_num}) was approved by ${reviewer_name || 'reviewer'}`).catch(()=>{});
-    } catch {}
+    // Respond NOW. Audit + notification do their own DB writes — none of
+    // them block the user's "approve" feedback. The audit insert is
+    // wrapped in try/catch inside recordHourLogAudit so a failure there
+    // can't crash the request after the response is already sent.
     res.json(r);
+    // Fire-and-forget background work. void marks intent (we deliberately
+    // don't await — saves the audit + project-name SELECT + notify SQL
+    // from the user-facing latency).
+    void (async () => {
+      try {
+        await recordHourLogAudit({
+          hour_log_id: r.id,
+          action: 'approved',
+          actor_id: reviewer_id ?? null,
+          actor_name: reviewer_name ?? null,
+          actor_role: 'reviewer',
+          before: cur ? { hours_logged: cur.hours_logged, status: cur.status, work_description: cur.work_description } : null,
+          after: { hours_logged: r.hours_logged, status: r.status, work_description: r.work_description },
+        });
+        const proj = await sql`SELECT name FROM projects WHERE id=${r.project_id}`;
+        const projectName = (proj as any[])[0]?.name || 'a project';
+        await notifyEmployeeUser(r.employee_id, 'hours_approved',
+          'Hours Approved',
+          `Your ${r.hours_logged}h on ${projectName} (W${r.week_num}) was approved by ${reviewer_name || 'reviewer'}`);
+      } catch { /* non-fatal — response already sent */ }
+    })();
   } catch (err: any) { res.status(500).json({ error: err.message || 'Server error' }); }
 });
 
@@ -9628,34 +9643,40 @@ app.patch('/api/hour-logs/:id/reject', async (req, res) => {
     invalidateHourLogsCache();
     const { reviewer_id, reviewer_name, rejection_reason } = req.body;
     if (!rejection_reason) return res.status(400).json({ error: 'rejection_reason is required' });
-    const pre = await sql`SELECT hours_logged, status, work_description FROM hour_logs WHERE id=${req.params.id}`;
-    const cur = (pre as any[])[0];
-    const rows = await sql`
-      UPDATE hour_logs SET status='rejected',
-        rejection_reason=${rejection_reason},
-        reviewed_by_id=${reviewer_id ?? null}, reviewed_by_name=${reviewer_name ?? null},
-        reviewed_at=NOW(), updated_at=NOW()
-      WHERE id=${req.params.id} RETURNING *`;
+    // Same parallelize-then-background pattern as approve. See that
+    // handler above for the reasoning.
+    const [pre, rows] = await Promise.all([
+      sql`SELECT hours_logged, status, work_description FROM hour_logs WHERE id=${req.params.id}` as Promise<any[]>,
+      sql`
+        UPDATE hour_logs SET status='rejected',
+          rejection_reason=${rejection_reason},
+          reviewed_by_id=${reviewer_id ?? null}, reviewed_by_name=${reviewer_name ?? null},
+          reviewed_at=NOW(), updated_at=NOW()
+        WHERE id=${req.params.id} RETURNING *` as Promise<any[]>,
+    ]);
     if (!rows.length) return res.status(404).json({ error: 'Log not found' });
+    const cur = pre[0];
     const r = rows[0];
-    await recordHourLogAudit({
-      hour_log_id: r.id,
-      action: 'rejected',
-      actor_id: reviewer_id ?? null,
-      actor_name: reviewer_name ?? null,
-      actor_role: 'reviewer',
-      before: cur ? { hours_logged: cur.hours_logged, status: cur.status, work_description: cur.work_description } : null,
-      after: { hours_logged: r.hours_logged, status: r.status, work_description: r.work_description },
-      reason: rejection_reason,
-    });
-    try {
-      const proj = await sql`SELECT name FROM projects WHERE id=${r.project_id}`;
-      const projectName = (proj as any[])[0]?.name || 'a project';
-      notifyEmployeeUser(r.employee_id, 'hours_rejected',
-        'Hours Rejected',
-        `Your ${r.hours_logged}h on ${projectName} (W${r.week_num}) was rejected: ${rejection_reason}`).catch(()=>{});
-    } catch {}
     res.json(r);
+    void (async () => {
+      try {
+        await recordHourLogAudit({
+          hour_log_id: r.id,
+          action: 'rejected',
+          actor_id: reviewer_id ?? null,
+          actor_name: reviewer_name ?? null,
+          actor_role: 'reviewer',
+          before: cur ? { hours_logged: cur.hours_logged, status: cur.status, work_description: cur.work_description } : null,
+          after: { hours_logged: r.hours_logged, status: r.status, work_description: r.work_description },
+          reason: rejection_reason,
+        });
+        const proj = await sql`SELECT name FROM projects WHERE id=${r.project_id}`;
+        const projectName = (proj as any[])[0]?.name || 'a project';
+        await notifyEmployeeUser(r.employee_id, 'hours_rejected',
+          'Hours Rejected',
+          `Your ${r.hours_logged}h on ${projectName} (W${r.week_num}) was rejected: ${rejection_reason}`);
+      } catch { /* non-fatal — response already sent */ }
+    })();
   } catch (err: any) { res.status(500).json({ error: err.message || 'Server error' }); }
 });
 

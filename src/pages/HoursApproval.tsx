@@ -148,28 +148,51 @@ export default function HoursApproval() {
     window.history.replaceState({}, '', u.toString());
   }, [logs, filterStatus]);
 
+  // Optimistic UI: flip the row in local state immediately so the button
+  // press feels instant. If the server rejects (network blip, auth, etc.)
+  // we revert the row and surface a toast. The full silentLoad() after
+  // syncs any other fields the server populated (reviewed_by, reviewed_at).
   const approve = async (log: HourLog) => {
+    const prev = log;
+    setLogs(curr => curr.map(l => l.id === log.id ? {
+      ...l, status: 'approved',
+      reviewed_by_name: user?.name ?? l.reviewed_by_name,
+      reviewed_at: new Date().toISOString(),
+    } : l));
+    toast.success('Hours approved', `${log.employee_name} · ${log.hours_logged}h on ${log.project_name}.`);
     try {
       await api.approveHourLog(log.id, {
         reviewer_id: reviewerEmpId ?? user?.id,
         reviewer_name: user?.name,
       });
-      toast.success('Hours approved', `${log.employee_name} · ${log.hours_logged}h on ${log.project_name}.`);
-    } catch (err: any) { toast.error('Approve failed', err?.message); }
-    load();
+      load();
+    } catch (err: any) {
+      // Revert the optimistic flip so the row goes back to its real state.
+      setLogs(curr => curr.map(l => l.id === log.id ? prev : l));
+      toast.error('Approve failed — change reverted', err?.message);
+    }
   };
 
   const reject = async (log: HourLog, reason: string) => {
+    const prev = log;
+    setLogs(curr => curr.map(l => l.id === log.id ? {
+      ...l, status: 'rejected', rejection_reason: reason,
+      reviewed_by_name: user?.name ?? l.reviewed_by_name,
+      reviewed_at: new Date().toISOString(),
+    } : l));
+    setRejecting(null);
+    toast.success('Hours rejected', `${log.employee_name} has been notified with your reason.`);
     try {
       await api.rejectHourLog(log.id, {
         reviewer_id: reviewerEmpId ?? user?.id,
         reviewer_name: user?.name,
         rejection_reason: reason,
       });
-      toast.success('Hours rejected', `${log.employee_name} has been notified with your reason.`);
-    } catch (err: any) { toast.error('Reject failed', err?.message); }
-    setRejecting(null);
-    load();
+      load();
+    } catch (err: any) {
+      setLogs(curr => curr.map(l => l.id === log.id ? prev : l));
+      toast.error('Reject failed — change reverted', err?.message);
+    }
   };
 
   const hold = async (log: HourLog, note: string) => {
