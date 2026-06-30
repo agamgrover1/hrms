@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { Search, Filter, Plus, Mail, Phone, MapPin, ChevronRight, X, User, Pencil, Trash2, Eye, EyeOff, AlertTriangle, Shield, LayoutGrid, List as ListIcon, ArrowUpDown, ChevronUp, ChevronDown, ShieldCheck, Clock } from 'lucide-react';
 import { api } from '../services/api';
 import { useAuth } from '../context/AuthContext';
+import { toast } from '../components/Toaster';
 // departments now loaded from API (Config → Departments)
 
 const avatarColors = [
@@ -1074,11 +1075,21 @@ export default function Employees() {
   const handleDelete = async (emp: any) => {
     setDeleting(true);
     try {
-      await api.deleteEmployee(emp.id);
+      // The backend cascades the delete to app_users so the ex-employee
+      // can't keep signing in. The response carries users_removed so we
+      // can surface a clearer success message.
+      const r = await api.deleteEmployee(emp.id) as any;
       setEmployees(prev => prev.filter(e => e.id !== emp.id));
       setConfirmDelete(null);
+      const usersRemoved = Number(r?.users_removed ?? 0);
+      toast.success(
+        `${emp.name} removed from directory`,
+        usersRemoved > 0
+          ? 'Their login account was also deleted — they can no longer access the portal.'
+          : 'They had no linked login account.',
+      );
     } catch (err: any) {
-      alert(err.message || 'Failed to delete employee. Please try again.');
+      toast.error('Delete failed', err?.message || 'Please try again.');
     } finally {
       setDeleting(false);
     }
@@ -1215,7 +1226,8 @@ export default function Employees() {
               <Trash2 size={20} className="text-danger" />
             </div>
             <h3 className="font-display font-semibold tracking-tight text-on-surface mb-1">Delete {confirmDelete.name}?</h3>
-            <p className="text-sm text-on-surface-subtle mb-6">This will permanently remove the employee record. This action cannot be undone.</p>
+            <p className="text-sm text-on-surface-subtle mb-4">This will permanently remove the employee record AND their login account from User Management. They'll no longer be able to access the portal.</p>
+            <p className="text-xs text-on-surface-subtle mb-6 italic">Past records (hours, leaves, audit trail) stay intact with their name on them.</p>
             <div className="flex gap-3">
               <button onClick={() => setConfirmDelete(null)} disabled={deleting}
                 className="flex-1 py-2.5 border border-outline rounded-lg text-sm font-medium text-on-surface-muted hover:bg-surface-2 transition-colors">

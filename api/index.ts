@@ -2059,6 +2059,7 @@ app.get('/api/employees/:id', async (req, res) => {
 app.post('/api/employees', async (req, res) => {
   try {
     if (!(await requireFullHR(req, res)).ok) return;
+    invalidateEmployeesCache();
     const { id, name, email, phone, department, designation, employee_id, join_date, location, manager, reporting_manager_id, status, avatar, salary, ctc, password, role, biometric_id, shift } = req.body;
     const rows = await sql`
       INSERT INTO employees (id, name, email, phone, department, designation, employee_id, join_date, location, manager, reporting_manager_id, status, avatar, salary, ctc, biometric_id, shift)
@@ -2092,6 +2093,7 @@ app.post('/api/employees', async (req, res) => {
 app.put('/api/employees/:id', async (req, res) => {
   try {
     if (!(await requireFullHR(req, res)).ok) return;
+    invalidateEmployeesCache();
     const { name, email, phone, department, designation, join_date, location, manager, reporting_manager_id, status, salary, ctc, biometric_id, shift, next_appraisal_month, next_appraisal_year, date_of_birth, exit_date, exit_salary_override } = req.body;
     await sql`ALTER TABLE employees ADD COLUMN IF NOT EXISTS date_of_birth DATE`.catch(()=>{});
     await sql`ALTER TABLE employees ADD COLUMN IF NOT EXISTS exit_date DATE`.catch(()=>{});
@@ -2154,6 +2156,7 @@ app.patch('/api/employees/:id/probation', async (req, res) => {
   try {
     await runStartupMigrations();
     if (!(await requireFullHR(req, res)).ok) return;
+    invalidateEmployeesCache();
     const { probation_end_date } = req.body;
 
     const empRows = await sql`SELECT join_date, probation_end_date FROM employees WHERE id=${req.params.id} OR employee_id=${req.params.id}`;
@@ -2173,9 +2176,15 @@ app.patch('/api/employees/:id/probation', async (req, res) => {
   } catch (err: any) { res.status(500).json({ error: err.message || 'Server error' }); }
 });
 
+function invalidateEmployeesCache() {
+  // Drop the org-wide list. memoTtl key matches employees:all.
+  _memoCache.delete('employees:all');
+}
+
 app.delete('/api/employees/:id', async (req, res) => {
   try {
     if (!(await requireFullHR(req, res)).ok) return;
+    invalidateEmployeesCache();
     // Look up the employee FIRST so we can find their linked app_users
     // row (the link lives on app_users.employee_id_ref, which holds
     // either the human code DL0076 or the legacy internal id e_xxx —
