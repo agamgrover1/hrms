@@ -49,6 +49,43 @@ app.use(cors({
 }));
 app.use(express.json());
 
+// ── Browser-cache headers for the read endpoints we already memoize ───────
+// Cuts Vercel Active CPU by skipping the request entirely while the
+// browser's copy is still fresh. Pairs with the server-side memoTtl: the
+// server cache only fires when max-age expires or a different user hits
+// the same endpoint inside a Lambda.
+//   private = browser-only cache (user-scoped payload)
+//   public  = CDN / shared proxy may also cache (org-wide payload)
+//   max-age is set to roughly half the memoTtl so the browser refetches
+//   before the server cache misses (gives the user fresher state on real
+//   refresh while still eliminating most polls).
+app.use((req: any, res: any, next: any) => {
+  if (req.method !== 'GET') { next(); return; }
+  const p = req.path as string;
+  const apply = (sec: number, scope: 'private' | 'public') =>
+    res.setHeader('Cache-Control', `${scope}, max-age=${sec}, stale-while-revalidate=${sec}`);
+  // Order matters — match the most-specific path first.
+  if (p === '/api/employees')              apply(30,  'private');
+  else if (p === '/api/announcements')     apply(30,  'public');
+  else if (p === '/api/upcoming-events')   apply(150, 'public');
+  else if (p === '/api/features/unseen')   apply(150, 'private');
+  else if (p === '/api/attendance')        apply(30,  'private');
+  else if (p === '/api/hour-log-days')     apply(30,  'private');
+  else if (p === '/api/hour-logs')         apply(30,  'private');
+  else if (p === '/api/leave/requests')    apply(30,  'private');
+  else if (p === '/api/leaves/out-today')  apply(30,  'public');
+  else if (p === '/api/notifications')     apply(15,  'private');
+  else if (p === '/api/hours-summary')     apply(30,  'private');
+  else if (p === '/api/finance/dashboard') apply(30,  'private');
+  else if (p === '/api/performance/pulse/team') apply(30, 'private');
+  else if (p === '/api/wfh/requests')      apply(30,  'private');
+  else if (p === '/api/project-assignments') apply(30, 'private');
+  else if (p === '/api/projects')          apply(30,  'private');
+  else if (p === '/api/internal-hour-logs') apply(30, 'private');
+  else if (p.startsWith('/api/leave/balances/')) apply(30, 'private');
+  next();
+});
+
 // ── Notification helpers ──────────────────────────────────────────────────
 async function notifyUser(userId: string, type: string, title: string, body?: string, link?: string) {
   try {
@@ -263,11 +300,15 @@ async function actorOwnEmployeeId(req: any): Promise<string | null> {
   try {
     const userId = req.header('x-user-id') || req.query.__uid;
     if (!userId) return null;
-    const row = (await sql`
-      SELECT e.id FROM app_users u
-      JOIN employees e ON e.employee_id = u.employee_id_ref OR e.id = u.employee_id_ref
-      WHERE u.id = ${userId} LIMIT 1`)[0] as any;
-    return row?.id ?? null;
+    // 5-minute memo — the user's employee record almost never moves and
+    // this helper is hit by every salary-stripped /api/employees call.
+    return await memoTtl(`actorOwnEmp:${userId}`, 5 * 60_000, async () => {
+      const row = (await sql`
+        SELECT e.id FROM app_users u
+        JOIN employees e ON e.employee_id = u.employee_id_ref OR e.id = u.employee_id_ref
+        WHERE u.id = ${userId} LIMIT 1`)[0] as any;
+      return row?.id ?? null;
+    });
   } catch { return null; }
 }
 
@@ -290,6 +331,24 @@ async function actorOwnEmployeeId(req: any): Promise<string | null> {
 // write-sensitive result, expose an invalidate() helper.
 type CacheEntry<T> = { value: T; expiresAt: number };
 const _memoCache = new Map<string, CacheEntry<any>>();
+
+// Tag a JSON response so the browser caches it for `seconds` without
+// re-asking the server. Works alongside memoTtl: while max-age is alive
+// the browser doesn't hit the function at all (saves Active CPU + Neon
+// egress + the Lambda invocation), after that the server-side memoTtl
+// catches the first request per minute.
+//   scope='private' → only the user's browser caches. Use for any
+//                     payload that varies per signed-in user.
+//   scope='public'  → CDN / shared proxies may also cache. Use only for
+//                     org-wide payloads that look the same for every
+//                     viewer (announcements, upcoming-events).
+function sendCached(res: any, body: any, seconds: number, scope: 'private' | 'public' = 'private') {
+  // stale-while-revalidate lets the browser serve a slightly-stale copy
+  // while it refetches in the background — no perceived staleness.
+  res.setHeader('Cache-Control', `${scope}, max-age=${seconds}, stale-while-revalidate=${seconds}`);
+  res.json(body);
+}
+
 async function memoTtl<T>(key: string, ttlMs: number, compute: () => Promise<T>): Promise<T> {
   const now = Date.now();
   const hit = _memoCache.get(key);
@@ -1904,8 +1963,14 @@ async function actorRoleOf(req: any): Promise<string> {
   try {
     const userId = req.header('x-user-id') || req.query.__uid;
     if (!userId) return '';
-    const u = (await sql`SELECT role FROM app_users WHERE id=${userId} LIMIT 1`)[0] as any;
-    return u?.role ?? '';
+    // Cache the role lookup for 5 minutes per user. The auth gate runs on
+    // EVERY request that scopes by role (employees, stripSalary, etc.) —
+    // dropping that to one SQL per user per 5min is one of the biggest
+    // wins available now that the other reads are memoized.
+    return await memoTtl(`actorRole:${userId}`, 5 * 60_000, async () => {
+      const u = (await sql`SELECT role FROM app_users WHERE id=${userId} LIMIT 1`)[0] as any;
+      return u?.role ?? '';
+    });
   } catch { return ''; }
 }
 
@@ -8299,19 +8364,31 @@ app.get('/api/wfh/requests', async (req, res) => {
         rows = await sql`SELECT wr.* FROM wfh_requests wr JOIN employees e ON e.id=wr.employee_id WHERE e.reporting_manager_id = ANY(${cands}::text[]) AND wr.manager_status='pending' AND wr.status='pending' ORDER BY wr.applied_on DESC`;
         return res.json({ _debug: { input: reporting_manager_id, resolved_manager: mgrRow, candidates: cands, matched_count: (rows as any[]).length, all_pending_wfh_sample: allPending }, rows });
       }
-      rows = await sql`SELECT wr.* FROM wfh_requests wr JOIN employees e ON e.id=wr.employee_id WHERE e.reporting_manager_id = ANY(${cands}::text[]) AND wr.manager_status='pending' AND wr.status='pending' ORDER BY wr.applied_on DESC`;
+      const mgrKey = cands.join('|');
+      rows = await memoTtl(`wfh:mgr:${mgrKey}`, 60_000, async () =>
+        sql`SELECT wr.* FROM wfh_requests wr JOIN employees e ON e.id=wr.employee_id WHERE e.reporting_manager_id = ANY(${cands}::text[]) AND wr.manager_status='pending' AND wr.status='pending' ORDER BY wr.applied_on DESC`);
     } else if (employee_id) {
-      rows = await sql`SELECT * FROM wfh_requests WHERE employee_id=${employee_id} ORDER BY applied_on DESC`;
+      rows = await memoTtl(`wfh:emp:${employee_id}`, 60_000, async () =>
+        sql`SELECT * FROM wfh_requests WHERE employee_id=${employee_id} ORDER BY applied_on DESC`);
     } else if (status) {
-      rows = await sql`SELECT * FROM wfh_requests WHERE status=${status} ORDER BY applied_on DESC`;
+      rows = await memoTtl(`wfh:status:${status}`, 60_000, async () =>
+        sql`SELECT * FROM wfh_requests WHERE status=${status} ORDER BY applied_on DESC`);
     } else {
-      rows = await sql`SELECT * FROM wfh_requests ORDER BY applied_on DESC`;
+      rows = await memoTtl(`wfh:all`, 60_000, async () =>
+        sql`SELECT * FROM wfh_requests ORDER BY applied_on DESC`);
     }
     res.json(rows);
   } catch { res.status(500).json({ error: 'Server error' }); }
 });
+
+function invalidateWfhCache() {
+  for (const k of Array.from(_memoCache.keys())) {
+    if (k.startsWith('wfh:')) _memoCache.delete(k);
+  }
+}
 app.post('/api/wfh/requests', async (req, res) => {
   try {
+    invalidateWfhCache();
     await ensureWfhTable();
     let { employee_id, employee_name, date, type, reason } = req.body;
     // Defensive resolution: if employee_id is empty (frontend submitted
@@ -8353,6 +8430,7 @@ app.post('/api/wfh/requests', async (req, res) => {
 });
 app.patch('/api/wfh/requests/:id/manager-approve', async (req, res) => {
   try {
+    invalidateWfhCache();
     const { status, manager_id, manager_name, rejection_reason } = req.body;
     if (status === 'rejected') {
       const rows = await sql`UPDATE wfh_requests SET manager_status='rejected',manager_id=${manager_id??null},manager_name=${manager_name??null},manager_approved_at=NOW(),manager_rejection_reason=${rejection_reason??null},status='rejected' WHERE id=${req.params.id} RETURNING *`;
@@ -8369,6 +8447,7 @@ app.patch('/api/wfh/requests/:id/manager-approve', async (req, res) => {
 });
 app.patch('/api/wfh/requests/:id', async (req, res) => {
   try {
+    invalidateWfhCache();
     const { status, actioner_name, rejection_reason } = req.body;
     const rows = await sql`UPDATE wfh_requests SET status=${status},hr_actioner_name=${actioner_name??null},hr_actioned_at=NOW(),rejection_reason=${status==='rejected'?(rejection_reason??null):null} WHERE id=${req.params.id} RETURNING *`;
     if (!rows.length) return res.status(404).json({ error: 'Not found' });
@@ -8388,6 +8467,7 @@ app.patch('/api/wfh/requests/:id', async (req, res) => {
 });
 app.patch('/api/wfh/requests/:id/cancel', async (req, res) => {
   try {
+    invalidateWfhCache();
     const { cancelled_by, cancellation_reason } = req.body;
     const rows = await sql`UPDATE wfh_requests SET status='cancelled',cancelled_by=${cancelled_by??null},cancelled_at=NOW(),cancellation_reason=${cancellation_reason??null} WHERE id=${req.params.id} AND status IN ('pending','approved') RETURNING *`;
     if (!rows.length) return res.status(404).json({ error: 'Not found or not cancellable' });
@@ -8532,41 +8612,46 @@ app.get('/api/projects', async (req, res) => {
   try {
     await runStartupMigrations();
     const { status, type } = req.query;
-    // LEFT JOIN total approved hours per project so the list can show
-    // consumed-vs-cap progress without an extra round trip.
-    let rows: any[];
-    if (status && type) {
-      rows = await sql`
+    // 60s memo — projects list rarely changes within a minute and is hit
+    // on every /projects + /hours page load.
+    const rows = await memoTtl(`projects:${status ?? ''}:${type ?? ''}`, 60_000, async () => {
+      if (status && type) return await sql`
         SELECT p.*, COALESCE(c.consumed, 0)::numeric AS consumed_hours_total
         FROM projects p
         LEFT JOIN (SELECT project_id, SUM(hours_logged) AS consumed FROM hour_logs WHERE status='approved' GROUP BY project_id) c ON c.project_id = p.id
         WHERE p.status=${status} AND p.project_type=${type} ORDER BY p.name ASC`;
-    } else if (status) {
-      rows = await sql`
+      if (status) return await sql`
         SELECT p.*, COALESCE(c.consumed, 0)::numeric AS consumed_hours_total
         FROM projects p
         LEFT JOIN (SELECT project_id, SUM(hours_logged) AS consumed FROM hour_logs WHERE status='approved' GROUP BY project_id) c ON c.project_id = p.id
         WHERE p.status=${status} ORDER BY p.name ASC`;
-    } else if (type) {
-      rows = await sql`
+      if (type) return await sql`
         SELECT p.*, COALESCE(c.consumed, 0)::numeric AS consumed_hours_total
         FROM projects p
         LEFT JOIN (SELECT project_id, SUM(hours_logged) AS consumed FROM hour_logs WHERE status='approved' GROUP BY project_id) c ON c.project_id = p.id
         WHERE p.project_type=${type} ORDER BY p.name ASC`;
-    } else {
-      rows = await sql`
+      return await sql`
         SELECT p.*, COALESCE(c.consumed, 0)::numeric AS consumed_hours_total
         FROM projects p
         LEFT JOIN (SELECT project_id, SUM(hours_logged) AS consumed FROM hour_logs WHERE status='approved' GROUP BY project_id) c ON c.project_id = p.id
         ORDER BY p.status='archived', p.name ASC`;
-    }
+    });
     res.json(rows);
   } catch (err: any) { res.status(500).json({ error: err.message || 'Server error' }); }
 });
 
+// Drop every projects:* memo cache entry. Called after any project
+// mutation so the list view picks up the change immediately.
+function invalidateProjectsCache() {
+  for (const k of Array.from(_memoCache.keys())) {
+    if (k.startsWith('projects:')) _memoCache.delete(k);
+  }
+}
+
 app.post('/api/projects', async (req, res) => {
   try {
     await runStartupMigrations();
+    invalidateProjectsCache();
     const {
       name, client_name, project_type, dashboard_url,
       project_reporting_id, project_reporting_name,
@@ -8595,6 +8680,7 @@ app.post('/api/projects', async (req, res) => {
 
 app.put('/api/projects/:id', async (req, res) => {
   try {
+    invalidateProjectsCache();
     const {
       name, client_name, project_type, dashboard_url,
       project_reporting_id, project_reporting_name,
@@ -8659,6 +8745,7 @@ async function dismissFutureAssignments(projectId: string) {
 
 app.delete('/api/projects/:id', async (req, res) => {
   try {
+    invalidateProjectsCache();
     // Soft delete: mark archived; preserves history of hour logs
     const rows = await sql`UPDATE projects SET status='archived' WHERE id=${req.params.id} RETURNING id, status`;
     if (!rows.length) return res.status(404).json({ error: 'Project not found' });
@@ -8675,25 +8762,35 @@ app.get('/api/project-assignments', async (req, res) => {
     const year = req.query.year ? Number(req.query.year) : null;
     const employee_id = (req.query.employee_id as string) || null;
     const project_id = (req.query.project_id as string) || null;
-    const rows = await sql`
-      SELECT pa.*, p.name AS project_name, p.client_name AS project_client_name,
-             p.project_type, p.dashboard_url, p.flag AS project_flag,
-             p.project_reporting_id, p.project_reporting_name,
-             p.project_lead_id, p.project_lead_name, p.status AS project_status
-      FROM project_assignments pa
-      JOIN projects p ON p.id = pa.project_id
-      WHERE (${month}::int IS NULL OR pa.month=${month})
-        AND (${year}::int IS NULL  OR pa.year=${year})
-        AND (${employee_id}::text IS NULL OR pa.employee_id=${employee_id})
-        AND (${project_id}::text IS NULL OR pa.project_id=${project_id})
-      ORDER BY p.name ASC, pa.employee_name ASC`;
+    const cacheKey = `projAssign:${employee_id ?? ''}:${project_id ?? ''}:${month ?? ''}:${year ?? ''}`;
+    const rows = await memoTtl(cacheKey, 60_000, async () =>
+      sql`
+        SELECT pa.*, p.name AS project_name, p.client_name AS project_client_name,
+               p.project_type, p.dashboard_url, p.flag AS project_flag,
+               p.project_reporting_id, p.project_reporting_name,
+               p.project_lead_id, p.project_lead_name, p.status AS project_status
+        FROM project_assignments pa
+        JOIN projects p ON p.id = pa.project_id
+        WHERE (${month}::int IS NULL OR pa.month=${month})
+          AND (${year}::int IS NULL  OR pa.year=${year})
+          AND (${employee_id}::text IS NULL OR pa.employee_id=${employee_id})
+          AND (${project_id}::text IS NULL OR pa.project_id=${project_id})
+        ORDER BY p.name ASC, pa.employee_name ASC`
+    );
     res.json(rows);
   } catch (err: any) { res.status(500).json({ error: err.message || 'Server error' }); }
 });
 
+function invalidateProjectAssignmentsCache() {
+  for (const k of Array.from(_memoCache.keys())) {
+    if (k.startsWith('projAssign:')) _memoCache.delete(k);
+  }
+}
+
 app.post('/api/project-assignments', async (req, res) => {
   try {
     await runStartupMigrations();
+    invalidateProjectAssignmentsCache();
     const {
       project_id, employee_id, employee_name, month, year,
       w1_hours, w2_hours, w3_hours, w4_hours, w5_hours, notes, created_by,
@@ -8734,6 +8831,7 @@ app.post('/api/project-assignments', async (req, res) => {
 
 app.put('/api/project-assignments/:id', async (req, res) => {
   try {
+    invalidateProjectAssignmentsCache();
     const { w1_hours, w2_hours, w3_hours, w4_hours, w5_hours, notes } = req.body;
     const w1 = Number(w1_hours) || 0;
     const w2 = Number(w2_hours) || 0;
@@ -8831,6 +8929,7 @@ app.get('/api/project-assignments/audit', async (req, res) => {
 
 app.delete('/api/project-assignments/:id', async (req, res) => {
   try {
+    invalidateProjectAssignmentsCache();
     const rows = await sql`DELETE FROM project_assignments WHERE id=${req.params.id} RETURNING *`;
     if (!rows.length) return res.status(404).json({ error: 'Assignment not found' });
     const r = rows[0];
@@ -8847,6 +8946,7 @@ app.delete('/api/project-assignments/:id', async (req, res) => {
 
 app.post('/api/project-assignments/copy-month', async (req, res) => {
   try {
+    invalidateProjectAssignmentsCache();
     const { from_month, from_year, to_month, to_year, created_by, blank_hours } = req.body;
     if (!from_month || !from_year || !to_month || !to_year)
       return res.status(400).json({ error: 'from_month, from_year, to_month, to_year are required' });
@@ -8885,7 +8985,8 @@ app.get('/api/hour-logs', async (req, res) => {
     const employee_id = (req.query.employee_id as string) || null;
     const status = (req.query.status as string) || null;
     const reviewer_id = (req.query.reviewer_id as string) || null;
-    const rows = await sql`
+    const cacheKey = `hourLogs:${employee_id ?? ''}:${reviewer_id ?? ''}:${status ?? ''}:${month ?? ''}:${year ?? ''}`;
+    const rows = await memoTtl(cacheKey, 60_000, async () => sql`
       SELECT hl.*, p.name AS project_name, p.client_name AS project_client_name,
              p.project_reporting_id, p.project_reporting_name,
              pa.w1_hours, pa.w2_hours, pa.w3_hours, pa.w4_hours, pa.w5_hours,
@@ -8944,13 +9045,22 @@ app.get('/api/hour-logs', async (req, res) => {
         AND (${reviewer_id}::text IS NULL
              OR p.project_reporting_id=${reviewer_id}
              OR p.project_lead_id=${reviewer_id})
-      ORDER BY hl.submitted_at DESC`;
+      ORDER BY hl.submitted_at DESC`);
     res.json(rows);
   } catch (err: any) { res.status(500).json({ error: err.message || 'Server error' }); }
 });
 
+function invalidateHourLogsCache() {
+  // Both lists are derived from the same write surface — any hour-log
+  // mutation can affect either, so drop both buckets together.
+  for (const k of Array.from(_memoCache.keys())) {
+    if (k.startsWith('hourLogs:') || k.startsWith('hourLogDays:')) _memoCache.delete(k);
+  }
+}
+
 app.post('/api/hour-logs', async (req, res) => {
   try {
+    invalidateHourLogsCache();
     await runStartupMigrations();
     const { project_id, employee_id, employee_name, month, year, week_num, hours_logged, work_description } = req.body;
     if (!project_id || !employee_id || !month || !year || !week_num)
@@ -9019,6 +9129,7 @@ app.post('/api/hour-logs', async (req, res) => {
 
 app.put('/api/hour-logs/:id', async (req, res) => {
   try {
+    invalidateHourLogsCache();
     const { hours_logged, work_description, actor_id, actor_name, actor_role, keep_status, reason } = req.body;
     const existing = await sql`SELECT * FROM hour_logs WHERE id=${req.params.id}`;
     if (!(existing as any[]).length) return res.status(404).json({ error: 'Log not found' });
@@ -9203,6 +9314,7 @@ app.get('/api/hour-log-days', async (req, res) => {
 
 app.post('/api/hour-log-days', async (req, res) => {
   try {
+    invalidateHourLogsCache();
     await runStartupMigrations();
     const { assignment_id, log_date, hours, notes, employee_id, employee_name } = req.body;
     if (!assignment_id || !log_date || hours === undefined || hours === null)
@@ -9232,6 +9344,7 @@ app.post('/api/hour-log-days', async (req, res) => {
 
 app.put('/api/hour-log-days/:id', async (req, res) => {
   try {
+    invalidateHourLogsCache();
     const { hours, notes } = req.body;
     const existing = await sql`SELECT * FROM hour_log_days WHERE id=${req.params.id}`;
     if (!(existing as any[]).length) return res.status(404).json({ error: 'Day entry not found' });
@@ -9249,6 +9362,7 @@ app.put('/api/hour-log-days/:id', async (req, res) => {
 
 app.delete('/api/hour-log-days/:id', async (req, res) => {
   try {
+    invalidateHourLogsCache();
     const existing = await sql`SELECT assignment_id, week_num FROM hour_log_days WHERE id=${req.params.id}`;
     if (!(existing as any[]).length) return res.status(404).json({ error: 'Day entry not found' });
     const cur = (existing as any[])[0];
@@ -9275,6 +9389,7 @@ app.get('/api/hour-logs/:id/audit', async (req, res) => {
 // and we add one final 'deleted' entry too.
 app.delete('/api/hour-logs/:id', async (req, res) => {
   try {
+    invalidateHourLogsCache();
     await runStartupMigrations();
     const { actor_id, actor_name, actor_role, reason } = req.body ?? {};
     const existing = await sql`SELECT * FROM hour_logs WHERE id=${req.params.id}`;
@@ -9335,6 +9450,7 @@ app.delete('/api/hour-logs/:id', async (req, res) => {
 // for parity with the existing "reason on the row" pattern.
 app.patch('/api/hour-logs/:id/hold', async (req, res) => {
   try {
+    invalidateHourLogsCache();
     const { reviewer_id, reviewer_name, reviewer_role, note } = req.body ?? {};
     if (!note?.trim()) return res.status(400).json({ error: 'A note explaining the hold is required' });
     const pre = await sql`SELECT hours_logged, status, work_description FROM hour_logs WHERE id=${req.params.id}`;
@@ -9475,6 +9591,7 @@ app.post('/api/hour-logs/:id/comments', async (req, res) => {
 
 app.patch('/api/hour-logs/:id/approve', async (req, res) => {
   try {
+    invalidateHourLogsCache();
     const { reviewer_id, reviewer_name } = req.body;
     const pre = await sql`SELECT hours_logged, status, work_description FROM hour_logs WHERE id=${req.params.id}`;
     const cur = (pre as any[])[0];
@@ -9508,6 +9625,7 @@ app.patch('/api/hour-logs/:id/approve', async (req, res) => {
 
 app.patch('/api/hour-logs/:id/reject', async (req, res) => {
   try {
+    invalidateHourLogsCache();
     const { reviewer_id, reviewer_name, rejection_reason } = req.body;
     if (!rejection_reason) return res.status(400).json({ error: 'rejection_reason is required' });
     const pre = await sql`SELECT hours_logged, status, work_description FROM hour_logs WHERE id=${req.params.id}`;
