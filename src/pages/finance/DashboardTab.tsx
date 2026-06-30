@@ -167,6 +167,9 @@ export default function DashboardTab({ month, year, rev }: { month: number; year
         )}
       </div>
 
+      {/* Team P&L — projects rolled up by their primary supervisor */}
+      <TeamProfitabilityTable projects={model.projectRows} currency={c} onPickProject={setProjectDrilldown} />
+
       {/* Per-employee drill-in modal */}
       {drilldown && (
         <EmployeeProjectsModal
@@ -196,6 +199,150 @@ export default function DashboardTab({ month, year, rev }: { month: number; year
         setGroupBy={setUtilGroup}
         onPick={setDrilldown}
       />
+    </div>
+  );
+}
+
+// Team rollup of project profitability. Each project belongs to the team
+// of its primary supervisor (supervisorNames[0]) — that's the person
+// running the show on that engagement. Projects with no supervisor land
+// in "Unassigned" so they're still visible (and the company total still
+// reconciles). Click a row to expand and see the projects in that team
+// alongside their individual P&L.
+function TeamProfitabilityTable({ projects, currency, onPickProject }: {
+  projects: any[];
+  currency: string;
+  onPickProject: (p: any) => void;
+}) {
+  const [expanded, setExpanded] = useState<Set<string>>(new Set());
+  const toggle = (key: string) => setExpanded(s => {
+    const next = new Set(s);
+    if (next.has(key)) next.delete(key); else next.add(key);
+    return next;
+  });
+
+  const teams = useMemo(() => {
+    const m = new Map<string, { team: string; projects: any[]; revenue: number; directCost: number; projectExpenses: number; grossProfit: number; overhead: number; supervision: number; netProfit: number; directHours: number }>();
+    for (const p of projects) {
+      const team = (p.supervisorNames && p.supervisorNames[0]) || 'Unassigned';
+      const entry = m.get(team) ?? {
+        team, projects: [],
+        revenue: 0, directCost: 0, projectExpenses: 0, grossProfit: 0,
+        overhead: 0, supervision: 0, netProfit: 0, directHours: 0,
+      };
+      entry.projects.push(p);
+      entry.revenue        += Number(p.revenue) || 0;
+      entry.directCost     += Number(p.directCost) || 0;
+      entry.projectExpenses+= Number(p.projectExpenses) || 0;
+      entry.grossProfit    += Number(p.grossProfit) || 0;
+      entry.overhead       += Number(p.overhead) || 0;
+      entry.supervision    += Number(p.supervision) || 0;
+      entry.netProfit      += Number(p.netProfit) || 0;
+      entry.directHours    += Number(p.directHours) || 0;
+      m.set(team, entry);
+    }
+    return Array.from(m.values()).sort((a, b) => b.netProfit - a.netProfit);
+  }, [projects]);
+
+  if (teams.length === 0) return null;
+
+  // Footer totals — sum across all teams (should match the per-project total above).
+  const tot = teams.reduce((acc, t) => ({
+    revenue: acc.revenue + t.revenue,
+    directCost: acc.directCost + t.directCost,
+    projectExpenses: acc.projectExpenses + t.projectExpenses,
+    grossProfit: acc.grossProfit + t.grossProfit,
+    overhead: acc.overhead + t.overhead,
+    supervision: acc.supervision + t.supervision,
+    netProfit: acc.netProfit + t.netProfit,
+  }), { revenue: 0, directCost: 0, projectExpenses: 0, grossProfit: 0, overhead: 0, supervision: 0, netProfit: 0 });
+
+  return (
+    <div className="rounded-xl-2 border border-outline bg-surface overflow-hidden">
+      <div className="px-5 py-3 border-b border-outline text-sm font-semibold text-on-surface">
+        Team profitability
+        <span className="text-xs font-normal text-on-surface-subtle ml-2">· projects rolled up by their primary supervisor · click a row to expand</span>
+      </div>
+      <div className="overflow-x-auto">
+        <table className="w-full text-sm">
+          <thead>
+            <tr className="text-[11px] uppercase tracking-wide text-on-surface-subtle border-b border-outline bg-surface-2">
+              <th className="text-left font-semibold px-4 py-2.5">Team</th>
+              <th className="text-right font-semibold px-3 py-2.5">Projects</th>
+              <th className="text-right font-semibold px-3 py-2.5">Revenue</th>
+              <th className="text-right font-semibold px-3 py-2.5">Direct cost</th>
+              <th className="text-right font-semibold px-3 py-2.5">Outsourced</th>
+              <th className="text-right font-semibold px-3 py-2.5">Gross</th>
+              <th className="text-right font-semibold px-3 py-2.5">Overhead</th>
+              <th className="text-right font-semibold px-3 py-2.5">Supervision</th>
+              <th className="text-right font-semibold px-3 py-2.5">Net profit</th>
+              <th className="text-right font-semibold px-3 py-2.5">Margin</th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-outline">
+            {teams.map(team => {
+              const margin = team.revenue > 0 ? team.netProfit / team.revenue : 0;
+              const isOpen = expanded.has(team.team);
+              return (
+                <Fragment key={team.team}>
+                  <tr className="hover:bg-surface-2/50 cursor-pointer group" onClick={() => toggle(team.team)}>
+                    <td className="px-4 py-2.5">
+                      <div className="font-medium text-on-surface inline-flex items-center gap-2 group-hover:text-accent transition-colors">
+                        <ChevronRight size={12} className={`text-on-surface-subtle transition-transform ${isOpen ? 'rotate-90' : ''}`} />
+                        {team.team}
+                      </div>
+                      <div className="text-xs text-on-surface-subtle pl-5">{hrs(team.directHours)} on direct work</div>
+                    </td>
+                    <td className="px-3 py-2.5 text-right tabular-nums text-on-surface">{team.projects.length}</td>
+                    <td className="px-3 py-2.5 text-right tabular-nums text-on-surface">{money(team.revenue, currency)}</td>
+                    <td className="px-3 py-2.5 text-right tabular-nums text-on-surface-muted">{money(team.directCost, currency)}</td>
+                    <td className={`px-3 py-2.5 text-right tabular-nums ${team.projectExpenses > 0 ? 'text-warning' : 'text-on-surface-subtle'}`}>{money(team.projectExpenses, currency)}</td>
+                    <td className="px-3 py-2.5 text-right tabular-nums text-on-surface">{money(team.grossProfit, currency)}</td>
+                    <td className="px-3 py-2.5 text-right tabular-nums text-on-surface-subtle">{money(team.overhead, currency)}</td>
+                    <td className="px-3 py-2.5 text-right tabular-nums text-on-surface-subtle">{money(team.supervision, currency)}</td>
+                    <td className={`px-3 py-2.5 text-right font-semibold tabular-nums ${team.netProfit >= 0 ? 'text-success' : 'text-danger'}`}>{money(team.netProfit, currency)}</td>
+                    <td className={`px-3 py-2.5 text-right tabular-nums ${marginTone(margin)}`}>{pct(margin)}</td>
+                  </tr>
+                  {isOpen && team.projects.map(p => (
+                    <tr key={p.id} className="bg-surface-2/30 hover:bg-surface-2/60 cursor-pointer group/inner" onClick={(e) => { e.stopPropagation(); onPickProject(p); }}>
+                      <td className="px-4 py-2 pl-10">
+                        <div className="text-sm text-on-surface inline-flex items-center gap-2 group-hover/inner:text-accent transition-colors">
+                          {p.name}
+                          <ChevronRight size={10} className="text-on-surface-subtle group-hover/inner:text-accent transition-colors" />
+                        </div>
+                        <div className="text-[11px] text-on-surface-subtle">{p.client_name || '—'} · {hrs(p.directHours)}</div>
+                      </td>
+                      <td className="px-3 py-2 text-right tabular-nums text-on-surface-subtle">1</td>
+                      <td className="px-3 py-2 text-right tabular-nums text-on-surface">{money(p.revenue, currency)}</td>
+                      <td className="px-3 py-2 text-right tabular-nums text-on-surface-muted">{money(p.directCost, currency)}</td>
+                      <td className={`px-3 py-2 text-right tabular-nums ${p.projectExpenses > 0 ? 'text-warning' : 'text-on-surface-subtle'}`}>{money(p.projectExpenses, currency)}</td>
+                      <td className="px-3 py-2 text-right tabular-nums text-on-surface">{money(p.grossProfit, currency)}</td>
+                      <td className="px-3 py-2 text-right tabular-nums text-on-surface-subtle">{money(p.overhead, currency)}</td>
+                      <td className="px-3 py-2 text-right tabular-nums text-on-surface-subtle">{money(p.supervision, currency)}</td>
+                      <td className={`px-3 py-2 text-right font-semibold tabular-nums ${p.netProfit >= 0 ? 'text-success' : 'text-danger'}`}>{money(p.netProfit, currency)}</td>
+                      <td className={`px-3 py-2 text-right tabular-nums ${marginTone(p.netMargin)}`}>{pct(p.netMargin)}</td>
+                    </tr>
+                  ))}
+                </Fragment>
+              );
+            })}
+          </tbody>
+          <tfoot>
+            <tr className="border-t-2 border-outline-strong bg-surface-2 font-semibold text-on-surface">
+              <td className="px-4 py-2.5">Total</td>
+              <td className="px-3 py-2.5 text-right tabular-nums">{projects.length}</td>
+              <td className="px-3 py-2.5 text-right tabular-nums">{money(tot.revenue, currency)}</td>
+              <td className="px-3 py-2.5 text-right tabular-nums">{money(tot.directCost, currency)}</td>
+              <td className="px-3 py-2.5 text-right tabular-nums">{money(tot.projectExpenses, currency)}</td>
+              <td className="px-3 py-2.5 text-right tabular-nums">{money(tot.grossProfit, currency)}</td>
+              <td className="px-3 py-2.5 text-right tabular-nums">{money(tot.overhead, currency)}</td>
+              <td className="px-3 py-2.5 text-right tabular-nums">{money(tot.supervision, currency)}</td>
+              <td className="px-3 py-2.5 text-right tabular-nums">{money(tot.netProfit, currency)}</td>
+              <td className="px-3 py-2.5"></td>
+            </tr>
+          </tfoot>
+        </table>
+      </div>
     </div>
   );
 }
