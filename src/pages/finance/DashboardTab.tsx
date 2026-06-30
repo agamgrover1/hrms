@@ -5,6 +5,36 @@ import { MONTHS, money, moneyShort, pct, hrs, marginTone } from './format';
 
 type UtilGroupKey = 'none' | 'manager';
 
+// Sort state shape used by both profitability tables. Net profit DESC is
+// the natural first read ("which projects / teams made the most money").
+type ProjectSortKey = 'name' | 'revenue' | 'received' | 'directCost' | 'projectExpenses' | 'grossProfit' | 'overhead' | 'supervision' | 'netProfit' | 'netMargin';
+type ProjectSort = { key: ProjectSortKey; dir: 'asc' | 'desc' };
+
+function applySort<T extends Record<string, any>>(rows: T[], sort: ProjectSort): T[] {
+  const copy = [...rows];
+  copy.sort((a, b) => {
+    if (sort.key === 'name') {
+      return String(a.name ?? '').localeCompare(String(b.name ?? ''));
+    }
+    return (Number(a[sort.key]) || 0) - (Number(b[sort.key]) || 0);
+  });
+  return sort.dir === 'desc' ? copy.reverse() : copy;
+}
+
+function cycleSort(setSort: (next: ProjectSort) => void, current: ProjectSort, key: ProjectSortKey) {
+  if (current.key === key) {
+    setSort({ key, dir: current.dir === 'asc' ? 'desc' : 'asc' });
+  } else {
+    // Strings start asc (A→Z); numbers start desc (biggest-first read).
+    setSort({ key, dir: key === 'name' ? 'asc' : 'desc' });
+  }
+}
+
+function SortIcon({ sort, k }: { sort: ProjectSort; k: ProjectSortKey }) {
+  if (sort.key !== k) return <span className="text-on-surface-subtle opacity-40">↕</span>;
+  return <span className="text-accent">{sort.dir === 'asc' ? '↑' : '↓'}</span>;
+}
+
 export default function DashboardTab({ month, year, rev }: { month: number; year: number; rev: number }) {
   const [model, setModel] = useState<FinModel | null>(null);
   const [loading, setLoading] = useState(true);
@@ -12,6 +42,9 @@ export default function DashboardTab({ month, year, rev }: { month: number; year
   const [drilldown, setDrilldown] = useState<FinEmployeeRow | null>(null);
   const [projectDrilldown, setProjectDrilldown] = useState<FinProjectRow | null>(null);
   const [utilGroup, setUtilGroup] = useState<UtilGroupKey>('none');
+  // Click any header in the project profitability table to cycle the sort.
+  // Net profit DESC is the natural first read.
+  const [projectSort, setProjectSort] = useState<ProjectSort>({ key: 'netProfit', dir: 'desc' });
 
   useEffect(() => {
     setLoading(true); setErr('');
@@ -95,21 +128,41 @@ export default function DashboardTab({ month, year, rev }: { month: number; year
           <div className="overflow-x-auto">
             <table className="w-full text-sm">
               <thead>
-                <tr className="text-[11px] uppercase tracking-wide text-on-surface-subtle border-b border-outline bg-surface-2">
-                  <th className="text-left font-semibold px-4 py-2.5">Project</th>
-                  <th className="text-right font-semibold px-3 py-2.5" title="Drives the P&L (accrual basis)">Revenue</th>
-                  <th className="text-right font-semibold px-3 py-2.5" title="Cleared invoices only — money actually received">Received</th>
-                  <th className="text-right font-semibold px-3 py-2.5">Direct cost</th>
-                  <th className="text-right font-semibold px-3 py-2.5" title="Outsourced services, content, ad spend etc. logged against this project">Outsourced</th>
-                  <th className="text-right font-semibold px-3 py-2.5">Gross</th>
-                  <th className="text-right font-semibold px-3 py-2.5">Overhead</th>
-                  <th className="text-right font-semibold px-3 py-2.5">Supervision</th>
-                  <th className="text-right font-semibold px-3 py-2.5">Net profit</th>
-                  <th className="text-right font-semibold px-3 py-2.5">Margin</th>
+                <tr className="text-[11px] uppercase tracking-wide text-on-surface-subtle border-b border-outline bg-surface-2 select-none">
+                  <th className="text-left font-semibold px-4 py-2.5">
+                    <button onClick={() => cycleSort(setProjectSort, projectSort, 'name')} className="inline-flex items-center gap-1 hover:text-on-surface">Project <SortIcon sort={projectSort} k="name" /></button>
+                  </th>
+                  <th className="text-right font-semibold px-3 py-2.5" title="Drives the P&L (accrual basis)">
+                    <button onClick={() => cycleSort(setProjectSort, projectSort, 'revenue')} className="inline-flex items-center gap-1 hover:text-on-surface">Revenue <SortIcon sort={projectSort} k="revenue" /></button>
+                  </th>
+                  <th className="text-right font-semibold px-3 py-2.5" title="Cleared invoices only — money actually received">
+                    <button onClick={() => cycleSort(setProjectSort, projectSort, 'received')} className="inline-flex items-center gap-1 hover:text-on-surface">Received <SortIcon sort={projectSort} k="received" /></button>
+                  </th>
+                  <th className="text-right font-semibold px-3 py-2.5">
+                    <button onClick={() => cycleSort(setProjectSort, projectSort, 'directCost')} className="inline-flex items-center gap-1 hover:text-on-surface">Direct cost <SortIcon sort={projectSort} k="directCost" /></button>
+                  </th>
+                  <th className="text-right font-semibold px-3 py-2.5" title="Outsourced services, content, ad spend etc. logged against this project">
+                    <button onClick={() => cycleSort(setProjectSort, projectSort, 'projectExpenses')} className="inline-flex items-center gap-1 hover:text-on-surface">Outsourced <SortIcon sort={projectSort} k="projectExpenses" /></button>
+                  </th>
+                  <th className="text-right font-semibold px-3 py-2.5">
+                    <button onClick={() => cycleSort(setProjectSort, projectSort, 'grossProfit')} className="inline-flex items-center gap-1 hover:text-on-surface">Gross <SortIcon sort={projectSort} k="grossProfit" /></button>
+                  </th>
+                  <th className="text-right font-semibold px-3 py-2.5">
+                    <button onClick={() => cycleSort(setProjectSort, projectSort, 'overhead')} className="inline-flex items-center gap-1 hover:text-on-surface">Overhead <SortIcon sort={projectSort} k="overhead" /></button>
+                  </th>
+                  <th className="text-right font-semibold px-3 py-2.5">
+                    <button onClick={() => cycleSort(setProjectSort, projectSort, 'supervision')} className="inline-flex items-center gap-1 hover:text-on-surface">Supervision <SortIcon sort={projectSort} k="supervision" /></button>
+                  </th>
+                  <th className="text-right font-semibold px-3 py-2.5">
+                    <button onClick={() => cycleSort(setProjectSort, projectSort, 'netProfit')} className="inline-flex items-center gap-1 hover:text-on-surface">Net profit <SortIcon sort={projectSort} k="netProfit" /></button>
+                  </th>
+                  <th className="text-right font-semibold px-3 py-2.5">
+                    <button onClick={() => cycleSort(setProjectSort, projectSort, 'netMargin')} className="inline-flex items-center gap-1 hover:text-on-surface">Margin <SortIcon sort={projectSort} k="netMargin" /></button>
+                  </th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-outline">
-                {model.projectRows.map((p) => (
+                {applySort(model.projectRows, projectSort).map((p) => (
                   <tr key={p.id} className="hover:bg-surface-2/50 cursor-pointer group" onClick={() => setProjectDrilldown(p)}>
                     <td className="px-4 py-2.5">
                       <div className="font-medium text-on-surface inline-flex items-center gap-2 group-hover:text-accent transition-colors">
@@ -220,6 +273,20 @@ function TeamProfitabilityTable({ projects, currency, onPickProject }: {
     if (next.has(key)) next.delete(key); else next.add(key);
     return next;
   });
+  // 'name' here maps to the team label, which our sort util resolves
+  // because we put it on the row as `name`.
+  type TeamSortKey = 'name' | 'projectsCount' | 'revenue' | 'directCost' | 'projectExpenses' | 'grossProfit' | 'overhead' | 'supervision' | 'netProfit' | 'netMargin';
+  const [teamSort, setTeamSort] = useState<{ key: TeamSortKey; dir: 'asc' | 'desc' }>({ key: 'netProfit', dir: 'desc' });
+  const onTeamSort = (key: TeamSortKey) => {
+    setTeamSort(prev => {
+      if (prev.key === key) return { key, dir: prev.dir === 'asc' ? 'desc' : 'asc' };
+      return { key, dir: key === 'name' ? 'asc' : 'desc' };
+    });
+  };
+  const TeamSortIcon = ({ k }: { k: TeamSortKey }) => {
+    if (teamSort.key !== k) return <span className="text-on-surface-subtle opacity-40">↕</span>;
+    return <span className="text-accent">{teamSort.dir === 'asc' ? '↑' : '↓'}</span>;
+  };
 
   const teams = useMemo(() => {
     const m = new Map<string, { team: string; projects: any[]; revenue: number; directCost: number; projectExpenses: number; grossProfit: number; overhead: number; supervision: number; netProfit: number; directHours: number }>();
@@ -241,8 +308,23 @@ function TeamProfitabilityTable({ projects, currency, onPickProject }: {
       entry.directHours    += Number(p.directHours) || 0;
       m.set(team, entry);
     }
-    return Array.from(m.values()).sort((a, b) => b.netProfit - a.netProfit);
+    return Array.from(m.values());
   }, [projects]);
+
+  // Sort + decorate with derived fields the sort can target.
+  const sortedTeams = useMemo(() => {
+    const rows = teams.map(t => ({
+      ...t,
+      name: t.team,
+      projectsCount: t.projects.length,
+      netMargin: t.revenue > 0 ? t.netProfit / t.revenue : 0,
+    }));
+    rows.sort((a, b) => {
+      if (teamSort.key === 'name') return String(a.name).localeCompare(String(b.name));
+      return (Number((a as any)[teamSort.key]) || 0) - (Number((b as any)[teamSort.key]) || 0);
+    });
+    return teamSort.dir === 'desc' ? rows.reverse() : rows;
+  }, [teams, teamSort]);
 
   if (teams.length === 0) return null;
 
@@ -266,21 +348,41 @@ function TeamProfitabilityTable({ projects, currency, onPickProject }: {
       <div className="overflow-x-auto">
         <table className="w-full text-sm">
           <thead>
-            <tr className="text-[11px] uppercase tracking-wide text-on-surface-subtle border-b border-outline bg-surface-2">
-              <th className="text-left font-semibold px-4 py-2.5">Team</th>
-              <th className="text-right font-semibold px-3 py-2.5">Projects</th>
-              <th className="text-right font-semibold px-3 py-2.5">Revenue</th>
-              <th className="text-right font-semibold px-3 py-2.5">Direct cost</th>
-              <th className="text-right font-semibold px-3 py-2.5">Outsourced</th>
-              <th className="text-right font-semibold px-3 py-2.5">Gross</th>
-              <th className="text-right font-semibold px-3 py-2.5">Overhead</th>
-              <th className="text-right font-semibold px-3 py-2.5">Supervision</th>
-              <th className="text-right font-semibold px-3 py-2.5">Net profit</th>
-              <th className="text-right font-semibold px-3 py-2.5">Margin</th>
+            <tr className="text-[11px] uppercase tracking-wide text-on-surface-subtle border-b border-outline bg-surface-2 select-none">
+              <th className="text-left font-semibold px-4 py-2.5">
+                <button onClick={() => onTeamSort('name')} className="inline-flex items-center gap-1 hover:text-on-surface">Team <TeamSortIcon k="name" /></button>
+              </th>
+              <th className="text-right font-semibold px-3 py-2.5">
+                <button onClick={() => onTeamSort('projectsCount')} className="inline-flex items-center gap-1 hover:text-on-surface">Projects <TeamSortIcon k="projectsCount" /></button>
+              </th>
+              <th className="text-right font-semibold px-3 py-2.5">
+                <button onClick={() => onTeamSort('revenue')} className="inline-flex items-center gap-1 hover:text-on-surface">Revenue <TeamSortIcon k="revenue" /></button>
+              </th>
+              <th className="text-right font-semibold px-3 py-2.5">
+                <button onClick={() => onTeamSort('directCost')} className="inline-flex items-center gap-1 hover:text-on-surface">Direct cost <TeamSortIcon k="directCost" /></button>
+              </th>
+              <th className="text-right font-semibold px-3 py-2.5">
+                <button onClick={() => onTeamSort('projectExpenses')} className="inline-flex items-center gap-1 hover:text-on-surface">Outsourced <TeamSortIcon k="projectExpenses" /></button>
+              </th>
+              <th className="text-right font-semibold px-3 py-2.5">
+                <button onClick={() => onTeamSort('grossProfit')} className="inline-flex items-center gap-1 hover:text-on-surface">Gross <TeamSortIcon k="grossProfit" /></button>
+              </th>
+              <th className="text-right font-semibold px-3 py-2.5">
+                <button onClick={() => onTeamSort('overhead')} className="inline-flex items-center gap-1 hover:text-on-surface">Overhead <TeamSortIcon k="overhead" /></button>
+              </th>
+              <th className="text-right font-semibold px-3 py-2.5">
+                <button onClick={() => onTeamSort('supervision')} className="inline-flex items-center gap-1 hover:text-on-surface">Supervision <TeamSortIcon k="supervision" /></button>
+              </th>
+              <th className="text-right font-semibold px-3 py-2.5">
+                <button onClick={() => onTeamSort('netProfit')} className="inline-flex items-center gap-1 hover:text-on-surface">Net profit <TeamSortIcon k="netProfit" /></button>
+              </th>
+              <th className="text-right font-semibold px-3 py-2.5">
+                <button onClick={() => onTeamSort('netMargin')} className="inline-flex items-center gap-1 hover:text-on-surface">Margin <TeamSortIcon k="netMargin" /></button>
+              </th>
             </tr>
           </thead>
           <tbody className="divide-y divide-outline">
-            {teams.map(team => {
+            {sortedTeams.map(team => {
               const margin = team.revenue > 0 ? team.netProfit / team.revenue : 0;
               const isOpen = expanded.has(team.team);
               return (
