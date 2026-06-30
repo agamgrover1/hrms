@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { Plus, X, Trash2, CheckCircle, Circle, Clock, AlertCircle, ChevronDown, ChevronRight } from 'lucide-react';
+import { Plus, X, Trash2, CheckCircle, Circle, Clock, AlertCircle, ChevronDown, ChevronRight, Pencil } from 'lucide-react';
 import { api } from '../services/api';
 import type { TodoTask } from '../services/api';
 import { toast } from './Toaster';
@@ -118,6 +118,23 @@ export default function TodoTab({ canAssignToOthers, employees }: {
     } catch (e: any) { toast.error('Could not delete task', e?.message); }
   };
 
+  // Edit state — only one task in edit mode at a time. The row renders
+  // an inline form when its id matches; everything else stays read-only.
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const saveEdit = async (id: string, patch: { title: string; description: string; due_date: string; priority: 'low' | 'normal' | 'high' }) => {
+    try {
+      await api.updateTodo(id, {
+        title: patch.title.trim(),
+        description: patch.description.trim() || undefined,
+        due_date: patch.due_date || null,
+        priority: patch.priority,
+      });
+      toast.success('Task updated', patch.title.trim());
+      setEditingId(null);
+      load();
+    } catch (e: any) { toast.error('Could not update task', e?.message); }
+  };
+
   // Filter out completed by default to keep the view clean.
   const filteredMine = useMemo(() =>
     showCompleted ? mine : mine.filter(t => t.status !== 'done' && t.status !== 'cancelled'),
@@ -230,6 +247,10 @@ export default function TodoTab({ canAssignToOthers, employees }: {
             emptyText={showCompleted ? 'No tasks yet.' : 'No open tasks. Add one above.'}
             renderTask={t => (
               <TaskRow key={t.id} task={t} showAssignee={false} showCreator
+                isEditing={editingId === t.id}
+                onEdit={() => setEditingId(t.id)}
+                onCancelEdit={() => setEditingId(null)}
+                onSave={(patch) => saveEdit(t.id, patch)}
                 onToggle={() => toggleStatus(t)}
                 onDelete={() => remove(t)} />
             )}
@@ -244,6 +265,10 @@ export default function TodoTab({ canAssignToOthers, employees }: {
               emptyText="No tasks you've assigned to others."
               renderTask={t => (
                 <TaskRow key={t.id} task={t} showAssignee showCreator={false}
+                  isEditing={editingId === t.id}
+                  onEdit={() => setEditingId(t.id)}
+                  onCancelEdit={() => setEditingId(null)}
+                  onSave={(patch) => saveEdit(t.id, patch)}
                   onToggle={() => toggleStatus(t)}
                   onDelete={() => remove(t)} />
               )}
@@ -277,14 +302,23 @@ function TaskSection({ title, subtitle, tasks, emptyText, renderTask }: {
   );
 }
 
-function TaskRow({ task, showAssignee, showCreator, onToggle, onDelete }: {
+function TaskRow({ task, showAssignee, showCreator, isEditing, onEdit, onCancelEdit, onSave, onToggle, onDelete }: {
   task: TodoTask; showAssignee: boolean; showCreator: boolean;
+  isEditing: boolean;
+  onEdit: () => void;
+  onCancelEdit: () => void;
+  onSave: (patch: { title: string; description: string; due_date: string; priority: 'low' | 'normal' | 'high' }) => void;
   onToggle: () => void; onDelete: () => void;
 }) {
   const isDone = task.status === 'done';
   const isCancelled = task.status === 'cancelled';
   const prio = PRIORITY_TONE[task.priority] ?? PRIORITY_TONE.normal;
   const due = dueDateLabel(task.due_date);
+
+  if (isEditing) return (
+    <TaskEditRow task={task} onCancel={onCancelEdit} onSave={onSave} />
+  );
+
   return (
     <div className="px-5 py-3 flex items-start gap-3 hover:bg-surface-2/30">
       <button onClick={onToggle} className="mt-0.5 flex-shrink-0 text-on-surface-muted hover:text-accent" title={isDone ? 'Mark as to-do' : 'Cycle status'}>
@@ -319,9 +353,82 @@ function TaskRow({ task, showAssignee, showCreator, onToggle, onDelete }: {
           )}
         </div>
       </div>
-      <button onClick={onDelete} className="flex-shrink-0 text-on-surface-subtle hover:text-danger p-1" title="Delete">
-        <Trash2 size={13} />
-      </button>
+      <div className="flex flex-shrink-0 items-center gap-0.5">
+        <button onClick={onEdit} className="text-on-surface-subtle hover:text-accent p-1" title="Edit">
+          <Pencil size={13} />
+        </button>
+        <button onClick={onDelete} className="text-on-surface-subtle hover:text-danger p-1" title="Delete">
+          <Trash2 size={13} />
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// Inline edit form — swaps in for a row when editing. Pre-fills with the
+// task's current values; save calls api.updateTodo via the parent.
+// Status / assignee aren't editable here (status flips via the circle
+// click on the row; reassigning a task wasn't in the original ask).
+function TaskEditRow({ task, onCancel, onSave }: {
+  task: TodoTask;
+  onCancel: () => void;
+  onSave: (patch: { title: string; description: string; due_date: string; priority: 'low' | 'normal' | 'high' }) => void;
+}) {
+  const [title, setTitle] = useState(task.title);
+  const [description, setDescription] = useState(task.description ?? '');
+  const [dueDate, setDueDate] = useState((task.due_date ?? '').slice(0, 10));
+  const [priority, setPriority] = useState<'low' | 'normal' | 'high'>(task.priority);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+
+  const submit = async () => {
+    setError('');
+    if (!title.trim()) { setError('Title is required'); return; }
+    setBusy(true);
+    try { await onSave({ title, description, due_date: dueDate, priority }); }
+    finally { setBusy(false); }
+  };
+
+  return (
+    <div className="px-5 py-3 bg-accent-container/15 border-l-2 border-accent space-y-3">
+      <div>
+        <label className="text-[10px] uppercase tracking-wide font-semibold text-on-surface-subtle mb-1 block">Title *</label>
+        <input value={title} onChange={e => setTitle(e.target.value)} autoFocus
+          onKeyDown={e => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) submit(); if (e.key === 'Escape') onCancel(); }}
+          className="w-full text-sm border border-outline rounded-lg px-3 py-2 bg-surface focus:outline-none focus:ring-2 focus:ring-accent/20" />
+      </div>
+      <div>
+        <label className="text-[10px] uppercase tracking-wide font-semibold text-on-surface-subtle mb-1 block">Description</label>
+        <textarea value={description} onChange={e => setDescription(e.target.value)}
+          rows={2} placeholder="Optional context…"
+          className="w-full text-sm border border-outline rounded-lg px-3 py-2 bg-surface resize-none focus:outline-none focus:ring-2 focus:ring-accent/20" />
+      </div>
+      <div className="grid grid-cols-2 gap-3">
+        <div>
+          <label className="text-[10px] uppercase tracking-wide font-semibold text-on-surface-subtle mb-1 block">Due</label>
+          <input type="date" value={dueDate} onChange={e => setDueDate(e.target.value)}
+            className="w-full text-sm border border-outline rounded-lg px-3 py-2 bg-surface focus:outline-none focus:ring-2 focus:ring-accent/20" />
+        </div>
+        <div>
+          <label className="text-[10px] uppercase tracking-wide font-semibold text-on-surface-subtle mb-1 block">Priority</label>
+          <select value={priority} onChange={e => setPriority(e.target.value as any)}
+            className="w-full text-sm border border-outline rounded-lg px-3 py-2 bg-surface focus:outline-none focus:ring-2 focus:ring-accent/20">
+            <option value="low">Low</option>
+            <option value="normal">Normal</option>
+            <option value="high">High</option>
+          </select>
+        </div>
+      </div>
+      {error && <p className="text-xs text-danger bg-danger-container/40 border border-danger/20 rounded-lg px-3 py-2">{error}</p>}
+      <div className="flex gap-2">
+        <button onClick={onCancel}
+          className="flex-1 py-2 text-sm font-medium border border-outline rounded-lg text-on-surface-muted hover:bg-surface-2">Cancel</button>
+        <button onClick={submit} disabled={busy}
+          className="flex-1 py-2 text-sm font-semibold bg-accent text-on-accent rounded-lg disabled:opacity-50">
+          {busy ? 'Saving…' : 'Save changes'}
+        </button>
+      </div>
+      <p className="text-[10px] text-on-surface-subtle">⌘/Ctrl + Enter to save · Esc to cancel.</p>
     </div>
   );
 }
