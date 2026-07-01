@@ -6010,13 +6010,18 @@ async function creditMonthlyLeave(employeeId: string, joinDate: string | null) {
   const months = Math.max(1, (cy - lastY) * 12 + (cm - lastM));
   // Snapshot what's carrying in BEFORE we add new credit — so employees see the breakdown
   const carryIn = Number(bal.full_day) || 0;
+  // Explicit ::int casts here because Neon's HTTP driver types template
+  // params as unknown; without the casts, Postgres reports "operator is
+  // not unique: unknown + unknown" and the UPDATE silently no-ops (the
+  // caller's .catch swallows it). Cost us a July-1 credit run before we
+  // caught it. Every param that participates in arithmetic gets a cast.
   await sql`UPDATE leave_balances
-    SET full_day = ${carryIn} + ${months},
+    SET full_day = ${carryIn}::int + ${months}::int,
         short_leave = 2,
-        last_credited_month = ${cm},
-        last_credited_year = ${cy},
-        prev_month_carry_full_day = ${carryIn},
-        current_month_credit_full_day = ${months}
+        last_credited_month = ${cm}::int,
+        last_credited_year = ${cy}::int,
+        prev_month_carry_full_day = ${carryIn}::int,
+        current_month_credit_full_day = ${months}::int
     WHERE employee_id=${employeeId}`;
 }
 
@@ -6466,38 +6471,16 @@ app.post('/api/leave/backfill-optional', async (req, res) => {
 // auto-trigger didn't fire (e.g. no one opened a leave surface yet on
 // the 1st and HR wants everyone's balance updated NOW). Idempotent:
 // running it twice for the same month is a no-op the second time.
-// Debug shim: credit ONE employee and report before/after + any error.
-// Delete after we've root-caused the July 1 issue.
-app.post('/api/debug/credit-one', async (req, res) => {
-  if (!(await requireAdmin(req, res))) return;
-  const { employee_id } = req.body ?? {};
-  if (!employee_id) return res.status(400).json({ error: 'employee_id required' });
-  const before = (await sql`SELECT * FROM leave_balances WHERE employee_id=${employee_id}`)[0] ?? null;
-  const empRow = (await sql`SELECT join_date, probation_end_date, status FROM employees WHERE id=${employee_id}`)[0] as any;
-  let errMsg: string | null = null;
-  let errStack: string | null = null;
-  try {
-    await creditMonthlyLeave(employee_id, empRow?.join_date ?? null);
-  } catch (e: any) {
-    errMsg = e?.message ?? String(e);
-    errStack = e?.stack ?? null;
-  }
-  const after = (await sql`SELECT * FROM leave_balances WHERE employee_id=${employee_id}`)[0] ?? null;
-  res.json({
-    now: new Date().toISOString(),
-    employee: empRow,
-    before, after,
-    error: errMsg, stack: errStack,
-    diff: {
-      full_day: (after?.full_day ?? 0) - (before?.full_day ?? 0),
-      last_credited_month_changed: before?.last_credited_month !== after?.last_credited_month,
-    },
-  });
-});
-
 app.post('/api/leave/balances/run-monthly-credit', async (req, res) => {
   if (!(await requireAdmin(req, res))) return;
   const uid = req.header('x-user-id') || null;
+  // ?force=true clears the current month's log row first so the run
+  // fires again. Useful for re-doing a batch after a bug fix (July 1
+  // silent-failure was the first such case).
+  if (String(req.query.force) === 'true') {
+    const now = new Date();
+    await sql`DELETE FROM monthly_leave_credit_log WHERE year=${now.getFullYear()} AND month=${now.getMonth() + 1}`.catch(() => {});
+  }
   const result = await ensureMonthlyLeaveCreditRun(`manual:${uid ?? 'admin'}`);
   const now = new Date();
   res.json({
