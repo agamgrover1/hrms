@@ -558,7 +558,7 @@ async function runStartupMigrations() {
   // SELECT to reference it so cold starts re-run migrations once after
   // each deploy.
   try {
-    await sql`SELECT learning_growth FROM monthly_performance LIMIT 0`;
+    await sql`SELECT year FROM monthly_leave_credit_log LIMIT 0`;
     _migrated = true;
     return;
   } catch {
