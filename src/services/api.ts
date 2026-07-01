@@ -188,6 +188,17 @@ export const api = {
     request<any>(`/leave/requests/${id}`, { method: 'DELETE' }),
   adjustLeaveBalance: (employee_id: string, data: { full_day: number; short_leave: number }) =>
     request<any>(`/leave/balances/${employee_id}`, { method: 'PATCH', body: JSON.stringify(data) }),
+  // Monthly credit — atomic org-wide batch. force=true clears the log row
+  // so the run fires again in the same month (useful after a fix).
+  runMonthlyLeaveCredit: (opts: { force?: boolean } = {}) =>
+    request<{ year: number; month: number; ran: boolean; credited: number; note: string }>(
+      `/leave/balances/run-monthly-credit${opts.force ? '?force=true' : ''}`,
+      { method: 'POST' },
+    ),
+  getMonthlyCreditStatus: () =>
+    request<{ year: number; month: number; ran: boolean; ran_at: string | null; ran_by: string | null; employees_credited: number }>(
+      `/leave/balances/monthly-credit-status`,
+    ),
 
   // Payroll
   getPayroll: (params?: { month?: string; year?: number }) => {

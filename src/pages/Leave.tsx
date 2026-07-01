@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { Plus, Check, X, Clock, Calendar, User, ChevronDown, Edit3 } from 'lucide-react';
+import { Plus, Check, X, Clock, Calendar, User, ChevronDown, Edit3, RefreshCcw } from 'lucide-react';
 import { api } from '../services/api';
 import { slotLabel } from '../utils/leaveLabel';
 import { toast } from '../components/Toaster';
@@ -566,6 +566,122 @@ function BalanceEditModal({ balance, employeeId, onClose, onSaved }: { balance: 
   );
 }
 
+// Admin / HR button — force-runs the monthly leave credit for every
+// active employee. Idempotent: if the batch already ran this month, the
+// server returns ran:false and we just show that status. Confirm dialog
+// asks before we set force=true, so a stray click doesn't re-credit.
+function MonthlyCreditButton() {
+  const [open, setOpen] = useState(false);
+  const [status, setStatus] = useState<Awaited<ReturnType<typeof api.getMonthlyCreditStatus>> | null>(null);
+  const [statusLoading, setStatusLoading] = useState(false);
+  const [busy, setBusy] = useState(false);
+
+  const openDialog = async () => {
+    setOpen(true);
+    setStatusLoading(true);
+    try {
+      const s = await api.getMonthlyCreditStatus();
+      setStatus(s);
+    } catch { setStatus(null); }
+    finally { setStatusLoading(false); }
+  };
+
+  const run = async (force: boolean) => {
+    setBusy(true);
+    try {
+      const r = await api.runMonthlyLeaveCredit({ force });
+      if (r.ran) {
+        toast.success('Monthly credit applied', `${r.credited} active employees credited for ${monthName(r.month)} ${r.year}.`);
+      } else {
+        toast.success('Already up to date', r.note);
+      }
+      setOpen(false);
+    } catch (e: any) {
+      toast.error('Failed to run monthly credit', e?.message);
+    } finally { setBusy(false); }
+  };
+
+  return (
+    <>
+      <button onClick={openDialog}
+        title="Force-run the monthly leave credit for all active employees"
+        className="flex items-center gap-1.5 px-3 py-2.5 border border-outline text-on-surface-muted hover:text-on-surface hover:bg-surface-2 text-xs font-medium rounded-lg transition-colors">
+        <RefreshCcw size={13} /> Run monthly credit
+      </button>
+
+      {open && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-bg/55 backdrop-blur-sm p-4" onClick={() => !busy && setOpen(false)}>
+          <div className="bg-surface rounded-2xl shadow-elev-4 border border-outline w-full max-w-sm p-6" onClick={e => e.stopPropagation()}>
+            <div className="w-12 h-12 rounded-full bg-warning-container flex items-center justify-center mx-auto mb-4">
+              <RefreshCcw size={20} className="text-warning" />
+            </div>
+            <h3 className="font-display font-semibold tracking-tight text-on-surface text-center mb-1">Run monthly credit</h3>
+            <p className="text-sm text-on-surface-subtle text-center mb-4">
+              Adds +1 full day + resets short-leave to 2 for every active employee for the current month.
+            </p>
+
+            <div className="rounded-xl border border-outline bg-surface-2/50 p-3 mb-4 text-xs">
+              {statusLoading ? (
+                <p className="text-on-surface-subtle text-center">Checking status…</p>
+              ) : status?.ran ? (
+                <div className="space-y-1">
+                  <p className="text-success font-semibold inline-flex items-center gap-1">
+                    <Check size={12} /> Already run for {monthName(status.month)} {status.year}
+                  </p>
+                  <p className="text-on-surface-muted">
+                    Credited <span className="num-mono font-semibold text-on-surface">{status.employees_credited}</span> employees
+                    {status.ran_at && <> on {new Date(status.ran_at).toLocaleString('en-IN', { day: 'numeric', month: 'short', hour: 'numeric', minute: '2-digit' })}</>}
+                    {status.ran_by && <> by <span className="italic">{status.ran_by}</span></>}.
+                  </p>
+                </div>
+              ) : status ? (
+                <p className="text-warning font-semibold inline-flex items-center gap-1">
+                  <Clock size={12} /> Not run yet for {monthName(status.month)} {status.year}
+                </p>
+              ) : (
+                <p className="text-on-surface-subtle text-center">Couldn't reach the server.</p>
+              )}
+            </div>
+
+            {status?.ran ? (
+              <>
+                <p className="text-[11px] text-on-surface-subtle italic text-center mb-4">
+                  Force-running will re-apply the credit — safe to do if you're recovering from an issue, but everyone will get another +1 full day + short-leave reset.
+                </p>
+                <div className="flex gap-2">
+                  <button onClick={() => setOpen(false)} disabled={busy}
+                    className="flex-1 py-2.5 border border-outline text-on-surface-muted hover:bg-surface-2 rounded-lg text-sm font-medium">
+                    Cancel
+                  </button>
+                  <button onClick={() => run(true)} disabled={busy}
+                    className="flex-1 py-2.5 bg-warning hover:opacity-90 text-white rounded-lg text-sm font-semibold disabled:opacity-60">
+                    {busy ? 'Running…' : 'Force re-run'}
+                  </button>
+                </div>
+              </>
+            ) : (
+              <div className="flex gap-2">
+                <button onClick={() => setOpen(false)} disabled={busy}
+                  className="flex-1 py-2.5 border border-outline text-on-surface-muted hover:bg-surface-2 rounded-lg text-sm font-medium">
+                  Cancel
+                </button>
+                <button onClick={() => run(false)} disabled={busy || statusLoading}
+                  className="flex-1 py-2.5 bg-brand hover:opacity-90 text-white rounded-lg text-sm font-semibold disabled:opacity-60">
+                  {busy ? 'Running…' : 'Run now'}
+                </button>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+    </>
+  );
+}
+
+function monthName(m: number): string {
+  return ['January','February','March','April','May','June','July','August','September','October','November','December'][m - 1] ?? '';
+}
+
 export default function Leave() {
   const { user } = useAuth();
   const [pageView, setPageView] = useState<'leaves' | 'wfh'>('leaves');
@@ -901,7 +1017,10 @@ export default function Leave() {
           ))}
         </div>
 
-        <div className="ml-auto">
+        <div className="ml-auto flex items-center gap-2">
+          {(user?.role === 'admin' || user?.role === 'hr_manager') && (
+            <MonthlyCreditButton />
+          )}
           <button onClick={() => setShowApply(true)}
             className="flex items-center gap-2 px-4 py-2.5 bg-brand hover:opacity-90 text-white text-sm font-medium rounded-lg transition-opacity shadow-elev-1">
             <Plus size={15} /> Apply Leave
