@@ -6466,6 +6466,35 @@ app.post('/api/leave/backfill-optional', async (req, res) => {
 // auto-trigger didn't fire (e.g. no one opened a leave surface yet on
 // the 1st and HR wants everyone's balance updated NOW). Idempotent:
 // running it twice for the same month is a no-op the second time.
+// Debug shim: credit ONE employee and report before/after + any error.
+// Delete after we've root-caused the July 1 issue.
+app.post('/api/debug/credit-one', async (req, res) => {
+  if (!(await requireAdmin(req, res))) return;
+  const { employee_id } = req.body ?? {};
+  if (!employee_id) return res.status(400).json({ error: 'employee_id required' });
+  const before = (await sql`SELECT * FROM leave_balances WHERE employee_id=${employee_id}`)[0] ?? null;
+  const empRow = (await sql`SELECT join_date, probation_end_date, status FROM employees WHERE id=${employee_id}`)[0] as any;
+  let errMsg: string | null = null;
+  let errStack: string | null = null;
+  try {
+    await creditMonthlyLeave(employee_id, empRow?.join_date ?? null);
+  } catch (e: any) {
+    errMsg = e?.message ?? String(e);
+    errStack = e?.stack ?? null;
+  }
+  const after = (await sql`SELECT * FROM leave_balances WHERE employee_id=${employee_id}`)[0] ?? null;
+  res.json({
+    now: new Date().toISOString(),
+    employee: empRow,
+    before, after,
+    error: errMsg, stack: errStack,
+    diff: {
+      full_day: (after?.full_day ?? 0) - (before?.full_day ?? 0),
+      last_credited_month_changed: before?.last_credited_month !== after?.last_credited_month,
+    },
+  });
+});
+
 app.post('/api/leave/balances/run-monthly-credit', async (req, res) => {
   if (!(await requireAdmin(req, res))) return;
   const uid = req.header('x-user-id') || null;
