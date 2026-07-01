@@ -6005,10 +6005,16 @@ async function creditMonthlyLeave(employeeId: string, joinDate: string | null) {
     await sql`UPDATE leave_balances SET last_credited_month=${cm}, last_credited_year=${cy}, prev_month_carry_full_day=COALESCE(full_day, 0), current_month_credit_full_day=0 WHERE employee_id=${employeeId}`;
     return;
   }
-  const lastM = bal.last_credited_month ?? cm;
-  const lastY = bal.last_credited_year ?? cy;
-  const months = Math.max(1, (cy - lastY) * 12 + (cm - lastM));
-  // Snapshot what's carrying in BEFORE we add new credit — so employees see the breakdown
+  // Always +1 for THIS month regardless of how many months elapsed
+  // since last credit. The policy is 'employee gets 1 full day on the
+  // 1st of each month' — NOT 'employee gets a catch-up credit for every
+  // missed month'. If someone hasn't been credited for a few months
+  // (e.g. system bug like the July 1 silent-fail), the earlier months
+  // are gone. Better to skip a credit than to double-credit.
+  const credit = 1;
+  // Snapshot what's carrying in BEFORE we add new credit — so the
+  // employee's balance breakdown shows "1 carried + 1 credited = 2"
+  // instead of a mystery total.
   const carryIn = Number(bal.full_day) || 0;
   // Explicit ::int casts here because Neon's HTTP driver types template
   // params as unknown; without the casts, Postgres reports "operator is
@@ -6016,12 +6022,12 @@ async function creditMonthlyLeave(employeeId: string, joinDate: string | null) {
   // caller's .catch swallows it). Cost us a July-1 credit run before we
   // caught it. Every param that participates in arithmetic gets a cast.
   await sql`UPDATE leave_balances
-    SET full_day = ${carryIn}::int + ${months}::int,
+    SET full_day = ${carryIn}::int + ${credit}::int,
         short_leave = 2,
         last_credited_month = ${cm}::int,
         last_credited_year = ${cy}::int,
         prev_month_carry_full_day = ${carryIn}::int,
-        current_month_credit_full_day = ${months}::int
+        current_month_credit_full_day = ${credit}::int
     WHERE employee_id=${employeeId}`;
 }
 
@@ -6471,6 +6477,40 @@ app.post('/api/leave/backfill-optional', async (req, res) => {
 // auto-trigger didn't fire (e.g. no one opened a leave surface yet on
 // the 1st and HR wants everyone's balance updated NOW). Idempotent:
 // running it twice for the same month is a no-op the second time.
+// One-shot backfill to undo the over-credit from the July 1 batch
+// (before we changed the policy to always +1). Iterates every balance
+// where current_month_credit_full_day > 1 and subtracts the excess from
+// full_day + resets current_month_credit_full_day to 1. Idempotent —
+// running it twice does nothing the second time because the excess is
+// already 0.
+//
+// Admin-only. Returns per-employee diffs so HR can spot-check.
+app.post('/api/admin/backfill-monthly-credit-excess', async (req, res) => {
+  if (!(await requireAdmin(req, res))) return;
+  const rows = await sql`
+    SELECT employee_id, full_day, current_month_credit_full_day
+    FROM leave_balances
+    WHERE current_month_credit_full_day > 1` as any[];
+  const results: Array<{ employee_id: string; before_full_day: number; after_full_day: number; excess_removed: number }> = [];
+  for (const r of rows) {
+    const excess = Number(r.current_month_credit_full_day) - 1;
+    const before = Number(r.full_day) || 0;
+    const after = Math.max(0, before - excess);
+    await sql`
+      UPDATE leave_balances
+      SET full_day = ${after}::int,
+          current_month_credit_full_day = 1::int
+      WHERE employee_id = ${r.employee_id}`.catch(() => {});
+    results.push({ employee_id: r.employee_id, before_full_day: before, after_full_day: after, excess_removed: excess });
+  }
+  // Purge the per-employee balance cache so the next fetch shows fresh
+  // numbers.
+  for (const k of Array.from(_memoCache.keys())) {
+    if (k.startsWith('leaveBal:')) _memoCache.delete(k);
+  }
+  res.json({ affected: results.length, results });
+});
+
 app.post('/api/leave/balances/run-monthly-credit', async (req, res) => {
   if (!(await requireAdmin(req, res))) return;
   const uid = req.header('x-user-id') || null;
