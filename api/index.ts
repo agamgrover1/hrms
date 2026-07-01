@@ -805,6 +805,19 @@ async function runStartupMigrations() {
       year INTEGER NOT NULL, created_at TIMESTAMPTZ DEFAULT NOW(),
       UNIQUE(date, year)
     )`;
+  // Idempotency ledger for the monthly leave-credit batch. The (year,
+  // month) uniqueness lets any request racing on the 1st use ON CONFLICT
+  // DO NOTHING RETURNING to atomically claim the run — only one of them
+  // gets the row back and actually fires the credit.
+  await sql`
+    CREATE TABLE IF NOT EXISTS monthly_leave_credit_log (
+      year INTEGER NOT NULL,
+      month INTEGER NOT NULL,
+      ran_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      ran_by TEXT,
+      employees_credited INTEGER NOT NULL DEFAULT 0,
+      PRIMARY KEY (year, month)
+    )`;
   // ── Project Hours module (replaces Google Sheet workflow) ────────────────
   await sql`
     CREATE TABLE IF NOT EXISTS projects (
@@ -6007,6 +6020,46 @@ async function creditMonthlyLeave(employeeId: string, joinDate: string | null) {
     WHERE employee_id=${employeeId}`;
 }
 
+// Run the monthly leave-credit batch across every active employee, but
+// only once per (year, month). Uses monthly_leave_credit_log as the
+// atomic latch — the INSERT ... ON CONFLICT DO NOTHING RETURNING trick
+// means only ONE caller wins the row across all Lambda instances on
+// the 1st of the month. Everyone else no-ops instantly.
+//
+// Called fire-and-forget from a few leave endpoints so the first real
+// request each month kicks it off. Also exposed as an admin POST for
+// manual triggers.
+async function ensureMonthlyLeaveCreditRun(ranBy: string | null = null): Promise<{ ran: boolean; credited: number }> {
+  const now = new Date();
+  const cy = now.getFullYear();
+  const cm = now.getMonth() + 1;
+  // Atomically claim the run. If someone else already ran it (or is
+  // running it right now on a sibling Lambda), the RETURNING clause is
+  // empty and we bail.
+  const claim = await sql`
+    INSERT INTO monthly_leave_credit_log (year, month, ran_by)
+    VALUES (${cy}, ${cm}, ${ranBy})
+    ON CONFLICT (year, month) DO NOTHING
+    RETURNING year`.catch(() => [] as any[]);
+  if (!(claim as any[]).length) return { ran: false, credited: 0 };
+  // We won the claim — actually credit everyone. Iterate active
+  // employees with their join_date so isOnProbation is checked per row.
+  const emps = await sql`
+    SELECT id, join_date FROM employees
+    WHERE COALESCE(status, 'active') = 'active'` as any[];
+  let credited = 0;
+  for (const e of emps) {
+    try {
+      await creditMonthlyLeave(e.id, e.join_date ?? null);
+      credited++;
+    } catch { /* per-employee failure is non-fatal — move on */ }
+  }
+  await sql`
+    UPDATE monthly_leave_credit_log SET employees_credited = ${credited}
+    WHERE year = ${cy} AND month = ${cm}`.catch(() => {});
+  return { ran: true, credited };
+}
+
 async function deductLeaveBalance(employeeId: string, type: string, days: number) {
   if (type === 'full_day') {
     await sql`UPDATE leave_balances SET full_day=GREATEST(0,full_day-${days}) WHERE employee_id=${employeeId}`.catch(() => {});
@@ -6102,6 +6155,10 @@ app.get('/api/leaves/out-today', async (req, res) => {
 
 app.get('/api/leave/requests', async (req, res) => {
   try {
+    // Fire-and-forget the monthly credit batch. Uses an atomic INSERT ...
+    // ON CONFLICT DO NOTHING RETURNING so only one Lambda runs it per
+    // month across the whole fleet; every other call is a cheap no-op.
+    void ensureMonthlyLeaveCreditRun('auto:leave-requests').catch(() => {});
     const { employee_id, status, reporting_manager_id } = req.query as any;
     // 60s memo per filter set. The no-filter case (dashboard mount) is
     // the biggest hitter — it returns the full leave history (often 100KB+
@@ -6405,8 +6462,55 @@ app.post('/api/leave/backfill-optional', async (req, res) => {
   } catch (err: any) { res.status(500).json({ error: err.message || 'Server error' }); }
 });
 
+// Admin-only force-run of the monthly leave credit. Use this if the
+// auto-trigger didn't fire (e.g. no one opened a leave surface yet on
+// the 1st and HR wants everyone's balance updated NOW). Idempotent:
+// running it twice for the same month is a no-op the second time.
+app.post('/api/leave/balances/run-monthly-credit', async (req, res) => {
+  if (!(await requireAdmin(req, res))) return;
+  const uid = req.header('x-user-id') || null;
+  const result = await ensureMonthlyLeaveCreditRun(`manual:${uid ?? 'admin'}`);
+  const now = new Date();
+  res.json({
+    year: now.getFullYear(),
+    month: now.getMonth() + 1,
+    ...result,
+    note: result.ran
+      ? `Credited ${result.credited} active employees. Cache invalidated.`
+      : 'Credit for this month already ran — no changes made.',
+  });
+  // Cache invalidation so the next balance fetch across the org shows
+  // the fresh numbers instead of the pre-credit cached copy.
+  for (const k of Array.from(_memoCache.keys())) {
+    if (k.startsWith('leaveBal:')) _memoCache.delete(k);
+  }
+});
+
+// Status peek — shows the last successful run so HR can confirm before
+// firing the manual endpoint.
+app.get('/api/leave/balances/monthly-credit-status', async (req, res) => {
+  if (!(await requireAdmin(req, res))) return;
+  const now = new Date();
+  const cy = now.getFullYear();
+  const cm = now.getMonth() + 1;
+  const row = (await sql`
+    SELECT year, month, ran_at, ran_by, employees_credited
+    FROM monthly_leave_credit_log
+    WHERE year = ${cy} AND month = ${cm} LIMIT 1`)[0] as any;
+  res.json({
+    year: cy, month: cm,
+    ran: !!row,
+    ran_at: row?.ran_at ?? null,
+    ran_by: row?.ran_by ?? null,
+    employees_credited: row?.employees_credited ?? 0,
+  });
+});
+
 app.get('/api/leave/balances/:employee_id', async (req, res) => {
   try {
+    // First-hit trigger for the month-wide batch. Fires only once per
+    // (year, month) via the log table; siblings are cheap no-ops.
+    void ensureMonthlyLeaveCreditRun('auto:balance-view').catch(() => {});
     const empRows = await sql`SELECT join_date, probation_end_date FROM employees WHERE id=${req.params.employee_id}`.catch(() => []);
     const joinDate = (empRows[0] as any)?.join_date ?? null;
     const probationEndDate = (empRows[0] as any)?.probation_end_date ?? null;
