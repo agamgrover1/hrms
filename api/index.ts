@@ -9725,13 +9725,24 @@ app.post('/api/hour-logs/:id/comments', async (req, res) => {
         // Strip the markup so the notification body reads cleanly.
         const cleanBody = body.replace(/@\[([^\]]+)\]\([^)]+\)/g, '@$1').trim().slice(0, 140);
         for (const empId of mentionedIds) {
+          // Route based on who's being mentioned:
+          //   - If they're the log's own author, they can only see the log
+          //     from their MyPortal My Hours tab (they have no approvals
+          //     surface for their own work).
+          //   - Everyone else (admin / HR / coord / reviewer / a random
+          //     colleague tagged in the thread) goes to /hours/approvals.
+          //     Admins see all logs there; reviewers see the ones they
+          //     manage. The auto-open effect widens filterStatus so the
+          //     modal pops regardless of the log's current status.
+          // Previously every mention used employeeLink — an admin tagged
+          // in someone else's log landed on their OWN MyPortal, couldn't
+          // find the referenced log, and the discussion modal never
+          // opened.
+          const link = empId === log.employee_id ? employeeLink : reviewerLink;
           notifyEmployeeUser(empId, 'hours_mention',
             `${author_name || 'Someone'} mentioned you`,
             `${author_name || 'Someone'} tagged you on ${projectName} (W${log.week_num}): ${cleanBody}`,
-            // Tagged people land on /my so they see their own /hours view;
-            // if they happen to be the reviewer for this log they can still
-            // open it from the bell. Cheap heuristic, works for both sides.
-            employeeLink).catch(() => {});
+            link).catch(() => {});
           pinged.add(empId);
         }
       }

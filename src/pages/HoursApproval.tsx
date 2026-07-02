@@ -129,11 +129,18 @@ export default function HoursApproval() {
   useLiveRefresh(silentLoad);
 
   // Deep-link auto-open: a notification can land here with ?logId=…&discuss=1
-  // (e.g. an employee replied on a held log) and we open the modal once the
-  // matching row is in state. We widen filterStatus to 'all' first so the
-  // log shows up regardless of its current status — otherwise a held log
-  // wouldn't be in the default "pending" view. Clean the URL so a refresh
-  // doesn't repop the modal.
+  // (e.g. an employee replied on a held log, or an admin was @-mentioned in
+  // a comment on someone else's log) and we open the modal once the
+  // matching row is in state.
+  //
+  // We widen along both filters before giving up:
+  //   1. filterStatus → 'all' so a held / approved / rejected log still
+  //      surfaces from a "pending"-default view.
+  //   2. scope → 'all' if the log isn't in the current 'mine' bucket.
+  //      Necessary when an admin / HR gets tagged in a log they don't
+  //      normally review — they still need the modal to open.
+  //
+  // Clean the URL so a refresh doesn't re-pop the modal.
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     const logId = params.get('logId');
@@ -141,12 +148,19 @@ export default function HoursApproval() {
     if (!logId || !wantDiscuss) return;
     if (filterStatus !== 'all') { setFilterStatus('all'); return; }
     const log = logs.find(l => l.id === logId);
-    if (!log) return;
+    if (!log) {
+      // Log not in state yet. If we're already scope='all', logs will
+      // arrive on the next render — do nothing, effect will re-run.
+      // If we're scope='mine' and the log isn't ours, widen and let the
+      // fetch complete.
+      if (scope !== 'all') setScope('all');
+      return;
+    }
     setCommentingOn(log);
     const u = new URL(window.location.href);
     u.searchParams.delete('logId'); u.searchParams.delete('discuss');
     window.history.replaceState({}, '', u.toString());
-  }, [logs, filterStatus]);
+  }, [logs, filterStatus, scope]);
 
   // Optimistic UI: flip the row in local state immediately so the button
   // press feels instant. If the server rejects (network blip, auth, etc.)
