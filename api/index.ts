@@ -8319,7 +8319,7 @@ app.post('/api/assets', async (req, res) => {
               ${ram?.trim() || null}, ${storage?.trim() || null}, ${pw})
       RETURNING *`;
     const actor = await resolveActor(req);
-    await logAssetActivity({
+    await recordAssetActivity({
       asset_id: id, action: 'created',
       actor_id: actor.id, actor_name: actor.name, actor_role: actor.role,
       description: `${asset_tag.trim()} registered${assigned_to_name ? ` — assigned to ${assigned_to_name}` : ' — unassigned'}`,
@@ -8381,7 +8381,7 @@ app.put('/api/assets/:id', async (req, res) => {
       if (ownerChanged) {
         const fromName = prior.assigned_to_name || '— unassigned —';
         const toName   = assigned_to_name || '— unassigned —';
-        await logAssetActivity({
+        await recordAssetActivity({
           asset_id: req.params.id, action: 'reassigned',
           actor_id: actor.id, actor_name: actor.name, actor_role: actor.role,
           description: `Reassigned: ${fromName} → ${toName}`,
@@ -8390,7 +8390,7 @@ app.put('/api/assets/:id', async (req, res) => {
         });
       }
       if (statusChanged) {
-        await logAssetActivity({
+        await recordAssetActivity({
           asset_id: req.params.id, action: 'status_changed',
           actor_id: actor.id, actor_name: actor.name, actor_role: actor.role,
           description: `Status: ${prior.status ?? 'active'} → ${newStatus}`,
