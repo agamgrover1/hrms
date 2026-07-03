@@ -180,6 +180,26 @@ export const api = {
       type: string; slot: string | null; to_date: string;
     }>;
   }>(`/leaves/out-today`),
+  // One-shot dashboard bundle. Server runs ~11 sub-queries in parallel
+  // using the same memoTtl caches the individual endpoints hit, so the
+  // browser makes ONE round-trip on Dashboard mount instead of ~11.
+  // hoursSummary is intentionally NOT included — it needs a heavier
+  // compute pass and Dashboard still calls getHoursSummary separately.
+  getDashboardBootstrap: (month: number, year: number) => request<{
+    month: number; year: number;
+    announcements: any[];
+    upcomingEvents: any[];
+    employees: any[];
+    leaveRequests: any[];
+    attendance: any[];
+    payroll: any[];
+    outToday: { today: string; out: any[] };
+    repairTickets: any[];
+    holidaysThisYear: any[];
+    holidaysNextYear: any[];
+    optionalThisYear: any[];
+    optionalNextYear: any[];
+  }>(`/dashboard/bootstrap?month=${month}&year=${year}`),
   updateLeaveBalance: (employee_id: string, data: { full_day?: number; short_leave?: number }) =>
     request<any>(`/leave/balances/${employee_id}`, { method: 'PATCH', body: JSON.stringify(data) }),
   backfillOptionalLeave: (data: { employee_id: string; date: string; reason?: string }) =>

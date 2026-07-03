@@ -93,6 +93,7 @@ app.use((req: any, res: any, next: any) => {
   else if (p === '/api/assets')                apply(60,   'private');  // 1 min
   else if (p === '/api/repair-tickets')        apply(30,   'private');
   else if (p === '/api/payroll')               apply(120,  'private');  // 2 min
+  else if (p === '/api/dashboard/bootstrap')   apply(30,   'private');  // 30 s — bundle refreshes on focus anyway
   next();
 });
 
@@ -4695,6 +4696,249 @@ app.post('/api/features/:id/ack', async (req, res) => {
 // feature_announcements which is for HRMS product changes only.
 // Admin / HR can create, edit, delete. Everyone can read.
 // ─────────────────────────────────────────────────────────────────────────
+
+// ══════════════════════════════════════════════════════════════════════════
+// GET /api/dashboard/bootstrap?month=&year=
+// One-shot endpoint that returns EVERY payload Dashboard needs on mount.
+// Replaces ~11 separate fetches with a single Lambda invocation. Each
+// sub-query reuses the SAME memoTtl cache keys the individual endpoints
+// use, so warm-cache hits are free and no double-fetching occurs when
+// other pages also load the same data.
+//
+// Included:
+//   announcements, upcomingEvents (30d), employees, leaveRequests,
+//   attendance (month+year), payroll (admin/HR only, else null),
+//   hoursSummary (month+year), outToday, repairTickets,
+//   holidaysThisYear / holidaysNextYear,
+//   optionalThisYear / optionalNextYear
+//
+// This does NOT replace the individual endpoints — they remain for other
+// pages (Attendance, Payroll, Employees, ...) and for the focus-refetch
+// path Dashboard uses.
+app.get('/api/dashboard/bootstrap', async (req, res) => {
+  try {
+    await runStartupMigrations();
+    const uid = req.header('x-user-id');
+    if (!uid) return res.status(401).json({ error: 'Sign in required' });
+    const now = new Date();
+    const month = Number(req.query.month) || (now.getMonth() + 1);
+    const year  = Number(req.query.year)  || now.getFullYear();
+    const nextYear = year + 1;
+    const horizonDays = 30;
+    const istNow = new Date(Date.now() + (5 * 60 + 30) * 60_000);
+    const todayIso = istNow.toISOString().slice(0, 10);
+    // Resolve viewer role once — payroll is admin/HR-only, we still
+    // want the bundle to succeed for everyone else.
+    const actorRole = await actorRoleOf(req);
+    const isAdminHR = actorRole === 'admin' || actorRole === 'hr_manager';
+
+    // Auto-post daily birthday / anniversary cards, but only once per
+    // day per Lambda instance — a memoTtl latch keeps it from hitting
+    // Neon on every bootstrap call. The individual /api/announcements
+    // endpoint still runs the same inserts (idempotent), so nothing
+    // breaks if that path fires first.
+    await memoTtl(`announcementsAutoPost:${todayIso}`, 6 * 60 * 60_000, async () => {
+      try {
+        await sql`
+          INSERT INTO company_announcements (id, title, body, kind, posted_by_name)
+          SELECT
+            'auto_bday_' || e.id || '_' || TO_CHAR(CURRENT_DATE, 'YYYYMMDD'),
+            '🎂 Happy birthday, ' || split_part(e.name, ' ', 1) || '!',
+            'Wishing ' || e.name || COALESCE(' (' || e.designation || ')', '') || ' a wonderful birthday today. Drop a 🎉 in the comments and make their day!',
+            'birthday',
+            'Digital Leap HRMS'
+          FROM employees e
+          WHERE e.status = 'active'
+            AND e.date_of_birth IS NOT NULL
+            AND EXTRACT(MONTH FROM e.date_of_birth) = EXTRACT(MONTH FROM CURRENT_DATE)
+            AND EXTRACT(DAY FROM e.date_of_birth)   = EXTRACT(DAY FROM CURRENT_DATE)
+          ON CONFLICT (id) DO NOTHING`.catch(()=>{});
+        await sql`
+          INSERT INTO company_announcements (id, title, body, kind, posted_by_name)
+          SELECT
+            'auto_anniv_' || e.id || '_' || TO_CHAR(CURRENT_DATE, 'YYYYMMDD'),
+            '🎯 ' || e.name || ' completes ' || (EXTRACT(YEAR FROM CURRENT_DATE) - EXTRACT(YEAR FROM e.join_date))::int || ' year' ||
+              CASE WHEN (EXTRACT(YEAR FROM CURRENT_DATE) - EXTRACT(YEAR FROM e.join_date))::int = 1 THEN '' ELSE 's' END || ' today!',
+            'Celebrating ' || e.name || COALESCE(' (' || e.designation || ')', '') || ' for being part of the team since ' || TO_CHAR(e.join_date, 'Mon YYYY') || '. Cheers to the journey 🥂',
+            'anniversary',
+            'Digital Leap HRMS'
+          FROM employees e
+          WHERE e.status = 'active'
+            AND e.join_date IS NOT NULL
+            AND EXTRACT(MONTH FROM e.join_date) = EXTRACT(MONTH FROM CURRENT_DATE)
+            AND EXTRACT(DAY FROM e.join_date)   = EXTRACT(DAY FROM CURRENT_DATE)
+            AND EXTRACT(YEAR FROM CURRENT_DATE) > EXTRACT(YEAR FROM e.join_date)
+          ON CONFLICT (id) DO NOTHING`.catch(()=>{});
+      } catch {}
+      return 'ok';
+    });
+
+    // Fire all reads in parallel. Every branch uses the same memoTtl key
+    // as its standalone endpoint counterpart, so if either was hit
+    // recently the result comes straight from memory.
+    const [
+      announcements,
+      upcomingEventsRaw,
+      employeesRows,
+      leaveRequestsRaw,
+      attendanceRows,
+      holidaysThisYearRows,
+      payroll,
+      outToday,
+      repairTickets,
+      holidaysThisYear,
+      holidaysNextYear,
+      optionalThisYear,
+      optionalNextYear,
+    ] = await Promise.all([
+      memoTtl('announcements:active', 60_000, async () =>
+        sql`SELECT * FROM company_announcements
+            WHERE expires_at IS NULL OR expires_at > NOW()
+            ORDER BY pinned DESC, created_at DESC LIMIT 50`),
+      // upcomingEvents mirrors /api/upcoming-events shape: 30-day horizon,
+      // combines holidays + birthdays + anniversaries. We share its cache
+      // key so a page that already loaded it doesn't re-fetch.
+      memoTtl(`upcomingEvents:${horizonDays}`, 300_000, async () => {
+        const lookbackDays = 3;
+        const holidayRows = await sql`
+          SELECT id, name, date::text AS event_date, 'holiday' AS kind
+          FROM holidays
+          WHERE date::date BETWEEN CURRENT_DATE - ${lookbackDays}::int AND CURRENT_DATE + ${horizonDays}::int
+          ORDER BY date`;
+        const birthdayRows = await sql`
+          SELECT e.id, e.name, e.designation, e.department, e.avatar,
+            e.date_of_birth::text AS source_date,
+            TO_CHAR(
+              CASE WHEN TO_DATE(EXTRACT(YEAR FROM CURRENT_DATE) || TO_CHAR(e.date_of_birth, '-MM-DD'), 'YYYY-MM-DD') >= CURRENT_DATE - ${lookbackDays}::int
+                   THEN TO_DATE(EXTRACT(YEAR FROM CURRENT_DATE) || TO_CHAR(e.date_of_birth, '-MM-DD'), 'YYYY-MM-DD')
+                   ELSE TO_DATE((EXTRACT(YEAR FROM CURRENT_DATE) + 1) || TO_CHAR(e.date_of_birth, '-MM-DD'), 'YYYY-MM-DD')
+              END, 'YYYY-MM-DD'
+            ) AS event_date
+          FROM employees e
+          WHERE e.status = 'active' AND e.date_of_birth IS NOT NULL`;
+        const anniversaryRows = await sql`
+          SELECT e.id, e.name, e.designation, e.department, e.avatar,
+            e.join_date::text AS source_date,
+            TO_CHAR(
+              CASE WHEN TO_DATE(EXTRACT(YEAR FROM CURRENT_DATE) || TO_CHAR(e.join_date, '-MM-DD'), 'YYYY-MM-DD') >= CURRENT_DATE - ${lookbackDays}::int
+                   THEN TO_DATE(EXTRACT(YEAR FROM CURRENT_DATE) || TO_CHAR(e.join_date, '-MM-DD'), 'YYYY-MM-DD')
+                   ELSE TO_DATE((EXTRACT(YEAR FROM CURRENT_DATE) + 1) || TO_CHAR(e.join_date, '-MM-DD'), 'YYYY-MM-DD')
+              END, 'YYYY-MM-DD'
+            ) AS event_date
+          FROM employees e
+          WHERE e.status = 'active' AND e.join_date IS NOT NULL
+            AND EXTRACT(YEAR FROM CURRENT_DATE) > EXTRACT(YEAR FROM e.join_date)`;
+        // Combine, keep only rows within (lookback..horizon), sort by event_date.
+        const horizon = new Date(Date.now() + horizonDays * 86_400_000).toISOString().slice(0, 10);
+        const past = new Date(Date.now() - lookbackDays * 86_400_000).toISOString().slice(0, 10);
+        const combined = [
+          ...(holidayRows as any[]).map(r => ({ ...r, kind: 'holiday' })),
+          ...(birthdayRows as any[]).map(r => ({ ...r, kind: 'birthday' })),
+          ...(anniversaryRows as any[]).map(r => ({ ...r, kind: 'anniversary' })),
+        ].filter(r => r.event_date >= past && r.event_date <= horizon)
+         .sort((a, b) => a.event_date.localeCompare(b.event_date));
+        return combined;
+      }),
+      memoTtl('employees:all', 60_000, async () =>
+        sql`SELECT * FROM employees ORDER BY name`),
+      memoTtl(`leaveRequests:::`, 60_000, async () =>
+        sql`SELECT * FROM leave_requests ORDER BY applied_on DESC`),
+      memoTtl(`attendance:all:${month}:${year}`, 60_000, async () =>
+        sql`SELECT * FROM attendance_records
+            WHERE EXTRACT(MONTH FROM date)=${Number(month)}
+              AND EXTRACT(YEAR FROM date)=${Number(year)}
+            ORDER BY date DESC, employee_id`),
+      memoTtl(`holidaysInScope:${month}:${year}`, 30 * 60_000, async () =>
+        sql`SELECT date, name FROM holidays
+            WHERE EXTRACT(MONTH FROM date)=${Number(month)}
+              AND EXTRACT(YEAR FROM date)=${Number(year)}`),
+      // Payroll = admin/HR only; return [] for everyone else so the
+      // client can just spread it into state without a role check.
+      isAdminHR
+        ? memoTtl(`payroll:${month}:${year}`, 5 * 60_000, async () =>
+            sql`SELECT pr.*, e.name, e.designation, e.avatar,
+                       e.employee_id as emp_id, e.department
+                FROM payroll_records pr
+                JOIN employees e ON pr.employee_id=e.id
+                WHERE pr.month=${month} AND pr.year=${Number(year)}
+                ORDER BY e.name`)
+        : Promise.resolve([] as any[]),
+      // hoursSummary is intentionally NOT in the bundle — the individual
+      // /api/hours-summary endpoint does a heavier per-employee compute
+      // pass (variances, overplan, edit counts) that we don't want to
+      // duplicate here. Dashboard still calls getHoursSummary separately;
+      // that's one round-trip instead of ten.
+      memoTtl(`outToday:${todayIso}`, 60_000, async () => {
+        const rows = await sql`
+          SELECT lr.id, lr.employee_id,
+                 COALESCE(e.name, lr.employee_name)  AS name,
+                 COALESCE(e.designation, '')          AS designation,
+                 COALESCE(e.avatar, '')               AS avatar,
+                 lr.type, lr.slot, lr.to_date::text  AS to_date
+          FROM leave_requests lr
+          LEFT JOIN employees e ON e.id = lr.employee_id
+          WHERE lr.status NOT IN ('rejected', 'cancelled')
+            AND lr.from_date <= ${todayIso}::date
+            AND lr.to_date   >= ${todayIso}::date
+          ORDER BY COALESCE(e.name, lr.employee_name) ASC`;
+        return { today: todayIso, out: rows };
+      }),
+      memoTtl(`repairTickets:all:all`, 60_000, async () =>
+        sql`SELECT * FROM repair_tickets ORDER BY reported_at DESC`),
+      memoTtl(`holidays:${year}`, 6 * 60 * 60_000, async () =>
+        sql`SELECT * FROM holidays WHERE EXTRACT(YEAR FROM date)=${year} ORDER BY date`),
+      memoTtl(`holidays:${nextYear}`, 6 * 60 * 60_000, async () =>
+        sql`SELECT * FROM holidays WHERE EXTRACT(YEAR FROM date)=${nextYear} ORDER BY date`),
+      memoTtl(`optionalLeaveDates:${year}`, 6 * 60 * 60_000, async () =>
+        sql`SELECT * FROM optional_leave_dates WHERE year=${year} ORDER BY date ASC`),
+      memoTtl(`optionalLeaveDates:${nextYear}`, 6 * 60 * 60_000, async () =>
+        sql`SELECT * FROM optional_leave_dates WHERE year=${nextYear} ORDER BY date ASC`),
+    ]);
+
+    // Mirror the existing /api/attendance holiday-tagging pass so the
+    // dashboard doesn't have to reimplement it. Same rules: if a row's
+    // date is a holiday, override status to 'holiday' with the holiday
+    // name in `holiday_name`.
+    const holidayMap = new Map<string, string>();
+    for (const h of holidaysThisYearRows as any[]) {
+      const d = String(h.date instanceof Date ? h.date.toISOString() : h.date).slice(0, 10);
+      holidayMap.set(d, h.name);
+    }
+    const attendance = (attendanceRows as any[]).map((r: any) => {
+      const iso = String(r.date instanceof Date ? r.date.toISOString() : r.date).slice(0, 10);
+      const holidayName = holidayMap.get(iso);
+      return holidayName
+        ? { ...r, status: 'holiday', holiday_name: holidayName }
+        : r;
+    });
+
+    // Same salary-strip for hr_intern as /api/employees does.
+    const ownEmpId = actorRole === 'hr_intern' ? await actorOwnEmployeeId(req) : null;
+    const employees = stripSalaryForIntern(actorRole, employeesRows as any[], ownEmpId);
+
+    // Normalize leave-request dates the same way the individual endpoint
+    // does so the client format stays consistent.
+    const leaveRequests = (leaveRequestsRaw as any[]).map(normDateV);
+
+    res.json({
+      month, year,
+      announcements,
+      upcomingEvents: upcomingEventsRaw,
+      employees,
+      leaveRequests,
+      attendance,
+      payroll,
+      outToday,
+      repairTickets,
+      holidaysThisYear,
+      holidaysNextYear,
+      optionalThisYear,
+      optionalNextYear,
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err?.message || 'Server error' });
+  }
+});
 
 app.get('/api/announcements', async (req, res) => {
   try {

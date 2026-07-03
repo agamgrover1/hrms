@@ -86,40 +86,27 @@ interface HolidayRow {
   name: string;
 }
 
-function HolidaysCard() {
-  const [fixed, setFixed] = useState<HolidayRow[]>([]);
-  const [optional, setOptional] = useState<HolidayRow[]>([]);
-  const [loading, setLoading] = useState(true);
-
-  useEffect(() => {
-    const thisYear = new Date().getFullYear();
+// Bootstrap-fed. Parent passes the pre-loaded holidays + optional pool
+// so the widget never fires its own network call. If the parent hasn't
+// finished loading yet, `loading` is true and skeletons render.
+function HolidaysCard({
+  fixedRaw, optionalRaw, loading,
+}: {
+  fixedRaw: any[];
+  optionalRaw: any[];
+  loading: boolean;
+}) {
+  const { fixed, optional } = useMemo(() => {
     const todayIso = new Date().toISOString().slice(0, 10);
-    let cancelled = false;
-    Promise.all([
-      // Fixed — official company holidays. Pull current + next year and
-      // filter to "today or later" so the list stays forward-looking.
-      Promise.all([
-        api.getHolidays(thisYear).catch(() => []),
-        api.getHolidays(thisYear + 1).catch(() => []),
-      ]).then(([a, b]) => [...(a as any[]), ...(b as any[])]
-        .map(h => ({ date: String(h.date).slice(0, 10), name: h.name }))
-        .filter(h => h.date >= todayIso)
-        .sort((a, b) => a.date.localeCompare(b.date))),
-      // Optional — the pool employees pick from. Same forward-looking
-      // filter.
-      Promise.all([
-        api.getOptionalLeaveDates(thisYear).catch(() => []),
-        api.getOptionalLeaveDates(thisYear + 1).catch(() => []),
-      ]).then(([a, b]) => [...(a as any[]), ...(b as any[])]
-        .map(h => ({ date: String(h.date).slice(0, 10), name: h.label }))
-        .filter(h => h.date >= todayIso)
-        .sort((a, b) => a.date.localeCompare(b.date))),
-    ])
-      .then(([f, o]) => { if (!cancelled) { setFixed(f); setOptional(o); } })
-      .catch(() => { if (!cancelled) { setFixed([]); setOptional([]); } })
-      .finally(() => { if (!cancelled) setLoading(false); });
-    return () => { cancelled = true; };
-  }, []);
+    const norm = (list: any[], nameKey: 'name' | 'label') => list
+      .map(h => ({ date: String(h.date).slice(0, 10), name: h[nameKey] }))
+      .filter(h => h.date >= todayIso)
+      .sort((a, b) => a.date.localeCompare(b.date));
+    return {
+      fixed: norm(fixedRaw, 'name'),
+      optional: norm(optionalRaw, 'label'),
+    };
+  }, [fixedRaw, optionalRaw]);
 
   const fmt = (iso: string): { date: string; weekday: string; daysAway: string } => {
     const d = new Date(iso + 'T12:00:00');
@@ -210,23 +197,15 @@ function HolidaysCard() {
   );
 }
 
-function OutTodayCard() {
-  // Self-fetching — no longer depends on parent props. The dedicated
-  // /api/leaves/out-today endpoint returns only today's intersecting
-  // leaves with the columns the widget renders, and is 60s-cached
-  // server-side. Even a slow client gets a near-instant payload once
-  // the cache is warm (first user this minute primes it).
-  const [data, setData] = useState<Awaited<ReturnType<typeof api.getOutToday>> | null>(null);
-  const [loading, setLoading] = useState(true);
-
-  useEffect(() => {
-    let cancelled = false;
-    api.getOutToday()
-      .then(d => { if (!cancelled) setData(d); })
-      .catch(() => { if (!cancelled) setData({ today: '', out: [] }); })
-      .finally(() => { if (!cancelled) setLoading(false); });
-    return () => { cancelled = true; };
-  }, []);
+// Bootstrap-fed. Parent passes the pre-loaded outToday payload so this
+// widget never fires its own network call — the shape is identical to
+// what /api/leaves/out-today returned before.
+function OutTodayCard({
+  data, loading,
+}: {
+  data: Awaited<ReturnType<typeof api.getOutToday>> | null;
+  loading: boolean;
+}) {
 
   // "back …" label. We accept the server-supplied `today` so we don't
   // have to recompute IST vs UTC client-side.
@@ -331,72 +310,79 @@ export default function Dashboard() {
   const [attendance, setAttendance] = useState<any[]>([]);
   const [repairTickets, setRepairTickets] = useState<any[]>([]);
   const [hoursSummary, setHoursSummary] = useState<any>(null);
+  // Holiday / optional / out-today used to be loaded by child components
+  // (HolidaysCard, OutTodayCard). They now come in through the bootstrap
+  // bundle and get passed down as props — saves 5 extra network calls.
+  const [holidaysThisYear, setHolidaysThisYear] = useState<any[]>([]);
+  const [holidaysNextYear, setHolidaysNextYear] = useState<any[]>([]);
+  const [optionalThisYear, setOptionalThisYear] = useState<any[]>([]);
+  const [optionalNextYear, setOptionalNextYear] = useState<any[]>([]);
+  const [outToday, setOutToday] = useState<Awaited<ReturnType<typeof api.getOutToday>> | null>(null);
   const [loading, setLoading] = useState(true);
   const [approvingLeave, setApprovingLeave] = useState<Record<string, boolean>>({});
 
   const now = new Date();
   const currentMonth = now.getMonth() + 1;
   const currentYear = now.getFullYear();
-  const currentMonthName = MONTH_FULL[now.getMonth()];
   const todayStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
-
-  // Live refresh on the dashboard used to refetch leaves + attendance on
-  // every tick. With ~40 employees and a workday window, those two queries
-  // alone were ~325KB per refresh and were burning the Neon 5GB monthly
-  // egress cap in days. They don't actually change second-to-second on a
-  // dashboard, so the background poll now only pulls the small "company
-  // news" surfaces (announcements + upcoming events).
-  useLiveRefresh(() => {
-    api.getAnnouncements().then(setAnnouncements).catch(() => {});
-    api.getUpcomingEvents(30).then(setUpcomingEvents).catch(() => {});
-  });
-
-  // Heavy queries (leaves + attendance) fire ONCE on mount (the Promise.all
-  // below), then ONLY on tab refocus — so a user returning after lunch
-  // still gets fresh state, but an open-but-idle tab doesn't hammer Neon
-  // every 45s. Listening to both focus + visibilitychange covers tab-
-  // switching and window-switching.
-  useEffect(() => {
-    const refetchHeavy = () => {
-      api.getLeaveRequests().then(setLeaveRequests).catch(() => {});
-      api.getAttendance({ month: currentMonth, year: currentYear }).then(setAttendance).catch(() => {});
-    };
-    const onVisible = () => { if (document.visibilityState === 'visible') refetchHeavy(); };
-    window.addEventListener('focus', refetchHeavy);
-    document.addEventListener('visibilitychange', onVisible);
-    return () => {
-      window.removeEventListener('focus', refetchHeavy);
-      document.removeEventListener('visibilitychange', onVisible);
-    };
-  }, [currentMonth, currentYear]);
 
   // Company news widget state + upcoming events
   const [announcements, setAnnouncements] = useState<Array<any>>([]);
   const [upcomingEvents, setUpcomingEvents] = useState<Array<any>>([]);
   const [showManageAnnouncements, setShowManageAnnouncements] = useState(false);
-  useEffect(() => {
-    api.getAnnouncements().then(setAnnouncements).catch(() => setAnnouncements([]));
-    api.getUpcomingEvents(30).then(setUpcomingEvents).catch(() => setUpcomingEvents([]));
-  }, []);
   const isAdminOrHR = user?.role === 'admin' || user?.role === 'hr_manager';
 
+  // One-shot bootstrap: replaces 11 previously-separate mount fetches
+  // (employees + leaves + payroll + attendance + tickets + announcements
+  // + upcoming events + holidays × 2 + optional-leave × 2 + out-today)
+  // with a single round-trip. Server runs the sub-queries in parallel
+  // using shared memoTtl caches so this endpoint is the cheapest way to
+  // hydrate the dashboard even on a cold Lambda. hoursSummary is loaded
+  // separately because it needs a heavier per-employee compute pass.
+  const applyBootstrap = (b: Awaited<ReturnType<typeof api.getDashboardBootstrap>>) => {
+    setAnnouncements(b.announcements ?? []);
+    setUpcomingEvents(b.upcomingEvents ?? []);
+    setEmployees(b.employees ?? []);
+    setLeaveRequests(b.leaveRequests ?? []);
+    setAttendance(b.attendance ?? []);
+    setPayroll(b.payroll ?? []);
+    setRepairTickets(b.repairTickets ?? []);
+    setOutToday(b.outToday ?? { today: '', out: [] });
+    setHolidaysThisYear(b.holidaysThisYear ?? []);
+    setHolidaysNextYear(b.holidaysNextYear ?? []);
+    setOptionalThisYear(b.optionalThisYear ?? []);
+    setOptionalNextYear(b.optionalNextYear ?? []);
+  };
   useEffect(() => {
     Promise.all([
-      api.getEmployees(),
-      api.getLeaveRequests(),
-      api.getPayroll({ month: currentMonthName, year: currentYear }),
-      api.getAttendance({ month: currentMonth, year: currentYear }),
-      api.getRepairTickets().catch(() => []),
-      api.getHoursSummary(currentMonth, currentYear).catch(() => null),
-    ]).then(([emps, leaves, pay, att, tickets, hours]) => {
-      setEmployees(emps);
-      setLeaveRequests(leaves);
-      setPayroll(pay);
-      setAttendance(att);
-      setRepairTickets(tickets);
-      setHoursSummary(hours);
-    }).finally(() => setLoading(false));
-  }, []);
+      api.getDashboardBootstrap(currentMonth, currentYear).then(applyBootstrap).catch(() => {}),
+      // hoursSummary NOT in bootstrap — heavier compute, isolated call.
+      api.getHoursSummary(currentMonth, currentYear).then(setHoursSummary).catch(() => setHoursSummary(null)),
+    ]).finally(() => setLoading(false));
+  }, [currentMonth, currentYear]);
+
+  // Focus refetch — re-hydrate everything through bootstrap when the tab
+  // regains focus (came back after lunch). Still ONE round-trip.
+  useEffect(() => {
+    const refetch = () => {
+      api.getDashboardBootstrap(currentMonth, currentYear).then(applyBootstrap).catch(() => {});
+    };
+    const onVisible = () => { if (document.visibilityState === 'visible') refetch(); };
+    window.addEventListener('focus', refetch);
+    document.addEventListener('visibilitychange', onVisible);
+    return () => {
+      window.removeEventListener('focus', refetch);
+      document.removeEventListener('visibilitychange', onVisible);
+    };
+  }, [currentMonth, currentYear]);
+
+  // Live-refresh tick — kept for the "company news feels alive" moment.
+  // Only pulls the two small surfaces (announcements + events); doesn't
+  // duplicate the heavy bundle.
+  useLiveRefresh(() => {
+    api.getAnnouncements().then(setAnnouncements).catch(() => {});
+    api.getUpcomingEvents(30).then(setUpcomingEvents).catch(() => {});
+  });
 
   const activeEmployees = employees.filter(e => e.status === 'active').length;
   const pendingLeaves = leaveRequests.filter((l: any) => l.status === 'pending');
@@ -750,12 +736,12 @@ export default function Dashboard() {
 
       {/* Who's out today — surfaced above the headcount band so it's the
           first "team availability" read after the KPI hero. */}
-      <OutTodayCard />
+      <OutTodayCard data={outToday} loading={loading} />
 
       {/* Fixed + Optional holidays — same row as Out Today's vibe:
           team-wide availability info that everyone benefits from
           seeing on the landing page. */}
-      <HolidaysCard />
+      <HolidaysCard fixedRaw={[...holidaysThisYear, ...holidaysNextYear]} optionalRaw={[...optionalThisYear, ...optionalNextYear]} loading={loading} />
 
       {/* Headcount growth + Pending leaves + Recent activity */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
@@ -1449,10 +1435,10 @@ function EmployeeDashboardView({ announcements, upcomingEvents }: {
       </section>
 
       {/* ── Who's out today — visible to everyone for team availability ───── */}
-      <OutTodayCard />
+      <OutTodayCard data={outToday} loading={loading} />
 
       {/* ── Fixed + Optional holidays — so everyone can plan around them ──── */}
-      <HolidaysCard />
+      <HolidaysCard fixedRaw={[...holidaysThisYear, ...holidaysNextYear]} optionalRaw={[...optionalThisYear, ...optionalNextYear]} loading={loading} />
 
       {/* ── Personal KPI tiles ──────────────────────────────────────────────── */}
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
