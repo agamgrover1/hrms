@@ -2,6 +2,7 @@ import { useState, useEffect, useMemo } from 'react';
 import {
   Wrench, Laptop, Building2, Plus, Trash2, Pencil, X, Check, AlertTriangle,
   Clock, CheckCircle, XCircle, DollarSign, Search, IndianRupee, History,
+  ArrowUpDown, ChevronUp, ChevronDown, Filter,
 } from 'lucide-react';
 import { api } from '../services/api';
 import { useAuth } from '../context/AuthContext';
@@ -455,10 +456,115 @@ function TicketsTab({ tickets, vendors, assets, employees, vendorById, assetById
 }
 
 // ── Assets Tab ────────────────────────────────────────────────────────────
+// Column-level filter + sort state. Keys map to the visible headers.
+type AssetSortKey = 'asset_tag' | 'category_name' | 'model' | 'serial_no' | 'assigned_to_name' | 'status' | 'open_tickets';
+type AssetFilters = {
+  tag: string;
+  category: string;         // '' = any; else exact match
+  model: string;            // partial, matches brand+model+specs
+  serial: string;           // partial
+  assigned: string;         // '' = any | '__unassigned__' | employee id
+  status: string;           // '' = any | 'active' | 'in_repair' | ...
+};
+
+const EMPTY_ASSET_FILTERS: AssetFilters = {
+  tag: '', category: '', model: '', serial: '', assigned: '', status: '',
+};
+
 function AssetsTab({ assets, employees, tickets, onCreate, onEdit, onDelete, onHistory }: any) {
   const empById = (id: string) => employees.find((e: any) => e.id === id);
   const openTicketCount = (assetId: string) =>
     tickets.filter((t: any) => t.asset_id === assetId && !['paid', 'cancelled'].includes(t.status)).length;
+
+  const [filters, setFilters] = useState<AssetFilters>(EMPTY_ASSET_FILTERS);
+  const [sort, setSort] = useState<{ key: AssetSortKey; dir: 'asc' | 'desc' }>({ key: 'asset_tag', dir: 'asc' });
+
+  // Options for the dropdown filters — derived from the loaded assets so we
+  // never show a category / status / assignee that has zero rows.
+  const categoryOptions = useMemo(() => {
+    const s = new Set<string>();
+    for (const a of assets) if (a.category_name) s.add(a.category_name);
+    return Array.from(s).sort();
+  }, [assets]);
+  const statusOptions = useMemo(() => {
+    const s = new Set<string>();
+    for (const a of assets) if (a.status) s.add(a.status);
+    return Array.from(s).sort();
+  }, [assets]);
+  const assigneeOptions = useMemo(() => {
+    // Only offer employees who actually own at least one asset — keeps the
+    // dropdown tight instead of listing the whole org.
+    const ids = new Set<string>();
+    for (const a of assets) if (a.assigned_to_id) ids.add(a.assigned_to_id);
+    const list = employees
+      .filter((e: any) => ids.has(e.id))
+      .map((e: any) => ({ id: e.id, name: e.name }))
+      .sort((a: any, b: any) => a.name.localeCompare(b.name));
+    return list;
+  }, [assets, employees]);
+
+  const displayed = useMemo(() => {
+    const q = (s: string) => s.trim().toLowerCase();
+    const tagQ = q(filters.tag), modelQ = q(filters.model), serialQ = q(filters.serial);
+    // Precompute open-ticket count per asset so sorting on it doesn't do
+    // O(n²) work.
+    const openCounts = new Map<string, number>();
+    for (const a of assets) openCounts.set(a.id, openTicketCount(a.id));
+
+    const rows = assets.filter((a: any) => {
+      if (filters.category && a.category_name !== filters.category) return false;
+      if (filters.status && a.status !== filters.status) return false;
+      if (filters.assigned === '__unassigned__') {
+        if (a.assigned_to_id) return false;
+      } else if (filters.assigned) {
+        if (a.assigned_to_id !== filters.assigned) return false;
+      }
+      if (tagQ && !(a.asset_tag || '').toLowerCase().includes(tagQ)) return false;
+      if (modelQ) {
+        // Match against the full displayed model string + specs.
+        const hay = [a.brand, a.model, a.processor, a.ram, a.storage].filter(Boolean).join(' ').toLowerCase();
+        if (!hay.includes(modelQ)) return false;
+      }
+      if (serialQ && !(a.serial_no || '').toLowerCase().includes(serialQ)) return false;
+      return true;
+    });
+
+    const dir = sort.dir === 'asc' ? 1 : -1;
+    const val = (a: any): any => {
+      switch (sort.key) {
+        case 'asset_tag':        return a.asset_tag || '';
+        case 'category_name':    return a.category_name || '';
+        case 'model':            return [a.brand, a.model].filter(Boolean).join(' ');
+        case 'serial_no':        return a.serial_no || '';
+        case 'assigned_to_name': return a.assigned_to_name || empById(a.assigned_to_id)?.name || '';
+        case 'status':           return a.status || '';
+        case 'open_tickets':     return openCounts.get(a.id) || 0;
+      }
+    };
+    return [...rows].sort((x: any, y: any) => {
+      const vx = val(x), vy = val(y);
+      if (typeof vx === 'number' && typeof vy === 'number') return (vx - vy) * dir;
+      return String(vx).localeCompare(String(vy), undefined, { numeric: true, sensitivity: 'base' }) * dir;
+    });
+  }, [assets, filters, sort, employees, tickets]);
+
+  const clearFilters = () => setFilters(EMPTY_ASSET_FILTERS);
+  const activeFilterCount = Object.values(filters).filter(v => v && v !== '').length;
+
+  const toggleSort = (key: AssetSortKey) => {
+    setSort(cur => cur.key === key
+      ? { key, dir: cur.dir === 'asc' ? 'desc' : 'asc' }
+      : { key, dir: ['open_tickets'].includes(key) ? 'desc' : 'asc' });
+  };
+  const SortHeader = ({ label, sortKey }: { label: string; sortKey: AssetSortKey }) => (
+    <button onClick={() => toggleSort(sortKey)}
+      className="flex items-center gap-1 text-xs font-semibold text-on-surface-subtle uppercase tracking-wide hover:text-on-surface transition-colors">
+      {label}
+      {sort.key === sortKey
+        ? (sort.dir === 'asc' ? <ChevronUp size={11}/> : <ChevronDown size={11}/>)
+        : <ArrowUpDown size={11} className="opacity-40" />}
+    </button>
+  );
 
   return (
     <div className="space-y-4">
@@ -475,17 +581,80 @@ function AssetsTab({ assets, employees, tickets, onCreate, onEdit, onDelete, onH
         </div>
       ) : (
         <div className="bg-surface rounded-xl-2 border border-outline shadow-elev-1 hover:shadow-elev-2 transition-shadow overflow-hidden">
+          {/* Filter row — one input per column. Text fields do partial matches;
+              dropdowns show only values present in the loaded assets so an
+              empty option never surfaces. */}
+          <div className="p-3 bg-surface-2/50 border-b border-outline flex flex-wrap items-center gap-2">
+            <Filter size={13} className="text-on-surface-subtle shrink-0" />
+            <input type="text" value={filters.tag}
+              onChange={e => setFilters({ ...filters, tag: e.target.value })}
+              placeholder="Tag"
+              className="w-24 text-xs px-2 py-1.5 border border-outline rounded-md bg-surface text-on-surface placeholder:text-on-surface-subtle focus:outline-none focus:border-accent focus:ring-1 focus:ring-accent/30" />
+            <select value={filters.category}
+              onChange={e => setFilters({ ...filters, category: e.target.value })}
+              className="text-xs px-2 py-1.5 border border-outline rounded-md bg-surface text-on-surface focus:outline-none focus:border-accent">
+              <option value="">Any category</option>
+              {categoryOptions.map(c => <option key={c} value={c}>{c}</option>)}
+            </select>
+            <input type="text" value={filters.model}
+              onChange={e => setFilters({ ...filters, model: e.target.value })}
+              placeholder="Model / spec"
+              className="w-36 text-xs px-2 py-1.5 border border-outline rounded-md bg-surface text-on-surface placeholder:text-on-surface-subtle focus:outline-none focus:border-accent focus:ring-1 focus:ring-accent/30" />
+            <input type="text" value={filters.serial}
+              onChange={e => setFilters({ ...filters, serial: e.target.value })}
+              placeholder="Serial"
+              className="w-28 text-xs px-2 py-1.5 border border-outline rounded-md bg-surface text-on-surface placeholder:text-on-surface-subtle focus:outline-none focus:border-accent focus:ring-1 focus:ring-accent/30" />
+            <select value={filters.assigned}
+              onChange={e => setFilters({ ...filters, assigned: e.target.value })}
+              className="text-xs px-2 py-1.5 border border-outline rounded-md bg-surface text-on-surface focus:outline-none focus:border-accent">
+              <option value="">Any assignee</option>
+              <option value="__unassigned__">— Unassigned —</option>
+              {assigneeOptions.map((e: any) => <option key={e.id} value={e.id}>{e.name}</option>)}
+            </select>
+            <select value={filters.status}
+              onChange={e => setFilters({ ...filters, status: e.target.value })}
+              className="text-xs px-2 py-1.5 border border-outline rounded-md bg-surface text-on-surface focus:outline-none focus:border-accent">
+              <option value="">Any status</option>
+              {statusOptions.map(s => <option key={s} value={s}>{s.replace('_', ' ')}</option>)}
+            </select>
+            <div className="ml-auto flex items-center gap-3">
+              <span className="text-xs text-on-surface-subtle">
+                {displayed.length === assets.length
+                  ? `${assets.length} asset${assets.length === 1 ? '' : 's'}`
+                  : `${displayed.length} of ${assets.length}`}
+              </span>
+              {activeFilterCount > 0 && (
+                <button onClick={clearFilters}
+                  className="text-xs font-semibold text-accent hover:underline inline-flex items-center gap-1">
+                  <X size={11}/> Clear
+                </button>
+              )}
+            </div>
+          </div>
           <div className="overflow-x-auto">
             <table className="w-full text-sm">
               <thead>
                 <tr className="bg-surface-2">
-                  {['Tag', 'Category', 'Model', 'Serial', 'Assigned To', 'Status', 'Active', ''].map(h => (
-                    <th key={h} className="text-left px-4 py-3 text-xs font-semibold text-on-surface-subtle uppercase tracking-wide">{h}</th>
-                  ))}
+                  <th className="text-left px-4 py-3"><SortHeader label="Tag"         sortKey="asset_tag"/></th>
+                  <th className="text-left px-4 py-3"><SortHeader label="Category"    sortKey="category_name"/></th>
+                  <th className="text-left px-4 py-3"><SortHeader label="Model"       sortKey="model"/></th>
+                  <th className="text-left px-4 py-3"><SortHeader label="Serial"      sortKey="serial_no"/></th>
+                  <th className="text-left px-4 py-3"><SortHeader label="Assigned To" sortKey="assigned_to_name"/></th>
+                  <th className="text-left px-4 py-3"><SortHeader label="Status"      sortKey="status"/></th>
+                  <th className="text-left px-4 py-3"><SortHeader label="Active"      sortKey="open_tickets"/></th>
+                  <th className="text-left px-4 py-3" />
                 </tr>
               </thead>
               <tbody>
-                {assets.map((a: any) => {
+                {displayed.length === 0 && (
+                  <tr>
+                    <td colSpan={8} className="px-4 py-12 text-center text-sm text-on-surface-subtle">
+                      No assets match the current filters.
+                      <button onClick={clearFilters} className="ml-2 text-accent hover:underline font-semibold">Clear filters</button>
+                    </td>
+                  </tr>
+                )}
+                {displayed.map((a: any) => {
                   const open = openTicketCount(a.id);
                   return (
                     <tr key={a.id} className="border-t border-outline hover:bg-surface-2/60">
