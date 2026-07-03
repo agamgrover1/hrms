@@ -196,6 +196,17 @@ export interface FinOptimization {
     projects_on: number; revenue_produced: number; margin_produced: number;
     leverage: number;
     verdict: 'great' | 'ok' | 'underused' | 'bench';
+    projects: Array<{
+      project_id: string;
+      project_name: string;
+      client_name: string | null;
+      hours: number;
+      revenue_per_hour: number;
+      revenue_produced: number;
+      cost: number;
+      margin: number;
+      leverage: number;
+    }>;
   }>;
 }
 

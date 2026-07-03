@@ -1,5 +1,5 @@
-import { useEffect, useMemo, useState } from 'react';
-import { TrendingUp, TrendingDown, AlertTriangle, ArrowRight, Sparkles, Award, Activity, Settings2, Info, Users as UsersIcon, ChevronDown, Briefcase } from 'lucide-react';
+import { Fragment, useEffect, useMemo, useState } from 'react';
+import { TrendingUp, TrendingDown, AlertTriangle, ArrowRight, Sparkles, Award, Activity, Settings2, Info, Users as UsersIcon, ChevronDown, ChevronRight, Briefcase } from 'lucide-react';
 import { financeApi, type FinOptimization, type FinManagerPnl } from '../../services/financeApi';
 import { money, moneyShort, pct, hrs } from './format';
 
@@ -253,6 +253,12 @@ function LeverageScore({ data }: { data: FinOptimization }) {
   const totalSalary = rows.reduce((s, r) => s + r.salary, 0);
   const totalRevenue = rows.reduce((s, r) => s + r.revenue_produced, 0);
   const orgLeverage = totalSalary > 0 ? totalRevenue / totalSalary : 0;
+  const [expanded, setExpanded] = useState<Set<string>>(new Set());
+  const toggle = (id: string) => setExpanded(cur => {
+    const nx = new Set(cur);
+    if (nx.has(id)) nx.delete(id); else nx.add(id);
+    return nx;
+  });
 
   return (
     <section className="rounded-xl-3 border border-outline bg-surface overflow-hidden shadow-elev-1">
@@ -264,6 +270,7 @@ function LeverageScore({ data }: { data: FinOptimization }) {
           <p className="text-xs text-on-surface-muted mt-0.5">
             Revenue produced ÷ salary, per direct-staff employee. ≥4× = great, 2.5–4× = OK, 1.5–2.5× = underused, &lt;1.5× = bench risk.
           </p>
+          <p className="text-[11px] text-on-surface-subtle mt-1">Click any row to see which projects drove that person's number.</p>
         </div>
         <div className="text-right">
           <p className="text-[10px] uppercase tracking-[0.16em] font-bold text-on-surface-subtle">Org-wide leverage</p>
@@ -279,6 +286,7 @@ function LeverageScore({ data }: { data: FinOptimization }) {
           <table className="w-full text-sm">
             <thead>
               <tr className="text-[10px] uppercase tracking-wide font-bold text-on-surface-subtle bg-surface-2 border-b border-outline">
+                <th className="px-2 py-2.5 w-8" />
                 <th className="px-4 py-2.5 text-left">Employee</th>
                 <th className="px-3 py-2.5 text-right">Salary</th>
                 <th className="px-3 py-2.5 text-right">Hours · Util</th>
@@ -291,27 +299,42 @@ function LeverageScore({ data }: { data: FinOptimization }) {
             <tbody className="divide-y divide-outline">
               {rows.map(r => {
                 const v = VERDICT_CFG[r.verdict] ?? VERDICT_CFG.ok;
+                const isOpen = expanded.has(r.employee_id);
                 return (
-                  <tr key={r.employee_id} className="hover:bg-surface-2/50">
-                    <td className="px-4 py-2.5">
-                      <div className="font-semibold text-on-surface">{r.name}</div>
-                      <div className="text-xs text-on-surface-subtle">{r.designation || r.department || '—'}</div>
-                    </td>
-                    <td className="px-3 py-2.5 text-right num-mono text-on-surface-muted">{money(r.salary, c)}</td>
-                    <td className="px-3 py-2.5 text-right num-mono text-xs text-on-surface-muted">
-                      <div>{hrs(r.hours_allocated)} / {hrs(r.capacity)}</div>
-                      <div className={`${r.utilization >= 0.8 ? 'text-success' : r.utilization >= 0.5 ? 'text-warning' : 'text-danger'}`}>{pct(r.utilization)}</div>
-                    </td>
-                    <td className="px-3 py-2.5 text-right num-mono text-on-surface">{money(r.revenue_produced, c)}</td>
-                    <td className={`px-3 py-2.5 text-right num-mono font-semibold ${r.margin_produced >= 0 ? 'text-success' : 'text-danger'}`}>
-                      {money(r.margin_produced, c)}
-                    </td>
-                    <td className="px-3 py-2.5 text-right num-mono font-bold text-on-surface">{r.leverage.toFixed(1)}×</td>
-                    <td className="px-3 py-2.5">
-                      <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-bold ${v.cls}`}>{v.label}</span>
-                      <div className="text-[10px] text-on-surface-subtle mt-0.5">{v.sub}</div>
-                    </td>
-                  </tr>
+                  <Fragment key={r.employee_id}>
+                    <tr
+                      onClick={() => toggle(r.employee_id)}
+                      className="hover:bg-surface-2/50 cursor-pointer">
+                      <td className="px-2 py-2.5 text-center text-on-surface-subtle">
+                        {isOpen ? <ChevronDown size={14}/> : <ChevronRight size={14}/>}
+                      </td>
+                      <td className="px-4 py-2.5">
+                        <div className="font-semibold text-on-surface">{r.name}</div>
+                        <div className="text-xs text-on-surface-subtle">{r.designation || r.department || '—'}</div>
+                      </td>
+                      <td className="px-3 py-2.5 text-right num-mono text-on-surface-muted">{money(r.salary, c)}</td>
+                      <td className="px-3 py-2.5 text-right num-mono text-xs text-on-surface-muted">
+                        <div>{hrs(r.hours_allocated)} / {hrs(r.capacity)}</div>
+                        <div className={`${r.utilization >= 0.8 ? 'text-success' : r.utilization >= 0.5 ? 'text-warning' : 'text-danger'}`}>{pct(r.utilization)}</div>
+                      </td>
+                      <td className="px-3 py-2.5 text-right num-mono text-on-surface">{money(r.revenue_produced, c)}</td>
+                      <td className={`px-3 py-2.5 text-right num-mono font-semibold ${r.margin_produced >= 0 ? 'text-success' : 'text-danger'}`}>
+                        {money(r.margin_produced, c)}
+                      </td>
+                      <td className="px-3 py-2.5 text-right num-mono font-bold text-on-surface">{r.leverage.toFixed(1)}×</td>
+                      <td className="px-3 py-2.5">
+                        <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-bold ${v.cls}`}>{v.label}</span>
+                        <div className="text-[10px] text-on-surface-subtle mt-0.5">{v.sub}</div>
+                      </td>
+                    </tr>
+                    {isOpen && (
+                      <tr className="bg-surface-2/40">
+                        <td colSpan={8} className="p-0">
+                          <LeverageProjectBreakdown row={r} currency={c} />
+                        </td>
+                      </tr>
+                    )}
+                  </Fragment>
                 );
               })}
             </tbody>
@@ -319,6 +342,71 @@ function LeverageScore({ data }: { data: FinOptimization }) {
         </div>
       )}
     </section>
+  );
+}
+
+// Sub-row rendered when a leverage entry is expanded: one line per project
+// the employee is allocated to this month, with hours / revenue / cost /
+// margin / per-project leverage (revenue ÷ cost-of-their-hours).
+function LeverageProjectBreakdown({ row, currency }: { row: FinOptimization['leverage'][number]; currency: string }) {
+  const projects = row.projects || [];
+  if (projects.length === 0) {
+    return (
+      <div className="px-8 py-6 text-sm text-on-surface-subtle italic">
+        {row.name} isn't assigned to any billable project this month.
+        {row.hours_allocated === 0 && ' Zero direct hours logged — worth investigating whether they should be on the bench-risk list.'}
+      </div>
+    );
+  }
+  const rate = row.rate;
+  const totalMargin = projects.reduce((s, p) => s + p.margin, 0);
+  return (
+    <div className="px-8 py-4">
+      <div className="flex flex-wrap items-baseline justify-between gap-2 mb-2">
+        <p className="text-[11px] uppercase tracking-[0.16em] font-bold text-on-surface-subtle inline-flex items-center gap-1.5">
+          <Briefcase size={11} /> Project mix — {row.name}
+        </p>
+        <p className="text-[11px] text-on-surface-subtle">
+          Blended cost/hour {money(rate, currency)} · net margin {' '}
+          <span className={totalMargin >= 0 ? 'text-success font-semibold' : 'text-danger font-semibold'}>
+            {money(totalMargin, currency)}
+          </span>
+        </p>
+      </div>
+      <table className="w-full text-xs">
+        <thead>
+          <tr className="text-[10px] uppercase tracking-wide font-bold text-on-surface-subtle border-b border-outline">
+            <th className="px-2 py-1.5 text-left">Project</th>
+            <th className="px-2 py-1.5 text-right">Hours</th>
+            <th className="px-2 py-1.5 text-right">Rev/hr</th>
+            <th className="px-2 py-1.5 text-right">Revenue</th>
+            <th className="px-2 py-1.5 text-right">Cost</th>
+            <th className="px-2 py-1.5 text-right">Margin</th>
+            <th className="px-2 py-1.5 text-right">Leverage</th>
+          </tr>
+        </thead>
+        <tbody className="divide-y divide-outline/60">
+          {projects.map(p => (
+            <tr key={p.project_id}>
+              <td className="px-2 py-1.5 text-on-surface">
+                <div className="font-semibold">{p.project_name}</div>
+                {p.client_name && <div className="text-[10px] text-on-surface-subtle">{p.client_name}</div>}
+              </td>
+              <td className="px-2 py-1.5 text-right num-mono text-on-surface-muted">{hrs(p.hours)}</td>
+              <td className="px-2 py-1.5 text-right num-mono text-on-surface-muted">{money(p.revenue_per_hour, currency)}</td>
+              <td className="px-2 py-1.5 text-right num-mono text-on-surface">{money(p.revenue_produced, currency)}</td>
+              <td className="px-2 py-1.5 text-right num-mono text-on-surface-muted">{money(p.cost, currency)}</td>
+              <td className={`px-2 py-1.5 text-right num-mono font-semibold ${p.margin >= 0 ? 'text-success' : 'text-danger'}`}>
+                {money(p.margin, currency)}
+              </td>
+              <td className={`px-2 py-1.5 text-right num-mono font-bold ${p.leverage >= 2 ? 'text-success' : p.leverage >= 1 ? 'text-warning' : 'text-danger'}`}>
+                {p.leverage.toFixed(1)}×
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
   );
 }
 

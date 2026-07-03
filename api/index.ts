@@ -11251,21 +11251,41 @@ app.get('/api/finance/optimization', async (req, res) => {
     }
 
     // ───── 3. Leverage score ─────
+    // Also produces a per-project breakdown so the UI can expand each row and
+    // show the caller "which projects drove this employee's leverage number".
+    // Cost per project = hours × employee's blended rate (same rate that
+    // powers the org-wide leverage denominator, keeps the math consistent).
     const leverage = directEmps.map((e: any) => {
       const totalHours = hoursByEmp.get(e.id) || 0;
-      // Revenue produced = sum over their assignments of (hours × project rev/h)
+      const rate = Number(e.rate);
       let revenue_produced = 0;
       let projectsOn = 0;
+      const projects: any[] = [];
       for (const a of allAssignments) {
         if (a.employee_id !== e.id) continue;
         const p: any = projById.get(a.project_id);
         if (!p) continue;
         const h = Number(a.monthly_hours || 0);
         if (h > 0) {
-          revenue_produced += h * Number(p.revenuePerHour);
+          const revPerHour = Number(p.revenuePerHour);
+          const rev = h * revPerHour;
+          const cost = h * rate;
+          revenue_produced += rev;
           projectsOn++;
+          projects.push({
+            project_id: p.id,
+            project_name: p.name,
+            client_name: p.client_name,
+            hours: h,
+            revenue_per_hour: revPerHour,
+            revenue_produced: rev,
+            cost,
+            margin: rev - cost,
+            leverage: cost > 0 ? rev / cost : 0,
+          });
         }
       }
+      projects.sort((a, b) => b.margin - a.margin);
       const salary = Number(e.salary);
       const lev = salary > 0 ? revenue_produced / salary : 0;
       let verdict: 'great' | 'ok' | 'underused' | 'bench';
@@ -11275,7 +11295,7 @@ app.get('/api/finance/optimization', async (req, res) => {
       else verdict = 'bench';
       return {
         employee_id: e.id, name: e.name, designation: e.designation, department: e.department,
-        salary, rate: Number(e.rate),
+        salary, rate,
         hours_allocated: totalHours, capacity: Number(e.capacity),
         utilization: Number(e.capacity || 0) > 0 ? totalHours / Number(e.capacity) : 0,
         projects_on: projectsOn,
@@ -11283,6 +11303,7 @@ app.get('/api/finance/optimization', async (req, res) => {
         margin_produced: revenue_produced - salary,
         leverage: lev,
         verdict,
+        projects,
       };
     }).sort((a, b) => b.leverage - a.leverage);
 
