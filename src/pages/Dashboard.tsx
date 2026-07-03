@@ -324,6 +324,7 @@ export default function Dashboard() {
   const now = new Date();
   const currentMonth = now.getMonth() + 1;
   const currentYear = now.getFullYear();
+  const currentMonthName = MONTH_FULL[now.getMonth()];
   const todayStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
 
   // Company news widget state + upcoming events
