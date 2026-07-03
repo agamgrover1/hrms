@@ -10,6 +10,31 @@
   </head>
   <body>
     <div id="root"></div>
+    <script>
+      // Cache-buster boot script. Runs BEFORE the React bundle so a
+      // stale service worker or an outdated Cache Storage entry never
+      // gets a chance to intercept the module fetch. Safe on every
+      // load — no-ops when there's nothing to clear.
+      //
+      // Belt + braces vs. the Vercel Cache-Control headers on
+      // index.html: headers stop the SHELL from being cached; this
+      // stops any old Service Worker / Cache API entry from proxying
+      // stale JS/CSS to the tab.
+      (function () {
+        try {
+          if ('serviceWorker' in navigator) {
+            navigator.serviceWorker.getRegistrations()
+              .then(function (regs) { regs.forEach(function (r) { r.unregister(); }); })
+              .catch(function () {});
+          }
+          if (typeof caches !== 'undefined' && caches && caches.keys) {
+            caches.keys()
+              .then(function (keys) { keys.forEach(function (k) { caches.delete(k); }); })
+              .catch(function () {});
+          }
+        } catch (e) { /* boot script must never throw */ }
+      })();
+    </script>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>
