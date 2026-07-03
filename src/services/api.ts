@@ -314,6 +314,18 @@ export const api = {
   deleteAsset: (id: string) => request<any>(`/assets/${id}`, { method: 'DELETE' }),
   getAssetRepairHistory: (assetId: string) =>
     request<{ asset_id: string; tickets: any[]; ticket_count: number; total_spend: number }>(`/assets/${assetId}/repair-history`),
+  getAssetOwnershipHistory: (assetId: string) =>
+    request<{
+      asset_id: string;
+      current: { assigned_to_id: string | null; assigned_to_name: string | null; status: string };
+      events: Array<{
+        id: number; action: 'created' | 'reassigned' | 'status_changed';
+        actor_id: string | null; actor_name: string | null; actor_role: string | null;
+        description: string | null;
+        before_value: string | null; after_value: string | null;
+        created_at: string;
+      }>;
+    }>(`/assets/${assetId}/ownership-history`),
 
   getAssetCategories: () => request<Array<{ id: string; name: string }>>(`/asset-categories`),
   createAssetCategory: (name: string) =>

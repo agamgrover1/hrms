@@ -678,6 +678,8 @@ function AssetsTab({ assets, employees, tickets, onCreate, onEdit, onDelete, onH
                         <span className={`text-[10px] font-bold px-2 py-1 rounded-full ${
                           a.status === 'active'    ? 'bg-success-container text-success' :
                           a.status === 'in_repair' ? 'bg-warning-container text-warning' :
+                          a.status === 'scrapped' || a.status === 'lost'
+                                                   ? 'bg-danger-container text-danger' :
                                                      'bg-surface-2 text-on-surface-muted'}`}>
                           {a.status.replace('_', ' ')}
                         </span>
@@ -687,7 +689,7 @@ function AssetsTab({ assets, employees, tickets, onCreate, onEdit, onDelete, onH
                       </td>
                       <td className="px-4 py-3">
                         <div className="flex gap-1">
-                          <button onClick={() => onHistory(a)} title="Repair history" className="text-on-surface-subtle hover:text-accent p-1 transition-colors"><History size={12}/></button>
+                          <button onClick={() => onHistory(a)} title="History (ownership + repairs)" className="text-on-surface-subtle hover:text-accent p-1 transition-colors"><History size={12}/></button>
                           <button onClick={() => onEdit(a)} title="Edit" className="text-on-surface-subtle hover:text-on-surface p-1 transition-colors"><Pencil size={12}/></button>
                           <button onClick={() => onDelete(a)} title="Delete" className="text-on-surface-subtle hover:text-danger p-1 transition-colors"><Trash2 size={12}/></button>
                         </div>
@@ -1034,6 +1036,8 @@ function AssetFormModal({ initial, employees, onClose, onSaved }: any) {
             <option value="active">Active</option>
             <option value="in_repair">In Repair</option>
             <option value="retired">Retired</option>
+            <option value="scrapped">Scrapped</option>
+            <option value="lost">Lost / stolen</option>
           </select>
         </div>
         <div>
@@ -1482,19 +1486,31 @@ function ModalActions({ onClose, onSave, saving }: any) {
 }
 
 // ── Per-asset repair history modal ────────────────────────────────────────
-// Shows running total spent on this asset plus every repair ticket (current
-// + historic) in reverse-chronological order. Admin can add a past repair
-// inline so legacy data ("we fixed this in March, ₹4,500") gets backfilled.
+// Two sections stacked in one dialog:
+//   1. Ownership & lifecycle timeline — created / reassigned / status
+//      changed events, with who did it and when. Sourced from
+//      asset_activity_log. Answers "who owned this? is it in scrap?"
+//   2. Repair history — every ticket (open + settled) plus running total
+//      spend. Admin can also backfill a past repair inline.
+// A small tab bar switches between the two so both share one modal chrome.
 function AssetHistoryModal({ asset, vendors, onClose, onAddPast }: any) {
+  const [tab, setTab] = useState<'ownership' | 'repairs'>('ownership');
   const [data, setData] = useState<{ tickets: any[]; ticket_count: number; total_spend: number } | null>(null);
+  const [ownership, setOwnership] = useState<{
+    current: { assigned_to_id: string | null; assigned_to_name: string | null; status: string };
+    events: Array<any>;
+  } | null>(null);
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState('');
 
   useEffect(() => {
     setLoading(true); setErr('');
-    api.getAssetRepairHistory(asset.id)
-      .then((d) => setData({ tickets: d.tickets, ticket_count: d.ticket_count, total_spend: d.total_spend }))
-      .catch(e => setErr(e.message))
+    Promise.all([
+      api.getAssetRepairHistory(asset.id)
+        .then(d => setData({ tickets: d.tickets, ticket_count: d.ticket_count, total_spend: d.total_spend })),
+      api.getAssetOwnershipHistory(asset.id)
+        .then(d => setOwnership({ current: d.current, events: d.events })),
+    ]).catch(e => setErr(e.message))
       .finally(() => setLoading(false));
   }, [asset.id, asset]);
 
@@ -1505,6 +1521,27 @@ function AssetHistoryModal({ asset, vendors, onClose, onAddPast }: any) {
   };
   const vendorName = (id?: string) => vendors?.find?.((v: any) => v.id === id)?.name ?? '—';
 
+  const fmtDateTime = (d: any) => {
+    if (!d) return '—';
+    try {
+      const dt = new Date(d);
+      return dt.toLocaleString('en-IN', { day: 'numeric', month: 'short', year: 'numeric', hour: 'numeric', minute: '2-digit' });
+    } catch { return '—'; }
+  };
+  const statusPillCls = (s: string) =>
+    s === 'active'    ? 'bg-success-container text-success' :
+    s === 'in_repair' ? 'bg-warning-container text-warning' :
+    s === 'scrapped' || s === 'lost' ? 'bg-danger-container text-danger' :
+                        'bg-surface-2 text-on-surface-muted';
+  const actionCfg = (a: string): { label: string; cls: string } => {
+    switch (a) {
+      case 'created':        return { label: 'Registered',   cls: 'bg-brand-container/60 text-brand' };
+      case 'reassigned':     return { label: 'Reassigned',   cls: 'bg-accent-container text-accent' };
+      case 'status_changed': return { label: 'Status',       cls: 'bg-surface-2 text-on-surface-muted' };
+      default:               return { label: a,              cls: 'bg-surface-2 text-on-surface-muted' };
+    }
+  };
+
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm" onClick={onClose}>
       <div className="bg-surface rounded-xl-3 border border-outline shadow-elev-3 w-full max-w-3xl max-h-[90vh] overflow-hidden flex flex-col" onClick={e => e.stopPropagation()}>
@@ -1513,74 +1550,162 @@ function AssetHistoryModal({ asset, vendors, onClose, onAddPast }: any) {
             <h3 className="font-display text-xl font-bold tracking-tight text-on-surface">{asset.asset_tag}</h3>
             <p className="text-xs text-on-surface-muted mt-0.5">
               {asset.category_name && <><span>{asset.category_name}</span> · </>}
-              {asset.model || 'Unknown model'} · repair history
+              {asset.model || 'Unknown model'}
             </p>
           </div>
           <button onClick={onClose} className="p-1.5 rounded-lg hover:bg-surface-2"><X size={18} className="text-on-surface-muted" /></button>
         </div>
 
-        {/* Total-spend strip */}
-        <div className="px-5 py-3 border-b border-outline grid grid-cols-2 gap-3 bg-surface-2/30">
+        {/* Current state strip: who owns it now + status pill. Answers the
+            user's "who is the current owner + is it in scrap" question
+            without having to scan the timeline. */}
+        <div className="px-5 py-3 border-b border-outline grid grid-cols-3 gap-3 bg-surface-2/30">
           <div>
-            <p className="text-[10px] uppercase tracking-[0.16em] font-bold text-on-surface-subtle">Total spent on repairs</p>
-            <p className="num-mono text-2xl font-bold text-on-surface mt-0.5">{fmtINR(data?.total_spend ?? 0)}</p>
+            <p className="text-[10px] uppercase tracking-[0.16em] font-bold text-on-surface-subtle">Current owner</p>
+            <p className="text-sm font-semibold text-on-surface mt-0.5">
+              {ownership?.current.assigned_to_name || <span className="italic text-on-surface-subtle">— unassigned —</span>}
+            </p>
+          </div>
+          <div>
+            <p className="text-[10px] uppercase tracking-[0.16em] font-bold text-on-surface-subtle">Status</p>
+            <p className="mt-0.5">
+              {ownership?.current.status && (
+                <span className={`text-[10px] font-bold px-2 py-1 rounded-full ${statusPillCls(ownership.current.status)}`}>
+                  {ownership.current.status.replace('_', ' ')}
+                </span>
+              )}
+            </p>
           </div>
           <div className="text-right">
-            <p className="text-[10px] uppercase tracking-[0.16em] font-bold text-on-surface-subtle">Tickets</p>
-            <p className="num-mono text-2xl font-bold text-on-surface mt-0.5">{data?.ticket_count ?? 0}</p>
+            <p className="text-[10px] uppercase tracking-[0.16em] font-bold text-on-surface-subtle">Repair spend</p>
+            <p className="num-mono text-lg font-bold text-on-surface mt-0.5">{fmtINR(data?.total_spend ?? 0)}</p>
           </div>
+        </div>
+
+        {/* Tab bar */}
+        <div className="px-5 pt-3 border-b border-outline flex items-center gap-1 bg-surface-2/10">
+          <button onClick={() => setTab('ownership')}
+            className={`px-3 py-2 text-xs font-semibold rounded-t-lg border-b-2 transition-colors ${
+              tab === 'ownership'
+                ? 'text-accent border-accent bg-surface'
+                : 'text-on-surface-muted border-transparent hover:text-on-surface hover:bg-surface-2/40'
+            }`}>
+            <History size={12} className="inline mr-1 -mt-0.5" />
+            Ownership & lifecycle
+            {ownership && <span className="ml-1.5 text-[10px] opacity-70">({ownership.events.length})</span>}
+          </button>
+          <button onClick={() => setTab('repairs')}
+            className={`px-3 py-2 text-xs font-semibold rounded-t-lg border-b-2 transition-colors ${
+              tab === 'repairs'
+                ? 'text-accent border-accent bg-surface'
+                : 'text-on-surface-muted border-transparent hover:text-on-surface hover:bg-surface-2/40'
+            }`}>
+            <Wrench size={12} className="inline mr-1 -mt-0.5" />
+            Repairs
+            {data && <span className="ml-1.5 text-[10px] opacity-70">({data.ticket_count})</span>}
+          </button>
         </div>
 
         {err && <div className="mx-5 mt-3 rounded-xl-2 border border-danger/30 bg-danger-container/40 p-3 text-sm text-danger">{err}</div>}
 
         <div className="flex-1 overflow-y-auto p-5 space-y-3">
-          {loading ? (
-            <div className="py-10 text-center text-sm text-on-surface-subtle">Loading…</div>
-          ) : !data || data.tickets.length === 0 ? (
-            <div className="py-10 text-center">
-              <Wrench size={28} className="mx-auto text-on-surface-subtle mb-2" />
-              <p className="text-sm text-on-surface-muted">No repairs recorded for this asset.</p>
-              <p className="text-xs text-on-surface-subtle mt-1">Add a past repair below to backfill legacy data.</p>
-            </div>
-          ) : (
-            data.tickets.map((t: any) => {
-              const cost = t.final_cost ?? t.quoted_cost;
-              const isHistoric = t.status === 'paid' || t.status === 'cancelled';
-              return (
-                <div key={t.id} className="rounded-xl-2 border border-outline p-3 hover:bg-surface-2/40 transition-colors">
-                  <div className="flex items-start justify-between gap-3">
-                    <div className="min-w-0 flex-1">
-                      <p className="text-sm font-semibold text-on-surface">{t.issue}</p>
-                      <p className="text-[11px] text-on-surface-muted mt-0.5">
-                        {fmtDate(t.reported_at)}
-                        {t.paid_at && t.paid_at !== t.reported_at && <> · settled {fmtDate(t.paid_at)}</>}
-                        {t.vendor_id && <> · {t.vendor_name || vendorName(t.vendor_id)}</>}
-                      </p>
-                      {t.notes && <p className="text-xs text-on-surface-muted mt-1 italic">{t.notes}</p>}
+          {tab === 'ownership' ? (
+            loading ? (
+              <div className="py-10 text-center text-sm text-on-surface-subtle">Loading…</div>
+            ) : !ownership || ownership.events.length === 0 ? (
+              <div className="py-10 text-center">
+                <History size={28} className="mx-auto text-on-surface-subtle mb-2" />
+                <p className="text-sm text-on-surface-muted">No lifecycle events recorded yet.</p>
+                <p className="text-xs text-on-surface-subtle mt-1">
+                  Reassignments and status changes made from now on will show up here.
+                </p>
+              </div>
+            ) : (
+              <div className="relative pl-6">
+                {/* Vertical line running down the timeline. */}
+                <div className="absolute left-2 top-2 bottom-2 w-px bg-outline" />
+                {ownership.events.map((ev) => {
+                  const cfg = actionCfg(ev.action);
+                  return (
+                    <div key={ev.id} className="relative pb-4 last:pb-0">
+                      <span className="absolute -left-4 top-1.5 w-2.5 h-2.5 rounded-full bg-surface border-2 border-accent" />
+                      <div className="rounded-xl-2 border border-outline p-3 bg-surface hover:bg-surface-2/40 transition-colors">
+                        <div className="flex items-start justify-between gap-3">
+                          <div className="min-w-0 flex-1">
+                            <div className="flex items-center gap-2 flex-wrap">
+                              <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full uppercase tracking-wide ${cfg.cls}`}>
+                                {cfg.label}
+                              </span>
+                              <span className="text-xs text-on-surface-muted">{fmtDateTime(ev.created_at)}</span>
+                            </div>
+                            <p className="text-sm text-on-surface mt-1">{ev.description || '—'}</p>
+                            {ev.actor_name && (
+                              <p className="text-[11px] text-on-surface-subtle mt-0.5">
+                                by {ev.actor_name}{ev.actor_role && <> · <span className="italic">{ev.actor_role.replace('_', ' ')}</span></>}
+                              </p>
+                            )}
+                          </div>
+                        </div>
+                      </div>
                     </div>
-                    <div className="text-right shrink-0">
-                      <p className={`num-mono font-bold ${cost ? 'text-on-surface' : 'text-on-surface-subtle'}`}>{fmtINR(cost)}</p>
-                      <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded-full mt-1 inline-block ${
-                        isHistoric ? 'bg-success-container text-success' :
-                        t.status === 'reported' ? 'bg-warning-container text-warning' :
-                        'bg-accent-container text-accent'
-                      }`}>{(t.status as string).replace('_', ' ')}</span>
+                  );
+                })}
+              </div>
+            )
+          ) : (
+            /* Repairs tab — unchanged layout, just moved under the tab. */
+            loading ? (
+              <div className="py-10 text-center text-sm text-on-surface-subtle">Loading…</div>
+            ) : !data || data.tickets.length === 0 ? (
+              <div className="py-10 text-center">
+                <Wrench size={28} className="mx-auto text-on-surface-subtle mb-2" />
+                <p className="text-sm text-on-surface-muted">No repairs recorded for this asset.</p>
+                <p className="text-xs text-on-surface-subtle mt-1">Add a past repair below to backfill legacy data.</p>
+              </div>
+            ) : (
+              data.tickets.map((t: any) => {
+                const cost = t.final_cost ?? t.quoted_cost;
+                const isHistoric = t.status === 'paid' || t.status === 'cancelled';
+                return (
+                  <div key={t.id} className="rounded-xl-2 border border-outline p-3 hover:bg-surface-2/40 transition-colors">
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="min-w-0 flex-1">
+                        <p className="text-sm font-semibold text-on-surface">{t.issue}</p>
+                        <p className="text-[11px] text-on-surface-muted mt-0.5">
+                          {fmtDate(t.reported_at)}
+                          {t.paid_at && t.paid_at !== t.reported_at && <> · settled {fmtDate(t.paid_at)}</>}
+                          {t.vendor_id && <> · {t.vendor_name || vendorName(t.vendor_id)}</>}
+                        </p>
+                        {t.notes && <p className="text-xs text-on-surface-muted mt-1 italic">{t.notes}</p>}
+                      </div>
+                      <div className="text-right shrink-0">
+                        <p className={`num-mono font-bold ${cost ? 'text-on-surface' : 'text-on-surface-subtle'}`}>{fmtINR(cost)}</p>
+                        <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded-full mt-1 inline-block ${
+                          isHistoric ? 'bg-success-container text-success' :
+                          t.status === 'reported' ? 'bg-warning-container text-warning' :
+                          'bg-accent-container text-accent'
+                        }`}>{(t.status as string).replace('_', ' ')}</span>
+                      </div>
                     </div>
                   </div>
-                </div>
-              );
-            })
+                );
+              })
+            )
           )}
         </div>
 
         <div className="px-5 py-3 border-t border-outline bg-surface-2/30 flex items-center justify-between gap-3">
           <p className="text-[11px] text-on-surface-subtle">
-            All historic + active repairs for this asset. Each new repair you log against this tag will appear here automatically.
+            {tab === 'ownership'
+              ? 'Every reassignment and status change is captured here automatically.'
+              : 'All historic + active repairs for this asset.'}
           </p>
-          <button onClick={onAddPast}
-            className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-semibold bg-accent text-on-accent rounded-lg hover:opacity-90">
-            <Plus size={13} /> Add past repair
-          </button>
+          {tab === 'repairs' && (
+            <button onClick={onAddPast}
+              className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-semibold bg-accent text-on-accent rounded-lg hover:opacity-90">
+              <Plus size={13} /> Add past repair
+            </button>
+          )}
         </div>
       </div>
     </div>

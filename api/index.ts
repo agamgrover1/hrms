@@ -7648,6 +7648,21 @@ async function isAdminOrHR(req: any): Promise<boolean> {
   return !!u && u.active === true && (u.role === 'admin' || u.role === 'hr_manager');
 }
 
+// Look up the acting user for audit / activity-log purposes. Returns
+// null-ish fields when there's no x-user-id header rather than 401ing —
+// the endpoint's own permission check has already run by the time this
+// is called, and we'd rather log an unattributed event than lose the
+// history entry entirely.
+async function resolveActor(req: any): Promise<{ id: string | null; name: string | null; role: string | null }> {
+  try {
+    const userId = req.header('x-user-id') || req.query.__uid;
+    if (!userId) return { id: null, name: null, role: null };
+    const rows = await sql`SELECT id, name, role FROM app_users WHERE id=${userId} LIMIT 1` as any[];
+    const u = rows[0];
+    return { id: u?.id ?? String(userId), name: u?.name ?? null, role: u?.role ?? null };
+  } catch { return { id: null, name: null, role: null }; }
+}
+
 app.get('/api/holidays', async (req, res) => {
   try {
     await runStartupMigrations();
@@ -8010,6 +8025,14 @@ app.post('/api/assets', async (req, res) => {
               ${brand?.trim() || null}, ${os?.trim() || null}, ${processor?.trim() || null},
               ${ram?.trim() || null}, ${storage?.trim() || null}, ${pw})
       RETURNING *`;
+    const actor = await resolveActor(req);
+    await logAssetActivity({
+      asset_id: id, action: 'created',
+      actor_id: actor.id, actor_name: actor.name, actor_role: actor.role,
+      description: `${asset_tag.trim()} registered${assigned_to_name ? ` — assigned to ${assigned_to_name}` : ' — unassigned'}`,
+      before_value: null,
+      after_value: JSON.stringify({ assigned_to_id: assigned_to_id ?? null, assigned_to_name: assigned_to_name ?? null, status: status ?? 'active' }),
+    });
     res.status(201).json((rows as any[])[0]);
   } catch (e: any) {
     if (e.message?.includes('unique')) return res.status(409).json({ error: 'Asset tag already exists' });
@@ -8022,6 +8045,10 @@ app.put('/api/assets/:id', async (req, res) => {
     const { asset_tag, category_id, model, serial_no, purchase_date, assigned_to_id, assigned_to_name, status, notes,
             brand, os, processor, ram, storage, admin_password } = req.body;
     if (!asset_tag?.trim()) return res.status(400).json({ error: 'Asset tag is required' });
+    // Snapshot the row BEFORE the update so we can log what actually
+    // changed (owner reassignment, retirement / scrapping, ...).
+    const priorRows = await sql`SELECT assigned_to_id, assigned_to_name, status FROM assets WHERE id=${req.params.id} LIMIT 1` as any[];
+    const prior = priorRows[0];
     const canSetPw = await isAdminOrHR(req);
     // Only update admin_password when admin/HR explicitly sends one — empty
     // string clears, undefined leaves it untouched. Non-admin writes can't
@@ -8047,6 +8074,37 @@ app.put('/api/assets/:id', async (req, res) => {
           processor=${processor?.trim() || null}, ram=${ram?.trim() || null}, storage=${storage?.trim() || null}
           WHERE id=${req.params.id} RETURNING *`;
     if (!(rows as any[]).length) return res.status(404).json({ error: 'Asset not found' });
+    // Log lifecycle changes to asset_activity_log so the history modal can
+    // reconstruct the ownership timeline. Reassignment and status changes
+    // are logged as separate events; everything else (spec bumps, notes,
+    // password) is treated as a routine edit and skipped — those aren't
+    // interesting for "who owned this and when".
+    const actor = await resolveActor(req);
+    const newStatus = status ?? 'active';
+    if (prior) {
+      const ownerChanged = (prior.assigned_to_id ?? null) !== (assigned_to_id ?? null);
+      const statusChanged = (prior.status ?? 'active') !== newStatus;
+      if (ownerChanged) {
+        const fromName = prior.assigned_to_name || '— unassigned —';
+        const toName   = assigned_to_name || '— unassigned —';
+        await logAssetActivity({
+          asset_id: req.params.id, action: 'reassigned',
+          actor_id: actor.id, actor_name: actor.name, actor_role: actor.role,
+          description: `Reassigned: ${fromName} → ${toName}`,
+          before_value: prior.assigned_to_name ?? null,
+          after_value: assigned_to_name ?? null,
+        });
+      }
+      if (statusChanged) {
+        await logAssetActivity({
+          asset_id: req.params.id, action: 'status_changed',
+          actor_id: actor.id, actor_name: actor.name, actor_role: actor.role,
+          description: `Status: ${prior.status ?? 'active'} → ${newStatus}`,
+          before_value: prior.status ?? 'active',
+          after_value: newStatus,
+        });
+      }
+    }
     res.json((rows as any[])[0]);
   } catch (e: any) {
     if (e.message?.includes('unique') || e.message?.includes('duplicate')) {
@@ -8054,6 +8112,34 @@ app.put('/api/assets/:id', async (req, res) => {
     }
     res.status(500).json({ error: e.message });
   }
+});
+
+// Ownership + lifecycle history for one asset. Independent of the repair
+// ticket history; this is who owned it, when they got it, when it was
+// scrapped, etc.
+app.get('/api/assets/:id/ownership-history', async (req, res) => {
+  try {
+    const assetRows = await sql`SELECT id, asset_tag, assigned_to_id, assigned_to_name, status, created_at FROM assets WHERE id=${req.params.id} LIMIT 1` as any[];
+    const asset = assetRows[0];
+    if (!asset) return res.status(404).json({ error: 'Asset not found' });
+    const events = await sql`
+      SELECT id, action, actor_id, actor_name, actor_role,
+             description, before_value, after_value, created_at
+      FROM asset_activity_log
+      WHERE asset_id = ${req.params.id}
+        AND action IN ('created', 'reassigned', 'status_changed')
+      ORDER BY created_at DESC, id DESC
+    ` as any[];
+    res.json({
+      asset_id: asset.id,
+      current: {
+        assigned_to_id: asset.assigned_to_id,
+        assigned_to_name: asset.assigned_to_name,
+        status: asset.status,
+      },
+      events,
+    });
+  } catch (e: any) { res.status(500).json({ error: e.message }); }
 });
 
 app.delete('/api/assets/:id', async (req, res) => {
