@@ -83,6 +83,16 @@ app.use((req: any, res: any, next: any) => {
   else if (p === '/api/projects')          apply(30,  'private');
   else if (p === '/api/internal-hour-logs') apply(30, 'private');
   else if (p.startsWith('/api/leave/balances/')) apply(30, 'private');
+  // Slow-changing config-ish reads: aggressive browser cache. Writes bust
+  // both the memory cache (memoBust) and force a fresh fetch by
+  // returning updated data in the mutation response.
+  else if (p === '/api/holidays')              apply(1800, 'public');   // 30 min
+  else if (p === '/api/optional-leave/dates')  apply(1800, 'public');   // 30 min
+  else if (p === '/api/vendors')               apply(600,  'private');  // 10 min
+  else if (p === '/api/asset-categories')      apply(1800, 'public');   // 30 min
+  else if (p === '/api/assets')                apply(60,   'private');  // 1 min
+  else if (p === '/api/repair-tickets')        apply(30,   'private');
+  else if (p === '/api/payroll')               apply(120,  'private');  // 2 min
   next();
 });
 
@@ -6653,12 +6663,16 @@ app.get('/api/payroll', async (req, res) => {
   if (!(await requireFullHR(req, res)).ok) return;
   try {
     const { month, year } = req.query as any;
-    let rows;
-    if (month && year) {
-      rows = await sql`SELECT pr.*, e.name, e.designation, e.avatar, e.employee_id as emp_id, e.department FROM payroll_records pr JOIN employees e ON pr.employee_id=e.id WHERE pr.month=${month} AND pr.year=${Number(year)} ORDER BY e.name`;
-    } else {
-      rows = await sql`SELECT pr.*, e.name, e.designation, e.avatar, e.employee_id as emp_id, e.department FROM payroll_records pr JOIN employees e ON pr.employee_id=e.id ORDER BY pr.year DESC, pr.month DESC, e.name`;
-    }
+    // Payroll for a given period is finalized once and read many times
+    // (Dashboard + Payroll page + reports). 5-min TTL is safe — payroll
+    // isn't edited outside of a payroll-run flow that only admin/HR can
+    // trigger, and those flows already refresh the client after.
+    const key = month && year ? `payroll:${month}:${year}` : 'payroll:all';
+    const rows = await memoTtl(key, 5 * 60_000, async () =>
+      month && year
+        ? await sql`SELECT pr.*, e.name, e.designation, e.avatar, e.employee_id as emp_id, e.department FROM payroll_records pr JOIN employees e ON pr.employee_id=e.id WHERE pr.month=${month} AND pr.year=${Number(year)} ORDER BY e.name`
+        : await sql`SELECT pr.*, e.name, e.designation, e.avatar, e.employee_id as emp_id, e.department FROM payroll_records pr JOIN employees e ON pr.employee_id=e.id ORDER BY pr.year DESC, pr.month DESC, e.name`
+    );
     res.json(rows);
   } catch (err) { res.status(500).json({ error: 'Server error' }); }
 });
@@ -7614,7 +7628,11 @@ app.get('/api/optional-leave/dates', async (req, res) => {
   try {
     await ensureOptionalLeaveTables();
     const year = Number((req.query as any).year) || new Date().getFullYear();
-    res.json(await sql`SELECT * FROM optional_leave_dates WHERE year=${year} ORDER BY date ASC`);
+    // Optional-leave pool changes 2-3 times a year. 6-hour TTL; writes bust.
+    const rows = await memoTtl(`optionalLeaveDates:${year}`, 6 * 60 * 60_000, async () =>
+      await sql`SELECT * FROM optional_leave_dates WHERE year=${year} ORDER BY date ASC`
+    );
+    res.json(rows);
   } catch { res.status(500).json({ error: 'Server error' }); }
 });
 app.post('/api/optional-leave/dates', async (req, res) => {
@@ -7629,11 +7647,16 @@ app.post('/api/optional-leave/dates', async (req, res) => {
       return res.status(400).json({ error: 'Date must be within the selected year' });
     const id = `old_${Date.now()}`;
     const rows = await sql`INSERT INTO optional_leave_dates (id,date,label,year) VALUES (${id},${date},${label.trim()},${Number(year)}) ON CONFLICT (date,year) DO UPDATE SET label=EXCLUDED.label RETURNING *`;
+    memoBust('optionalLeaveDates:*');
     res.status(201).json(rows[0]);
   } catch (e: any) { res.status(500).json({ error: e.message }); }
 });
 app.delete('/api/optional-leave/dates/:id', async (req, res) => {
-  try { await sql`DELETE FROM optional_leave_dates WHERE id=${req.params.id}`; res.json({ success: true }); }
+  try {
+    await sql`DELETE FROM optional_leave_dates WHERE id=${req.params.id}`;
+    memoBust('optionalLeaveDates:*');
+    res.json({ success: true });
+  }
   catch { res.status(500).json({ error: 'Server error' }); }
 });
 
@@ -7667,9 +7690,15 @@ app.get('/api/holidays', async (req, res) => {
   try {
     await runStartupMigrations();
     const year = req.query.year ? Number(req.query.year) : null;
-    const rows = year
-      ? await sql`SELECT * FROM holidays WHERE EXTRACT(YEAR FROM date)=${year} ORDER BY date`
-      : await sql`SELECT * FROM holidays ORDER BY date`;
+    // Holidays change once a year at most. 6-hour TTL is aggressive but
+    // safe because every write below busts `holidays:*`. Dashboard alone
+    // was calling this endpoint 4× per mount (current + next year × fixed
+    // + optional variants) — each of those now hits the memory cache.
+    const rows = await memoTtl(`holidays:${year ?? 'all'}`, 6 * 60 * 60_000, async () =>
+      year
+        ? await sql`SELECT * FROM holidays WHERE EXTRACT(YEAR FROM date)=${year} ORDER BY date`
+        : await sql`SELECT * FROM holidays ORDER BY date`
+    );
     res.json(rows);
   } catch (err: any) { res.status(500).json({ error: err.message || 'Server error' }); }
 });
@@ -7686,6 +7715,7 @@ app.post('/api/holidays', async (req, res) => {
       ON CONFLICT (date) DO UPDATE SET
         name=EXCLUDED.name, type=EXCLUDED.type, notes=EXCLUDED.notes, updated_at=NOW()
       RETURNING *`;
+    memoBust('holidays:*');
     res.status(201).json(rows[0]);
   } catch (err: any) { res.status(500).json({ error: err.message || 'Server error' }); }
 });
@@ -7701,6 +7731,7 @@ app.put('/api/holidays/:id', async (req, res) => {
         notes=${notes?.trim() || null}, updated_at=NOW()
       WHERE id=${Number(req.params.id)} RETURNING *`;
     if (!rows.length) return res.status(404).json({ error: 'Holiday not found' });
+    memoBust('holidays:*');
     res.json(rows[0]);
   } catch (err: any) { res.status(500).json({ error: err.message || 'Server error' }); }
 });
@@ -7709,6 +7740,7 @@ app.delete('/api/holidays/:id', async (req, res) => {
   try {
     if (!(await isAdminOrHR(req))) return res.status(403).json({ error: 'Admin / HR only' });
     await sql`DELETE FROM holidays WHERE id=${Number(req.params.id)}`;
+    memoBust('holidays:*');
     res.json({ success: true });
   } catch (err: any) { res.status(500).json({ error: err.message || 'Server error' }); }
 });
@@ -7926,7 +7958,10 @@ async function ensureRepairTables() {
 app.get('/api/vendors', async (_req, res) => {
   try {
     await ensureRepairTables();
-    res.json(await sql`SELECT * FROM vendors ORDER BY created_at DESC`);
+    // Vendor list is ~1 row. Cache aggressively; every write busts.
+    const rows = await memoTtl('vendors:all', 6 * 60 * 60_000, async () =>
+      await sql`SELECT * FROM vendors ORDER BY created_at DESC`);
+    res.json(rows);
   } catch (e: any) { res.status(500).json({ error: e.message }); }
 });
 
@@ -7937,6 +7972,7 @@ app.post('/api/vendors', async (req, res) => {
     if (!name?.trim()) return res.status(400).json({ error: 'Vendor name is required' });
     const id = `vend_${Date.now()}`;
     const rows = await sql`INSERT INTO vendors (id, name, contact_person, phone, email, gst_no, address, notes) VALUES (${id}, ${name.trim()}, ${contact_person ?? null}, ${phone ?? null}, ${email ?? null}, ${gst_no ?? null}, ${address ?? null}, ${notes ?? null}) RETURNING *`;
+    memoBust('vendors:*');
     res.status(201).json((rows as any[])[0]);
   } catch (e: any) { res.status(500).json({ error: e.message }); }
 });
@@ -7947,6 +7983,7 @@ app.put('/api/vendors/:id', async (req, res) => {
     if (!name?.trim()) return res.status(400).json({ error: 'Vendor name is required' });
     const rows = await sql`UPDATE vendors SET name=${name.trim()}, contact_person=${contact_person ?? null}, phone=${phone ?? null}, email=${email ?? null}, gst_no=${gst_no ?? null}, address=${address ?? null}, notes=${notes ?? null}, active=${active ?? true} WHERE id=${req.params.id} RETURNING *`;
     if (!(rows as any[]).length) return res.status(404).json({ error: 'Vendor not found' });
+    memoBust('vendors:*');
     res.json((rows as any[])[0]);
   } catch (e: any) { res.status(500).json({ error: e.message }); }
 });
@@ -7954,6 +7991,7 @@ app.put('/api/vendors/:id', async (req, res) => {
 app.delete('/api/vendors/:id', async (req, res) => {
   try {
     await sql`DELETE FROM vendors WHERE id=${req.params.id}`;
+    memoBust('vendors:*');
     res.json({ success: true });
   } catch (e: any) { res.status(500).json({ error: e.message }); }
 });
@@ -7962,7 +8000,10 @@ app.delete('/api/vendors/:id', async (req, res) => {
 app.get('/api/asset-categories', async (_req, res) => {
   try {
     await ensureRepairTables();
-    res.json(await sql`SELECT * FROM asset_categories ORDER BY name ASC`);
+    // Categories are seeded once and edited rarely. Long TTL.
+    const rows = await memoTtl('assetCategories:all', 6 * 60 * 60_000, async () =>
+      await sql`SELECT * FROM asset_categories ORDER BY name ASC`);
+    res.json(rows);
   } catch (e: any) { res.status(500).json({ error: e.message }); }
 });
 
@@ -7973,6 +8014,7 @@ app.post('/api/asset-categories', async (req, res) => {
     if (!name?.trim()) return res.status(400).json({ error: 'Category name is required' });
     const id = name.trim().toLowerCase().replace(/\s+/g, '-').replace(/[^a-z0-9-]/g, '');
     const rows = await sql`INSERT INTO asset_categories (id, name) VALUES (${id}, ${name.trim()}) ON CONFLICT (id) DO UPDATE SET name=EXCLUDED.name RETURNING *`;
+    memoBust('assetCategories:*');
     res.status(201).json((rows as any[])[0]);
   } catch (e: any) { res.status(500).json({ error: e.message }); }
 });
@@ -7985,6 +8027,7 @@ app.delete('/api/asset-categories/:id', async (req, res) => {
       return res.status(409).json({ error: 'Category in use by existing assets — reassign them first' });
     }
     await sql`DELETE FROM asset_categories WHERE id=${req.params.id}`;
+    memoBust('assetCategories:*');
     res.json({ success: true });
   } catch (e: any) { res.status(500).json({ error: e.message }); }
 });
@@ -7994,9 +8037,15 @@ app.get('/api/assets', async (req, res) => {
   try {
     await ensureRepairTables();
     const { assigned_to_id } = req.query as any;
-    const rows = assigned_to_id
-      ? await sql`SELECT a.*, c.name AS category_name FROM assets a LEFT JOIN asset_categories c ON c.id = a.category_id WHERE a.assigned_to_id=${assigned_to_id} ORDER BY a.asset_tag ASC`
-      : await sql`SELECT a.*, c.name AS category_name FROM assets a LEFT JOIN asset_categories c ON c.id = a.category_id ORDER BY a.asset_tag ASC`;
+    // Asset registry is loaded on every Asset Registry mount. 2-min TTL
+    // catches back-to-back navigations without letting stale rows linger.
+    // Writes (create / update / delete) bust `assets:*`.
+    const key = `assets:${assigned_to_id || 'all'}`;
+    const rows = await memoTtl(key, 120_000, async () =>
+      assigned_to_id
+        ? await sql`SELECT a.*, c.name AS category_name FROM assets a LEFT JOIN asset_categories c ON c.id = a.category_id WHERE a.assigned_to_id=${assigned_to_id} ORDER BY a.asset_tag ASC`
+        : await sql`SELECT a.*, c.name AS category_name FROM assets a LEFT JOIN asset_categories c ON c.id = a.category_id ORDER BY a.asset_tag ASC`
+    );
     // Strip admin_password for everyone except admin/HR. Employees viewing
     // their own laptop should NOT see this — it's the IT-set password used
     // for recovery, not a self-service field.
@@ -8033,6 +8082,7 @@ app.post('/api/assets', async (req, res) => {
       before_value: null,
       after_value: JSON.stringify({ assigned_to_id: assigned_to_id ?? null, assigned_to_name: assigned_to_name ?? null, status: status ?? 'active' }),
     });
+    memoBust('assets:*');
     res.status(201).json((rows as any[])[0]);
   } catch (e: any) {
     if (e.message?.includes('unique')) return res.status(409).json({ error: 'Asset tag already exists' });
@@ -8105,6 +8155,7 @@ app.put('/api/assets/:id', async (req, res) => {
         });
       }
     }
+    memoBust('assets:*');
     res.json((rows as any[])[0]);
   } catch (e: any) {
     if (e.message?.includes('unique') || e.message?.includes('duplicate')) {
@@ -8145,6 +8196,7 @@ app.get('/api/assets/:id/ownership-history', async (req, res) => {
 app.delete('/api/assets/:id', async (req, res) => {
   try {
     await sql`DELETE FROM assets WHERE id=${req.params.id}`;
+    memoBust('assets:*');
     res.json({ success: true });
   } catch (e: any) { res.status(500).json({ error: e.message }); }
 });
@@ -8180,14 +8232,17 @@ app.get('/api/repair-tickets', async (req, res) => {
   try {
     await ensureRepairTables();
     const { employee_id, asset_id } = req.query as any;
-    let rows: any[];
-    if (employee_id) {
-      rows = await sql`SELECT * FROM repair_tickets WHERE employee_id=${employee_id} ORDER BY reported_at DESC` as any[];
-    } else if (asset_id) {
-      rows = await sql`SELECT * FROM repair_tickets WHERE asset_id=${asset_id} ORDER BY reported_at DESC` as any[];
-    } else {
-      rows = await sql`SELECT * FROM repair_tickets ORDER BY reported_at DESC` as any[];
-    }
+    // 60s cache is enough to absorb Dashboard + Asset Registry mount
+    // hitting this back-to-back. Every ticket create / edit / delete
+    // busts `repairTickets:*`.
+    const key = `repairTickets:${employee_id || 'all'}:${asset_id || 'all'}`;
+    let rows = await memoTtl(key, 60_000, async () =>
+      employee_id
+        ? await sql`SELECT * FROM repair_tickets WHERE employee_id=${employee_id} ORDER BY reported_at DESC`
+        : asset_id
+          ? await sql`SELECT * FROM repair_tickets WHERE asset_id=${asset_id} ORDER BY reported_at DESC`
+          : await sql`SELECT * FROM repair_tickets ORDER BY reported_at DESC`
+    ) as any[];
     // Hide cost / payment / vendor / approval fields from employees so the
     // money trail (quoted, final, payment_mode, payment dates, vendor) never
     // shows up — not even in DevTools. Admin/HR (and the case where no
@@ -8283,6 +8338,7 @@ app.post('/api/repair-tickets', async (req, res) => {
     const subject = employee_name ? `${employee_name}'s asset` : assetTag ? `Asset ${assetTag}` : 'An asset';
     notifyAdminsAndHR('repair_ticket_created', 'New Repair Ticket', `${subject} reported for repair: ${issue.trim().slice(0, 60)}${issue.length > 60 ? '…' : ''}`).catch(()=>{});
     if (employee_id) notifyEmployeeUser(employee_id, 'repair_ticket_created', 'Repair Ticket Logged', `Your laptop has been logged for repair. Issue: ${issue.trim().slice(0, 60)}${issue.length > 60 ? '…' : ''}`).catch(()=>{});
+    memoBust('repairTickets:*');
     res.status(201).json(ticket);
   } catch (e: any) { res.status(500).json({ error: e.message }); }
 });
@@ -8436,6 +8492,7 @@ app.patch('/api/repair-tickets/:id', async (req, res) => {
       }
     }
 
+    memoBust('repairTickets:*');
     res.json(updated);
   } catch (e: any) { res.status(500).json({ error: e.message }); }
 });
@@ -8457,6 +8514,7 @@ app.patch('/api/repair-tickets/:id/approve', async (req, res) => {
     if (t.asset_id) await sql`UPDATE assets SET status='active' WHERE id=${t.asset_id}`.catch(()=>{});
     if (t.employee_id) notifyEmployeeUser(t.employee_id, 'repair_paid', 'Laptop Repair Update', `Your laptop repair payment has been approved and marked as paid.`).catch(()=>{});
     notifyAdminsAndHR('repair_paid', 'Repair Payment Approved', `${t.employee_name}'s repair (₹${Number(t.final_cost ?? 0).toLocaleString('en-IN')}) approved & paid.`).catch(()=>{});
+    memoBust('repairTickets:*');
     res.json(t);
   } catch (e: any) { res.status(500).json({ error: e.message }); }
 });
@@ -8476,6 +8534,7 @@ app.patch('/api/repair-tickets/:id/reject', async (req, res) => {
       description: `Payment rejected${rejection_reason ? ` — ${rejection_reason}` : ''}`,
     });
     notifyAdminsAndHR('repair_rejected', 'Repair Payment Rejected', `${t.employee_name}'s repair payment was rejected by ${rejected_by}.${rejection_reason ? ' Reason: ' + rejection_reason : ''}`).catch(()=>{});
+    memoBust('repairTickets:*');
     res.json(t);
   } catch (e: any) { res.status(500).json({ error: e.message }); }
 });
@@ -8511,7 +8570,11 @@ app.delete('/api/repair-tickets/:id', async (req, res) => {
   try {
     const rows = await sql`SELECT asset_id FROM repair_tickets WHERE id=${req.params.id}` as any[];
     await sql`DELETE FROM repair_tickets WHERE id=${req.params.id}`;
-    if (rows[0]?.asset_id) await sql`UPDATE assets SET status='active' WHERE id=${rows[0].asset_id}`.catch(()=>{});
+    if (rows[0]?.asset_id) {
+      await sql`UPDATE assets SET status='active' WHERE id=${rows[0].asset_id}`.catch(()=>{});
+      memoBust('assets:*');
+    }
+    memoBust('repairTickets:*');
     res.json({ success: true });
   } catch (e: any) { res.status(500).json({ error: e.message }); }
 });
