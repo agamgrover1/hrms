@@ -24,6 +24,7 @@ import ProjectHours from './pages/ProjectHours';
 import HoursApproval from './pages/HoursApproval';
 import HoursCompliance from './pages/HoursCompliance';
 import HoursUtilization from './pages/HoursUtilization';
+import HoursAllocation from './pages/HoursAllocation';
 import TemplatesHub from './pages/TemplatesHub';
 import Notifications from './pages/Notifications';
 import Features from './pages/Features';
@@ -89,6 +90,8 @@ function AppRoutes() {
         <Route path="hours/compliance" element={<ProtectedRoute><HoursCompliance /></ProtectedRoute>} />
         {/* Utilization: server enforces role-based scoping + cost stripping */}
         <Route path="hours/utilization" element={<ProtectedRoute><HoursUtilization /></ProtectedRoute>} />
+        {/* Weekly billing planner — coord/admin edit, everyone else read-only (see page). */}
+        <Route path="hours/allocation" element={<ProtectedRoute roles={['admin', 'hr_manager', 'project_coordinator']}><HoursAllocation /></ProtectedRoute>} />
         <Route path="notifications" element={<ProtectedRoute><Notifications /></ProtectedRoute>} />
         {/* Template Hub — HR / admin only for now. */}
         <Route path="templates" element={<ProtectedRoute roles={['admin', 'hr_manager']}><TemplatesHub /></ProtectedRoute>} />

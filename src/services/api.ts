@@ -555,6 +555,41 @@ export const api = {
   addHourLogComment: (id: string, data: { author_id?: string; author_name?: string; author_role?: string; body: string }) =>
     request<any>(`/hour-logs/${id}/comments`, { method: 'POST', body: JSON.stringify(data) }),
 
+  // Weekly billing allocation sheet (replaces the Google Sheet).
+  getHoursAllocations: (month: number, year: number) =>
+    request<{
+      month: number; year: number;
+      rows: Array<{
+        project_id: string;
+        project_name: string;
+        client_name: string | null;
+        billing_account_id: string | null;
+        billing_account_name: string | null;
+        weeks: Array<{
+          week_num: number;
+          target_hours: number;
+          actual_hours: number;
+          actual_computed: number;
+          actual_override: number | null;
+          pending: number;
+          status: 'unset' | 'met' | 'partial' | 'missing';
+          notes: string | null;
+          updated_by: string | null;
+          updated_at: string | null;
+        }>;
+      }>;
+    }>(`/hours/allocations?month=${month}&year=${year}`),
+  saveHoursAllocation: (data: {
+    project_id: string; year: number; week_num: number;
+    target_hours?: number; actual_override?: number | null; notes?: string;
+  }) =>
+    request<{ ok: true }>('/hours/allocations', { method: 'PUT', body: JSON.stringify(data) }),
+  setProjectBillingAccount: (project_id: string, billing_account_id: string | null) =>
+    request<{ ok: true; billing_account_id: string | null }>(
+      `/projects/${project_id}/billing-account`,
+      { method: 'PATCH', body: JSON.stringify({ billing_account_id }) },
+    ),
+
   getHoursSummary: (month: number, year: number) =>
     request<{
       month: number; year: number;

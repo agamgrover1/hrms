@@ -364,6 +364,17 @@ async function memoTtl<T>(key: string, ttlMs: number, compute: () => Promise<T>)
   return value;
 }
 
+// Drop entries whose key starts with `prefix` (or contains it if the
+// prefix ends with `*`). Used after mutations that would let stale
+// memoTtl values leak to subsequent GETs in the same Lambda.
+function memoBust(prefix: string) {
+  const wildcard = prefix.endsWith('*');
+  const stem = wildcard ? prefix.slice(0, -1) : prefix;
+  for (const k of _memoCache.keys()) {
+    if (wildcard ? k.startsWith(stem) : k === stem) _memoCache.delete(k);
+  }
+}
+
 // ── Startup migrations (idempotent — safe to run on every cold start) ────
 let _migrated = false;
 
@@ -553,12 +564,13 @@ async function runStartupMigrations() {
   // full migration block.
   //
   // KEEP THIS PROBE POINTED AT THE MOST RECENT MIGRATION when you add one.
-  // Right now: monthly_performance.learning_growth (added in Phase-1 of
-  // the monthly review). If you add a newer column / table, update this
-  // SELECT to reference it so cold starts re-run migrations once after
-  // each deploy.
+  // Right now: hours_weekly_targets (added for the Hours Allocation sheet
+  // that replaces the Google Sheet workflow — per-week billing target per
+  // project, grouped by billing account holder). If you add a newer
+  // column / table, update this SELECT to reference it so cold starts
+  // re-run migrations once after each deploy.
   try {
-    await sql`SELECT year FROM monthly_leave_credit_log LIMIT 0`;
+    await sql`SELECT target_hours FROM hours_weekly_targets LIMIT 0`;
     _migrated = true;
     return;
   } catch {
@@ -1870,7 +1882,36 @@ async function runStartupMigrations() {
     // Optional total-hours cap per project (one-time / fixed-budget projects).
     // Null = uncapped / recurring.
     await sql`ALTER TABLE projects ADD COLUMN IF NOT EXISTS total_hours_cap NUMERIC`.catch(()=>{});
+    // Billing account holder — the Upwork ID / tracker that will bill this
+    // project. Free-text so it can hold either an employee_id (Agam,
+    // Manpreet, Gayatri, Sarab, Shivam, Vinay) OR a synthetic tag like
+    // 'hubstaff' for tracker-driven work. Nullable — unassigned rows show
+    // in an "Unassigned" bucket on the allocation sheet.
+    await sql`ALTER TABLE projects ADD COLUMN IF NOT EXISTS billing_account_id TEXT`.catch(()=>{});
   } catch { /* columns may already exist — non-fatal */ }
+
+  // ── Hours Allocation (weekly billing planner) ────────────────────────────
+  // Replaces the Google Sheet where the project coordinator planned
+  // "bill this many hours to Client X in Week N" and the biller logged
+  // actuals against it. Actuals come from SUM(hour_logs) grouped by
+  // (project, year, week_num). For projects tracked externally (Hubstaff)
+  // where no one on our team logs into the HRMS, actual_override lets the
+  // coordinator paste the tracked total in manually.
+  await sql`
+    CREATE TABLE IF NOT EXISTS hours_weekly_targets (
+      project_id       TEXT NOT NULL,
+      year             INTEGER NOT NULL,
+      week_num         INTEGER NOT NULL,
+      target_hours     NUMERIC NOT NULL DEFAULT 0,
+      actual_override  NUMERIC,          -- null = compute from hour_logs
+      notes            TEXT,
+      created_by       TEXT,
+      updated_by       TEXT,
+      created_at       TIMESTAMPTZ DEFAULT NOW(),
+      updated_at       TIMESTAMPTZ DEFAULT NOW(),
+      PRIMARY KEY (project_id, year, week_num)
+    )`;
+  await sql`CREATE INDEX IF NOT EXISTS idx_hwt_period ON hours_weekly_targets(year, week_num)`.catch(()=>{});
 
   // ── Seed default config data ─────────────────────────────────────────────
   try {
@@ -10337,6 +10378,179 @@ app.get('/api/hours-compliance', async (req, res) => {
       })),
     });
   } catch (err: any) { res.status(500).json({ error: err.message || 'Server error' }); }
+});
+
+// ════════════════════════════════════════════════════════════════════════
+// ── Hours Allocation — weekly billing planner ───────────────────────────
+// ════════════════════════════════════════════════════════════════════════
+// Replaces the Google Sheet where the project coordinator set "bill this
+// many hours to Client X in Week N" and the biller (Upwork ID owner)
+// logged actuals. One row per project × week; groups collapse under a
+// billing_account_id (an employee id like 'e_agam' OR a synthetic tag
+// like 'hubstaff' for tracker-driven work). Actuals come from SUM of
+// hour_logs for the (project, year, week) unless the coordinator has
+// entered an override (used for Hubstaff-tracked projects where no one
+// on our team logs into the HRMS).
+//
+// GET /api/hours/allocations?month=&year=
+//   Returns targets + actuals for all 5 weeks of the given month, all
+//   active projects, grouped by billing account. Open to admin / HR /
+//   coordinator / employee-team-lead (read-only for lead + employee).
+
+app.get('/api/hours/allocations', async (req, res) => {
+  try {
+    await runStartupMigrations();
+    const uid = req.header('x-user-id') || (req.query.__uid as string);
+    if (!uid) return res.status(401).json({ error: 'Not authenticated' });
+    const month = Number(req.query.month);
+    const year = Number(req.query.year);
+    if (!month || !year || month < 1 || month > 12) {
+      return res.status(400).json({ error: 'month + year required' });
+    }
+
+    // Load projects (active + any status that already has a target this
+    // month — so archived projects with historical targets still show up
+    // for context). Include billing_account_id so we can group.
+    const projectsRows = await memoTtl(`hwt:projects:${month}:${year}`, 30_000, async () =>
+      await sql`
+        SELECT p.id, p.name, p.client_name, p.status, p.billing_account_id,
+               p.total_hours_cap
+        FROM projects p
+        WHERE p.status = 'active'
+           OR p.id IN (SELECT project_id FROM hours_weekly_targets WHERE year=${year} AND (
+                (${month}::int = 1  AND FALSE) OR week_num BETWEEN 1 AND 5))
+        ORDER BY p.name`
+    ) as any[];
+
+    // Targets for this month.
+    const targets = await sql`
+      SELECT project_id, week_num, target_hours, actual_override, notes,
+             updated_by, updated_at
+      FROM hours_weekly_targets
+      WHERE year = ${year} AND week_num BETWEEN 1 AND 5
+        AND project_id IN (SELECT id FROM projects WHERE status='active'
+                            UNION SELECT project_id FROM hours_weekly_targets WHERE year=${year})
+    ` as any[];
+
+    // Actuals — sum of hour_logs per (project, week_num) for the month.
+    // Include pending/approved/on_hold. Exclude rejected (didn't happen).
+    const actuals = await sql`
+      SELECT project_id, week_num, COALESCE(SUM(hours_logged), 0)::numeric AS actual
+      FROM hour_logs
+      WHERE month = ${month} AND year = ${year}
+        AND status IN ('approved', 'pending', 'on_hold')
+      GROUP BY project_id, week_num
+    ` as any[];
+
+    // Billing account holder names — for the group headers. Only need the
+    // ids that actually appear on projects this month.
+    const holderIds = new Set<string>();
+    for (const p of projectsRows) if (p.billing_account_id) holderIds.add(p.billing_account_id);
+    const holderList = Array.from(holderIds);
+    const holders = holderList.length ? (await sql`
+      SELECT id, name FROM employees WHERE id = ANY(${holderList}::text[])
+    ` as any[]) : [];
+    const holderName = new Map<string, string>();
+    for (const h of holders) holderName.set(h.id, h.name);
+
+    // Build target + actual lookup tables keyed by "projectId:weekNum".
+    const targetMap = new Map<string, any>();
+    for (const t of targets) targetMap.set(`${t.project_id}:${t.week_num}`, t);
+    const actualMap = new Map<string, number>();
+    for (const a of actuals) actualMap.set(`${a.project_id}:${a.week_num}`, Number(a.actual));
+
+    // Assemble one row per project with weeks[1..5].
+    const rows = projectsRows.map(p => {
+      const weeks: any[] = [];
+      for (let w = 1; w <= 5; w++) {
+        const t = targetMap.get(`${p.id}:${w}`);
+        const rawActual = actualMap.get(`${p.id}:${w}`) ?? 0;
+        const override = t?.actual_override != null ? Number(t.actual_override) : null;
+        const actual = override != null ? override : rawActual;
+        const target = t ? Number(t.target_hours) : 0;
+        weeks.push({
+          week_num: w,
+          target_hours: target,
+          actual_hours: actual,
+          actual_computed: rawActual, // what hour_logs actually say (pre-override)
+          actual_override: override,   // null when not overridden
+          pending: Math.max(0, target - actual),
+          status: !target ? 'unset' : actual >= target ? 'met' : actual > 0 ? 'partial' : 'missing',
+          notes: t?.notes ?? null,
+          updated_by: t?.updated_by ?? null,
+          updated_at: t?.updated_at ?? null,
+        });
+      }
+      const billingId = p.billing_account_id || null;
+      return {
+        project_id: p.id,
+        project_name: p.name,
+        client_name: p.client_name,
+        billing_account_id: billingId,
+        billing_account_name: billingId
+          ? (holderName.get(billingId) || billingId) // synthetic tags fall through as-is
+          : null,
+        weeks,
+      };
+    });
+
+    res.json({ month, year, rows });
+  } catch (err: any) {
+    res.status(500).json({ error: err?.message || 'Server error' });
+  }
+});
+
+// PUT /api/hours/allocations — upsert a target for one (project, year, week).
+// Body: { project_id, year, week_num, target_hours?, actual_override?, notes? }
+// Any field left undefined is preserved. target_hours=0 clears the target.
+// Coordinator / admin only.
+app.put('/api/hours/allocations', async (req, res) => {
+  try {
+    await runStartupMigrations();
+    const auth = await requireAdminOrCoord(req, res); if (!auth.ok) return;
+    const { project_id, year, week_num, target_hours, actual_override, notes } = req.body || {};
+    if (!project_id || !year || !week_num) {
+      return res.status(400).json({ error: 'project_id, year, week_num required' });
+    }
+    if (week_num < 1 || week_num > 5) return res.status(400).json({ error: 'week_num 1..5' });
+    // Bust the projects memo so the coord sees fresh billing groups.
+    memoBust(`hwt:projects:*`);
+
+    const targetVal = target_hours == null ? 0 : Number(target_hours);
+    const overrideVal = actual_override == null || actual_override === '' ? null : Number(actual_override);
+    const notesVal = notes == null ? null : String(notes);
+
+    await sql`
+      INSERT INTO hours_weekly_targets (project_id, year, week_num, target_hours, actual_override, notes, created_by, updated_by, updated_at)
+      VALUES (${project_id}, ${year}::int, ${week_num}::int, ${targetVal}, ${overrideVal}, ${notesVal}, ${auth.user!.id}, ${auth.user!.id}, NOW())
+      ON CONFLICT (project_id, year, week_num) DO UPDATE SET
+        target_hours    = EXCLUDED.target_hours,
+        actual_override = EXCLUDED.actual_override,
+        notes           = COALESCE(EXCLUDED.notes, hours_weekly_targets.notes),
+        updated_by      = EXCLUDED.updated_by,
+        updated_at      = NOW()
+    `;
+    res.json({ ok: true });
+  } catch (err: any) {
+    res.status(500).json({ error: err?.message || 'Server error' });
+  }
+});
+
+// PATCH /api/projects/:id/billing-account — assign a billing account
+// (employee id OR a synthetic tag like 'hubstaff') to a project. This
+// only affects grouping on the allocation sheet; nothing else.
+app.patch('/api/projects/:id/billing-account', async (req, res) => {
+  try {
+    await runStartupMigrations();
+    const auth = await requireAdminOrCoord(req, res); if (!auth.ok) return;
+    const { billing_account_id } = req.body || {};
+    const value = billing_account_id == null || billing_account_id === '' ? null : String(billing_account_id);
+    await sql`UPDATE projects SET billing_account_id = ${value} WHERE id = ${req.params.id}`;
+    memoBust(`hwt:projects:*`);
+    res.json({ ok: true, billing_account_id: value });
+  } catch (err: any) {
+    res.status(500).json({ error: err?.message || 'Server error' });
+  }
 });
 
 // ════════════════════════════════════════════════════════════════════════

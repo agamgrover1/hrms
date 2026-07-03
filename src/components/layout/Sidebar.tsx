@@ -40,6 +40,7 @@ const projectGroup: NavGroup = {
   items: [
     { to: '/projects', icon: Briefcase, label: 'Projects' },
     { to: '/hours', icon: Layers, label: 'Hours grid' },
+    { to: '/hours/allocation', icon: CalendarDays, label: 'Allocation' },
     { to: '/hours/compliance', icon: AlertTriangle, label: 'Compliance' },
     { to: '/hours/utilization', icon: Activity, label: 'Utilization' },
     { to: '/hours/approvals', icon: ClipboardCheck, label: 'Approvals' },
