@@ -4821,9 +4821,15 @@ app.get('/api/dashboard/bootstrap', async (req, res) => {
         sql`SELECT * FROM company_announcements
             WHERE expires_at IS NULL OR expires_at > NOW()
             ORDER BY pinned DESC, created_at DESC LIMIT 50`),
-      // upcomingEvents mirrors /api/upcoming-events shape: 30-day horizon,
-      // combines holidays + birthdays + anniversaries. We share its cache
-      // key so a page that already loaded it doesn't re-fetch.
+      // upcomingEvents: MUST return the exact shape /api/upcoming-events
+      // does, because both call sites share the same memoTtl key
+      // (`upcomingEvents:${horizonDays}`). If the two versions diverge,
+      // whichever ran first wins the cache for 5 min and the widget's
+      // { label, employee, years } fields flicker in and out — that's
+      // what "names appearing and disappearing" looked like from the
+      // user's end. Kept structurally identical to the individual
+      // endpoint at :5308 so future edits stay in sync (or diverge with
+      // separate cache keys).
       memoTtl(`upcomingEvents:${horizonDays}`, 300_000, async () => {
         const lookbackDays = 3;
         const holidayRows = await sql`
@@ -4841,7 +4847,8 @@ app.get('/api/dashboard/bootstrap', async (req, res) => {
               END, 'YYYY-MM-DD'
             ) AS event_date
           FROM employees e
-          WHERE e.status = 'active' AND e.date_of_birth IS NOT NULL`;
+          WHERE e.status = 'active' AND e.date_of_birth IS NOT NULL
+          ORDER BY event_date`;
         const anniversaryRows = await sql`
           SELECT e.id, e.name, e.designation, e.department, e.avatar,
             e.join_date::text AS source_date,
@@ -4850,20 +4857,38 @@ app.get('/api/dashboard/bootstrap', async (req, res) => {
                    THEN TO_DATE(EXTRACT(YEAR FROM CURRENT_DATE) || TO_CHAR(e.join_date, '-MM-DD'), 'YYYY-MM-DD')
                    ELSE TO_DATE((EXTRACT(YEAR FROM CURRENT_DATE) + 1) || TO_CHAR(e.join_date, '-MM-DD'), 'YYYY-MM-DD')
               END, 'YYYY-MM-DD'
-            ) AS event_date
+            ) AS event_date,
+            (EXTRACT(YEAR FROM CURRENT_DATE) - EXTRACT(YEAR FROM e.join_date))::int AS years_completed
           FROM employees e
           WHERE e.status = 'active' AND e.join_date IS NOT NULL
-            AND EXTRACT(YEAR FROM CURRENT_DATE) > EXTRACT(YEAR FROM e.join_date)`;
-        // Combine, keep only rows within (lookback..horizon), sort by event_date.
-        const horizon = new Date(Date.now() + horizonDays * 86_400_000).toISOString().slice(0, 10);
-        const past = new Date(Date.now() - lookbackDays * 86_400_000).toISOString().slice(0, 10);
-        const combined = [
-          ...(holidayRows as any[]).map(r => ({ ...r, kind: 'holiday' })),
-          ...(birthdayRows as any[]).map(r => ({ ...r, kind: 'birthday' })),
-          ...(anniversaryRows as any[]).map(r => ({ ...r, kind: 'anniversary' })),
-        ].filter(r => r.event_date >= past && r.event_date <= horizon)
-         .sort((a, b) => a.event_date.localeCompare(b.event_date));
-        return combined;
+            AND EXTRACT(YEAR FROM CURRENT_DATE) > EXTRACT(YEAR FROM e.join_date)
+          ORDER BY event_date`;
+        const horizonStr  = new Date(Date.now() + horizonDays * 86400_000).toISOString().slice(0, 10);
+        const lookbackStr = new Date(Date.now() - lookbackDays * 86400_000).toISOString().slice(0, 10);
+        return [
+          ...(holidayRows as any[]).map(r => ({
+            kind: 'holiday' as const,
+            event_date: r.event_date,
+            label: r.name,
+          })),
+          ...(birthdayRows as any[])
+            .filter(r => r.event_date >= lookbackStr && r.event_date <= horizonStr)
+            .map(r => ({
+              kind: 'birthday' as const,
+              event_date: r.event_date,
+              label: `${r.name}'s birthday`,
+              employee: { id: r.id, name: r.name, designation: r.designation, department: r.department, avatar: r.avatar },
+            })),
+          ...(anniversaryRows as any[])
+            .filter(r => r.event_date >= lookbackStr && r.event_date <= horizonStr)
+            .map(r => ({
+              kind: 'anniversary' as const,
+              event_date: r.event_date,
+              label: `${r.name} · ${r.years_completed} year${r.years_completed === 1 ? '' : 's'}`,
+              years: r.years_completed,
+              employee: { id: r.id, name: r.name, designation: r.designation, department: r.department, avatar: r.avatar },
+            })),
+        ].sort((a, b) => a.event_date.localeCompare(b.event_date));
       }),
       memoTtl('employees:all', 60_000, async () =>
         sql`SELECT * FROM employees ORDER BY name`),
