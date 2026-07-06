@@ -108,8 +108,7 @@ function ScoreSlider({ label, value, onChange }: {
         value={isNA ? 75 : (value as number)}
         disabled={isNA}
         onChange={e => onChange(Number(e.target.value))}
-        className="w-full h-1.5 rounded-full appearance-none cursor-pointer disabled:opacity-30 disabled:cursor-not-allowed"
-        style={{ accentColor: 'rgb(var(--accent))' }}
+        className="score-slider"
       />
       {isNA && (
         <p className="text-[10px] text-on-surface-subtle italic mt-0.5">

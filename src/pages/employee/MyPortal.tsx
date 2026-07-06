@@ -3163,8 +3163,7 @@ export default function MyPortal() {
                   <input type="range" min={0} max={100}
                     value={teamReviewScores[key]}
                     onChange={e => setTeamReviewScores(s => ({ ...s, [key]: Number(e.target.value) }))}
-                    className="w-full h-1.5 rounded-full appearance-none cursor-pointer"
-                    style={{ accentColor: perfColor(teamReviewScores[key]) }}
+                    className="score-slider"
                   />
                 </div>
               ))}

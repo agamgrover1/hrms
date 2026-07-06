@@ -195,8 +195,7 @@ function ScoreInput({
         value={isNA ? 75 : (value as number)}
         disabled={isNA}
         onChange={e => onChange(Number(e.target.value))}
-        className="w-full h-2 rounded-full appearance-none cursor-pointer bg-surface-2 disabled:opacity-30 disabled:cursor-not-allowed"
-        style={{ accentColor: 'rgb(var(--accent))' }}
+        className="score-slider"
       />
       {isNA && (
         <p className="text-[11px] text-on-surface-subtle italic">Excluded from overall score.</p>

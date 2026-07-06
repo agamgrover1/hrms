@@ -98,7 +98,7 @@ export default function SelfReviewModal({
                 <label className="text-sm text-on-surface flex-1">{c.label}</label>
                 <input type="range" min={0} max={100} value={scores[c.key]}
                   onChange={e => setScores(s => ({ ...s, [c.key]: Number(e.target.value) }))}
-                  className="flex-1 accent-accent" />
+                  className="score-slider flex-1" />
                 <input type="number" min={0} max={100} value={scores[c.key]}
                   onChange={e => setScores(s => ({ ...s, [c.key]: Math.max(0, Math.min(100, Number(e.target.value))) }))}
                   className="w-16 text-center num-mono text-sm font-bold bg-surface border border-outline rounded-lg px-2 py-1 focus:outline-none focus:border-accent" />

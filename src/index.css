@@ -167,6 +167,85 @@ body {
 
 /* Smooth theme switch */
 * { transition: background-color 200ms ease, border-color 200ms ease, color 150ms ease; }
+
+/* ── Score slider ─────────────────────────────────────────────────────────
+   Used on monthly review forms (MyTeam / Performance). Native range
+   inputs have no consistent cross-browser styling — `accent-color` alone
+   left the track invisible in dark theme and inconsistent on WebKit vs
+   Firefox. This class draws an explicit track + thumb that reads in
+   both themes and disables cleanly when the pillar is toggled N/A.
+
+   Firefox uses `::-moz-range-progress` for the filled portion; WebKit
+   has no equivalent, so we skip the fill effect there (a solid track +
+   the thumb pointing at the value still communicates position clearly).
+   The transitions inherited from the `* { transition… }` rule above
+   would interfere with dragging, so track backgrounds override with
+   `transition: none`. */
+input[type='range'].score-slider {
+  -webkit-appearance: none;
+  appearance: none;
+  background: transparent;
+  height: 20px;
+  cursor: pointer;
+  padding: 0;
+  margin: 0;
+  width: 100%;
+}
+input[type='range'].score-slider:disabled { opacity: 0.35; cursor: not-allowed; }
+input[type='range'].score-slider:focus { outline: none; }
+
+input[type='range'].score-slider::-webkit-slider-runnable-track {
+  height: 6px;
+  border-radius: 9999px;
+  background: rgb(var(--surface-2));
+  border: 1px solid rgb(var(--outline));
+  transition: none;
+}
+input[type='range'].score-slider::-moz-range-track {
+  height: 6px;
+  border-radius: 9999px;
+  background: rgb(var(--surface-2));
+  border: 1px solid rgb(var(--outline));
+  transition: none;
+}
+input[type='range'].score-slider::-moz-range-progress {
+  height: 6px;
+  border-radius: 9999px;
+  background: rgb(var(--accent));
+  transition: none;
+}
+input[type='range'].score-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 18px;
+  height: 18px;
+  border-radius: 9999px;
+  background: rgb(var(--accent));
+  border: 2px solid rgb(var(--surface));
+  box-shadow: 0 1px 3px rgb(0 0 0 / 0.25);
+  margin-top: -7px; /* center the 18px thumb on the 6px track (18-6)/2 = 6 + 1px border compensation */
+  cursor: pointer;
+  transition: transform 100ms ease;
+}
+input[type='range'].score-slider::-webkit-slider-thumb:hover { transform: scale(1.1); }
+input[type='range'].score-slider::-webkit-slider-thumb:active { transform: scale(1.05); }
+input[type='range'].score-slider::-moz-range-thumb {
+  width: 18px;
+  height: 18px;
+  border-radius: 9999px;
+  background: rgb(var(--accent));
+  border: 2px solid rgb(var(--surface));
+  box-shadow: 0 1px 3px rgb(0 0 0 / 0.25);
+  cursor: pointer;
+  transition: transform 100ms ease;
+}
+input[type='range'].score-slider::-moz-range-thumb:hover { transform: scale(1.1); }
+input[type='range'].score-slider:focus-visible::-webkit-slider-thumb {
+  box-shadow: 0 0 0 4px rgb(var(--accent) / 0.25);
+}
+input[type='range'].score-slider:focus-visible::-moz-range-thumb {
+  box-shadow: 0 0 0 4px rgb(var(--accent) / 0.25);
+}
 input, select, textarea, button { transition: none; }
 
 /* ── Aurora gradient — used by the Dashboard hero band ───────────────────── */
