@@ -7194,6 +7194,13 @@ app.post('/api/performance/monthly', async (req, res) => {
     // Preserve nulls so the downstream pulse pillars + trend readers can
     // treat "not rated" differently from "rated 0". Numeric values are
     // clamped to [0, 100] as a defensive backstop.
+    //
+    // The ::numeric casts are load-bearing: the Neon HTTP driver types
+    // a bare `${null}` template param as `unknown`, and Postgres refuses
+    // to insert an `unknown`-typed NULL into a NUMERIC column without
+    // an explicit cast. Casting every slot means both `123` and `null`
+    // pass through cleanly. Without this, saving a review with any N/A
+    // pillar returned a 500 to the client ("Server error").
     const numOrNull = (v: any) => v == null ? null : Math.max(0, Math.min(100, Number(v)));
     const rows = await sql`
       INSERT INTO monthly_performance
@@ -7204,12 +7211,12 @@ app.post('/api/performance/monthly', async (req, res) => {
          overall_score, comments, parameter_notes, updated_at)
       VALUES
         (${employee_id}, ${reviewer_id ?? null}, ${reviewer_name ?? null}, ${month}, ${year},
-         ${numOrNull(productivity)}, ${numOrNull(quality)}, ${numOrNull(teamwork)},
-         ${numOrNull(attendance_score)}, ${numOrNull(initiative)},
-         ${numOrNull(client_satisfaction)}, ${numOrNull(ai_usage)},
-         ${numOrNull(communication)}, ${numOrNull(ownership)},
-         ${numOrNull(planning_accuracy)}, ${numOrNull(learning_growth)},
-         ${overall_score}, ${comments ?? null}, ${paramNotesJson}, NOW())
+         ${numOrNull(productivity)}::numeric, ${numOrNull(quality)}::numeric, ${numOrNull(teamwork)}::numeric,
+         ${numOrNull(attendance_score)}::numeric, ${numOrNull(initiative)}::numeric,
+         ${numOrNull(client_satisfaction)}::numeric, ${numOrNull(ai_usage)}::numeric,
+         ${numOrNull(communication)}::numeric, ${numOrNull(ownership)}::numeric,
+         ${numOrNull(planning_accuracy)}::numeric, ${numOrNull(learning_growth)}::numeric,
+         ${overall_score}::numeric, ${comments ?? null}, ${paramNotesJson}::jsonb, NOW())
       ON CONFLICT (employee_id, month, year) DO UPDATE SET
         reviewer_id=EXCLUDED.reviewer_id, reviewer_name=EXCLUDED.reviewer_name,
         productivity=EXCLUDED.productivity, quality=EXCLUDED.quality, teamwork=EXCLUDED.teamwork,
@@ -7226,7 +7233,14 @@ app.post('/api/performance/monthly', async (req, res) => {
       `Your ${MONTHS_SHORT[rec.month - 1]} ${rec.year} performance review is in — overall score: ${rec.overall_score}/100.`
     );
     res.json(rec);
-  } catch (err) { res.status(500).json({ error: 'Server error' }); }
+  } catch (err: any) {
+    // Surface the real message so we stop chasing "Server error" ghosts.
+    // The Neon HTTP driver puts the useful hint in .message; the
+    // generic 500 with no body was what made this bug so opaque last
+    // time.
+    console.error('POST /api/performance/monthly failed:', err);
+    res.status(500).json({ error: err?.message ?? 'Server error' });
+  }
 });
 
 // ── Review signals ────────────────────────────────────────────────────────
