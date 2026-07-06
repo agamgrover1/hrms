@@ -329,22 +329,36 @@ export default function TopBar({ title, onMenuClick }: Props) {
       .catch(() => {});
   };
 
+  // Track when we last fired a bell refetch so focus/visibility events
+  // that arrive faster than the throttle window are dropped. Someone
+  // flipping between Chrome tabs 20× an hour was previously ripping 20
+  // fetchNotifications calls; now the same activity fires at most once
+  // per 30s. Bell CLICK bypasses this — the user asked explicitly.
+  const lastFetchRef = useRef(0);
+  const BELL_THROTTLE_MS = 30_000;
   useEffect(() => {
     if (!user?.id) return;
     // No background polling — every interval poll counted as an edge
-    // request against the Vercel quota and the org was approaching the
-    // 5k-edge-request target. Three triggers keep the bell useful
-    // without polling:
+    // request against the Vercel quota. Four triggers keep the bell
+    // useful:
     //   1. Mount fetch — fresh state when the user opens the app.
-    //   2. Focus / visibilitychange — fresh state when the user returns
-    //      to the tab (most common refresh path during a workday).
-    //   3. Bell click — handleBellClick below also refetches.
+    //   2. Focus / visibilitychange — throttled to 30s. Alt-Tab flurries
+    //      collapse into one request; genuine "back from coffee" still
+    //      refreshes.
+    //   3. Bell click — handleBellClick below refetches unconditionally.
     // Toasts only fire on the focus / visibility paths (showToasts:true)
     // so a returning user still gets a popup for anything that landed
     // while they were away.
     fetchNotifications({ showToasts: true });
-    const onFocus = () => fetchNotifications({ showToasts: true });
-    const onVisible = () => { if (document.visibilityState === 'visible') fetchNotifications({ showToasts: true }); };
+    lastFetchRef.current = Date.now();
+    const throttled = () => {
+      const now = Date.now();
+      if (now - lastFetchRef.current < BELL_THROTTLE_MS) return;
+      lastFetchRef.current = now;
+      fetchNotifications({ showToasts: true });
+    };
+    const onFocus = () => throttled();
+    const onVisible = () => { if (document.visibilityState === 'visible') throttled(); };
     window.addEventListener('focus', onFocus);
     document.addEventListener('visibilitychange', onVisible);
     return () => {
@@ -401,7 +415,13 @@ export default function TopBar({ title, onMenuClick }: Props) {
   const handleBellClick = () => {
     // Refetch on each open so the list is fresh — replaces the old
     // background poll. Cheap: one query per bell open, not every 30s.
-    if (!showNotifs) fetchNotifications();
+    // Explicit user action bypasses the focus/visibility throttle, but
+    // we still anchor the timestamp so a focus event 1s later doesn't
+    // double-fetch pointlessly.
+    if (!showNotifs) {
+      lastFetchRef.current = Date.now();
+      fetchNotifications();
+    }
     setShowNotifs(v => !v);
     setShowMenu(false);
   };

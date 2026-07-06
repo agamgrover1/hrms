@@ -87,6 +87,10 @@ app.use((req: any, res: any, next: any) => {
   // Slow-changing config-ish reads: aggressive browser cache. Writes bust
   // both the memory cache (memoBust) and force a fresh fetch by
   // returning updated data in the mutation response.
+  else if (p === '/api/permissions/me')        apply(300,  'private');  // 5 min — role rarely changes; hit on every mount
+  else if (p === '/api/attendance/today')      apply(30,   'private');
+  else if (p === '/api/todos')                 apply(30,   'private');
+  else if (p.startsWith('/api/announcements/') && p.endsWith('/comments')) apply(30, 'private');
   else if (p === '/api/holidays')              apply(1800, 'public');   // 30 min
   else if (p === '/api/optional-leave/dates')  apply(1800, 'public');   // 30 min
   else if (p === '/api/vendors')               apply(600,  'private');  // 10 min
@@ -5299,10 +5303,15 @@ app.get('/api/announcements/:id/comments', async (req, res) => {
     await runStartupMigrations();
     const uid = req.header('x-user-id');
     if (!uid) return res.status(401).json({ error: 'Sign in required' });
-    const rows = await sql`
-      SELECT * FROM announcement_comments
-      WHERE announcement_id = ${req.params.id}
-      ORDER BY created_at ASC`;
+    // 30s cache — comment lists are hit on every announcement expand
+    // and the same list is identical for every viewer of that
+    // announcement. Comment writes below bust the entry so an author
+    // sees their own comment appear instantly.
+    const rows = await memoTtl(`annComments:${req.params.id}`, 30_000, async () =>
+      await sql`
+        SELECT * FROM announcement_comments
+        WHERE announcement_id = ${req.params.id}
+        ORDER BY created_at ASC`);
     res.json(rows);
   } catch (err: any) { res.status(500).json({ error: err.message ?? 'Server error' }); }
 });
@@ -5324,6 +5333,7 @@ app.post('/api/announcements/:id/comments', async (req, res) => {
       INSERT INTO announcement_comments (id, announcement_id, body, posted_by_id, posted_by_name, posted_by_role)
       VALUES (${id}, ${req.params.id}, ${body.trim()}, ${u.id}, ${u.name}, ${u.role})
       RETURNING *`)[0];
+    memoBust(`annComments:${req.params.id}`);
     // Ping the original poster (if a human posted it and isn't the
     // commenter themselves). Auto-posts have posted_by_id=NULL so this
     // skips automatically for birthday/anniversary cards.
@@ -5350,6 +5360,7 @@ app.delete('/api/announcements/:id/comments/:commentId', async (req, res) => {
     const isOwn = c.posted_by_id === uid;
     if (!isAdminOrHR && !isOwn) return res.status(403).json({ error: 'You can only delete your own comments.' });
     await sql`DELETE FROM announcement_comments WHERE id=${req.params.commentId}`;
+    memoBust(`annComments:${req.params.id}`);
     res.json({ ok: true });
   } catch (err: any) { res.status(500).json({ error: err.message ?? 'Server error' }); }
 });
@@ -5717,36 +5728,41 @@ app.get('/api/permissions/me', async (req, res) => {
     await runStartupMigrations();
     const uid = req.header('x-user-id');
     if (!uid) return res.status(401).json({ error: 'Sign in required' });
-    const u = (await sql`SELECT role FROM app_users WHERE id=${uid}`)[0] as any;
-    if (!u) return res.status(401).json({ error: 'Unknown user' });
-    // Admin shortcut — return a sentinel the client can detect to skip
-    // the per-module check entirely.
-    if (u.role === 'admin') return res.json({ admin: true });
-    const modules = await sql`SELECT id FROM permission_modules`;
-    const defaults = await sql`SELECT module_id, can_read, can_create, can_modify, can_delete, can_approve
-                               FROM role_default_permissions WHERE role=${u.role}`;
-    const overrides = await sql`SELECT module_id, can_read, can_create, can_modify, can_delete, can_approve
-                                FROM user_permission_overrides WHERE user_id=${uid}`;
-    const map: Record<string, any> = {};
-    (defaults as any[]).forEach(d => {
-      map[d.module_id] = {
-        read: !!d.can_read, create: !!d.can_create, modify: !!d.can_modify,
-        delete: !!d.can_delete, approve: !!d.can_approve,
-      };
+    // 5-minute per-user cache. Role + permission overrides change
+    // exceedingly rarely (admin action only) but this endpoint is hit
+    // on every page mount by the client's permission gate. Invalidated
+    // implicitly by the TTL; explicit bust happens inside the endpoints
+    // that mutate role_default_permissions / user_permission_overrides.
+    const result = await memoTtl(`permissions:me:${uid}`, 5 * 60_000, async () => {
+      const u = (await sql`SELECT role FROM app_users WHERE id=${uid}`)[0] as any;
+      if (!u) return null;
+      if (u.role === 'admin') return { admin: true } as any;
+      const modules = await sql`SELECT id FROM permission_modules`;
+      const defaults = await sql`SELECT module_id, can_read, can_create, can_modify, can_delete, can_approve
+                                 FROM role_default_permissions WHERE role=${u.role}`;
+      const overrides = await sql`SELECT module_id, can_read, can_create, can_modify, can_delete, can_approve
+                                  FROM user_permission_overrides WHERE user_id=${uid}`;
+      const map: Record<string, any> = {};
+      (defaults as any[]).forEach(d => {
+        map[d.module_id] = {
+          read: !!d.can_read, create: !!d.can_create, modify: !!d.can_modify,
+          delete: !!d.can_delete, approve: !!d.can_approve,
+        };
+      });
+      (overrides as any[]).forEach(o => {
+        map[o.module_id] = {
+          read: !!o.can_read, create: !!o.can_create, modify: !!o.can_modify,
+          delete: !!o.can_delete, approve: !!o.can_approve,
+        };
+      });
+      (modules as any[]).forEach(m => {
+        if (!map[m.id]) map[m.id] = { read: false, create: false, modify: false, delete: false, approve: false };
+      });
+      return { admin: false, permissions: map } as any;
     });
-    (overrides as any[]).forEach(o => {
-      map[o.module_id] = {
-        read: !!o.can_read, create: !!o.can_create, modify: !!o.can_modify,
-        delete: !!o.can_delete, approve: !!o.can_approve,
-      };
-    });
-    // Make sure every module has an entry even if neither default nor
-    // override was set (e.g. brand-new module added to the catalog and
-    // role defaults haven't been seeded for it yet).
-    (modules as any[]).forEach(m => {
-      if (!map[m.id]) map[m.id] = { read: false, create: false, modify: false, delete: false, approve: false };
-    });
-    res.json({ admin: false, permissions: map });
+    if (!result) return res.status(401).json({ error: 'Unknown user' });
+    res.json(result);
+    return;
   } catch (err: any) { res.status(500).json({ error: err.message ?? 'Server error' }); }
 });
 

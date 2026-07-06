@@ -6,11 +6,17 @@ import { useEffect, useRef } from 'react';
 //   3. Mount, if opts.initial is true (most callers do their own mount
 //      fetch via a separate useEffect, so this is opt-in)
 //
+// Throttled — if `throttleMs` (default 60s) hasn't elapsed since the
+// previous refetch, the incoming focus/visibility event is dropped.
+// Someone flipping between Chrome tabs 20× an hour used to trigger 20
+// refetches per page × N pages open; the same activity now fires at
+// most once per throttle window. The "came back after coffee / lunch"
+// case (which is what freshness is actually for) is well past the
+// window and still hits the network.
+//
 // The polling interval was REMOVED. Each tick used to be a fetch() →
 // edge request, and at 40 users × multiple tabs × 8h workday it was
-// dominating the Vercel edge-request quota. The two event listeners
-// catch every realistic "I just came back to this tab" case — for a
-// dashboard / list page that's plenty of freshness.
+// dominating the Vercel edge-request quota.
 //
 // `intervalMs` is accepted-but-ignored for backwards compatibility so
 // existing callers don't break. If you ever genuinely need polling
@@ -24,22 +30,32 @@ import { useEffect, useRef } from 'react';
 
 export function useLiveRefresh(
   refetch: () => void,
-  opts: { intervalMs?: number; enabled?: boolean; initial?: boolean } = {}
+  opts: { intervalMs?: number; enabled?: boolean; initial?: boolean; throttleMs?: number } = {}
 ) {
-  const { enabled = true, initial = false } = opts;
+  const { enabled = true, initial = false, throttleMs = 60_000 } = opts;
   const refetchRef = useRef(refetch);
+  const lastFiredRef = useRef(0);
   useEffect(() => { refetchRef.current = refetch; }, [refetch]);
 
   useEffect(() => {
     if (!enabled) return;
-    if (initial) refetchRef.current();
-    const onFocus = () => refetchRef.current();
-    const onVisible = () => { if (document.visibilityState === 'visible') refetchRef.current(); };
+    // Fires if the throttle window has elapsed since the last hit.
+    // Anchor the timestamp on both mount-initial and every accepted
+    // focus/visibility event.
+    const maybeFire = () => {
+      const now = Date.now();
+      if (now - lastFiredRef.current < throttleMs) return;
+      lastFiredRef.current = now;
+      refetchRef.current();
+    };
+    if (initial) { lastFiredRef.current = Date.now(); refetchRef.current(); }
+    const onFocus = () => maybeFire();
+    const onVisible = () => { if (document.visibilityState === 'visible') maybeFire(); };
     window.addEventListener('focus', onFocus);
     document.addEventListener('visibilitychange', onVisible);
     return () => {
       window.removeEventListener('focus', onFocus);
       document.removeEventListener('visibilitychange', onVisible);
     };
-  }, [enabled, initial]);
+  }, [enabled, initial, throttleMs]);
 }
