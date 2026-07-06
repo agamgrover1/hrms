@@ -7703,10 +7703,41 @@ app.post('/api/performance/monthly/self', async (req, res) => {
 });
 
 // ── Performance Notes ─────────────────────────────────────────────────────
+// Permission surface:
+//   - admin / hr_manager  → any employee
+//   - anyone else with a viewer employee_id_ref → only employees whose
+//     reporting_manager_id points at them (their direct reports). Team
+//     leads writing/reading private notes for their own reports is the
+//     use case that opened this up beyond HR.
+// Endpoints previously had NO auth check at all — anyone with an
+// x-user-id header could pull or plant notes on any employee. Closing
+// that hole while opening the door for leads.
+async function canManagePerformanceNotesFor(req: any, employeeId: string): Promise<boolean> {
+  const uid = req.header('x-user-id');
+  if (!uid) return false;
+  const u = (await sql`SELECT role, employee_id_ref FROM app_users WHERE id=${uid} LIMIT 1`)[0] as any;
+  if (!u || !u.role) return false;
+  if (u.role === 'admin' || u.role === 'hr_manager') return true;
+  if (!u.employee_id_ref) return false;
+  // A viewer's employee_id_ref usually holds the human code, so resolve
+  // both id and employee_id from their profile before comparing against
+  // the target's reporting_manager_id (which also stores either form
+  // depending on when the row was created).
+  const viewerEmp = (await sql`SELECT id, employee_id FROM employees WHERE id=${u.employee_id_ref} OR employee_id=${u.employee_id_ref} LIMIT 1`)[0] as any;
+  if (!viewerEmp) return false;
+  const target = (await sql`SELECT reporting_manager_id FROM employees WHERE id=${employeeId} LIMIT 1`)[0] as any;
+  if (!target?.reporting_manager_id) return false;
+  return target.reporting_manager_id === viewerEmp.id
+      || target.reporting_manager_id === viewerEmp.employee_id;
+}
+
 app.get('/api/performance/notes', async (req, res) => {
   try {
     const { employee_id } = req.query as any;
     if (!employee_id) return res.status(400).json({ error: 'employee_id required' });
+    if (!(await canManagePerformanceNotesFor(req, String(employee_id)))) {
+      return res.status(403).json({ error: 'Not permitted' });
+    }
     const rows = await sql`SELECT * FROM performance_notes WHERE employee_id=${employee_id} ORDER BY note_date DESC, created_at DESC`;
     res.json(rows);
   } catch (err) { res.status(500).json({ error: 'Server error' }); }
@@ -7715,6 +7746,10 @@ app.get('/api/performance/notes', async (req, res) => {
 app.post('/api/performance/notes', async (req, res) => {
   try {
     const { employee_id, note_date, note_text, note_type, created_by_id, created_by_name } = req.body;
+    if (!employee_id) return res.status(400).json({ error: 'employee_id required' });
+    if (!(await canManagePerformanceNotesFor(req, String(employee_id)))) {
+      return res.status(403).json({ error: 'Not permitted' });
+    }
     const rows = await sql`
       INSERT INTO performance_notes (employee_id, note_date, note_text, note_type, created_by_id, created_by_name)
       VALUES (${employee_id}, ${note_date}, ${note_text}, ${note_type ?? 'neutral'}, ${created_by_id ?? null}, ${created_by_name ?? null})
@@ -7725,6 +7760,13 @@ app.post('/api/performance/notes', async (req, res) => {
 
 app.delete('/api/performance/notes/:id', async (req, res) => {
   try {
+    // Look up the row so we can check permission by employee_id, not
+    // note id — otherwise anyone could DELETE by guessing an id.
+    const row = (await sql`SELECT employee_id FROM performance_notes WHERE id=${req.params.id} LIMIT 1`)[0] as any;
+    if (!row) return res.json({ success: true }); // idempotent
+    if (!(await canManagePerformanceNotesFor(req, String(row.employee_id)))) {
+      return res.status(403).json({ error: 'Not permitted' });
+    }
     await sql`DELETE FROM performance_notes WHERE id=${req.params.id}`;
     res.json({ success: true });
   } catch (err) { res.status(500).json({ error: 'Server error' }); }

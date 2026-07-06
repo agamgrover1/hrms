@@ -6,7 +6,7 @@ import {
   Target, TrendingUp, Award, Calendar, Plus, X, Trash2,
   ChevronDown, MessageSquare, Edit3, CheckCircle, AlertCircle, Info,
   FileText, ChevronRight, Circle, RefreshCw, Minus, Check, Lock, Unlock,
-  Search, ArrowUpDown, ChevronUp,
+  Search, ArrowUpDown, ChevronUp, Users,
 } from 'lucide-react';
 import { api } from '../services/api';
 import { useAuth } from '../context/AuthContext';
@@ -507,7 +507,7 @@ function AddReviewModal({
 }
 
 // ─── Add Note Modal ──────────────────────────────────────────────────────────
-function AddNoteModal({ employee, reviewer, onSave, onClose }: {
+export function AddNoteModal({ employee, reviewer, onSave, onClose }: {
   employee: any; reviewer: any; onSave: (note: any) => void; onClose: () => void;
 }) {
   const [noteText, setNoteText] = useState('');
@@ -754,6 +754,11 @@ export default function Performance() {
   const [view, setView] = useState<PageView>('monthly');
   const [employees, setEmployees] = useState<any[]>([]);
   const [selectedEmpId, setSelectedEmpId] = useState('');
+  // Team filter: when set, restricts the employee dropdown + the "reviewed
+  // this year" summary to reports whose reporting_manager_id matches. Empty
+  // string = show everyone (default). Only meaningful for admin/HR since
+  // they're the only ones who see the full roster.
+  const [teamFilterId, setTeamFilterId] = useState('');
   const [selectedYear, setSelectedYear] = useState(currentYear);
   const [monthlyData, setMonthlyData] = useState<any[]>([]);
   // Which month row is expanded to show comments + per-pillar notes.
@@ -900,8 +905,65 @@ export default function Performance() {
           <>
             {/* Filters */}
             <div className="flex flex-wrap items-center gap-3">
+              {/* Team filter — admin/HR only. Empty = all employees;
+                  a manager id restricts the picker (and every downstream
+                  score/note fetch) to that manager's direct reports.
+                  Managers appear in the dropdown only if at least one
+                  employee has their id in reporting_manager_id, so
+                  hollow rows never surface. Auto-jumps the selected
+                  employee if the current pick doesn't belong to the
+                  chosen team. */}
+              {isHROrAdmin && (() => {
+                const teamLeads = employees.filter(e =>
+                  employees.some(x => x.reporting_manager_id === e.id || x.reporting_manager_id === e.employee_id)
+                ).sort((a, b) => (a.name ?? '').localeCompare(b.name ?? ''));
+                return (
+                  <div className="relative">
+                    <select
+                      value={teamFilterId}
+                      onChange={e => {
+                        const newTeam = e.target.value;
+                        setTeamFilterId(newTeam);
+                        if (newTeam) {
+                          const reports = employees.filter(x =>
+                            x.reporting_manager_id === newTeam ||
+                            x.reporting_manager_id === employees.find(y => y.id === newTeam)?.employee_id
+                          );
+                          if (reports.length && !reports.some(r => r.id === selectedEmpId)) {
+                            setSelectedEmpId(reports[0].id);
+                          }
+                        }
+                      }}
+                      title="Filter by reporting manager"
+                      className="appearance-none bg-surface border border-outline rounded-lg pl-9 pr-9 py-2.5 text-sm font-semibold focus:outline-none focus:border-accent focus:ring-2 focus:ring-accent/20 shadow-elev-1 text-on-surface min-w-[180px]"
+                    >
+                      <option value="">All teams</option>
+                      {teamLeads.map(m => {
+                        const reportsCount = employees.filter(x =>
+                          x.reporting_manager_id === m.id || x.reporting_manager_id === m.employee_id
+                        ).length;
+                        return (
+                          <option key={m.id} value={m.id}>
+                            {m.name}'s team · {reportsCount}
+                          </option>
+                        );
+                      })}
+                    </select>
+                    <Users size={13} className="absolute left-3 top-1/2 -translate-y-1/2 text-on-surface-subtle pointer-events-none" />
+                    <ChevronDown size={14} className="absolute right-3 top-1/2 -translate-y-1/2 text-on-surface-subtle pointer-events-none" />
+                  </div>
+                );
+              })()}
               <EmployeeSearchSelect
-                employees={employees}
+                employees={(() => {
+                  // Restrict the employee picker to the selected team, if any.
+                  if (!teamFilterId) return employees;
+                  const manager = employees.find(e => e.id === teamFilterId);
+                  return employees.filter(e =>
+                    e.reporting_manager_id === teamFilterId ||
+                    (manager?.employee_id && e.reporting_manager_id === manager.employee_id)
+                  );
+                })()}
                 value={selectedEmpId}
                 onChange={setSelectedEmpId}
               />

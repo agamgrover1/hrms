@@ -1,13 +1,13 @@
 import { useState, useEffect, useMemo } from 'react';
 import { useSearchParams, useNavigate, Link } from 'react-router-dom';
 import { Users, Calendar, TrendingUp, CheckCircle, XCircle, AlertCircle,
-  X, Save, RefreshCw, Clock, UserCheck, Monitor, Info } from 'lucide-react';
+  X, Save, RefreshCw, Clock, UserCheck, Monitor, Info, MessageSquare, Plus, Trash2, ChevronDown, ChevronRight } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
 import { api } from '../../services/api';
 import MemberCalendarModal from '../../components/MemberCalendarModal';
 import PulseContextPanel from '../../components/PulseContextPanel';
 import MonthSelector, { monthLabel } from '../../components/MonthSelector';
-import { GOAL_STATUSES, GOAL_STATUS_CONFIG } from '../Performance';
+import { GOAL_STATUSES, GOAL_STATUS_CONFIG, AddNoteModal } from '../Performance';
 import type { GoalStatus } from '../Performance';
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
@@ -374,6 +374,34 @@ export default function MyTeam() {
 
   // ── Performance state ───────────────────────────────────────────────────────
   const [teamPerf, setTeamPerf] = useState<Record<string, any[]>>({});
+  // Private notes per team member. Keyed by member.id. Fetched alongside
+  // performance so leads can annotate reports over time — one-on-ones,
+  // client feedback, concerns, praise. The backend gates access to
+  // admin/HR + the actual reporting manager, so a lead only ever sees
+  // their own team's rows.
+  const [teamNotes, setTeamNotes] = useState<Record<string, any[]>>({});
+  const [noteTarget, setNoteTarget] = useState<any | null>(null);
+  const [notesOpenFor, setNotesOpenFor] = useState<Set<string>>(new Set());
+  const toggleNotes = (id: string) => setNotesOpenFor(cur => {
+    const nx = new Set(cur);
+    if (nx.has(id)) nx.delete(id); else nx.add(id);
+    return nx;
+  });
+  const handleDeleteNote = async (memberId: string, noteId: string) => {
+    if (!window.confirm('Delete this private note? This cannot be undone.')) return;
+    try {
+      await api.deletePerformanceNote(noteId);
+      setTeamNotes(prev => ({
+        ...prev,
+        [memberId]: (prev[memberId] ?? []).filter((n: any) => n.id !== noteId),
+      }));
+    } catch { /* silent — button is already gone if row's stale */ }
+  };
+  const noteTypeCfg: Record<string, { icon: any; className: string; iconClass: string }> = {
+    positive: { icon: CheckCircle, className: 'bg-success-container border-success/25',                 iconClass: 'text-success' },
+    neutral:  { icon: Info,        className: 'bg-brand-container border-brand/20',                    iconClass: 'text-on-brand-container' },
+    negative: { icon: AlertCircle, className: 'bg-danger-container border-danger/25',                  iconClass: 'text-danger' },
+  };
   const [showReview, setShowReview] = useState<any | null>(null);
   // Scores hold either a number (0-100) OR null (N/A — pillar excluded
   // from overall_score, downstream consumers see "not rated").
@@ -480,6 +508,13 @@ export default function MyTeam() {
             .then(att => setTeamAttendance(prev => ({ ...prev, [m.id]: att })));
           api.getLeaveRequests({ employee_id: m.id })
             .then(lv => setTeamAllLeaves(prev => [...prev, ...lv]));
+          // Private notes — reader is scoped to admin/HR + the actual
+          // reporting manager on the backend, so this only returns rows
+          // the current lead is allowed to see (their own notes and any
+          // HR-authored ones).
+          api.getPerformanceNotes(m.id)
+            .then(ns => setTeamNotes(prev => ({ ...prev, [m.id]: Array.isArray(ns) ? ns : [] })))
+            .catch(() => {});
         });
       });
     });
@@ -1277,6 +1312,67 @@ export default function MyTeam() {
                   </div>
                 </div>
 
+                {/* Private notes — collapsed by default. Header shows
+                    the count so leads spot rows worth expanding without
+                    having to click into every card. */}
+                {(() => {
+                  const notes = teamNotes[member.id] ?? [];
+                  const open = notesOpenFor.has(member.id);
+                  return (
+                    <div className="border-t border-outline">
+                      <div className="flex items-center justify-between px-5 py-3">
+                        <button onClick={() => toggleNotes(member.id)}
+                          className="flex items-center gap-2 text-xs font-semibold text-on-surface-muted hover:text-on-surface transition-colors">
+                          {open ? <ChevronDown size={13} className="text-accent" /> : <ChevronRight size={13} />}
+                          <MessageSquare size={12} />
+                          Private notes
+                          <span className="text-on-surface-subtle">({notes.length})</span>
+                          <span className="text-[10px] font-normal text-on-surface-subtle italic hidden sm:inline">· not visible to employee</span>
+                        </button>
+                        <button onClick={() => setNoteTarget(member)}
+                          className="inline-flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-semibold rounded-lg border border-outline text-on-surface hover:bg-surface-2 transition-colors">
+                          <Plus size={12} /> Note
+                        </button>
+                      </div>
+                      {open && (
+                        <div className="px-5 pb-4 space-y-2">
+                          {notes.length === 0 ? (
+                            <p className="text-xs text-on-surface-subtle italic px-3 py-4 text-center rounded-lg bg-surface-2/40 border border-outline">
+                              No notes yet. Click "+ Note" to record a private observation.
+                            </p>
+                          ) : (
+                            notes.map((n: any) => {
+                              const cfg = noteTypeCfg[n.note_type] ?? noteTypeCfg.neutral;
+                              const NoteIcon = cfg.icon;
+                              return (
+                                <div key={n.id} className={`rounded-lg border p-3 ${cfg.className}`}>
+                                  <div className="flex items-start gap-2">
+                                    <NoteIcon size={14} className={`${cfg.iconClass} flex-shrink-0 mt-0.5`} />
+                                    <div className="flex-1 min-w-0">
+                                      <p className={`text-xs font-semibold ${cfg.iconClass}`}>
+                                        {new Date(n.note_date).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' })}
+                                      </p>
+                                      <p className="text-xs text-on-surface-muted mt-1 leading-relaxed whitespace-pre-line">{n.note_text}</p>
+                                      {n.created_by_name && (
+                                        <p className="text-[10px] text-on-surface-subtle mt-1.5">— {n.created_by_name}</p>
+                                      )}
+                                    </div>
+                                    <button onClick={() => handleDeleteNote(member.id, n.id)}
+                                      className="flex-shrink-0 p-1 hover:bg-surface/60 rounded transition-colors"
+                                      title="Delete note">
+                                      <Trash2 size={12} className={cfg.iconClass} />
+                                    </button>
+                                  </div>
+                                </div>
+                              );
+                            })
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })()}
+
                 {/* Appraisal goals */}
                 {memberAppraisals.filter((a: any) => a.submitted).length > 0 && (
                   <div className="px-5 py-4 border-t border-outline">
@@ -1460,6 +1556,20 @@ export default function MyTeam() {
       )}
 
       {/* ── Reject leave modal ───────────────────────────────────────────────── */}
+      {/* Private note composer — reuses the same modal from Performance.tsx
+          so admin / HR and leads have identical UX + type options. */}
+      {noteTarget && (
+        <AddNoteModal
+          employee={noteTarget}
+          reviewer={{ id: user?.id, name: user?.name }}
+          onSave={(note: any) => setTeamNotes(prev => ({
+            ...prev,
+            [noteTarget.id]: [note, ...(prev[noteTarget.id] ?? [])],
+          }))}
+          onClose={() => setNoteTarget(null)}
+        />
+      )}
+
       {rejectTarget && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-bg/55 backdrop-blur-sm p-4">
           <div className="bg-surface rounded-2xl shadow-elev-4 border border-outline w-full max-w-sm p-6">
