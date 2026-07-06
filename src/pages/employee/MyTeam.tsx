@@ -576,6 +576,17 @@ export default function MyTeam() {
     if (existingLocked) { setReviewError('HR has locked this review. Ask HR to unlock it to make changes.'); return; }
     const overall = computeOverall(scores);
     if (overall == null) { setReviewError('At least one pillar must be scored. All sliders are marked N/A.'); return; }
+    // Every RATED pillar needs a note. N/A pillars are skipped — they
+    // don't need justification because they're excluded from the score
+    // entirely. Missing notes get named in the error so the reviewer
+    // knows exactly which fields to fill.
+    const missingNotes = SCORE_CATEGORIES
+      .filter(c => scores[c.key] != null && !(paramNotes[c.key] ?? '').trim())
+      .map(c => c.label);
+    if (missingNotes.length) {
+      setReviewError(`Add a note for every rated pillar. Missing: ${missingNotes.join(', ')}.`);
+      return;
+    }
     setSavingReview(true);
     setReviewError('');
     try {
@@ -1393,22 +1404,36 @@ export default function MyTeam() {
               </div>
               {/* Pulse context — data view for the reviewer to reference */}
               <PulseContextPanel employeeId={showReview?.id ?? null} />
-              {SCORE_CATEGORIES.map(({ key, label, hint }: any) => (
+              {SCORE_CATEGORIES.map(({ key, label, hint }: any) => {
+                // Notes are mandatory for rated pillars, optional (and
+                // hidden) for N/A ones — no point demanding a
+                // justification for a pillar the reviewer already said
+                // doesn't apply.
+                const isNA = scores[key] == null;
+                const noteMissing = !isNA && !(paramNotes[key] ?? '').trim();
+                return (
                 <div key={key} className="space-y-1.5">
                   <ScoreSlider label={label} value={scores[key] ?? 75}
                     onChange={v => setScores(p => ({ ...p, [key]: v }))} />
                   {hint && <p className="text-[10px] text-on-surface-subtle leading-snug -mt-1">{hint}</p>}
-                  <textarea
-                    value={paramNotes[key] ?? ''}
-                    onChange={e => setParamNotes(p => ({ ...p, [key]: e.target.value }))}
-                    rows={1}
-                    placeholder={`Note for ${label} (optional)…`}
-                    className="w-full bg-surface text-on-surface border border-outline rounded-lg px-2.5 py-1.5 text-xs resize-none focus:outline-none focus:border-accent leading-relaxed"
-                    onFocus={e => { (e.target as HTMLTextAreaElement).rows = 2; }}
-                    onBlur={e => { if (!e.target.value) (e.target as HTMLTextAreaElement).rows = 1; }}
-                  />
+                  {!isNA && (
+                    <textarea
+                      value={paramNotes[key] ?? ''}
+                      onChange={e => setParamNotes(p => ({ ...p, [key]: e.target.value }))}
+                      rows={1}
+                      placeholder={`Note for ${label} (required)…`}
+                      className={`w-full bg-surface text-on-surface border rounded-lg px-2.5 py-1.5 text-xs resize-none focus:outline-none leading-relaxed ${
+                        noteMissing
+                          ? 'border-danger/40 focus:border-danger focus:ring-2 focus:ring-danger/20'
+                          : 'border-outline focus:border-accent'
+                      }`}
+                      onFocus={e => { (e.target as HTMLTextAreaElement).rows = 2; }}
+                      onBlur={e => { if (!e.target.value) (e.target as HTMLTextAreaElement).rows = 1; }}
+                    />
+                  )}
                 </div>
-              ))}
+                );
+              })}
               <div>
                 <label className="text-xs font-semibold text-on-surface-muted block mb-1.5">Comments (optional)</label>
                 <textarea value={reviewComment} onChange={e => setReviewComment(e.target.value)} rows={3}

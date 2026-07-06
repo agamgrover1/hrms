@@ -206,10 +206,14 @@ export function ReviewCommentsPanel({ record }: { record: any }) {
 
 // ─── Slider + text input combo ───────────────────────────────────────────────
 function ScoreInput({
-  label, value, onChange, note, onNoteChange,
+  label, value, onChange, note, onNoteChange, noteRequired,
 }: {
   label: string; value: number | null; onChange: (v: number | null) => void;
   note?: string; onNoteChange?: (v: string) => void;
+  // Whether a note is required (true for RATED pillars). Missing notes
+  // paint the textarea with a danger outline so the reviewer knows which
+  // fields they still owe before the save button will accept them.
+  noteRequired?: boolean;
 }) {
   const isNA = value === null;
   const [raw, setRaw] = useState(String(value ?? 75));
@@ -263,17 +267,24 @@ function ScoreInput({
       {isNA && (
         <p className="text-[11px] text-on-surface-subtle italic">Excluded from overall score.</p>
       )}
-      {onNoteChange !== undefined && (
-        <textarea
-          value={note ?? ''}
-          onChange={e => onNoteChange(e.target.value)}
-          rows={1}
-          placeholder={`Note for ${label} (optional)…`}
-          className="w-full bg-surface border border-outline rounded-lg px-2.5 py-1.5 text-xs resize-none focus:outline-none focus:border-accent focus:ring-2 focus:ring-accent/20 leading-relaxed text-on-surface-muted"
-          onFocus={e => { (e.target as HTMLTextAreaElement).rows = 2; }}
-          onBlur={e => { if (!e.target.value) (e.target as HTMLTextAreaElement).rows = 1; }}
-        />
-      )}
+      {onNoteChange !== undefined && !isNA && (() => {
+        const isMissing = !!noteRequired && !(note ?? '').trim();
+        return (
+          <textarea
+            value={note ?? ''}
+            onChange={e => onNoteChange(e.target.value)}
+            rows={1}
+            placeholder={`Note for ${label}${noteRequired ? ' (required)' : ' (optional)'}…`}
+            className={`w-full bg-surface rounded-lg px-2.5 py-1.5 text-xs resize-none focus:outline-none leading-relaxed text-on-surface-muted border ${
+              isMissing
+                ? 'border-danger/40 focus:border-danger focus:ring-2 focus:ring-danger/20'
+                : 'border-outline focus:border-accent focus:ring-2 focus:ring-accent/20'
+            }`}
+            onFocus={e => { (e.target as HTMLTextAreaElement).rows = 2; }}
+            onBlur={e => { if (!e.target.value) (e.target as HTMLTextAreaElement).rows = 1; }}
+          />
+        );
+      })()}
     </div>
   );
 }
@@ -317,10 +328,23 @@ function AddReviewModal({
   const naCount = CATEGORIES.length - _nums.length;
   const isEditing = !!existing;
   const isLocked = !!existing?.is_locked;
+  // Notes are mandatory for every RATED pillar. N/A pillars are excluded
+  // — they need no justification because they don't contribute to the
+  // score. Track the missing set so we can gate save + highlight fields.
+  const missingNoteKeys = CATEGORIES
+    .filter(c => (scores as any)[c.key] != null && !((paramNotes[c.key] ?? '').trim()))
+    .map(c => c.key);
+  const [validationError, setValidationError] = useState('');
 
   const handleSave = async () => {
     if (overall == null) return; // every slider was N/A — button is disabled anyway
     if (isLocked) return;
+    if (missingNoteKeys.length) {
+      const missingLabels = CATEGORIES.filter(c => missingNoteKeys.includes(c.key)).map(c => c.label);
+      setValidationError(`Add a note for every rated pillar. Missing: ${missingLabels.join(', ')}.`);
+      return;
+    }
+    setValidationError('');
     setSaving(true);
     try {
       await api.saveMonthlyPerformance({
@@ -440,6 +464,7 @@ function AddReviewModal({
                 onChange={v => setScores(s => ({ ...s, [key]: v }))}
                 note={paramNotes[key] ?? ''}
                 onNoteChange={v => setParamNotes(n => ({ ...n, [key]: v }))}
+                noteRequired={scores[key] != null}
               />
               {hint && <p className="text-[10px] text-on-surface-subtle leading-snug mt-1 ml-1">{hint}</p>}
             </div>
@@ -457,6 +482,12 @@ function AddReviewModal({
           </div>
         </div>
 
+        {validationError && (
+          <div className="mx-5 mb-2 px-3 py-2 rounded-lg text-xs font-semibold bg-danger-container/60 text-danger border border-danger/25 flex items-start gap-2">
+            <AlertCircle size={13} className="mt-0.5 shrink-0" />
+            <span>{validationError}</span>
+          </div>
+        )}
         <div className="flex gap-3 p-5 border-t border-outline">
           <button onClick={onClose} className="flex-1 py-2.5 border border-outline rounded-xl-2 text-sm font-semibold text-on-surface-muted hover:bg-surface-2 transition-colors">
             Cancel
@@ -464,7 +495,7 @@ function AddReviewModal({
           <button
             onClick={handleSave}
             disabled={saving || overall == null || isLocked}
-            title={isLocked ? 'HR has locked this review' : overall == null ? 'At least one pillar must be scored' : ''}
+            title={isLocked ? 'HR has locked this review' : overall == null ? 'At least one pillar must be scored' : missingNoteKeys.length ? `Missing notes on ${missingNoteKeys.length} pillar${missingNoteKeys.length === 1 ? '' : 's'}` : ''}
             className="flex-1 py-2.5 bg-accent text-on-accent rounded-xl-2 text-sm font-semibold disabled:opacity-60 disabled:cursor-not-allowed hover:opacity-90 shadow-elev-1 hover:shadow-elev-2 transition-all"
           >
             {saving ? 'Saving…' : isEditing ? 'Update Review' : 'Save Review'}
