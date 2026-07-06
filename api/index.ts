@@ -5149,6 +5149,106 @@ app.get('/api/dashboard/bootstrap', async (req, res) => {
   }
 });
 
+// ══════════════════════════════════════════════════════════════════════════
+// GET /api/myportal/bootstrap?employee_id=&month=&year=
+// Collapses the 8 fetches MyPortal fires on mount (the Promise.all block
+// in MyPortal.tsx around line 782) into one round-trip. Each sub-query
+// runs in parallel server-side and reuses the same memoTtl caches the
+// individual endpoints would hit. The follow-up 8 "nice to have"
+// fetches (warnings, PIPs, upsells, expenses, assets, repair tickets,
+// optional-leave availability, expense categories) still fire from the
+// frontend for now; adding them here would double the response size and
+// most aren't rendered on the default (Overview) tab anyway.
+//
+// Response keys mirror what MyPortal already destructures so the
+// frontend refactor is a one-liner (call bootstrap, spread results into
+// state instead of chaining Promise.all).
+app.get('/api/myportal/bootstrap', async (req, res) => {
+  try {
+    await runStartupMigrations();
+    const uid = req.header('x-user-id');
+    if (!uid) return res.status(401).json({ error: 'Sign in required' });
+    const employee_id = String(req.query.employee_id || '');
+    const month = Number(req.query.month);
+    const year = Number(req.query.year);
+    if (!employee_id || !month || !year) {
+      return res.status(400).json({ error: 'employee_id, month, year required' });
+    }
+    // Employee list is needed to resolve manager + populate the team
+    // lookup. Reuse the same memo key as the standalone /api/employees.
+    const employees = await memoTtl('employees:all', 60_000, async () =>
+      sql`SELECT * FROM employees ORDER BY name`
+    ) as any[];
+    // Match the "find emp by internal id" pattern the frontend was
+    // running client-side, so the response can already carry the
+    // resolved employee row + manager.
+    const emp = employees.find(e => e.id === employee_id) || null;
+    if (!emp) return res.status(404).json({ error: 'Employee not found' });
+    const manager = emp.reporting_manager_id
+      ? employees.find(e => e.id === emp.reporting_manager_id) || null
+      : null;
+
+    const [
+      attendanceRows,
+      leaveRequests,
+      payroll,
+      leaveBalanceRows,
+      monthlyPerf,
+      appraisalGoals,
+      wfhRequests,
+      holidayRows,
+    ] = await Promise.all([
+      memoTtl(`attendance:${employee_id}:${month}:${year}`, 60_000, async () =>
+        sql`SELECT * FROM attendance_records WHERE employee_id=${employee_id}
+             AND EXTRACT(MONTH FROM date)=${Number(month)}
+             AND EXTRACT(YEAR FROM date)=${Number(year)} ORDER BY date`),
+      sql`SELECT * FROM leave_requests WHERE employee_id=${employee_id} ORDER BY applied_on DESC`,
+      sql`SELECT * FROM payroll_records WHERE employee_id=${employee_id} ORDER BY year DESC, month DESC`,
+      sql`SELECT * FROM leave_balances WHERE employee_id=${employee_id} LIMIT 1`,
+      sql`SELECT * FROM monthly_performance WHERE employee_id=${employee_id} AND year=${Number(year)} ORDER BY month DESC`,
+      sql`SELECT * FROM appraisals WHERE employee_id=${employee_id} ORDER BY year DESC, month DESC`.catch(() => []),
+      sql`SELECT * FROM wfh_requests WHERE employee_id=${employee_id} ORDER BY created_at DESC`.catch(() => []),
+      memoTtl(`holidaysInScope:${month}:${year}`, 30 * 60_000, async () =>
+        sql`SELECT date, name FROM holidays
+             WHERE EXTRACT(MONTH FROM date)=${Number(month)}
+               AND EXTRACT(YEAR FROM date)=${Number(year)}`),
+    ]);
+
+    // Holiday overlay on attendance — same rule as /api/attendance so
+    // the frontend doesn't need to re-apply it.
+    const holidayMap = new Map<string, string>();
+    for (const h of holidayRows as any[]) {
+      const d = String(h.date instanceof Date ? h.date.toISOString() : h.date).slice(0, 10);
+      holidayMap.set(d, h.name);
+    }
+    const attendance = (attendanceRows as any[]).map((r: any) => {
+      const iso = String(r.date instanceof Date ? r.date.toISOString() : r.date).slice(0, 10);
+      const holidayName = holidayMap.get(iso);
+      return holidayName
+        ? { ...r, status: 'holiday', holiday_name: holidayName }
+        : r;
+    });
+    // Leave-balance defaults so the frontend can just spread with no
+    // extra guard. Matches the .catch() default it was using.
+    const bal = (leaveBalanceRows as any[])[0] ?? { casual: 10, sick: 7, earned: 15 };
+
+    res.json({
+      month, year,
+      employee: emp,
+      manager,
+      attendance,
+      leaveRequests: (leaveRequests as any[]).map(normDateV),
+      payroll: (payroll as any[])[0] ?? null,
+      leaveBalance: bal,
+      monthlyPerformance: monthlyPerf,
+      appraisalGoals,
+      wfhRequests,
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err?.message || 'Server error' });
+  }
+});
+
 app.get('/api/announcements', async (req, res) => {
   try {
     await runStartupMigrations();

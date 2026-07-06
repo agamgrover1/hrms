@@ -605,6 +605,23 @@ export const api = {
   addHourLogComment: (id: string, data: { author_id?: string; author_name?: string; author_role?: string; body: string }) =>
     request<any>(`/hour-logs/${id}/comments`, { method: 'POST', body: JSON.stringify(data) }),
 
+  // One-shot MyPortal bundle. Collapses the 8-fetch Promise.all on
+  // mount into a single round-trip. Follow-up "nice to have" fetches
+  // (warnings, PIPs, assets, etc.) still fire separately for now.
+  getMyPortalBootstrap: (employee_id: string, month: number, year: number) =>
+    request<{
+      month: number; year: number;
+      employee: any;
+      manager: any | null;
+      attendance: any[];
+      leaveRequests: any[];
+      payroll: any | null;
+      leaveBalance: any;
+      monthlyPerformance: any[];
+      appraisalGoals: any[];
+      wfhRequests: any[];
+    }>(`/myportal/bootstrap?employee_id=${employee_id}&month=${month}&year=${year}`),
+
   // Weekly billing allocation sheet (replaces the Google Sheet).
   getHoursAllocations: (month: number, year: number) =>
     request<{

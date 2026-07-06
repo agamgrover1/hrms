@@ -772,51 +772,57 @@ export default function MyPortal() {
 
   useEffect(() => {
     if (!empRef) return;
-    api.getEmployees().then(emps => {
+    // MyPortal used to fire 8 fetches in a Promise.all on mount plus a
+    // getEmployees() to resolve the current employee. The bootstrap
+    // endpoint collapses those into a single round-trip; only the
+    // "nice to have" widgets (warnings, PIPs, upsells, expenses,
+    // assets, repair tickets, optional-leave, expense categories) still
+    // fetch independently — they're small and don't gate the first
+    // paint.
+    (async () => {
+      // Resolve the internal employee id from the human code. Employee
+      // list is memoTtl'd server-side so this is cheap.
+      const emps = await api.getEmployees().catch(() => [] as any[]);
       const emp = emps.find(e => e.employee_id === empRef);
       if (!emp) return;
       setEmpDbId(emp.id);
-      setEmpRecord(emp);
-      const mgr = emp.reporting_manager_id ? emps.find(e => e.id === emp.reporting_manager_id) : null;
-      setReportingManager(mgr ? { id: mgr.id, name: mgr.name, designation: mgr.designation } : null);
-      Promise.all([
-        api.getAttendance({ employee_id: emp.id, month: currentMonth, year: currentYear }),
-        api.getLeaveRequests({ employee_id: emp.id }),
-        api.getEmployeePayroll(emp.id),
-        api.getLeaveBalance(emp.id).catch(() => ({ casual: 10, sick: 7, earned: 15 })),
-        api.getMonthlyPerformance(emp.id, currentYear),
-        api.getAppraisalGoals({ employee_id: emp.id }),
-        api.getWfhRequests({ employee_id: emp.id }),
-      ]).then(([att, lv, pay, bal, perf, appraisals, wfh]) => {
-        api.getWarnings(emp.id).then(setMyWarnings).catch(() => {});
-        api.getPips(emp.id).then(pips => setMyPip((pips as any[]).find(p => p.status === 'active') ?? null)).catch(() => {});
-        api.getUpsellRequests(emp.id).then(setMyIncentives).catch(() => {});
-        api.getExpenses(emp.id).then(setMyExpenses).catch(() => {});
-        // My laptop/asset + active repair tickets
-        api.getAssets(emp.id).then(setMyAssets).catch(() => {});
-        api.getRepairTickets(emp.id).then(setMyRepairTickets).catch(() => {});
-        // (Pulse fetch moved to its own effect below — it doesn't depend on
-        // emp lookup, which bails when user.employee_id_ref is null.)
-        // Optional leave pool for current year
-        api.getOptionalLeaveAvailable(emp.id, new Date().getFullYear())
-          .then(d => { setOptionalLeaveData(d); setOptionalLeaveLoaded(true); })
-          .catch(() => setOptionalLeaveLoaded(true));
-        api.getExpenseCategories().then(setExpCategories).catch(() => {});
-        setAttendance(att);
-        setLeaves(lv);
-        setWfhRequests(Array.isArray(wfh) ? wfh : []);
-        setPayroll(Array.isArray(pay) ? pay[0] : pay);
-        setBalance(bal);
-        setMonthlyPerf(perf);
-        const list = Array.isArray(appraisals) ? appraisals : [];
-        setAllAppraisals(list);
-        // Pre-load draft for the current appraisal window if any exists
-        const currAppraisal = list.find(
-          a => a.month === currentMonth && a.year === currentYear
-        );
-        setGoalsDraft(currAppraisal?.goals?.length ? currAppraisal.goals : [{ title: '', description: '', success_criteria: '' }]);
-      });
-    });
+      const boot = await api.getMyPortalBootstrap(emp.id, currentMonth, currentYear).catch(() => null);
+      if (!boot) return;
+      // The bootstrap payload's employee row already carries the fresh
+      // record — prefer it so any recent HR edits show up without a
+      // second /api/employees hit.
+      setEmpRecord(boot.employee ?? emp);
+      setReportingManager(boot.manager
+        ? { id: boot.manager.id, name: boot.manager.name, designation: boot.manager.designation }
+        : null);
+      setAttendance(boot.attendance);
+      setLeaves(boot.leaveRequests);
+      setWfhRequests(Array.isArray(boot.wfhRequests) ? boot.wfhRequests : []);
+      setPayroll(boot.payroll);
+      setBalance(boot.leaveBalance);
+      setMonthlyPerf(boot.monthlyPerformance);
+      const list = Array.isArray(boot.appraisalGoals) ? boot.appraisalGoals : [];
+      setAllAppraisals(list);
+      const currAppraisal = list.find(
+        (a: any) => a.month === currentMonth && a.year === currentYear
+      );
+      setGoalsDraft(currAppraisal?.goals?.length ? currAppraisal.goals : [{ title: '', description: '', success_criteria: '' }]);
+
+      // Nice-to-have widgets — fire after the main paint so they don't
+      // delay the perceived load. Not in the bootstrap because they
+      // don't show up on the default (Overview) tab and would double
+      // the response size for the common case.
+      api.getWarnings(emp.id).then(setMyWarnings).catch(() => {});
+      api.getPips(emp.id).then(pips => setMyPip((pips as any[]).find(p => p.status === 'active') ?? null)).catch(() => {});
+      api.getUpsellRequests(emp.id).then(setMyIncentives).catch(() => {});
+      api.getExpenses(emp.id).then(setMyExpenses).catch(() => {});
+      api.getAssets(emp.id).then(setMyAssets).catch(() => {});
+      api.getRepairTickets(emp.id).then(setMyRepairTickets).catch(() => {});
+      api.getOptionalLeaveAvailable(emp.id, new Date().getFullYear())
+        .then(d => { setOptionalLeaveData(d); setOptionalLeaveLoaded(true); })
+        .catch(() => setOptionalLeaveLoaded(true));
+      api.getExpenseCategories().then(setExpCategories).catch(() => {});
+    })();
   }, [empRef, currentYear, currentMonth]);
 
   // Is there an appraisal window open for this employee right now?
