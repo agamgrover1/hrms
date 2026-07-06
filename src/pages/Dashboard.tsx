@@ -505,11 +505,20 @@ export default function Dashboard() {
 
   // Employees / coordinators get a personal-flavored landing dashboard
   // instead of the org-wide KPIs. Same Announcements + Coming up appear
-  // for both groups so company news reaches everyone uniformly.
+  // for both groups so company news reaches everyone uniformly. The
+  // bootstrap-fed props (outToday / holidays / optional) get passed
+  // through so the child's OutTodayCard + HolidaysCard render without
+  // making their own network calls — same as the admin branch does.
   if (!isAdminOrHR) return (
     <EmployeeDashboardView
       announcements={announcements}
       upcomingEvents={upcomingEvents}
+      outToday={outToday}
+      holidaysThisYear={holidaysThisYear}
+      holidaysNextYear={holidaysNextYear}
+      optionalThisYear={optionalThisYear}
+      optionalNextYear={optionalNextYear}
+      loading={loading}
     />
   );
 
@@ -1304,8 +1313,15 @@ function ManageAnnouncementsModal({ isAdminOrHR, currentItems, onClose, onChange
 // same Company Announcements + Coming up widgets the admin Dashboard has.
 // ─────────────────────────────────────────────────────────────────────────
 
-function EmployeeDashboardView({ announcements, upcomingEvents }: {
+function EmployeeDashboardView({
+  announcements, upcomingEvents,
+  outToday, holidaysThisYear, holidaysNextYear, optionalThisYear, optionalNextYear, loading,
+}: {
   announcements: any[]; upcomingEvents: any[];
+  outToday: Awaited<ReturnType<typeof api.getOutToday>> | null;
+  holidaysThisYear: any[]; holidaysNextYear: any[];
+  optionalThisYear: any[]; optionalNextYear: any[];
+  loading: boolean;
 }) {
   const { user } = useAuth();
   const isAdminOrHR = user?.role === 'admin' || user?.role === 'hr_manager';
