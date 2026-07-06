@@ -9816,6 +9816,28 @@ function weekNumOfDate(iso: string): number {
   return 5;
 }
 
+// Inverse of weekNumOfDate: given (year, month, week) return the actual
+// [startDay, endDay] of that Mon-Sun aligned bucket. Any code that has
+// to reason about "what dates are in W3" MUST use this — a naive
+// (week - 1) * 7 + 1 gives July W2 = 8..14 while the rest of the app
+// (assignment columns, w1..w5 headers, hour_log week_num) treats
+// July W2 as 6..12. That drift produced the "Direct staff utilization"
+// subtitle showing July 8-14 while its own W2 tab labelled 6-12.
+function weekBucketRange(year: number, month: number, week: number): { startDay: number; endDay: number } {
+  const lastDay = new Date(year, month, 0).getDate();
+  const dow1 = new Date(Date.UTC(year, month - 1, 1)).getUTCDay(); // 0=Sun..6=Sat
+  const firstSundayDay = dow1 === 0 ? 1 : 8 - dow1;
+  const w2Start = firstSundayDay + 1;
+  let startDay: number, endDay: number;
+  if (week === 1) { startDay = 1;             endDay = firstSundayDay; }
+  else if (week === 2) { startDay = w2Start;        endDay = w2Start + 6; }
+  else if (week === 3) { startDay = w2Start + 7;    endDay = w2Start + 13; }
+  else if (week === 4) { startDay = w2Start + 14;   endDay = w2Start + 20; }
+  else                 { startDay = w2Start + 21;   endDay = lastDay; }
+  endDay = Math.min(endDay, lastDay);
+  return { startDay, endDay };
+}
+
 async function recomputeWeeklyFromDays(assignment_id: string, week_num: number): Promise<string | null> {
   const sumRows = await sql`
     SELECT COALESCE(SUM(hours), 0)::numeric AS total,
@@ -10551,9 +10573,15 @@ app.get('/api/hours-utilization', async (req, res) => {
       // Compute the week's working-day count: weekdays in
       // [startDay, endDay] of month. Mon-Fri count; Sat/Sun excluded.
       // (If your org works Saturdays, swap to (dow !== 0).)
-      const lastDay = new Date(year, month, 0).getDate();
-      const startDay = (week - 1) * 7 + 1;
-      const endDay = Math.min(week * 7, lastDay);
+      //
+      // Range comes from weekBucketRange so this endpoint agrees with
+      // the rest of the app on which days are in each week. Previously
+      // it used the naive `(week - 1) * 7 + 1` — for July 2026 that
+      // gave W2 = 8..14 while the tab labels (and hour_log week_num,
+      // and project_assignments' w1..w5 columns) treated W2 as 6..12.
+      // That's the mismatch the user saw: subtitle "July 8-14" while
+      // its own W2 button said 6-12.
+      const { startDay, endDay } = weekBucketRange(year, month, week);
       let workingDays = 0;
       for (let d = startDay; d <= endDay; d++) {
         const dow = new Date(year, month - 1, d).getDay(); // 0=Sun..6=Sat
