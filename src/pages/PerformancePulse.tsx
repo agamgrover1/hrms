@@ -103,7 +103,12 @@ export default function PerformancePulse() {
   async function openDrawer(row: PulseTeamRow) {
     setDrawer({ row, data: null });
     try {
-      const d = await api.getEmployeePulse(row.id);
+      // Pass the selected month/year through so the drawer shows the
+      // locked snapshot for THAT period, not the latest one. Without
+      // this, picking June from the header still opened the current
+      // month's live-computed drawer — visually incongruent with the
+      // June grid the user was looking at.
+      const d = await api.getEmployeePulse(row.id, { month: orgMonth, year: orgYear });
       setDrawer({ row, data: d.latest });
     } catch {
       setDrawer({ row, data: null });
