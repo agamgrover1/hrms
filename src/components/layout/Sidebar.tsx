@@ -83,6 +83,57 @@ const ROLE_PILL: Record<string, { label: string; bg: string; color: string }> = 
   employee:            { label: 'Employee',      bg: 'rgba(255,255,255,0.08)', color: 'rgba(255,255,255,0.7)' },
 };
 
+// Version stamp at the bottom of the sidebar. Reads the git commit SHA
+// baked in at build time (__APP_VERSION__ from vite.config.ts) plus the
+// build timestamp so users can eyeball freshness at a glance instead of
+// staring at a hardcoded "v1.0" that never budges.
+//
+// Renders:
+//   DL · HRMS · v9bd129f
+//   deployed 6h ago                     (title="2026-07-06 14:23 UTC · full-sha")
+//
+// Local-only dev builds (SHA starts with "local-") show a "dev" label so
+// there's no confusion about which build is running.
+function humanizeAgo(iso: string): string {
+  try {
+    const then = new Date(iso).getTime();
+    const diffMs = Date.now() - then;
+    if (!Number.isFinite(diffMs) || diffMs < 0) return '';
+    const mins = Math.floor(diffMs / 60_000);
+    if (mins < 1) return 'just now';
+    if (mins < 60) return `${mins}m ago`;
+    const hrs = Math.floor(mins / 60);
+    if (hrs < 24) return `${hrs}h ago`;
+    const days = Math.floor(hrs / 24);
+    if (days < 30) return `${days}d ago`;
+    const months = Math.floor(days / 30);
+    return `${months}mo ago`;
+  } catch { return ''; }
+}
+function SidebarVersionStamp() {
+  const sha = typeof __APP_VERSION__ !== 'undefined' ? __APP_VERSION__ : '';
+  const buildDate = typeof __BUILD_DATE__ !== 'undefined' ? __BUILD_DATE__ : '';
+  const isLocal = sha.startsWith('local-');
+  const shortSha = isLocal ? 'dev' : (sha.slice(0, 7) || '—');
+  const ago = buildDate ? humanizeAgo(buildDate) : '';
+  const tooltip = [
+    sha && `Version: ${sha}`,
+    buildDate && `Built: ${new Date(buildDate).toLocaleString('en-IN', { dateStyle: 'medium', timeStyle: 'short' })}`,
+  ].filter(Boolean).join('\n');
+  return (
+    <div title={tooltip} className="mt-2 space-y-0.5 select-none cursor-help">
+      <p className="text-[10px] text-white/25 text-center font-mono tracking-wider">
+        DL · HRMS · v<span className="text-white/40">{shortSha}</span>
+      </p>
+      {ago && (
+        <p className="text-[9px] text-white/20 text-center font-mono">
+          deployed {ago}
+        </p>
+      )}
+    </div>
+  );
+}
+
 export default function Sidebar({ mobileOpen = false, onMobileClose }: { mobileOpen?: boolean; onMobileClose?: () => void }) {
   const [collapsedRaw, setCollapsed] = useState(false);
   // Track viewport so the collapsed-narrow look only applies on real
@@ -328,9 +379,7 @@ export default function Sidebar({ mobileOpen = false, onMobileClose }: { mobileO
           className={`hidden lg:flex items-center gap-3 px-3 py-2 rounded-xl text-xs font-medium text-white/40 hover:text-white/70 hover:bg-white/5 transition-all w-full ${collapsed ? 'justify-center' : ''}`}>
           {collapsed ? <ChevronRight size={16} strokeWidth={1.75} /> : <><ChevronLeft size={16} strokeWidth={1.75} /><span>Collapse</span></>}
         </button>
-        {!collapsed && (
-          <p className="text-[10px] text-white/25 text-center mt-2 font-mono tracking-wider">DL · HRMS · v1.0</p>
-        )}
+        {!collapsed && <SidebarVersionStamp />}
       </div>
     </aside>
     </>

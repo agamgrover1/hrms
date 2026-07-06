@@ -23,6 +23,10 @@ export default defineConfig({
   plugins: [react()],
   define: {
     __APP_VERSION__: JSON.stringify(resolveBuildVersion()),
+    // Build-time UTC ISO stamp. Sidebar shows the short version in
+    // "DL · HRMS · v{shortSha} · deployed 6h ago" so anyone can eyeball
+    // whether they're on a fresh deploy without opening DevTools.
+    __BUILD_DATE__: JSON.stringify(new Date().toISOString()),
   },
   server: {
     port: 3031,
