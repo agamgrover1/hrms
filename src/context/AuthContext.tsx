@@ -34,7 +34,12 @@ interface AuthContextType {
   user: AppUser | null;
   users: AppUser[];
   usersLoading: boolean;
-  login: (email: string, password: string) => Promise<{ success: boolean; error?: string }>;
+  // Login returns one of three outcomes:
+  //   { success: true }                             — session issued, user set
+  //   { success: false, requires2fa: true, challenge_token } — password OK, need code
+  //   { success: false, error }                     — anything else
+  login: (email: string, password: string) => Promise<{ success: boolean; error?: string; requires2fa?: boolean; challengeToken?: string }>;
+  completeTwoFactor: (challengeToken: string, opts: { code?: string; backupCode?: string }) => Promise<{ success: boolean; error?: string }>;
   logout: () => void;
   createUser: (data: any) => Promise<{ success: boolean; error?: string }>;
   updateUser: (id: string, data: any) => Promise<void>;
@@ -81,19 +86,47 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     if (user) refreshUsers();
   }, [!!user]);
 
+  // Shared "finish login" tail — turns a raw {user} payload into the
+  // stored session + activity clock. Reused by both the plain login
+  // and the 2FA completion path.
+  const finalizeLoginPayload = (u: any): { success: true } => {
+    const appUser: AppUser = { ...u, employeeId: u.employee_id_ref };
+    setUser(appUser);
+    localStorage.setItem(SESSION_KEY, JSON.stringify(appUser));
+    const now = Date.now();
+    lastActivityRef.current = now;
+    localStorage.setItem(ACTIVITY_KEY, String(now));
+    return { success: true };
+  };
+
   const login = async (email: string, password: string) => {
     try {
-      const { user: u } = await api.login(email, password);
-      const appUser: AppUser = { ...u, employeeId: u.employee_id_ref };
-      setUser(appUser);
-      localStorage.setItem(SESSION_KEY, JSON.stringify(appUser));
-      // Seed activity timestamp so the timeout clock starts now.
-      const now = Date.now();
-      lastActivityRef.current = now;
-      localStorage.setItem(ACTIVITY_KEY, String(now));
-      return { success: true };
+      const resp = await api.login(email, password);
+      // Server can respond with a 2FA challenge instead of a session.
+      // Bubble it up so the Login page can render the OTP step; we do
+      // NOT set the user object here.
+      if ('requires_2fa' in resp && resp.requires_2fa) {
+        return { success: false, requires2fa: true, challengeToken: resp.challenge_token };
+      }
+      return finalizeLoginPayload((resp as { user: any }).user);
     } catch (err: any) {
       return { success: false, error: err.message || 'Login failed' };
+    }
+  };
+
+  const completeTwoFactor = async (
+    challengeToken: string,
+    opts: { code?: string; backupCode?: string },
+  ) => {
+    try {
+      const { user: u } = await api.loginTwoFactor({
+        challenge_token: challengeToken,
+        code: opts.code,
+        backup_code: opts.backupCode,
+      });
+      return finalizeLoginPayload(u);
+    } catch (err: any) {
+      return { success: false, error: err.message || 'Two-factor verification failed' };
     }
   };
 
@@ -187,7 +220,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   return (
     <AuthContext.Provider value={{
-      user, users, usersLoading, login, logout,
+      user, users, usersLoading, login, completeTwoFactor, logout,
       createUser, updateUser, deleteUser, toggleUserActive, refreshUsers,
     }}>
       {children}

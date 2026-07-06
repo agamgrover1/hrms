@@ -105,7 +105,23 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
 export const api = {
   // Auth
   login: (email: string, password: string) =>
-    request<{ user: any }>('/auth/login', { method: 'POST', body: JSON.stringify({ email, password }) }),
+    // Response is either { user } when 2FA is off, or
+    // { requires_2fa: true, challenge_token } when the account has TOTP
+    // enabled and needs the second-factor step.
+    request<{ user: any } | { requires_2fa: true; challenge_token: string }>(
+      '/auth/login', { method: 'POST', body: JSON.stringify({ email, password }) }),
+  loginTwoFactor: (data: { challenge_token: string; code?: string; backup_code?: string }) =>
+    request<{ user: any }>('/auth/login/2fa', { method: 'POST', body: JSON.stringify(data) }),
+  twoFactorStatus: () =>
+    request<{ enabled: boolean; enrolled_at: string | null; backup_codes_remaining: number }>('/auth/2fa/status'),
+  twoFactorSetup: () =>
+    request<{ secret: string; otpauth_url: string }>('/auth/2fa/setup', { method: 'POST', body: '{}' }),
+  twoFactorVerify: (code: string) =>
+    request<{ ok: true; backup_codes: string[] }>('/auth/2fa/verify', { method: 'POST', body: JSON.stringify({ code }) }),
+  twoFactorDisable: (code: string) =>
+    request<{ ok: true }>('/auth/2fa/disable', { method: 'POST', body: JSON.stringify({ code }) }),
+  twoFactorResetForUser: (userId: string) =>
+    request<{ ok: true; target: { id: string; name: string } }>(`/auth/2fa/reset/${userId}`, { method: 'POST', body: '{}' }),
 
   // Employees
   getEmployees: () => request<any[]>('/employees'),

@@ -1,9 +1,10 @@
 import { useState, useEffect } from 'react';
-import { Plus, Edit2, Trash2, X, Eye, EyeOff, Shield, Users, UserCheck, Search, ToggleLeft, ToggleRight, Briefcase, KeyRound, Check } from 'lucide-react';
+import { Plus, Edit2, Trash2, X, Eye, EyeOff, Shield, Users, UserCheck, Search, ToggleLeft, ToggleRight, Briefcase, KeyRound, Check, ShieldOff } from 'lucide-react';
+import { api } from '../services/api';
+import { toast } from '../components/Toaster';
 import { useAuth } from '../context/AuthContext';
 import type { AppUser, Role } from '../context/AuthContext';
 import { departments } from '../data/mockData';
-import { api } from '../services/api';
 
 const roleConfig: Record<Role, { label: string; color: string; icon: typeof Shield }> = {
   admin: { label: 'Admin', color: 'bg-danger-container text-danger border-danger/20', icon: Shield },
@@ -341,6 +342,26 @@ export default function UserManagement() {
                       >
                         <KeyRound size={14} />
                       </button>
+                      {u.id !== currentUser?.id && (
+                        <button
+                          onClick={async () => {
+                            // Locked-out recovery: nuke this user's TOTP
+                            // secret + backup codes so they can re-enroll
+                            // on next login. Confirms first because it
+                            // does effectively disable 2FA for that user
+                            // until they re-enroll.
+                            if (!confirm(`Reset 2FA for ${u.name}? They'll be able to sign in with just password, and will re-enroll from Security next time.`)) return;
+                            try {
+                              await api.twoFactorResetForUser(u.id);
+                              toast.success('2FA reset', `${u.name} can now sign in with password alone until they re-enroll.`);
+                            } catch (e: any) { toast.error('Reset failed', e?.message); }
+                          }}
+                          className="p-1.5 text-on-surface-muted hover:text-warning hover:bg-surface-2 rounded-lg transition-colors"
+                          title="Reset 2FA (they lost their phone)"
+                        >
+                          <ShieldOff size={14} />
+                        </button>
+                      )}
                       {u.id !== currentUser?.id && (
                         <button
                           onClick={() => setConfirmDelete(u.id)}

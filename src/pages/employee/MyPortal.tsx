@@ -1,8 +1,9 @@
 import { useState, useEffect, useMemo, Component, type ReactNode } from 'react';
 import { useSearchParams } from 'react-router-dom';
-import { Clock, Calendar, DollarSign, User, CheckCircle, XCircle, AlertCircle, Plus, X, Target, FileText, Lock, Trash2, Save, Users, Monitor, Briefcase, Edit2, BookOpen, Wrench, ListChecks, Circle, CheckSquare } from 'lucide-react';
+import { Clock, Calendar, DollarSign, User, CheckCircle, XCircle, AlertCircle, Plus, X, Target, FileText, Lock, Trash2, Save, Users, Monitor, Briefcase, Edit2, BookOpen, Wrench, ListChecks, Circle, CheckSquare, ShieldCheck } from 'lucide-react';
 import MyRoleTab from '../../components/MyRoleTab';
 import TodoTab from '../../components/TodoTab';
+import TwoFactorSection from '../../components/TwoFactorSection';
 import MonthSelector, { monthLabel } from '../../components/MonthSelector';
 import { leaveTypeLabel } from '../../utils/leaveLabel';
 import { formatWeekDays, isCurrentWeekOfMonth, isEmptyWeek } from '../../utils/weekRange';
@@ -337,6 +338,7 @@ const baseTabs = [
   { key: 'device',       label: 'My Device',    icon: Monitor },
   { key: 'payslip',      label: 'Pay Slip',     icon: DollarSign },
   { key: 'performance',  label: 'Performance',  icon: Target },
+  { key: 'security',     label: 'Security',     icon: ShieldCheck },
 ];
 
 const SCORE_CATEGORIES = [
@@ -2839,6 +2841,13 @@ export default function MyPortal() {
               <p className="text-xs text-on-surface-subtle mt-1">Your manager will open the appraisal window when it's time</p>
             </div>
           )}
+        </div>
+      )}
+
+      {/* ── Security (password + 2FA) ── */}
+      {tab === 'security' && (
+        <div className="space-y-5 max-w-2xl">
+          <TwoFactorSection />
         </div>
       )}
 

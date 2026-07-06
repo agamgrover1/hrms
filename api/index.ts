@@ -2,6 +2,7 @@ import express from 'express';
 import cors from 'cors';
 import { neon } from '@neondatabase/serverless';
 import bcrypt from 'bcryptjs';
+import { createHmac, randomBytes } from 'node:crypto';
 
 // Lazy Neon client — always typed as Promise<any[]> to satisfy TypeScript 6 strict mode
 let _sql: ReturnType<typeof neon> | null = null;
@@ -575,12 +576,11 @@ async function runStartupMigrations() {
   // full migration block.
   //
   // KEEP THIS PROBE POINTED AT THE MOST RECENT MIGRATION when you add one.
-  // Right now: todo_tasks.tags (added for user-managed To-Do tags /
-  // categories that the widget can filter by). If you add a newer
-  // column / table, update this SELECT to reference it so cold starts
-  // re-run migrations once after each deploy.
+  // Right now: app_users.totp_enabled (added for optional TOTP-based
+  // 2FA). If you add a newer column / table, update this SELECT to
+  // reference it so cold starts re-run migrations once after each deploy.
   try {
-    await sql`SELECT tags FROM todo_tasks LIMIT 0`;
+    await sql`SELECT totp_enabled FROM app_users LIMIT 0`;
     _migrated = true;
     return;
   } catch {
@@ -1903,6 +1903,13 @@ async function runStartupMigrations() {
     // give us ANY() / && for cheap filter queries.
     await sql`ALTER TABLE todo_tasks ADD COLUMN IF NOT EXISTS tags TEXT[] DEFAULT '{}'::text[]`.catch(()=>{});
     await sql`CREATE INDEX IF NOT EXISTS idx_todo_tags ON todo_tasks USING GIN (tags)`.catch(()=>{});
+    // TOTP-based 2FA. Secrets are base32-encoded per RFC 4648; backup
+    // codes are bcrypt-hashed (each used at most once). enrolled_at is
+    // an audit stamp so admin can see "when did this user turn on 2FA".
+    await sql`ALTER TABLE app_users ADD COLUMN IF NOT EXISTS totp_secret TEXT`.catch(()=>{});
+    await sql`ALTER TABLE app_users ADD COLUMN IF NOT EXISTS totp_enabled BOOLEAN NOT NULL DEFAULT FALSE`.catch(()=>{});
+    await sql`ALTER TABLE app_users ADD COLUMN IF NOT EXISTS totp_backup_codes TEXT[] DEFAULT '{}'::text[]`.catch(()=>{});
+    await sql`ALTER TABLE app_users ADD COLUMN IF NOT EXISTS totp_enrolled_at TIMESTAMPTZ`.catch(()=>{});
   } catch { /* columns may already exist — non-fatal */ }
 
   // ── Hours Allocation (weekly billing planner) ────────────────────────────
@@ -1988,8 +1995,26 @@ app.get('/api/health', async (_, res) => {
 });
 
 // ── Auth ──────────────────────────────────────────────────────────────────
+// Shared post-verification finalizer: builds the safe user payload the
+// client stores as its session. Reused by both /auth/login (when 2FA
+// is off) and /auth/login/2fa (when the TOTP step also succeeds).
+async function buildLoginSession(user: any): Promise<any> {
+  const { password: _pw, totp_secret: _s, totp_backup_codes: _b, ...safeUser } = user;
+  if (safeUser.employee_id_ref) {
+    const e = (await sql`
+      SELECT employee_id FROM employees
+      WHERE employee_id = ${safeUser.employee_id_ref} OR id = ${safeUser.employee_id_ref}
+      LIMIT 1`)[0] as any;
+    safeUser.employee_code = e?.employee_id ?? null;
+  } else {
+    safeUser.employee_code = null;
+  }
+  return safeUser;
+}
+
 app.post('/api/auth/login', async (req, res) => {
   try {
+    await runStartupMigrations();
     const { email, password } = req.body;
     if (!email || !password) return res.status(400).json({ error: 'Email and password required' });
     const rows = await sql`SELECT * FROM app_users WHERE LOWER(email) = LOWER(${email}) LIMIT 1`;
@@ -2001,26 +2026,179 @@ app.post('/api/auth/login', async (req, res) => {
     if (!valid) return res.status(401).json({ error: 'Invalid email or password.' });
     // Auto-upgrade plain-text to bcrypt
     if (!isHashed) { const h = await bcrypt.hash(password, 10); await sql`UPDATE app_users SET password=${h} WHERE id=${user.id}`.catch(()=>{}); }
-    const { password: _pw, ...safeUser } = user;
-    // Surface the human-readable employee code (employees.employee_id) so
-    // the UI can show e.g. DL0067 anywhere it currently shows the internal
-    // employee_id_ref.
-    if (safeUser.employee_id_ref) {
-      // employee_id_ref usually holds the human code already; defensively
-      // match on either column for legacy rows.
-      const e = (await sql`
-        SELECT employee_id FROM employees
-        WHERE employee_id = ${safeUser.employee_id_ref} OR id = ${safeUser.employee_id_ref}
-        LIMIT 1`)[0] as any;
-      safeUser.employee_code = e?.employee_id ?? null;
-    } else {
-      safeUser.employee_code = null;
+    // Password verified. If 2FA is enabled on this account, DO NOT issue
+    // the session yet — return a short-lived challenge token the client
+    // must POST back to /auth/login/2fa alongside the TOTP / backup
+    // code. Rejecting here means a stolen password on its own is
+    // useless.
+    if (user.totp_enabled) {
+      return res.json({
+        requires_2fa: true,
+        challenge_token: issueTwoFactorChallenge(user.id),
+      });
     }
-    res.json({ user: safeUser });
+    res.json({ user: await buildLoginSession(user) });
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'Server error' });
   }
+});
+
+// Second-factor completion. Accepts either a 6-digit TOTP code from
+// the authenticator app OR one of the user's 8 backup codes (matched
+// against the bcrypt hashes stored on their row). Backup codes are
+// removed from the row on use — single-use by design.
+app.post('/api/auth/login/2fa', async (req, res) => {
+  try {
+    await runStartupMigrations();
+    const { challenge_token, code, backup_code } = req.body ?? {};
+    const userId = verifyTwoFactorChallenge(challenge_token);
+    if (!userId) return res.status(401).json({ error: 'Challenge expired — please sign in again.' });
+    const rows = await sql`SELECT * FROM app_users WHERE id=${userId} LIMIT 1`;
+    if (!rows.length) return res.status(401).json({ error: 'Unknown user' });
+    const user = rows[0] as any;
+    if (!user.active) return res.status(403).json({ error: 'Account deactivated' });
+    if (!user.totp_enabled) {
+      // Someone's calling /login/2fa for a user whose 2FA got disabled
+      // between the password step and now. Refuse rather than
+      // accidentally letting them past on stale challenge.
+      return res.status(400).json({ error: 'Two-factor auth is not enabled on this account.' });
+    }
+
+    // Prefer TOTP; fall back to backup code if that field was sent.
+    let accepted = false;
+    let usedBackupIndex = -1;
+    if (code && totpVerify(user.totp_secret, code)) {
+      accepted = true;
+    } else if (backup_code) {
+      const cleaned = String(backup_code).trim().toUpperCase();
+      const hashes: string[] = Array.isArray(user.totp_backup_codes) ? user.totp_backup_codes : [];
+      for (let i = 0; i < hashes.length; i++) {
+        if (await bcrypt.compare(cleaned, hashes[i])) {
+          accepted = true; usedBackupIndex = i; break;
+        }
+      }
+    }
+    if (!accepted) return res.status(401).json({ error: 'Invalid code. Try again or use a backup code.' });
+
+    if (usedBackupIndex >= 0) {
+      // Burn the backup code so it can't be replayed.
+      const remaining = (user.totp_backup_codes as string[]).filter((_, i) => i !== usedBackupIndex);
+      await sql`UPDATE app_users SET totp_backup_codes=${remaining}::text[] WHERE id=${user.id}`;
+    }
+    res.json({ user: await buildLoginSession(user) });
+  } catch (err: any) {
+    res.status(500).json({ error: err?.message ?? 'Server error' });
+  }
+});
+
+// ── 2FA enrollment endpoints (all require a signed-in session via x-user-id) ─
+
+// Start enrollment. Generates a fresh secret, stashes it on the user's
+// row as PENDING (totp_enabled stays false), and returns the secret +
+// otpauth:// URI so the frontend can render a QR. The user must POST
+// a code to /verify next to finish enrollment.
+//
+// Calling this endpoint again for an already-enrolled user is
+// rejected — they must disable first, so re-enrollment is deliberate.
+app.post('/api/auth/2fa/setup', async (req, res) => {
+  try {
+    await runStartupMigrations();
+    const uid = req.header('x-user-id');
+    if (!uid) return res.status(401).json({ error: 'Sign in required' });
+    const user = (await sql`SELECT id, email, totp_enabled FROM app_users WHERE id=${uid}`)[0] as any;
+    if (!user) return res.status(401).json({ error: 'Unknown user' });
+    if (user.totp_enabled) return res.status(400).json({ error: '2FA is already enabled. Disable it first to re-enroll.' });
+    const secret = generateTotpSecret();
+    await sql`UPDATE app_users SET totp_secret=${secret} WHERE id=${uid}`;
+    const label = encodeURIComponent(`Digital Leap HRMS:${user.email}`);
+    const issuer = encodeURIComponent('Digital Leap HRMS');
+    const otpauth_url = `otpauth://totp/${label}?secret=${secret}&issuer=${issuer}&digits=6&period=30`;
+    res.json({ secret, otpauth_url });
+  } catch (err: any) { res.status(500).json({ error: err?.message ?? 'Server error' }); }
+});
+
+// Confirm enrollment by proving the authenticator app has the same
+// secret. On success we flip totp_enabled and hand back a fresh set
+// of backup codes (shown ONCE — the client must display these).
+app.post('/api/auth/2fa/verify', async (req, res) => {
+  try {
+    const uid = req.header('x-user-id');
+    if (!uid) return res.status(401).json({ error: 'Sign in required' });
+    const { code } = req.body ?? {};
+    const user = (await sql`SELECT id, totp_secret, totp_enabled FROM app_users WHERE id=${uid}`)[0] as any;
+    if (!user?.totp_secret) return res.status(400).json({ error: 'Start setup first (no pending secret found).' });
+    if (user.totp_enabled) return res.status(400).json({ error: '2FA is already enabled.' });
+    if (!totpVerify(user.totp_secret, code)) {
+      return res.status(401).json({ error: 'That code did not match. Try the next one your app shows.' });
+    }
+    const backupCodes = generateBackupCodes();
+    const hashed = await Promise.all(backupCodes.map(c => bcrypt.hash(c, 8)));
+    await sql`
+      UPDATE app_users SET
+        totp_enabled = TRUE,
+        totp_backup_codes = ${hashed}::text[],
+        totp_enrolled_at = NOW()
+      WHERE id=${uid}`;
+    res.json({ ok: true, backup_codes: backupCodes });
+  } catch (err: any) { res.status(500).json({ error: err?.message ?? 'Server error' }); }
+});
+
+// Turn off 2FA. Requires the current TOTP code so a stolen session
+// alone can't disable it — the attacker would also need the phone.
+app.post('/api/auth/2fa/disable', async (req, res) => {
+  try {
+    const uid = req.header('x-user-id');
+    if (!uid) return res.status(401).json({ error: 'Sign in required' });
+    const { code } = req.body ?? {};
+    const user = (await sql`SELECT id, totp_secret, totp_enabled FROM app_users WHERE id=${uid}`)[0] as any;
+    if (!user?.totp_enabled) return res.status(400).json({ error: '2FA is not enabled.' });
+    if (!totpVerify(user.totp_secret, code)) {
+      return res.status(401).json({ error: 'Enter the current 6-digit code from your authenticator to disable 2FA.' });
+    }
+    await sql`
+      UPDATE app_users SET
+        totp_enabled = FALSE,
+        totp_secret = NULL,
+        totp_backup_codes = '{}'::text[],
+        totp_enrolled_at = NULL
+      WHERE id=${uid}`;
+    res.json({ ok: true });
+  } catch (err: any) { res.status(500).json({ error: err?.message ?? 'Server error' }); }
+});
+
+// Admin-only reset: wipes another user's 2FA state so they can re-enroll
+// (used when someone lost both phone AND backup codes).
+app.post('/api/auth/2fa/reset/:userId', async (req, res) => {
+  try {
+    if (!(await isAdminOrHR(req))) return res.status(403).json({ error: 'Admin / HR only' });
+    const target = (await sql`SELECT id, name, totp_enabled FROM app_users WHERE id=${req.params.userId}`)[0] as any;
+    if (!target) return res.status(404).json({ error: 'User not found' });
+    await sql`
+      UPDATE app_users SET
+        totp_enabled = FALSE,
+        totp_secret = NULL,
+        totp_backup_codes = '{}'::text[],
+        totp_enrolled_at = NULL
+      WHERE id=${req.params.userId}`;
+    res.json({ ok: true, target: { id: target.id, name: target.name } });
+  } catch (err: any) { res.status(500).json({ error: err?.message ?? 'Server error' }); }
+});
+
+// Status lookup so the Security section can render the right buttons
+// without needing the full user object exposed on the auth payload.
+app.get('/api/auth/2fa/status', async (req, res) => {
+  try {
+    const uid = req.header('x-user-id');
+    if (!uid) return res.status(401).json({ error: 'Sign in required' });
+    const user = (await sql`SELECT totp_enabled, totp_enrolled_at, COALESCE(array_length(totp_backup_codes, 1), 0)::int AS backup_codes_remaining FROM app_users WHERE id=${uid}`)[0] as any;
+    if (!user) return res.status(401).json({ error: 'Unknown user' });
+    res.json({
+      enabled: !!user.totp_enabled,
+      enrolled_at: user.totp_enrolled_at,
+      backup_codes_remaining: user.backup_codes_remaining ?? 0,
+    });
+  } catch (err: any) { res.status(500).json({ error: err?.message ?? 'Server error' }); }
 });
 
 // ── Employees ─────────────────────────────────────────────────────────────
@@ -7896,6 +8074,114 @@ app.delete('/api/optional-leave/dates/:id', async (req, res) => {
 // ── Holidays (org-wide non-working days) ──────────────────────────────────
 // Editable by admin/HR via Config; visible to all authenticated users so the
 // holiday markings show up in attendance calendars / my-portal / my-team.
+// ── TOTP (RFC 6238) helpers ─────────────────────────────────────────────
+// Zero external deps — just Node crypto. Standard 30-second period,
+// SHA-1 hash (what Google Authenticator + Authy + 1Password default to),
+// 6-digit codes. Verify accepts a ±1-step drift window so a code entered
+// as the period boundary rolls doesn't spuriously fail.
+const TOTP_PERIOD = 30;
+const TOTP_DIGITS = 6;
+
+// Encode a Buffer as unpadded RFC-4648 base32 (the alphabet
+// authenticator apps expect).
+function base32Encode(buf: Buffer): string {
+  const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';
+  let out = ''; let bits = 0; let value = 0;
+  for (const byte of buf) {
+    value = (value << 8) | byte; bits += 8;
+    while (bits >= 5) { out += alphabet[(value >>> (bits - 5)) & 0x1f]; bits -= 5; }
+  }
+  if (bits > 0) out += alphabet[(value << (5 - bits)) & 0x1f];
+  return out;
+}
+function base32Decode(input: string): Buffer {
+  const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';
+  const clean = input.replace(/=+$/, '').toUpperCase().replace(/\s+/g, '');
+  const out: number[] = []; let bits = 0; let value = 0;
+  for (const c of clean) {
+    const idx = alphabet.indexOf(c);
+    if (idx < 0) continue;
+    value = (value << 5) | idx; bits += 5;
+    if (bits >= 8) { out.push((value >>> (bits - 8)) & 0xff); bits -= 8; }
+  }
+  return Buffer.from(out);
+}
+
+// Compute the TOTP for a given secret + counter.
+function totpAt(secret: string, counter: number): string {
+  const key = base32Decode(secret);
+  const counterBuf = Buffer.alloc(8);
+  counterBuf.writeBigUInt64BE(BigInt(counter));
+  const hmac = createHmac('sha1', key).update(counterBuf).digest();
+  const offset = hmac[hmac.length - 1] & 0x0f;
+  const bin = ((hmac[offset] & 0x7f) << 24)
+            | ((hmac[offset + 1] & 0xff) << 16)
+            | ((hmac[offset + 2] & 0xff) << 8)
+            | (hmac[offset + 3] & 0xff);
+  return String(bin % 10 ** TOTP_DIGITS).padStart(TOTP_DIGITS, '0');
+}
+
+// Verify a user-entered code against the current period ±1 step
+// (30s slack either way handles clock skew + boundary races).
+function totpVerify(secret: string | null, code: string | undefined): boolean {
+  if (!secret || !code) return false;
+  const cleaned = code.trim().replace(/\s+/g, '');
+  if (!/^\d{6}$/.test(cleaned)) return false;
+  const counter = Math.floor(Date.now() / 1000 / TOTP_PERIOD);
+  for (const drift of [-1, 0, 1]) {
+    if (totpAt(secret, counter + drift) === cleaned) return true;
+  }
+  return false;
+}
+
+// Signed short-lived (5-min) challenge token used between password
+// success and TOTP submission. HMAC-SHA256 so it's stateless — no
+// DB row needed. Signing secret: env-provided if set (recommended
+// in prod), else derived from DATABASE_URL as a stable per-deploy
+// fallback so a stolen challenge from one deploy is worthless on
+// another.
+function twoFactorSigningSecret(): string {
+  return process.env.TWOFA_SIGNING_SECRET
+      || process.env.DATABASE_URL
+      || 'insecure-fallback-set-TWOFA_SIGNING_SECRET-in-prod';
+}
+function issueTwoFactorChallenge(userId: string): string {
+  const expiresAt = Date.now() + 5 * 60_000;
+  const payload = `${Buffer.from(userId).toString('base64url')}.${expiresAt}`;
+  const sig = createHmac('sha256', twoFactorSigningSecret()).update(payload).digest('base64url');
+  return `${payload}.${sig}`;
+}
+function verifyTwoFactorChallenge(token: string | undefined): string | null {
+  if (!token || typeof token !== 'string') return null;
+  const parts = token.split('.');
+  if (parts.length !== 3) return null;
+  const [uidB64, expStr, sig] = parts;
+  const payload = `${uidB64}.${expStr}`;
+  const expected = createHmac('sha256', twoFactorSigningSecret()).update(payload).digest('base64url');
+  if (sig !== expected) return null;
+  const exp = Number(expStr);
+  if (!Number.isFinite(exp) || Date.now() > exp) return null;
+  try { return Buffer.from(uidB64, 'base64url').toString('utf8'); }
+  catch { return null; }
+}
+
+// Generate a fresh TOTP secret (160-bit per RFC 4226 recommendation).
+function generateTotpSecret(): string {
+  return base32Encode(randomBytes(20));
+}
+
+// Backup codes: 8 × 8-char (4-4 pattern for readability). Returned to
+// the user once at enrollment; stored bcrypt-hashed so a DB dump can't
+// replay them.
+function generateBackupCodes(): string[] {
+  const codes: string[] = [];
+  for (let i = 0; i < 8; i++) {
+    const raw = randomBytes(4).toString('hex').toUpperCase();
+    codes.push(`${raw.slice(0, 4)}-${raw.slice(4)}`);
+  }
+  return codes;
+}
+
 async function isAdminOrHR(req: any): Promise<boolean> {
   const userId = req.header('x-user-id') || req.query.__uid;
   if (!userId) return false;
