@@ -7189,6 +7189,12 @@ app.post('/api/performance/monthly', async (req, res) => {
     if ((existing[0] as any)?.is_locked && requester_role !== 'admin') {
       return res.status(403).json({ error: 'This review has been locked by HR and cannot be modified' });
     };
+    // Sliders can now come in as null (N/A — the reviewer explicitly
+    // toggled that pillar off because it doesn't apply to this employee).
+    // Preserve nulls so the downstream pulse pillars + trend readers can
+    // treat "not rated" differently from "rated 0". Numeric values are
+    // clamped to [0, 100] as a defensive backstop.
+    const numOrNull = (v: any) => v == null ? null : Math.max(0, Math.min(100, Number(v)));
     const rows = await sql`
       INSERT INTO monthly_performance
         (employee_id, reviewer_id, reviewer_name, month, year,
@@ -7198,9 +7204,11 @@ app.post('/api/performance/monthly', async (req, res) => {
          overall_score, comments, parameter_notes, updated_at)
       VALUES
         (${employee_id}, ${reviewer_id ?? null}, ${reviewer_name ?? null}, ${month}, ${year},
-         ${productivity}, ${quality}, ${teamwork}, ${attendance_score}, ${initiative},
-         ${client_satisfaction ?? 0}, ${ai_usage ?? 75},
-         ${communication ?? 75}, ${ownership ?? 75}, ${planning_accuracy ?? 75}, ${learning_growth ?? 75},
+         ${numOrNull(productivity)}, ${numOrNull(quality)}, ${numOrNull(teamwork)},
+         ${numOrNull(attendance_score)}, ${numOrNull(initiative)},
+         ${numOrNull(client_satisfaction)}, ${numOrNull(ai_usage)},
+         ${numOrNull(communication)}, ${numOrNull(ownership)},
+         ${numOrNull(planning_accuracy)}, ${numOrNull(learning_growth)},
          ${overall_score}, ${comments ?? null}, ${paramNotesJson}, NOW())
       ON CONFLICT (employee_id, month, year) DO UPDATE SET
         reviewer_id=EXCLUDED.reviewer_id, reviewer_name=EXCLUDED.reviewer_name,

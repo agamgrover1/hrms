@@ -71,18 +71,62 @@ function RejectInput({ onClose, onConfirm, placeholder = 'Enter reason…', conf
 }
 
 // ── Score slider ──────────────────────────────────────────────────────────────
-function ScoreSlider({ label, value, onChange }: { label: string; value: number; onChange: (v: number) => void }) {
+// Score slider with an N/A toggle. Marking a slider N/A stores null on
+// the parent so:
+//   1) that pillar doesn't drag the overall_score (denominator drops)
+//   2) downstream pulse / trend readers see "no rating" instead of 0/75
+// Use this when a pillar genuinely doesn't apply — a junior IC on
+// Client Handling, an admin on Team Stewardship (they have no manager),
+// etc. Any slider left as a number contributes normally.
+function ScoreSlider({ label, value, onChange }: {
+  label: string;
+  value: number | null;
+  onChange: (v: number | null) => void;
+}) {
+  const isNA = value === null;
   return (
     <div>
-      <div className="flex justify-between mb-1.5">
+      <div className="flex justify-between items-center mb-1.5">
         <label className="text-xs font-semibold text-on-surface-muted">{label}</label>
-        <span className="num-mono text-xs font-bold" style={{ color: perfColor(value) }}>{value}</span>
+        <div className="flex items-center gap-2">
+          {!isNA && (
+            <span className="num-mono text-xs font-bold" style={{ color: perfColor(value) }}>{value}</span>
+          )}
+          <button type="button"
+            onClick={() => onChange(isNA ? 75 : null)}
+            title={isNA ? 'Include this pillar' : 'Mark not applicable — excludes from overall'}
+            className={`text-[10px] font-semibold px-1.5 py-0.5 rounded border transition-colors ${
+              isNA
+                ? 'bg-accent text-on-accent border-accent'
+                : 'text-on-surface-subtle border-outline hover:border-accent/50 hover:text-on-surface-muted'}`}>
+            {isNA ? 'N/A ✓' : 'N/A'}
+          </button>
+        </div>
       </div>
-      <input type="range" min={0} max={100} value={value} onChange={e => onChange(Number(e.target.value))}
-        className="w-full h-1.5 rounded-full appearance-none cursor-pointer"
-        style={{ accentColor: 'rgb(var(--accent))' }} />
+      <input
+        type="range" min={0} max={100}
+        value={isNA ? 75 : (value as number)}
+        disabled={isNA}
+        onChange={e => onChange(Number(e.target.value))}
+        className="w-full h-1.5 rounded-full appearance-none cursor-pointer disabled:opacity-30 disabled:cursor-not-allowed"
+        style={{ accentColor: 'rgb(var(--accent))' }}
+      />
+      {isNA && (
+        <p className="text-[10px] text-on-surface-subtle italic mt-0.5">
+          Excluded from overall score. Use when this pillar doesn't apply to this employee.
+        </p>
+      )}
     </div>
   );
+}
+
+// Overall = mean of the non-N/A pillar scores. Returns null when EVERY
+// slider is N/A (defensive; UI stops the reviewer from submitting in
+// that case).
+function computeOverall(scores: Record<string, number | null>): number | null {
+  const nums = Object.values(scores).filter((v): v is number => v != null);
+  if (!nums.length) return null;
+  return Math.round(nums.reduce((s, n) => s + n, 0) / nums.length);
 }
 
 // ── Main component ────────────────────────────────────────────────────────────
@@ -332,9 +376,16 @@ export default function MyTeam() {
   // ── Performance state ───────────────────────────────────────────────────────
   const [teamPerf, setTeamPerf] = useState<Record<string, any[]>>({});
   const [showReview, setShowReview] = useState<any | null>(null);
-  const [scores, setScores] = useState<Record<string, number>>(() =>
+  // Scores hold either a number (0-100) OR null (N/A — pillar excluded
+  // from overall_score, downstream consumers see "not rated").
+  const [scores, setScores] = useState<Record<string, number | null>>(() =>
     Object.fromEntries(SCORE_CATEGORIES.map(c => [c.key, 75]))
   );
+  // Track whether the modal is editing an existing review vs adding one —
+  // drives button label ("Save Review" vs "Update Review") and the header
+  // affordance so Vansh knows he's editing, not writing a fresh one.
+  const [editingExisting, setEditingExisting] = useState(false);
+  const [existingLocked, setExistingLocked] = useState(false);
   const [reviewComment, setReviewComment] = useState('');
   // Review period picker — defaults to LAST month since managers usually add
   // reviews in the first week of the new month for the prior month's work.
@@ -478,23 +529,62 @@ export default function MyTeam() {
   };
 
   // ── Performance handlers ────────────────────────────────────────────────────
-  const openReview = (member: any) => {
-    setShowReview(member);
-    setScores(Object.fromEntries(SCORE_CATEGORIES.map(c => [c.key, 75])));
-    setReviewComment('');
-    setParamNotes({});
+  // Look up a saved review for (member, month, year) and hydrate the
+  // modal state from it. Called on open AND whenever the reviewer flips
+  // the month picker — otherwise editing a different month started with
+  // stale slider values from whatever was open before.
+  const loadReviewFor = (member: any, month: number, year: number) => {
+    const perf = teamPerf[member.id] ?? [];
+    const existing = perf.find((r: any) => r.month === month && r.year === year);
+    if (existing) {
+      // Prefill sliders from the saved row. null (from the DB or a
+      // deliberate N/A) survives as null so the toggle renders correctly.
+      const filled: Record<string, number | null> = {};
+      for (const c of SCORE_CATEGORIES) {
+        const v = existing[c.key as keyof typeof existing];
+        filled[c.key] = v == null ? null : Number(v);
+      }
+      setScores(filled);
+      setReviewComment(existing.comments ?? '');
+      setParamNotes(existing.parameter_notes ?? {});
+      setEditingExisting(true);
+      setExistingLocked(!!existing.is_locked);
+    } else {
+      setScores(Object.fromEntries(SCORE_CATEGORIES.map(c => [c.key, 75])));
+      setReviewComment('');
+      setParamNotes({});
+      setEditingExisting(false);
+      setExistingLocked(false);
+    }
     setReviewError('');
   };
 
+  const openReview = (member: any) => {
+    setShowReview(member);
+    loadReviewFor(member, reviewMonth, reviewYear);
+  };
+
+  // Re-hydrate whenever the reviewer changes the month/year picker while
+  // the modal is open — otherwise flipping from Jun to May shows Jun's
+  // saved values, which is worse than showing nothing.
+  useEffect(() => {
+    if (showReview) loadReviewFor(showReview, reviewMonth, reviewYear);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [reviewMonth, reviewYear]);
+
   const handleSaveReview = async () => {
     if (!showReview || !empDbId) return;
+    if (existingLocked) { setReviewError('HR has locked this review. Ask HR to unlock it to make changes.'); return; }
+    const overall = computeOverall(scores);
+    if (overall == null) { setReviewError('At least one pillar must be scored. All sliders are marked N/A.'); return; }
     setSavingReview(true);
     setReviewError('');
     try {
-      const overall = Math.round(Object.values(scores).reduce((a, b) => a + b, 0) / SCORE_CATEGORIES.length);
       await api.saveMonthlyPerformance({
         employee_id: showReview.id, reviewer_id: empDbId, reviewer_name: user?.name,
         month: reviewMonth, year: reviewYear,
+        // Send each field through as-is (including null for N/A). Backend
+        // stores NULL and skips it in aggregate math.
         ...Object.fromEntries(SCORE_CATEGORIES.map(c => [c.key, scores[c.key]])) as any,
         overall_score: overall, comments: reviewComment,
         parameter_notes: paramNotes,
@@ -1157,10 +1247,19 @@ export default function MyTeam() {
                         <p className="text-xs text-on-surface-muted">{MONTHS_SHORT[latest.month - 1]}</p>
                       </div>
                     )}
-                    <button onClick={() => openReview(member)}
-                      className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-lg border border-outline text-on-surface hover:bg-surface-2 transition-colors">
-                      <TrendingUp size={12} /> Add Review
-                    </button>
+                    {(() => {
+                      // Show "Edit" when a review already exists for the
+                      // currently-selected review period, so the reviewer
+                      // knows the button won't erase their previous entry.
+                      const memberPerf = teamPerf[member.id] ?? [];
+                      const hasCurrent = memberPerf.some((r: any) => r.month === reviewMonth && r.year === reviewYear);
+                      return (
+                        <button onClick={() => openReview(member)}
+                          className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-lg border border-outline text-on-surface hover:bg-surface-2 transition-colors">
+                          <TrendingUp size={12} /> {hasCurrent ? 'Edit Review' : 'Add Review'}
+                        </button>
+                      );
+                    })()}
                     <button onClick={() => setWarnTarget(member)}
                       className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-lg border border-warning/30 text-warning hover:bg-warning-container transition-colors">
                       <AlertCircle size={12} /> Warn
@@ -1241,9 +1340,13 @@ export default function MyTeam() {
             <div className="flex items-center justify-between px-6 py-5 text-white"
               style={{ background: 'linear-gradient(135deg, rgb(var(--brand)) 0%, rgb(var(--primary)) 100%)' }}>
               <div>
-                <h3 className="font-display text-xl font-bold tracking-tight">Monthly Review</h3>
+                <h3 className="font-display text-xl font-bold tracking-tight">
+                  {editingExisting ? 'Edit Monthly Review' : 'Monthly Review'}
+                  {existingLocked && <span className="ml-2 text-[10px] font-semibold uppercase tracking-wider bg-white/20 px-2 py-0.5 rounded-full align-middle">Locked by HR</span>}
+                </h3>
                 <p className="text-sm mt-0.5 text-white/60">
                   {showReview.name} · for <span className="font-semibold text-white">{MONTHS_SHORT[reviewMonth - 1]} <span className="num-mono">{reviewYear}</span></span>
+                  {editingExisting && !existingLocked && <span className="ml-2 text-[11px] text-white/70">· editing your saved review</span>}
                 </p>
               </div>
               <button onClick={() => setShowReview(null)}><X size={18} className="text-white/60 hover:text-white" /></button>
@@ -1267,12 +1370,26 @@ export default function MyTeam() {
                   </select>
                 </div>
               </div>
-              {/* Overall preview */}
+              {/* Overall preview — mean of the non-N/A pillars. If every
+                  pillar is N/A we show "—" instead of NaN, and the save
+                  button below is disabled with a helpful error. */}
               <div className="rounded-xl-2 p-3 text-center bg-surface-2 border border-outline">
                 <p className="text-xs font-semibold uppercase tracking-wide text-on-surface-muted mb-1">Overall Score</p>
                 {(() => {
-                  const overall = Math.round(Object.values(scores).reduce((a, b) => a + b, 0) / SCORE_CATEGORIES.length);
-                  return <p className="num-mono text-3xl font-semibold" style={{ color: perfColor(overall) }}>{overall}</p>;
+                  const overall = computeOverall(scores);
+                  const naCount = Object.values(scores).filter(v => v === null).length;
+                  return (
+                    <>
+                      {overall == null
+                        ? <p className="num-mono text-3xl font-semibold text-on-surface-subtle">—</p>
+                        : <p className="num-mono text-3xl font-semibold" style={{ color: perfColor(overall) }}>{overall}</p>}
+                      {naCount > 0 && (
+                        <p className="text-[11px] text-on-surface-subtle mt-1">
+                          Averaged across {SCORE_CATEGORIES.length - naCount} of {SCORE_CATEGORIES.length} pillars · {naCount} marked N/A
+                        </p>
+                      )}
+                    </>
+                  );
                 })()}
               </div>
               {/* Pulse context — data view for the reviewer to reference */}
@@ -1307,9 +1424,11 @@ export default function MyTeam() {
             )}
             <div className="flex gap-3 px-6 py-4 border-t border-outline">
               <button onClick={() => setShowReview(null)} className="flex-1 py-2.5 border border-outline rounded-xl-2 text-sm font-semibold text-on-surface-muted hover:bg-surface-2 transition-colors">Cancel</button>
-              <button onClick={handleSaveReview} disabled={savingReview}
-                className="flex-1 py-2.5 text-on-accent rounded-xl-2 text-sm font-semibold disabled:opacity-60 flex items-center justify-center gap-2 bg-accent hover:opacity-90 transition-opacity">
-                {savingReview ? <><RefreshCw size={14} className="animate-spin" /> Saving…</> : <><Save size={14} /> Save Review</>}
+              <button onClick={handleSaveReview} disabled={savingReview || existingLocked}
+                className="flex-1 py-2.5 text-on-accent rounded-xl-2 text-sm font-semibold disabled:opacity-60 disabled:cursor-not-allowed flex items-center justify-center gap-2 bg-accent hover:opacity-90 transition-opacity">
+                {savingReview
+                  ? <><RefreshCw size={14} className="animate-spin" /> Saving…</>
+                  : <><Save size={14} /> {editingExisting ? 'Update Review' : 'Save Review'}</>}
               </button>
             </div>
           </div>

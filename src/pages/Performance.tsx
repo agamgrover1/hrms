@@ -30,7 +30,11 @@ const CATEGORIES = [
 ] as const;
 
 type CategoryKey = typeof CATEGORIES[number]['key'];
-type Scores = Record<CategoryKey, number>;
+// Number = rated, null = N/A (pillar doesn't apply to this employee —
+// e.g. Client Handling for a junior IC). N/A pillars are excluded from
+// the overall_score denominator so juniors aren't penalised for a
+// dimension that isn't relevant to their role.
+type Scores = Record<CategoryKey, number | null>;
 
 // ─── Goal status config (shared across admin + employee views) ───────────────
 export const GOAL_STATUSES = ['not_started', 'touched', 'in_progress', 'completed'] as const;
@@ -141,12 +145,13 @@ function scoreBadge(score: number) {
 function ScoreInput({
   label, value, onChange, note, onNoteChange,
 }: {
-  label: string; value: number; onChange: (v: number) => void;
+  label: string; value: number | null; onChange: (v: number | null) => void;
   note?: string; onNoteChange?: (v: string) => void;
 }) {
-  const [raw, setRaw] = useState(String(value));
+  const isNA = value === null;
+  const [raw, setRaw] = useState(String(value ?? 75));
 
-  useEffect(() => { setRaw(String(value)); }, [value]);
+  useEffect(() => { setRaw(String(value ?? 75)); }, [value]);
 
   const handleText = (e: React.ChangeEvent<HTMLInputElement>) => {
     const v = e.target.value;
@@ -165,20 +170,37 @@ function ScoreInput({
     <div className="space-y-1.5">
       <div className="flex items-center justify-between gap-3">
         <label className="text-sm font-semibold flex-1 text-on-surface">{label}</label>
-        <input
-          type="number" min={0} max={100}
-          value={raw}
-          onChange={handleText}
-          onBlur={handleBlur}
-          className={`w-16 text-center bg-surface border border-outline rounded-lg px-2 py-1 text-sm font-bold focus:outline-none focus:border-accent focus:ring-2 focus:ring-accent/20 num-mono ${scoreColorClass(value)}`}
-        />
+        <div className="flex items-center gap-2">
+          <button type="button"
+            onClick={() => onChange(isNA ? 75 : null)}
+            title={isNA ? 'Include this pillar' : 'Not applicable — excludes from overall'}
+            className={`text-[10px] font-semibold px-2 py-0.5 rounded border transition-colors ${
+              isNA
+                ? 'bg-accent text-on-accent border-accent'
+                : 'text-on-surface-subtle border-outline hover:border-accent/50 hover:text-on-surface-muted'}`}>
+            {isNA ? 'N/A ✓' : 'N/A'}
+          </button>
+          <input
+            type="number" min={0} max={100}
+            value={raw}
+            disabled={isNA}
+            onChange={handleText}
+            onBlur={handleBlur}
+            className={`w-16 text-center bg-surface border border-outline rounded-lg px-2 py-1 text-sm font-bold focus:outline-none focus:border-accent focus:ring-2 focus:ring-accent/20 num-mono disabled:opacity-30 ${isNA ? '' : scoreColorClass(value as number)}`}
+          />
+        </div>
       </div>
       <input
-        type="range" min={0} max={100} value={value}
+        type="range" min={0} max={100}
+        value={isNA ? 75 : (value as number)}
+        disabled={isNA}
         onChange={e => onChange(Number(e.target.value))}
-        className="w-full h-2 rounded-full appearance-none cursor-pointer bg-surface-2"
+        className="w-full h-2 rounded-full appearance-none cursor-pointer bg-surface-2 disabled:opacity-30 disabled:cursor-not-allowed"
         style={{ accentColor: 'rgb(var(--accent))' }}
       />
+      {isNA && (
+        <p className="text-[11px] text-on-surface-subtle italic">Excluded from overall score.</p>
+      )}
       {onNoteChange !== undefined && (
         <textarea
           value={note ?? ''}
@@ -201,26 +223,42 @@ function AddReviewModal({
   employee: any; month: number; year: number; existing?: any; reviewer: any;
   onSave: () => void; onClose: () => void;
 }) {
+  // Prefill from the saved review when editing. `existing[key]` is null
+  // when the reviewer previously marked that pillar N/A; keep it null.
+  // Only fall back to 75 when the field is truly absent (new review).
+  const initial = (key: string): number | null => {
+    if (!existing) return 75;
+    const v = (existing as any)[key];
+    return v == null ? null : Number(v);
+  };
   const [scores, setScores] = useState<Scores>({
-    productivity:        existing?.productivity        ?? 75,
-    quality:             existing?.quality             ?? 75,
-    teamwork:            existing?.teamwork            ?? 75,
-    attendance_score:    existing?.attendance_score    ?? 75,
-    initiative:          existing?.initiative          ?? 75,
-    client_satisfaction: existing?.client_satisfaction ?? 75,
-    ai_usage:            existing?.ai_usage            ?? 75,
-    communication:       existing?.communication       ?? 75,
-    ownership:           existing?.ownership           ?? 75,
-    planning_accuracy:   existing?.planning_accuracy   ?? 75,
-    learning_growth:     existing?.learning_growth     ?? 75,
+    productivity:        initial('productivity'),
+    quality:             initial('quality'),
+    teamwork:            initial('teamwork'),
+    attendance_score:    initial('attendance_score'),
+    initiative:          initial('initiative'),
+    client_satisfaction: initial('client_satisfaction'),
+    ai_usage:            initial('ai_usage'),
+    communication:       initial('communication'),
+    ownership:           initial('ownership'),
+    planning_accuracy:   initial('planning_accuracy'),
+    learning_growth:     initial('learning_growth'),
   });
   const [paramNotes, setParamNotes] = useState<Record<string, string>>(existing?.parameter_notes ?? {});
   const [comments, setComments] = useState(existing?.comments ?? '');
   const [saving, setSaving] = useState(false);
 
-  const overall = Math.round(Object.values(scores).reduce((a, b) => a + b, 0) / CATEGORIES.length);
+  // Overall = mean of the non-N/A pillars. All-N/A collapses to null and
+  // save is blocked below.
+  const _nums = Object.values(scores).filter((v): v is number => v != null);
+  const overall = _nums.length ? Math.round(_nums.reduce((s, n) => s + n, 0) / _nums.length) : null;
+  const naCount = CATEGORIES.length - _nums.length;
+  const isEditing = !!existing;
+  const isLocked = !!existing?.is_locked;
 
   const handleSave = async () => {
+    if (overall == null) return; // every slider was N/A — button is disabled anyway
+    if (isLocked) return;
     setSaving(true);
     try {
       await api.saveMonthlyPerformance({
@@ -228,7 +266,7 @@ function AddReviewModal({
         reviewer_id: reviewer?.id,
         reviewer_name: reviewer?.name,
         month, year,
-        ...scores,
+        ...scores, // null values pass through as NULL to the backend
         overall_score: overall,
         comments,
         parameter_notes: paramNotes,
@@ -257,12 +295,25 @@ function AddReviewModal({
         </div>
 
         <div className="p-5 space-y-5">
-          {/* Overall score preview */}
+          {/* Overall score preview — average of the non-N/A pillars. */}
           <div className="rounded-xl-2 p-4 text-center bg-surface-2 border border-outline">
             <p className="text-xs font-semibold uppercase tracking-wide text-on-surface-subtle mb-1">Overall Score</p>
-            <p className={`num-mono text-4xl font-bold ${scoreColorClass(overall)}`}>{overall}</p>
-            <p className={`text-xs font-semibold mt-1 ${scoreColorClass(overall)}`}>{scoreBadge(overall).label}</p>
-            <p className="text-xs text-on-surface-subtle mt-1">Average of <span className="num-mono">{CATEGORIES.length}</span> parameters</p>
+            {overall == null ? (
+              <>
+                <p className="num-mono text-4xl font-bold text-on-surface-subtle">—</p>
+                <p className="text-xs text-danger mt-1">At least one pillar must be scored.</p>
+              </>
+            ) : (
+              <>
+                <p className={`num-mono text-4xl font-bold ${scoreColorClass(overall)}`}>{overall}</p>
+                <p className={`text-xs font-semibold mt-1 ${scoreColorClass(overall)}`}>{scoreBadge(overall).label}</p>
+                <p className="text-xs text-on-surface-subtle mt-1">
+                  Average of <span className="num-mono">{CATEGORIES.length - naCount}</span> of <span className="num-mono">{CATEGORIES.length}</span> parameters
+                  {naCount > 0 && <> · <span className="num-mono">{naCount}</span> marked N/A</>}
+                </p>
+              </>
+            )}
+            {isLocked && <p className="text-[11px] font-semibold uppercase tracking-wider text-warning mt-2">Locked by HR — unlock to edit</p>}
           </div>
 
           {/* Pulse pillars (computed view) + raw signals (facts view).
@@ -350,10 +401,11 @@ function AddReviewModal({
           </button>
           <button
             onClick={handleSave}
-            disabled={saving}
-            className="flex-1 py-2.5 bg-accent text-on-accent rounded-xl-2 text-sm font-semibold disabled:opacity-60 hover:opacity-90 shadow-elev-1 hover:shadow-elev-2 transition-all"
+            disabled={saving || overall == null || isLocked}
+            title={isLocked ? 'HR has locked this review' : overall == null ? 'At least one pillar must be scored' : ''}
+            className="flex-1 py-2.5 bg-accent text-on-accent rounded-xl-2 text-sm font-semibold disabled:opacity-60 disabled:cursor-not-allowed hover:opacity-90 shadow-elev-1 hover:shadow-elev-2 transition-all"
           >
-            {saving ? 'Saving…' : 'Save Review'}
+            {saving ? 'Saving…' : isEditing ? 'Update Review' : 'Save Review'}
           </button>
         </div>
       </div>
@@ -915,15 +967,22 @@ export default function Performance() {
                     ) : (
                       <div className="space-y-3">
                         {CATEGORIES.map(({ key, label }) => {
-                          const avg = Math.round(monthlyData.reduce((a, r) => a + (r[key] ?? 0), 0) / monthlyData.length);
+                          // Skip nulls (N/A) — averaging over 0 for
+                          // pillars the reviewer marked "not applicable"
+                          // would drag every category to near-zero as
+                          // soon as one N/A entry landed.
+                          const rated = monthlyData.map(r => r[key]).filter((v): v is number => v != null);
+                          const avg = rated.length ? Math.round(rated.reduce((a, n) => a + n, 0) / rated.length) : null;
                           return (
                             <div key={key}>
                               <div className="flex justify-between text-xs mb-1">
                                 <span className="font-medium text-on-surface-muted">{label}</span>
-                                <span className={`font-bold num-mono ${scoreColorClass(avg)}`}>{avg}</span>
+                                {avg == null
+                                  ? <span className="font-bold text-on-surface-subtle">N/A</span>
+                                  : <span className={`font-bold num-mono ${scoreColorClass(avg)}`}>{avg}</span>}
                               </div>
                               <div className="h-2 bg-surface-2 rounded-full overflow-hidden">
-                                <div className="h-full rounded-full transition-all bg-accent" style={{ width: `${avg}%` }} />
+                                <div className="h-full rounded-full transition-all bg-accent" style={{ width: `${avg ?? 0}%` }} />
                               </div>
                             </div>
                           );
