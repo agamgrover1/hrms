@@ -83,17 +83,20 @@ const ROLE_PILL: Record<string, { label: string; bg: string; color: string }> = 
   employee:            { label: 'Employee',      bg: 'rgba(255,255,255,0.08)', color: 'rgba(255,255,255,0.7)' },
 };
 
-// Version stamp at the bottom of the sidebar. Reads the git commit SHA
-// baked in at build time (__APP_VERSION__ from vite.config.ts) plus the
-// build timestamp so users can eyeball freshness at a glance instead of
-// staring at a hardcoded "v1.0" that never budges.
+// Version stamp at the bottom of the sidebar. Shows a human-readable
+// semver ("v1.4") plus how long ago this bundle was built.
 //
 // Renders:
-//   DL · HRMS · v9bd129f
-//   deployed 6h ago                     (title="2026-07-06 14:23 UTC · full-sha")
+//   DL · HRMS · v1.4
+//   deployed 6h ago              (hover: "SHA: 11fd36e · Built: 6 Jul 2026, 14:23")
 //
-// Local-only dev builds (SHA starts with "local-") show a "dev" label so
-// there's no confusion about which build is running.
+// Semver auto-increments per deploy: MAJOR comes from vite.config's
+// VERSION_MAJOR constant (bumped manually for real releases), MINOR is
+// the commit count since VERSION_BASELINE_SHA. The full git SHA + build
+// timestamp move to the hover tooltip for anyone who needs it.
+//
+// Local dev builds (SHA prefix "local-") render as "vdev" so there's no
+// confusion about which build is running when the dev server is up.
 function humanizeAgo(iso: string): string {
   try {
     const then = new Date(iso).getTime();
@@ -112,18 +115,19 @@ function humanizeAgo(iso: string): string {
 }
 function SidebarVersionStamp() {
   const sha = typeof __APP_VERSION__ !== 'undefined' ? __APP_VERSION__ : '';
+  const semver = typeof __APP_SEMVER__ !== 'undefined' ? __APP_SEMVER__ : '';
   const buildDate = typeof __BUILD_DATE__ !== 'undefined' ? __BUILD_DATE__ : '';
   const isLocal = sha.startsWith('local-');
-  const shortSha = isLocal ? 'dev' : (sha.slice(0, 7) || '—');
+  const display = isLocal ? 'dev' : (semver || '—');
   const ago = buildDate ? humanizeAgo(buildDate) : '';
   const tooltip = [
-    sha && `Version: ${sha}`,
+    !isLocal && sha && `SHA: ${sha.slice(0, 7)}`,
     buildDate && `Built: ${new Date(buildDate).toLocaleString('en-IN', { dateStyle: 'medium', timeStyle: 'short' })}`,
   ].filter(Boolean).join('\n');
   return (
     <div title={tooltip} className="mt-2 space-y-0.5 select-none cursor-help">
       <p className="text-[10px] text-white/25 text-center font-mono tracking-wider">
-        DL · HRMS · v<span className="text-white/40">{shortSha}</span>
+        DL · HRMS · v<span className="text-white/40">{display}</span>
       </p>
       {ago && (
         <p className="text-[9px] text-white/20 text-center font-mono">
