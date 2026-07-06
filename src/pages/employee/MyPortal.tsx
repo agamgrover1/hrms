@@ -1,9 +1,10 @@
-import { useState, useEffect, useMemo, Component, type ReactNode } from 'react';
+import { Fragment, useState, useEffect, useMemo, Component, type ReactNode } from 'react';
 import { useSearchParams } from 'react-router-dom';
-import { Clock, Calendar, DollarSign, User, CheckCircle, XCircle, AlertCircle, Plus, X, Target, FileText, Lock, Trash2, Save, Users, Monitor, Briefcase, Edit2, BookOpen, Wrench, ListChecks, Circle, CheckSquare, ShieldCheck } from 'lucide-react';
+import { Clock, Calendar, DollarSign, User, CheckCircle, XCircle, AlertCircle, Plus, X, Target, FileText, Lock, Trash2, Save, Users, Monitor, Briefcase, Edit2, BookOpen, Wrench, ListChecks, Circle, CheckSquare, ShieldCheck, ChevronDown, ChevronRight, MessageSquare } from 'lucide-react';
 import MyRoleTab from '../../components/MyRoleTab';
 import TodoTab from '../../components/TodoTab';
 import TwoFactorSection from '../../components/TwoFactorSection';
+import { ReviewCommentsPanel } from '../Performance';
 import MonthSelector, { monthLabel } from '../../components/MonthSelector';
 import { leaveTypeLabel } from '../../utils/leaveLabel';
 import { formatWeekDays, isCurrentWeekOfMonth, isEmptyWeek } from '../../utils/weekRange';
@@ -637,6 +638,10 @@ export default function MyPortal() {
   const [payroll, setPayroll] = useState<any | null>(null);
   const [balance, setBalance] = useState<any>({ casual: 0, sick: 0, earned: 0 });
   const [monthlyPerf, setMonthlyPerf] = useState<any[]>([]);
+  // Which month row on the personal Score Breakdown table is expanded
+  // to show the reviewer's comments + per-pillar notes. Only one open
+  // at a time; null = all collapsed.
+  const [expandedPerfMonth, setExpandedPerfMonth] = useState<number | null>(null);
   const [empDbId, setEmpDbId] = useState('');
   // Self-review modal — employee files their own scores before the
   // manager closes the review. Anchored to the prior calendar month.
@@ -2676,20 +2681,45 @@ export default function MyPortal() {
                 <tbody>
                   {monthlyPerf.length === 0 ? (
                     <tr><td colSpan={8} className="text-center text-on-surface-subtle text-sm py-10">No reviews yet for {currentYear}</td></tr>
-                  ) : monthlyPerf.map(r => (
-                    <tr key={r.id} className="border-t border-gray-50 hover:bg-surface-2/50">
-                      <td className="px-4 py-3 font-semibold" style={{ color: '#192250' }}>{MONTHS_SHORT[r.month - 1]}</td>
-                      {PERF_KEYS.map((k, i) => (
-                        <td key={i} className="px-2 py-3 text-center font-bold tabular-nums" style={{ color: perfColor(r[k] ?? 0) }}>{r[k] ?? 0}</td>
-                      ))}
-                      <td className="px-3 py-3 text-center">
-                        <span className="inline-flex px-2 py-0.5 rounded-full text-xs font-bold"
-                          style={{ background: `${perfColor(r.overall_score)}18`, color: perfColor(r.overall_score) }}>
-                          {r.overall_score}
-                        </span>
-                      </td>
-                    </tr>
-                  ))}
+                  ) : monthlyPerf.map(r => {
+                    const isExpanded = expandedPerfMonth === r.month;
+                    const hasNotes = (r.comments && String(r.comments).trim() !== '')
+                      || Object.values(r.parameter_notes ?? {}).some((v: any) => v && String(v).trim() !== '');
+                    return (
+                    <Fragment key={r.id}>
+                      <tr className="border-t border-gray-50 hover:bg-surface-2/50">
+                        <td className="px-4 py-3 font-semibold" style={{ color: '#192250' }}>
+                          <button
+                            onClick={() => setExpandedPerfMonth(cur => cur === r.month ? null : r.month)}
+                            title={hasNotes ? "Show reviewer's comments" : 'No comments on this review'}
+                            className="inline-flex items-center gap-1.5 hover:opacity-80 transition-opacity"
+                          >
+                            {isExpanded
+                              ? <ChevronDown size={13} style={{ color: '#EE2770' }} />
+                              : <ChevronRight size={13} className="text-on-surface-subtle" />}
+                            <span>{MONTHS_SHORT[r.month - 1]}</span>
+                            {hasNotes && !isExpanded && <MessageSquare size={10} style={{ color: '#EE2770' }} />}
+                          </button>
+                        </td>
+                        {PERF_KEYS.map((k, i) => (
+                          <td key={i} className="px-2 py-3 text-center font-bold tabular-nums" style={{ color: perfColor(r[k] ?? 0) }}>{r[k] ?? 0}</td>
+                        ))}
+                        <td className="px-3 py-3 text-center">
+                          <span className="inline-flex px-2 py-0.5 rounded-full text-xs font-bold"
+                            style={{ background: `${perfColor(r.overall_score)}18`, color: perfColor(r.overall_score) }}>
+                            {r.overall_score}
+                          </span>
+                        </td>
+                      </tr>
+                      {isExpanded && (
+                        <tr className="bg-surface-2/40">
+                          <td colSpan={PERF_KEYS.length + 2} className="px-4 py-3">
+                            <ReviewCommentsPanel record={r} />
+                          </td>
+                        </tr>
+                      )}
+                    </Fragment>);
+                  })}
                 </tbody>
               </table>
             </div>

@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
+import { Fragment, useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Cell
 } from 'recharts';
@@ -139,6 +139,69 @@ function scoreBadge(score: number) {
   if (score >= 70) return { bg: '#e0e4f5', text: '#192250', label: 'Good',       className: 'bg-brand-container text-on-brand-container' };
   if (score >= 50) return { bg: '#fef3c7', text: '#92400e', label: 'Average',    className: 'bg-warning-container text-warning' };
   return            { bg: '#fee2e2', text: '#991b1b', label: 'Needs Work', className: 'bg-danger-container text-danger' };
+}
+
+// ─── Reviewer comments + per-pillar notes panel ─────────────────────────
+// Rendered inside the monthly review row when the user expands it.
+// Shows everything the reviewer typed but the historical grid was
+// hiding — the overall Comments plus every per-pillar note that had
+// text in it. Same panel is used across the Performance page,
+// MyPortal, and MyTeam so admin / employee / reviewer all get the
+// same detail on the same click.
+export function ReviewCommentsPanel({ record }: { record: any }) {
+  const notes = record?.parameter_notes ?? {};
+  // Match every note key to its human-readable label from CATEGORIES;
+  // ignore keys the reviewer left blank so the panel doesn't render a
+  // row of empty labels.
+  const noteRows = CATEGORIES
+    .map(c => ({ key: c.key, label: c.label, note: String(notes[c.key] ?? '').trim() }))
+    .filter(r => r.note !== '');
+  const hasComments = record?.comments && String(record.comments).trim() !== '';
+  const hasAny = hasComments || noteRows.length > 0;
+
+  if (!hasAny) {
+    return (
+      <p className="text-xs text-on-surface-subtle italic">
+        No comments or per-pillar notes recorded on this review.
+      </p>
+    );
+  }
+
+  return (
+    <div className="space-y-3">
+      {hasComments && (
+        <div>
+          <p className="text-[10px] uppercase tracking-[0.16em] font-bold text-on-surface-subtle mb-1">
+            Reviewer's overall feedback
+          </p>
+          <div className="rounded-lg bg-surface border border-outline px-3 py-2 text-sm text-on-surface whitespace-pre-line">
+            {record.comments}
+          </div>
+        </div>
+      )}
+      {noteRows.length > 0 && (
+        <div>
+          <p className="text-[10px] uppercase tracking-[0.16em] font-bold text-on-surface-subtle mb-1">
+            Per-pillar notes
+          </p>
+          <ul className="grid grid-cols-1 md:grid-cols-2 gap-2">
+            {noteRows.map(r => (
+              <li key={r.key} className="rounded-lg bg-surface border border-outline px-3 py-2">
+                <p className="text-[11px] font-semibold text-on-surface-muted">{r.label}</p>
+                <p className="text-sm text-on-surface whitespace-pre-line mt-0.5">{r.note}</p>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+      {record?.reviewer_name && (
+        <p className="text-[11px] text-on-surface-subtle">
+          Reviewed by <span className="font-semibold text-on-surface-muted">{record.reviewer_name}</span>
+          {record.updated_at && <> · {new Date(record.updated_at).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' })}</>}
+        </p>
+      )}
+    </div>
+  );
 }
 
 // ─── Slider + text input combo ───────────────────────────────────────────────
@@ -662,6 +725,10 @@ export default function Performance() {
   const [selectedEmpId, setSelectedEmpId] = useState('');
   const [selectedYear, setSelectedYear] = useState(currentYear);
   const [monthlyData, setMonthlyData] = useState<any[]>([]);
+  // Which month row is expanded to show comments + per-pillar notes.
+  // Only one row open at a time so the historical table doesn't blow
+  // out vertically when the user is scanning. null = all collapsed.
+  const [expandedMonth, setExpandedMonth] = useState<number | null>(null);
   // Sort key + direction for the Monthly Reviews table. 'month' is the
   // default and renders the calendar order (Jan→Dec). Any other key sorts
   // months that have a review first, ranked by the chosen field, then
@@ -1016,9 +1083,38 @@ export default function Performance() {
                     {sortedMonthRows.map(({ idx, monthNum, record }) => {
                       const m = MONTHS[idx];
                       const isFuture = selectedYear === currentYear && monthNum > currentMonth;
+                      // Row is expandable only when there's an actual
+                      // record — collapsed rows for un-reviewed months
+                      // stay simple text.
+                      const isExpanded = expandedMonth === monthNum;
+                      const hasNotes = !!record && (
+                        (record.comments && record.comments.trim() !== '') ||
+                        Object.values(record.parameter_notes ?? {}).some((v: any) => v && String(v).trim() !== '')
+                      );
+                      // Number of category columns + Overall + Reviewer +
+                      // (optional) Action → for the expanded sub-row's
+                      // colSpan.
+                      const spanCols = 1 + CATEGORIES.length + 2 + (isHROrAdmin ? 1 : 0);
                       return (
-                        <tr key={m} className="border-t border-outline hover:bg-surface-2 transition-colors">
-                          <td className="px-5 py-3.5 font-semibold text-on-surface">{m} <span className="num-mono">{selectedYear}</span></td>
+                        <Fragment key={m}>
+                        <tr className="border-t border-outline hover:bg-surface-2 transition-colors">
+                          <td className="px-5 py-3.5 font-semibold text-on-surface">
+                            {record ? (
+                              <button
+                                onClick={() => setExpandedMonth(cur => cur === monthNum ? null : monthNum)}
+                                title={hasNotes ? 'Show reviewer comments + per-pillar notes' : 'No comments recorded for this month'}
+                                className="inline-flex items-center gap-1.5 hover:text-accent transition-colors group"
+                              >
+                                {isExpanded ? <ChevronDown size={14} className="text-accent" /> : <ChevronRight size={14} className="text-on-surface-subtle group-hover:text-accent" />}
+                                <span>{m} <span className="num-mono">{selectedYear}</span></span>
+                                {hasNotes && !isExpanded && (
+                                  <MessageSquare size={11} className="text-accent" />
+                                )}
+                              </button>
+                            ) : (
+                              <span>{m} <span className="num-mono">{selectedYear}</span></span>
+                            )}
+                          </td>
                           {CATEGORIES.map(c => (
                             <td key={c.key} className="px-2 py-3.5 text-center">
                               {record
@@ -1092,6 +1188,14 @@ export default function Performance() {
                             </td>
                           )}
                         </tr>
+                        {isExpanded && record && (
+                          <tr className="bg-surface-2/40 border-t border-outline">
+                            <td colSpan={spanCols} className="px-5 py-4">
+                              <ReviewCommentsPanel record={record} />
+                            </td>
+                          </tr>
+                        )}
+                        </Fragment>
                       );
                     })}
                   </tbody>
