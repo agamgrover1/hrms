@@ -98,6 +98,13 @@ export default function EmployeeHoursDetailModal({ employeeId, employeeName, mon
   // modal pattern as the Projects page so the visual stays consistent.
   const [openProject, setOpenProject] = useState<{ id: string; name: string; client_name: string | null } | null>(null);
   const [pendingAllocs, setPendingAllocs] = useState<Set<string>>(new Set());
+  // Approve / reject state. Same permission surface as edit (canEditAny):
+  // admin / HR / coord. Reject uses an inline mini prompt because opening
+  // yet another modal on top of this one felt heavy for what's usually a
+  // one-line note.
+  const [reviewingId, setReviewingId] = useState<string | null>(null);
+  const [rejectingId, setRejectingId] = useState<string | null>(null);
+  const [rejectReason, setRejectReason] = useState('');
 
   const reload = () => {
     setLoading(true);
@@ -188,6 +195,61 @@ export default function EmployeeHoursDetailModal({ employeeId, employeeName, mon
     } catch (err: any) {
       alert(err.message ?? 'Failed to delete.');
     }
+  };
+
+  // Approve / reject a pending log from inside this drill-in modal, so
+  // a coord or manager reviewing the employee's month can act on the row
+  // without having to navigate over to /hours/approvals. Same optimistic
+  // flip + revert-on-error pattern as HoursApproval so the button feels
+  // instant. reviewingId gates the button so a double-click doesn't
+  // race two requests.
+  const approve = async (log: LogRow) => {
+    setReviewingId(log.id);
+    const prev = log;
+    setLogs(curr => curr.map(l => l.id === log.id ? {
+      ...l, status: 'approved',
+      reviewed_by_name: user?.name ?? l.reviewed_by_name,
+      reviewed_at: new Date().toISOString(),
+      rejection_reason: null,
+    } : l));
+    try {
+      await api.approveHourLog(log.id, {
+        reviewer_id: user?.id,
+        reviewer_name: user?.name,
+      });
+      toast.success('Hours approved', `${employeeName} · ${Number(log.hours_logged)}h on ${log.project_name ?? 'project'}.`);
+    } catch (err: any) {
+      setLogs(curr => curr.map(l => l.id === log.id ? prev : l));
+      toast.error('Approve failed — change reverted', err?.message);
+    } finally { setReviewingId(null); }
+  };
+  const openReject = (log: LogRow) => {
+    setRejectingId(log.id);
+    setRejectReason('');
+  };
+  const cancelReject = () => { setRejectingId(null); setRejectReason(''); };
+  const confirmReject = async (log: LogRow) => {
+    const reason = rejectReason.trim();
+    if (!reason) return; // button is disabled but defensive
+    setReviewingId(log.id);
+    const prev = log;
+    setLogs(curr => curr.map(l => l.id === log.id ? {
+      ...l, status: 'rejected', rejection_reason: reason,
+      reviewed_by_name: user?.name ?? l.reviewed_by_name,
+      reviewed_at: new Date().toISOString(),
+    } : l));
+    cancelReject();
+    try {
+      await api.rejectHourLog(log.id, {
+        reviewer_id: user?.id,
+        reviewer_name: user?.name,
+        rejection_reason: reason,
+      });
+      toast.success('Hours rejected', `${employeeName} has been notified with your reason.`);
+    } catch (err: any) {
+      setLogs(curr => curr.map(l => l.id === log.id ? prev : l));
+      toast.error('Reject failed — change reverted', err?.message);
+    } finally { setReviewingId(null); }
   };
 
   const loadHistory = async (logId: string) => {
@@ -496,6 +558,27 @@ export default function EmployeeHoursDetailModal({ employeeId, employeeName, mon
                                   )}
                                 </div>
                                 <StatusPill status={log.status} />
+                                {/* Approve / Reject shortcuts — only for
+                                    pending rows. Same permission surface
+                                    as edit; the backend accepts anyone
+                                    with a user id, so this mirrors the
+                                    existing gate elsewhere. */}
+                                {canEditAny && !isEditing && log.status === 'pending' && (
+                                  <>
+                                    <button onClick={() => approve(log)}
+                                      disabled={reviewingId === log.id}
+                                      title="Approve these hours"
+                                      className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-md text-xs font-semibold bg-success-container text-success hover:opacity-90 disabled:opacity-50">
+                                      <CheckCircle size={12} /> Approve
+                                    </button>
+                                    <button onClick={() => openReject(log)}
+                                      disabled={reviewingId === log.id}
+                                      title="Reject with a reason"
+                                      className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-md text-xs font-semibold bg-danger-container text-danger hover:opacity-90 disabled:opacity-50">
+                                      <XCircle size={12} /> Reject
+                                    </button>
+                                  </>
+                                )}
                                 {canEditAny && !isEditing && (
                                   <button onClick={() => startEdit(log)}
                                     title="Edit (admin override)"
@@ -532,6 +615,41 @@ export default function EmployeeHoursDetailModal({ employeeId, employeeName, mon
                                 )}
                               </div>
                             </div>
+
+                            {/* Reject-with-reason inline prompt. Sits
+                                inside the row so the visual context
+                                stays intact. Reason is required — the
+                                employee sees it in the rejection
+                                notification. */}
+                            {rejectingId === log.id && (
+                              <div className="mt-2 rounded-lg border border-danger/25 bg-danger-container/40 p-3 space-y-2">
+                                <label className="text-[10px] uppercase tracking-[0.16em] font-bold text-danger block">
+                                  Reason for rejection <span className="opacity-70">*</span>
+                                </label>
+                                <textarea
+                                  value={rejectReason}
+                                  onChange={e => setRejectReason(e.target.value)}
+                                  rows={2}
+                                  autoFocus
+                                  placeholder="e.g. missing daily notes; please add task descriptions and resubmit."
+                                  className="w-full bg-surface border border-outline rounded-md px-2.5 py-1.5 text-xs text-on-surface focus:outline-none focus:ring-2 focus:ring-danger/30 resize-none"
+                                />
+                                <p className="text-[10px] text-on-surface-muted">
+                                  {employeeName} sees this reason in the notification. They can edit their log and resubmit.
+                                </p>
+                                <div className="flex items-center gap-2 justify-end">
+                                  <button onClick={cancelReject}
+                                    className="px-2.5 py-1.5 rounded-md text-xs text-on-surface-muted hover:bg-surface-2">
+                                    Cancel
+                                  </button>
+                                  <button onClick={() => confirmReject(log)}
+                                    disabled={!rejectReason.trim() || reviewingId === log.id}
+                                    className="inline-flex items-center gap-1 px-3 py-1.5 rounded-md text-xs font-semibold bg-danger text-white hover:opacity-90 disabled:opacity-40 disabled:cursor-not-allowed">
+                                    <XCircle size={11} /> Reject hours
+                                  </button>
+                                </div>
+                              </div>
+                            )}
 
                             {/* Reason input when editing an already-approved log */}
                             {isEditing && canEditAny && log.status === 'approved' && (
