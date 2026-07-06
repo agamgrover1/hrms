@@ -24,14 +24,23 @@ function fmtLong(iso: string) {
   return d.toLocaleDateString('en-IN', { weekday: 'short', day: 'numeric', month: 'short' });
 }
 
+// Palette tuned for readability on BOTH themes and for the common
+// "sparse data" case. When attendance data is thin (avg 10%, lowest
+// 0%), most cells hit the "empty" bucket — that bucket used to be
+// rgb(var(--outline) / 0.55) which on a white surface renders as
+// near-invisible pale gray. Users saw the summary numbers and
+// weekday labels but NO cells at all. Solidify the empty state and
+// keep every rated bucket at an opacity where the hue reads
+// clearly. Cells also get a stroke via the .heat-cell CSS class so
+// the grid remains scannable even when several buckets sit close
+// in value.
 function colorFor(ratio: number, inFuture: boolean): { bg: string; border?: string } {
-  if (inFuture) return { bg: 'rgb(var(--outline) / 0.35)' };
-  if (ratio === 0) return { bg: 'rgb(var(--outline) / 0.55)' };
-  // Brand gradient: low = warning, mid = accent-soft, high = success/brand
-  if (ratio < 0.4)  return { bg: 'rgb(var(--warning) / 0.65)' };
-  if (ratio < 0.7)  return { bg: 'rgb(var(--accent) / 0.55)' };
-  if (ratio < 0.9)  return { bg: 'rgb(var(--accent) / 0.80)' };
-  return                  { bg: 'rgb(var(--success) / 0.85)' };
+  if (inFuture) return { bg: 'rgb(var(--outline-strong) / 0.35)' };
+  if (ratio === 0) return { bg: 'rgb(var(--outline-strong) / 0.65)' };
+  if (ratio < 0.4)  return { bg: 'rgb(var(--warning))' };
+  if (ratio < 0.7)  return { bg: 'rgb(var(--accent) / 0.7)' };
+  if (ratio < 0.9)  return { bg: 'rgb(var(--accent))' };
+  return                  { bg: 'rgb(var(--success))' };
 }
 
 /**
