@@ -64,7 +64,13 @@ export default function Layout() {
   }, [location.pathname]);
 
   return (
-    <div className="flex min-h-screen bg-bg">
+    // h-screen + overflow-hidden pin the whole app to viewport height so
+    // only <main> scrolls internally. Previously we used min-h-screen
+    // (a MINIMUM height) which let tall pages push the body past 100vh
+    // — the whole document then scrolled, sidebar and all, and users
+    // saw blank space below the sidebar once they scrolled a long list
+    // like /employees or the Overview widgets past the fold.
+    <div className="flex h-screen bg-bg overflow-hidden">
       <Sidebar mobileOpen={mobileSidebarOpen} onMobileClose={() => setMobileSidebarOpen(false)} />
       <div className="flex-1 flex flex-col min-w-0">
         <TopBar title={title} onMenuClick={() => setMobileSidebarOpen(true)} />

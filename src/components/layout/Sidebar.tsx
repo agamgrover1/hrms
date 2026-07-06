@@ -310,7 +310,7 @@ export default function Sidebar({ mobileOpen = false, onMobileClose }: { mobileO
       )}
       <aside
         className={`
-          fixed lg:static lg:relative inset-y-0 left-0 z-50 min-h-screen flex flex-col flex-shrink-0 isolate
+          fixed lg:static lg:relative inset-y-0 left-0 z-50 h-screen lg:h-full flex flex-col flex-shrink-0 isolate
           ${collapsed ? 'lg:w-[72px]' : 'lg:w-64'}
           w-64
           transition-transform duration-300
