@@ -333,16 +333,19 @@ export default function Dashboard() {
   const [showManageAnnouncements, setShowManageAnnouncements] = useState(false);
   const isAdminOrHR = user?.role === 'admin' || user?.role === 'hr_manager';
 
-  // One-shot bootstrap: replaces 11 previously-separate mount fetches
+  // One-shot bootstrap: replaces 10 previously-separate mount fetches
   // (employees + leaves + payroll + attendance + tickets + announcements
-  // + upcoming events + holidays × 2 + optional-leave × 2 + out-today)
-  // with a single round-trip. Server runs the sub-queries in parallel
-  // using shared memoTtl caches so this endpoint is the cheapest way to
-  // hydrate the dashboard even on a cold Lambda. hoursSummary is loaded
-  // separately because it needs a heavier per-employee compute pass.
+  // + holidays × 2 + optional-leave × 2 + out-today) with a single
+  // round-trip. Server runs the sub-queries in parallel using shared
+  // memoTtl caches so this endpoint is the cheapest way to hydrate the
+  // dashboard even on a cold Lambda.
+  //
+  // Explicitly NOT in the bundle:
+  //   - hoursSummary  → heavier per-employee compute; isolated call.
+  //   - upcomingEvents → day-granular data; a localStorage guard below
+  //     fetches it at most once per user per day (huge Vercel savings).
   const applyBootstrap = (b: Awaited<ReturnType<typeof api.getDashboardBootstrap>>) => {
     setAnnouncements(b.announcements ?? []);
-    setUpcomingEvents(b.upcomingEvents ?? []);
     setEmployees(b.employees ?? []);
     setLeaveRequests(b.leaveRequests ?? []);
     setAttendance(b.attendance ?? []);
@@ -362,6 +365,41 @@ export default function Dashboard() {
     ]).finally(() => setLoading(false));
   }, [currentMonth, currentYear]);
 
+  // Upcoming events (holidays + birthdays + anniversaries) turn over
+  // once a day. Guard the fetch with a localStorage snapshot keyed by
+  // ISO date — first visit of the day fetches; every subsequent visit
+  // that day reads straight from disk. Backend's memoTtl is 24h too,
+  // so the first user of the day pays a single Neon query and everyone
+  // else gets a free response. Massive drop in edge requests + Neon
+  // hits for a widget whose data literally can't change hour-to-hour.
+  useEffect(() => {
+    const todayIso = new Date().toISOString().slice(0, 10);
+    const cacheKey = `upcomingEvents:${user?.id ?? 'anon'}:${todayIso}`;
+    try {
+      const cached = localStorage.getItem(cacheKey);
+      if (cached) {
+        setUpcomingEvents(JSON.parse(cached));
+        return;
+      }
+    } catch { /* corrupt JSON — fall through */ }
+    api.getUpcomingEvents(30)
+      .then(rows => {
+        setUpcomingEvents(rows);
+        try {
+          // Best-effort prune of any of this user's prior-day snapshots
+          // so localStorage doesn't accumulate one entry per calendar
+          // day forever.
+          const prefix = `upcomingEvents:${user?.id ?? 'anon'}:`;
+          for (let i = localStorage.length - 1; i >= 0; i--) {
+            const k = localStorage.key(i);
+            if (k && k.startsWith(prefix) && k !== cacheKey) localStorage.removeItem(k);
+          }
+          localStorage.setItem(cacheKey, JSON.stringify(rows));
+        } catch { /* quota / private mode — fine, just skip caching */ }
+      })
+      .catch(() => setUpcomingEvents([]));
+  }, [user?.id]);
+
   // Focus refetch — re-hydrate everything through bootstrap when the tab
   // regains focus (came back after lunch). Still ONE round-trip.
   useEffect(() => {
@@ -377,12 +415,13 @@ export default function Dashboard() {
     };
   }, [currentMonth, currentYear]);
 
-  // Live-refresh tick — kept for the "company news feels alive" moment.
-  // Only pulls the two small surfaces (announcements + events); doesn't
-  // duplicate the heavy bundle.
+  // Live-refresh tick — kept only for announcements so a fresh post
+  // surfaces without a manual reload. Upcoming events USED to fire here
+  // too but was pointless churn: the widget's data is day-granular and
+  // is already loaded once from localStorage on mount. Removing it
+  // dropped the tick's edge-request cost in half.
   useLiveRefresh(() => {
     api.getAnnouncements().then(setAnnouncements).catch(() => {});
-    api.getUpcomingEvents(30).then(setUpcomingEvents).catch(() => {});
   });
 
   const activeEmployees = employees.filter(e => e.status === 'active').length;

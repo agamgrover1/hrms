@@ -4804,7 +4804,6 @@ app.get('/api/dashboard/bootstrap', async (req, res) => {
     // recently the result comes straight from memory.
     const [
       announcements,
-      upcomingEventsRaw,
       employeesRows,
       leaveRequestsRaw,
       attendanceRows,
@@ -4821,75 +4820,10 @@ app.get('/api/dashboard/bootstrap', async (req, res) => {
         sql`SELECT * FROM company_announcements
             WHERE expires_at IS NULL OR expires_at > NOW()
             ORDER BY pinned DESC, created_at DESC LIMIT 50`),
-      // upcomingEvents: MUST return the exact shape /api/upcoming-events
-      // does, because both call sites share the same memoTtl key
-      // (`upcomingEvents:${horizonDays}`). If the two versions diverge,
-      // whichever ran first wins the cache for 5 min and the widget's
-      // { label, employee, years } fields flicker in and out — that's
-      // what "names appearing and disappearing" looked like from the
-      // user's end. Kept structurally identical to the individual
-      // endpoint at :5308 so future edits stay in sync (or diverge with
-      // separate cache keys).
-      memoTtl(`upcomingEvents:${horizonDays}`, 300_000, async () => {
-        const lookbackDays = 3;
-        const holidayRows = await sql`
-          SELECT id, name, date::text AS event_date, 'holiday' AS kind
-          FROM holidays
-          WHERE date::date BETWEEN CURRENT_DATE - ${lookbackDays}::int AND CURRENT_DATE + ${horizonDays}::int
-          ORDER BY date`;
-        const birthdayRows = await sql`
-          SELECT e.id, e.name, e.designation, e.department, e.avatar,
-            e.date_of_birth::text AS source_date,
-            TO_CHAR(
-              CASE WHEN TO_DATE(EXTRACT(YEAR FROM CURRENT_DATE) || TO_CHAR(e.date_of_birth, '-MM-DD'), 'YYYY-MM-DD') >= CURRENT_DATE - ${lookbackDays}::int
-                   THEN TO_DATE(EXTRACT(YEAR FROM CURRENT_DATE) || TO_CHAR(e.date_of_birth, '-MM-DD'), 'YYYY-MM-DD')
-                   ELSE TO_DATE((EXTRACT(YEAR FROM CURRENT_DATE) + 1) || TO_CHAR(e.date_of_birth, '-MM-DD'), 'YYYY-MM-DD')
-              END, 'YYYY-MM-DD'
-            ) AS event_date
-          FROM employees e
-          WHERE e.status = 'active' AND e.date_of_birth IS NOT NULL
-          ORDER BY event_date`;
-        const anniversaryRows = await sql`
-          SELECT e.id, e.name, e.designation, e.department, e.avatar,
-            e.join_date::text AS source_date,
-            TO_CHAR(
-              CASE WHEN TO_DATE(EXTRACT(YEAR FROM CURRENT_DATE) || TO_CHAR(e.join_date, '-MM-DD'), 'YYYY-MM-DD') >= CURRENT_DATE - ${lookbackDays}::int
-                   THEN TO_DATE(EXTRACT(YEAR FROM CURRENT_DATE) || TO_CHAR(e.join_date, '-MM-DD'), 'YYYY-MM-DD')
-                   ELSE TO_DATE((EXTRACT(YEAR FROM CURRENT_DATE) + 1) || TO_CHAR(e.join_date, '-MM-DD'), 'YYYY-MM-DD')
-              END, 'YYYY-MM-DD'
-            ) AS event_date,
-            (EXTRACT(YEAR FROM CURRENT_DATE) - EXTRACT(YEAR FROM e.join_date))::int AS years_completed
-          FROM employees e
-          WHERE e.status = 'active' AND e.join_date IS NOT NULL
-            AND EXTRACT(YEAR FROM CURRENT_DATE) > EXTRACT(YEAR FROM e.join_date)
-          ORDER BY event_date`;
-        const horizonStr  = new Date(Date.now() + horizonDays * 86400_000).toISOString().slice(0, 10);
-        const lookbackStr = new Date(Date.now() - lookbackDays * 86400_000).toISOString().slice(0, 10);
-        return [
-          ...(holidayRows as any[]).map(r => ({
-            kind: 'holiday' as const,
-            event_date: r.event_date,
-            label: r.name,
-          })),
-          ...(birthdayRows as any[])
-            .filter(r => r.event_date >= lookbackStr && r.event_date <= horizonStr)
-            .map(r => ({
-              kind: 'birthday' as const,
-              event_date: r.event_date,
-              label: `${r.name}'s birthday`,
-              employee: { id: r.id, name: r.name, designation: r.designation, department: r.department, avatar: r.avatar },
-            })),
-          ...(anniversaryRows as any[])
-            .filter(r => r.event_date >= lookbackStr && r.event_date <= horizonStr)
-            .map(r => ({
-              kind: 'anniversary' as const,
-              event_date: r.event_date,
-              label: `${r.name} · ${r.years_completed} year${r.years_completed === 1 ? '' : 's'}`,
-              years: r.years_completed,
-              employee: { id: r.id, name: r.name, designation: r.designation, department: r.department, avatar: r.avatar },
-            })),
-        ].sort((a, b) => a.event_date.localeCompare(b.event_date));
-      }),
+      // upcomingEvents intentionally NOT in the bootstrap bundle. It's
+      // day-granular data — a client-side localStorage guard on the
+      // frontend fetches /api/upcoming-events once per user per day, and
+      // the backend's 24h memoTtl means even that fetch is cache-cheap.
       memoTtl('employees:all', 60_000, async () =>
         sql`SELECT * FROM employees ORDER BY name`),
       memoTtl(`leaveRequests:::`, 60_000, async () =>
@@ -4974,7 +4908,6 @@ app.get('/api/dashboard/bootstrap', async (req, res) => {
     res.json({
       month, year,
       announcements,
-      upcomingEvents: upcomingEventsRaw,
       employees,
       leaveRequests,
       attendance,
@@ -5338,7 +5271,12 @@ app.get('/api/upcoming-events', async (req, res) => {
     const horizonDays = Math.min(60, Math.max(7, Number(req.query.days) || 30));
     // 5-minute memo — payload is identical across viewers and the data
     // (holidays + birthdays + anniversaries) only changes day-to-day.
-    const events = await memoTtl(`upcomingEvents:${horizonDays}`, 300_000, async () => {
+    // 24-hour cache. Upcoming events only turn over day-to-day (a new
+    // holiday gets added, someone's birthday passes) — refreshing every
+    // 5 minutes was pure Neon churn for no benefit. If an admin adds a
+    // holiday mid-day, memoBust('upcomingEvents:*') from the holidays
+    // write path invalidates this cache immediately.
+    const events = await memoTtl(`upcomingEvents:${horizonDays}`, 24 * 60 * 60_000, async () => {
     // Lookback window for "just happened" events so today's birthday
     // doesn't vanish from the widget the moment the day rolls over.
     // The user kept missing Sahil's birthday post-deploy because at
@@ -8011,6 +7949,7 @@ app.post('/api/holidays', async (req, res) => {
         name=EXCLUDED.name, type=EXCLUDED.type, notes=EXCLUDED.notes, updated_at=NOW()
       RETURNING *`;
     memoBust('holidays:*');
+    memoBust('upcomingEvents:*');
     res.status(201).json(rows[0]);
   } catch (err: any) { res.status(500).json({ error: err.message || 'Server error' }); }
 });
@@ -8027,6 +7966,7 @@ app.put('/api/holidays/:id', async (req, res) => {
       WHERE id=${Number(req.params.id)} RETURNING *`;
     if (!rows.length) return res.status(404).json({ error: 'Holiday not found' });
     memoBust('holidays:*');
+    memoBust('upcomingEvents:*');
     res.json(rows[0]);
   } catch (err: any) { res.status(500).json({ error: err.message || 'Server error' }); }
 });
@@ -8036,6 +7976,7 @@ app.delete('/api/holidays/:id', async (req, res) => {
     if (!(await isAdminOrHR(req))) return res.status(403).json({ error: 'Admin / HR only' });
     await sql`DELETE FROM holidays WHERE id=${Number(req.params.id)}`;
     memoBust('holidays:*');
+    memoBust('upcomingEvents:*');
     res.json({ success: true });
   } catch (err: any) { res.status(500).json({ error: err.message || 'Server error' }); }
 });

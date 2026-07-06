@@ -191,7 +191,6 @@ export const api = {
   getDashboardBootstrap: (month: number, year: number) => request<{
     month: number; year: number;
     announcements: any[];
-    upcomingEvents: any[];
     employees: any[];
     leaveRequests: any[];
     attendance: any[];
