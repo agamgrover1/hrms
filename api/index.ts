@@ -576,11 +576,13 @@ async function runStartupMigrations() {
   // full migration block.
   //
   // KEEP THIS PROBE POINTED AT THE MOST RECENT MIGRATION when you add one.
-  // Right now: app_users.totp_enabled (added for optional TOTP-based
-  // 2FA). If you add a newer column / table, update this SELECT to
-  // reference it so cold starts re-run migrations once after each deploy.
+  // Right now: monthly_performance.pillars_null_ok, the marker that
+  // proves the DROP NOT NULL migration on the pillar columns has run
+  // (required for the N/A toggle to save cleanly). If you add a newer
+  // column / table, update this SELECT to reference it so cold starts
+  // re-run migrations once after each deploy.
   try {
-    await sql`SELECT totp_enabled FROM app_users LIMIT 0`;
+    await sql`SELECT pillars_null_ok FROM monthly_performance LIMIT 0`;
     _migrated = true;
     return;
   } catch {
@@ -1749,6 +1751,36 @@ async function runStartupMigrations() {
   await sql`ALTER TABLE monthly_performance ADD COLUMN IF NOT EXISTS ownership NUMERIC DEFAULT 75`.catch(()=>{});
   await sql`ALTER TABLE monthly_performance ADD COLUMN IF NOT EXISTS planning_accuracy NUMERIC DEFAULT 75`.catch(()=>{});
   await sql`ALTER TABLE monthly_performance ADD COLUMN IF NOT EXISTS learning_growth NUMERIC DEFAULT 75`.catch(()=>{});
+
+  // Drop the NOT NULL constraint on every pillar column. The CREATE
+  // TABLE above declares them as `NUMERIC DEFAULT 0` which permits NULL,
+  // but some environments (prod, an earlier hand-run migration) have
+  // NOT NULL bolted on. That breaks the N/A feature — saving a review
+  // with any pillar marked "not applicable" 500s with:
+  //   null value in column "client_satisfaction" of relation
+  //   "monthly_performance" violates not-null constraint
+  // ALTER … DROP NOT NULL is idempotent (dropping a constraint that
+  // isn't there is a Postgres no-op) so this is safe to leave in the
+  // startup pass forever. Have to write each column explicitly because
+  // the Neon HTTP driver only supports template-literal parameter
+  // binding, not identifier binding.
+  await sql`ALTER TABLE monthly_performance ALTER COLUMN productivity        DROP NOT NULL`.catch(()=>{});
+  await sql`ALTER TABLE monthly_performance ALTER COLUMN quality             DROP NOT NULL`.catch(()=>{});
+  await sql`ALTER TABLE monthly_performance ALTER COLUMN teamwork            DROP NOT NULL`.catch(()=>{});
+  await sql`ALTER TABLE monthly_performance ALTER COLUMN attendance_score    DROP NOT NULL`.catch(()=>{});
+  await sql`ALTER TABLE monthly_performance ALTER COLUMN initiative          DROP NOT NULL`.catch(()=>{});
+  await sql`ALTER TABLE monthly_performance ALTER COLUMN client_satisfaction DROP NOT NULL`.catch(()=>{});
+  await sql`ALTER TABLE monthly_performance ALTER COLUMN ai_usage            DROP NOT NULL`.catch(()=>{});
+  await sql`ALTER TABLE monthly_performance ALTER COLUMN communication       DROP NOT NULL`.catch(()=>{});
+  await sql`ALTER TABLE monthly_performance ALTER COLUMN ownership           DROP NOT NULL`.catch(()=>{});
+  await sql`ALTER TABLE monthly_performance ALTER COLUMN planning_accuracy   DROP NOT NULL`.catch(()=>{});
+  await sql`ALTER TABLE monthly_performance ALTER COLUMN learning_growth     DROP NOT NULL`.catch(()=>{});
+  // Marker column that also doubles as the fast-path probe target — its
+  // presence proves the DROP NOT NULLs above have run at least once on
+  // this DB. Without a marker the fast-path would happily short-circuit
+  // on `totp_enabled` and skip this fix forever on any prod that already
+  // shipped the 2FA migration.
+  await sql`ALTER TABLE monthly_performance ADD COLUMN IF NOT EXISTS pillars_null_ok BOOLEAN DEFAULT TRUE`.catch(()=>{});
 
   // ── Self-review pass ────────────────────────────────────────────────────
   // The employee fills a self-review first (own scores per category +
