@@ -119,6 +119,17 @@ async function notifyAdminsAndHR(type: string, title: string, body?: string) {
   } catch { /* non-fatal */ }
 }
 
+// Admin-only fan-out. Use for finance / invoice / P&L events HR has no
+// stake in — the audit trail is business-owner concern, not people-ops.
+// notifyAdminsAndHR is the wrong tool for those, even though the name
+// sounded broad enough at the time.
+async function notifyAdmins(type: string, title: string, body?: string) {
+  try {
+    const users = await sql`SELECT id FROM app_users WHERE role = 'admin' AND active = TRUE`;
+    await Promise.all((users as any[]).map((u: any) => notifyUser(u.id, type, title, body)));
+  } catch { /* non-fatal */ }
+}
+
 async function notifyCoordinators(type: string, title: string, body?: string) {
   try {
     const users = await sql`SELECT id FROM app_users WHERE role IN ('admin', 'hr_manager', 'project_coordinator') AND active = TRUE`;
@@ -12397,14 +12408,16 @@ app.patch('/api/finance/revenue/:project_id/:month/:year/clear', async (req, res
       RETURNING *`)[0];
     logRevenueAudit(isAdmin ? 'cleared' : 'clear_requested', row, updated, gate.user, row.project_name);
     if (isAdmin) {
-      // Admin cleared directly — ping admins/HR for the activity feed.
+      // Admin cleared directly — ping admins only for the activity feed.
+      // HR is not in the finance workflow so they shouldn't get invoice
+      // events on their bell.
       const variance = receivedInr - invoiced;
       const varianceMsg = Math.abs(variance) < 1 ? 'paid in full' : variance < 0 ? `short by ₹${Math.round(Math.abs(variance)).toLocaleString('en-IN')}` : `extra ₹${Math.round(variance).toLocaleString('en-IN')}`;
-      notifyAdminsAndHR('invoice_cleared', 'Upwork billing cleared',
+      notifyAdmins('invoice_cleared', 'Upwork billing cleared',
         `${row.project_name ?? 'Project'} (${ccy} ${received.toLocaleString('en-IN')}) — ${varianceMsg}.`).catch(() => {});
     } else {
-      // Coord requested — ping admins for final approval.
-      notifyAdminsAndHR('invoice_clear_requested',
+      // Coord requested — ping admins for final approval (not HR).
+      notifyAdmins('invoice_clear_requested',
         'Billing clearance awaiting your approval',
         `${gate.user?.name ?? 'A coordinator'} marked ${row.project_name ?? 'a project'} billing as cleared for ${ccy} ${received.toLocaleString('en-IN')}. Open Finance → Billing setup to approve.`
       ).catch(() => {});
@@ -13069,7 +13082,7 @@ app.post('/api/finance/invoices', async (req, res) => {
       RETURNING *`;
     const inv = rows[0];
     logInvoiceAudit('created', null, inv, gate.user, proj[0].name);
-    notifyAdminsAndHR(
+    notifyAdmins(
       'invoice_raised',
       'Invoice Raised',
       `${gate.user?.name ?? 'A coordinator'} raised ${fmtMoneyCcy(Number(amount_invoiced), ccy)}${ccy !== 'INR' ? ` (≈ ${fmtMoney(inr)})` : ''} on ${proj[0].name}${invoice_number ? ` (${invoice_number})` : ''}.`
@@ -13203,8 +13216,9 @@ app.patch('/api/finance/invoices/:id/clear', async (req, res) => {
           `${inv.project_name} · ${fmtMoney(received)} received (${varianceMsg}).`).catch(()=>{});
       }
     } else {
-      // Coordinator requested clearance — ping admins for final approval.
-      notifyAdminsAndHR('invoice_clear_requested',
+      // Coordinator requested clearance — ping admins for final approval
+      // (not HR — invoice workflow is finance-side, not people-ops).
+      notifyAdmins('invoice_clear_requested',
         'Clearance request awaiting your approval',
         `${actorName ?? 'A coordinator'} marked ${inv.project_name}${inv.invoice_number ? ` (${inv.invoice_number})` : ''} as cleared for ${fmtMoney(received)}. Open Finance to approve.`
       ).catch(()=>{});
