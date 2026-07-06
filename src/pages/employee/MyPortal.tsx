@@ -7,7 +7,7 @@ import TwoFactorSection from '../../components/TwoFactorSection';
 import { ReviewCommentsPanel } from '../Performance';
 import MonthSelector, { monthLabel } from '../../components/MonthSelector';
 import { leaveTypeLabel } from '../../utils/leaveLabel';
-import { formatWeekDays, isCurrentWeekOfMonth, isEmptyWeek } from '../../utils/weekRange';
+import { formatWeekDays, isCurrentWeekOfMonth, isEmptyWeek, weekDateRange } from '../../utils/weekRange';
 import HourLogCommentsModal from '../../components/HourLogCommentsModal';
 import { toast } from '../../components/Toaster';
 import AttendanceNoteModal from '../../components/AttendanceNoteModal';
@@ -3816,14 +3816,18 @@ function WeekCell({ alloc, log, onClick, onDiscuss }: { alloc: number; log?: MHL
   );
 }
 
-// Returns the dates within the given month that belong to a 1..5 "week" using
-// CEIL(day_of_month / 7) — same rule the backend uses for week_num.
+// Returns the dates within the given month that belong to a 1..5
+// "week" using the Mon-Sun aligned scheme the rest of the app uses.
+// See src/utils/weekRange.ts and api/index.ts:weekNumOfDate — this
+// MUST match those two, otherwise a day the user logs from "W1" in
+// this modal gets classified as W2 by the backend, and the modal on
+// the next visit shows a different date range than the last save.
+// That drift is what the "days 6 and 7 appear inside Week 1 for
+// July 2026" bug was.
 function daysOfWeek(month: number, year: number, weekNum: number): string[] {
+  const range = weekDateRange(month, year, weekNum);
   const out: string[] = [];
-  const daysInMonth = new Date(year, month, 0).getDate();
-  const startDay = (weekNum - 1) * 7 + 1;
-  const endDay = Math.min(startDay + 6, daysInMonth);
-  for (let d = startDay; d <= endDay; d++) {
+  for (let d = range.startDay; d <= range.endDay; d++) {
     out.push(`${year}-${String(month).padStart(2,'0')}-${String(d).padStart(2,'0')}`);
   }
   return out;
