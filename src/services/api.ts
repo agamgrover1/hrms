@@ -30,6 +30,9 @@ export interface TodoTask {
   status: 'pending' | 'in_progress' | 'done' | 'cancelled';
   completed_at: string | null;
   completion_note: string | null;
+  // User-defined tags/categories the assignee (or creator) attaches to
+  // organize their list. Always lowercase, deduped, max 8 per task.
+  tags: string[] | null;
   created_at: string; updated_at: string;
 }
 
@@ -837,9 +840,9 @@ export const api = {
     if (params.status) qs.set('status', params.status);
     return request<{ mine: TodoTask[]; assigned_by_me: TodoTask[] }>(`/todos${qs.toString() ? `?${qs}` : ''}`);
   },
-  createTodo: (data: { title: string; description?: string; due_date?: string; priority?: 'low' | 'normal' | 'high'; assignee_id?: string }) =>
+  createTodo: (data: { title: string; description?: string; due_date?: string; priority?: 'low' | 'normal' | 'high'; assignee_id?: string; tags?: string[] }) =>
     request<TodoTask>(`/todos`, { method: 'POST', body: JSON.stringify(data) }),
-  updateTodo: (id: string, data: Partial<{ title: string; description: string; due_date: string | null; priority: 'low' | 'normal' | 'high'; status: 'pending' | 'in_progress' | 'done' | 'cancelled'; completion_note: string }>) =>
+  updateTodo: (id: string, data: Partial<{ title: string; description: string; due_date: string | null; priority: 'low' | 'normal' | 'high'; status: 'pending' | 'in_progress' | 'done' | 'cancelled'; completion_note: string; tags: string[] }>) =>
     request<TodoTask>(`/todos/${id}`, { method: 'PATCH', body: JSON.stringify(data) }),
   deleteTodo: (id: string) =>
     request(`/todos/${id}`, { method: 'DELETE' }),

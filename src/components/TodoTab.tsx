@@ -1,8 +1,21 @@
 import { useEffect, useMemo, useState } from 'react';
-import { Plus, X, Trash2, CheckCircle, Circle, Clock, AlertCircle, ChevronDown, ChevronRight, Pencil } from 'lucide-react';
+import { Plus, X, Trash2, CheckCircle, Circle, Clock, AlertCircle, ChevronDown, ChevronRight, Pencil, Tag as TagIcon } from 'lucide-react';
 import { api } from '../services/api';
 import type { TodoTask } from '../services/api';
 import { toast } from './Toaster';
+
+// Parse a comma / space separated string into a clean tag list.
+// Mirrors the backend normalization: lowercase, trim, no dupes, drop
+// empties, cap at 8. Splits on comma AND space so the user can type
+// naturally without having to remember which separator to use.
+function parseTags(input: string): string[] {
+  if (!input) return [];
+  const parts = input
+    .split(/[,\s]+/)
+    .map(t => t.trim().toLowerCase())
+    .filter(t => t.length > 0 && t.length <= 32);
+  return Array.from(new Set(parts)).slice(0, 8);
+}
 
 // To-Do tab for MyPortal. Two sections:
 //   - "My tasks" — anything assigned to me (self or assigned by a manager/HR/admin)
@@ -54,8 +67,14 @@ export default function TodoTab({ canAssignToOthers, employees }: {
   const [formDescription, setFormDescription] = useState('');
   const [formDueDate, setFormDueDate] = useState('');
   const [formPriority, setFormPriority] = useState<'low' | 'normal' | 'high'>('normal');
+  const [formTags, setFormTags] = useState('');
   const [formBusy, setFormBusy] = useState(false);
   const [formError, setFormError] = useState('');
+
+  // Active tag filter — null = show all. Clicking a chip on a row (or a
+  // pill in the header) sets this; clicking again clears it. Applies to
+  // both "My tasks" and "Assigned by me" so the filter feels global.
+  const [tagFilter, setTagFilter] = useState<string | null>(null);
 
   const load = () => {
     setLoading(true);
@@ -73,6 +92,7 @@ export default function TodoTab({ canAssignToOthers, employees }: {
     setFormDescription('');
     setFormDueDate('');
     setFormPriority('normal');
+    setFormTags('');
     setFormError('');
   };
 
@@ -88,6 +108,7 @@ export default function TodoTab({ canAssignToOthers, employees }: {
         due_date: formDueDate || undefined,
         priority: formPriority,
         assignee_id: formAssignSelf ? undefined : formAssigneeId,
+        tags: parseTags(formTags),
       });
       toast.success(formAssignSelf ? 'To-do added' : 'Task assigned', formTitle.trim());
       resetForm();
@@ -121,13 +142,14 @@ export default function TodoTab({ canAssignToOthers, employees }: {
   // Edit state — only one task in edit mode at a time. The row renders
   // an inline form when its id matches; everything else stays read-only.
   const [editingId, setEditingId] = useState<string | null>(null);
-  const saveEdit = async (id: string, patch: { title: string; description: string; due_date: string; priority: 'low' | 'normal' | 'high' }) => {
+  const saveEdit = async (id: string, patch: { title: string; description: string; due_date: string; priority: 'low' | 'normal' | 'high'; tags: string[] }) => {
     try {
       await api.updateTodo(id, {
         title: patch.title.trim(),
         description: patch.description.trim() || undefined,
         due_date: patch.due_date || null,
         priority: patch.priority,
+        tags: patch.tags,
       });
       toast.success('Task updated', patch.title.trim());
       setEditingId(null);
@@ -135,13 +157,36 @@ export default function TodoTab({ canAssignToOthers, employees }: {
     } catch (e: any) { toast.error('Could not update task', e?.message); }
   };
 
-  // Filter out completed by default to keep the view clean.
-  const filteredMine = useMemo(() =>
-    showCompleted ? mine : mine.filter(t => t.status !== 'done' && t.status !== 'cancelled'),
-    [mine, showCompleted]);
-  const filteredAssigned = useMemo(() =>
-    showCompleted ? assignedByMe : assignedByMe.filter(t => t.status !== 'done' && t.status !== 'cancelled'),
-    [assignedByMe, showCompleted]);
+  // Quick tag-only edit — invoked from the row's tag chip UI so the
+  // assignee can categorize whatever landed on their list without
+  // opening the full edit form.
+  const saveTagsOnly = async (id: string, tags: string[]) => {
+    try {
+      await api.updateTodo(id, { tags });
+      load();
+    } catch (e: any) { toast.error('Could not update tags', e?.message); }
+  };
+
+  // Every tag currently used across both lists — drives the filter pill
+  // row and the datalist auto-complete on the add form. Sorted by usage
+  // frequency so the most-used categories show first.
+  const allTags = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const t of [...mine, ...assignedByMe]) {
+      for (const tag of (t.tags ?? [])) counts.set(tag, (counts.get(tag) ?? 0) + 1);
+    }
+    return Array.from(counts.entries())
+      .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+      .map(([tag, count]) => ({ tag, count }));
+  }, [mine, assignedByMe]);
+
+  const passesFilters = (t: TodoTask): boolean => {
+    if (!showCompleted && (t.status === 'done' || t.status === 'cancelled')) return false;
+    if (tagFilter && !((t.tags ?? []).includes(tagFilter))) return false;
+    return true;
+  };
+  const filteredMine     = useMemo(() => mine.filter(passesFilters),        [mine, showCompleted, tagFilter]);
+  const filteredAssigned = useMemo(() => assignedByMe.filter(passesFilters), [assignedByMe, showCompleted, tagFilter]);
 
   return (
     <div className="space-y-5">
@@ -165,6 +210,33 @@ export default function TodoTab({ canAssignToOthers, employees }: {
           </button>
         </div>
       </div>
+
+      {/* Tag filter row — only appears once at least one task on the list
+          has a tag. Click a pill to filter to that tag; click "All" to
+          clear. The count next to each tag is how many open tasks carry
+          it, so the user knows which categories are actually alive. */}
+      {allTags.length > 0 && (
+        <div className="flex flex-wrap items-center gap-1.5">
+          <TagIcon size={12} className="text-on-surface-subtle mr-0.5" />
+          <button onClick={() => setTagFilter(null)}
+            className={`text-[11px] px-2.5 py-1 rounded-full border font-semibold transition-colors ${
+              tagFilter === null
+                ? 'bg-accent text-on-accent border-accent'
+                : 'bg-surface text-on-surface-muted border-outline hover:border-accent/50'}`}>
+            All
+          </button>
+          {allTags.map(t => (
+            <button key={t.tag} onClick={() => setTagFilter(cur => cur === t.tag ? null : t.tag)}
+              className={`text-[11px] px-2.5 py-1 rounded-full border font-semibold transition-colors inline-flex items-center gap-1 ${
+                tagFilter === t.tag
+                  ? 'bg-accent text-on-accent border-accent'
+                  : 'bg-surface text-on-surface-muted border-outline hover:border-accent/50'}`}>
+              {t.tag}
+              <span className="text-[9px] opacity-70">{t.count}</span>
+            </button>
+          ))}
+        </div>
+      )}
 
       {/* Add form */}
       {showForm && (
@@ -223,6 +295,22 @@ export default function TodoTab({ canAssignToOthers, employees }: {
               </select>
             </div>
           </div>
+          <div>
+            <label className="text-[10px] uppercase tracking-wide font-semibold text-on-surface-subtle mb-1 block">
+              Tags / categories <span className="text-on-surface-subtle normal-case">(optional, up to 8)</span>
+            </label>
+            <input value={formTags} onChange={e => setFormTags(e.target.value)}
+              list="todo-tag-suggestions"
+              placeholder="client-work, follow-up, urgent…"
+              className="w-full text-sm border border-outline rounded-lg px-3 py-2 bg-surface focus:outline-none focus:ring-2 focus:ring-accent/20" />
+            {/* Suggests tags the user already has on their list, so they
+                stick with a stable vocabulary instead of drifting into
+                "client-work" vs "clientwork" vs "Client Work". */}
+            <datalist id="todo-tag-suggestions">
+              {allTags.map(t => <option key={t.tag} value={t.tag} />)}
+            </datalist>
+            <p className="text-[10px] text-on-surface-subtle mt-1">Separate with commas or spaces. Case doesn't matter — everything gets lowercased.</p>
+          </div>
           {formError && <p className="text-xs text-danger bg-danger-container/40 border border-danger/20 rounded-lg px-3 py-2">{formError}</p>}
           <div className="flex gap-2">
             <button onClick={() => { resetForm(); setShowForm(false); }}
@@ -242,12 +330,15 @@ export default function TodoTab({ canAssignToOthers, employees }: {
           {/* My tasks */}
           <TaskSection
             title="My tasks"
-            subtitle="Things I need to do — whether I added them or someone else did"
+            subtitle={tagFilter ? `Filtered by #${tagFilter}` : "Things I need to do — whether I added them or someone else did"}
             tasks={filteredMine}
-            emptyText={showCompleted ? 'No tasks yet.' : 'No open tasks. Add one above.'}
+            emptyText={tagFilter ? `No open tasks tagged "${tagFilter}".` : showCompleted ? 'No tasks yet.' : 'No open tasks. Add one above.'}
             renderTask={t => (
               <TaskRow key={t.id} task={t} showAssignee={false} showCreator
                 isEditing={editingId === t.id}
+                activeTagFilter={tagFilter}
+                onTagClick={(tag) => setTagFilter(cur => cur === tag ? null : tag)}
+                onQuickTagsSave={(tags) => saveTagsOnly(t.id, tags)}
                 onEdit={() => setEditingId(t.id)}
                 onCancelEdit={() => setEditingId(null)}
                 onSave={(patch) => saveEdit(t.id, patch)}
@@ -260,12 +351,15 @@ export default function TodoTab({ canAssignToOthers, employees }: {
           {(assignedByMe.length > 0 || showCompleted) && (
             <TaskSection
               title="Assigned by me"
-              subtitle="Tasks I added to other people's lists"
+              subtitle={tagFilter ? `Filtered by #${tagFilter}` : "Tasks I added to other people's lists"}
               tasks={filteredAssigned}
-              emptyText="No tasks you've assigned to others."
+              emptyText={tagFilter ? `No open tasks tagged "${tagFilter}".` : "No tasks you've assigned to others."}
               renderTask={t => (
                 <TaskRow key={t.id} task={t} showAssignee showCreator={false}
                   isEditing={editingId === t.id}
+                  activeTagFilter={tagFilter}
+                  onTagClick={(tag) => setTagFilter(cur => cur === tag ? null : tag)}
+                  onQuickTagsSave={(tags) => saveTagsOnly(t.id, tags)}
                   onEdit={() => setEditingId(t.id)}
                   onCancelEdit={() => setEditingId(null)}
                   onSave={(patch) => saveEdit(t.id, patch)}
@@ -302,18 +396,27 @@ function TaskSection({ title, subtitle, tasks, emptyText, renderTask }: {
   );
 }
 
-function TaskRow({ task, showAssignee, showCreator, isEditing, onEdit, onCancelEdit, onSave, onToggle, onDelete }: {
+function TaskRow({ task, showAssignee, showCreator, isEditing, activeTagFilter, onTagClick, onQuickTagsSave, onEdit, onCancelEdit, onSave, onToggle, onDelete }: {
   task: TodoTask; showAssignee: boolean; showCreator: boolean;
   isEditing: boolean;
+  activeTagFilter: string | null;
+  onTagClick: (tag: string) => void;
+  onQuickTagsSave: (tags: string[]) => void;
   onEdit: () => void;
   onCancelEdit: () => void;
-  onSave: (patch: { title: string; description: string; due_date: string; priority: 'low' | 'normal' | 'high' }) => void;
+  onSave: (patch: { title: string; description: string; due_date: string; priority: 'low' | 'normal' | 'high'; tags: string[] }) => void;
   onToggle: () => void; onDelete: () => void;
 }) {
   const isDone = task.status === 'done';
   const isCancelled = task.status === 'cancelled';
   const prio = PRIORITY_TONE[task.priority] ?? PRIORITY_TONE.normal;
   const due = dueDateLabel(task.due_date);
+  const tags = task.tags ?? [];
+
+  // Inline add-tag popover on rows that don't have any tag yet — one
+  // click to categorize a task without opening the full edit form.
+  const [quickAdd, setQuickAdd] = useState(false);
+  const [quickAddDraft, setQuickAddDraft] = useState('');
 
   if (isEditing) return (
     <TaskEditRow task={task} onCancel={onCancelEdit} onSave={onSave} />
@@ -352,6 +455,62 @@ function TaskRow({ task, showAssignee, showCreator, isEditing, onEdit, onCancelE
             </span>
           )}
         </div>
+        {/* Tag chips + quick-add. Chips are click-to-filter; a small × on
+            each removes it in place. Empty-tag rows get a subtle "add
+            tag" affordance so categorization stays one click away. */}
+        <div className="flex items-center gap-1.5 mt-1.5 flex-wrap">
+          {tags.map(tag => {
+            const isActive = activeTagFilter === tag;
+            return (
+              <span key={tag}
+                className={`inline-flex items-center gap-1 text-[10px] font-semibold rounded-full px-2 py-0.5 border transition-colors ${
+                  isActive
+                    ? 'bg-accent text-on-accent border-accent'
+                    : 'bg-accent/8 text-accent border-accent/25 hover:bg-accent/15'}`}>
+                <button onClick={() => onTagClick(tag)} className="focus:outline-none" title={isActive ? 'Clear filter' : `Filter to #${tag}`}>
+                  #{tag}
+                </button>
+                <button
+                  onClick={() => onQuickTagsSave(tags.filter(x => x !== tag))}
+                  className="opacity-60 hover:opacity-100 text-[12px] leading-none"
+                  title="Remove tag">
+                  ×
+                </button>
+              </span>
+            );
+          })}
+          {quickAdd ? (
+            <span className="inline-flex items-center gap-1">
+              <input
+                value={quickAddDraft}
+                onChange={e => setQuickAddDraft(e.target.value)}
+                onKeyDown={e => {
+                  if (e.key === 'Enter') {
+                    const next = parseTags([...tags, quickAddDraft].join(','));
+                    onQuickTagsSave(next);
+                    setQuickAdd(false); setQuickAddDraft('');
+                  }
+                  if (e.key === 'Escape') { setQuickAdd(false); setQuickAddDraft(''); }
+                }}
+                onBlur={() => {
+                  const draft = quickAddDraft.trim();
+                  if (draft) {
+                    const next = parseTags([...tags, draft].join(','));
+                    onQuickTagsSave(next);
+                  }
+                  setQuickAdd(false); setQuickAddDraft('');
+                }}
+                autoFocus
+                placeholder="tag…"
+                className="text-[11px] px-2 py-0.5 rounded-full border border-accent/40 bg-surface w-24 focus:outline-none focus:ring-1 focus:ring-accent/30" />
+            </span>
+          ) : (
+            <button onClick={() => setQuickAdd(true)}
+              className="text-[10px] text-on-surface-subtle hover:text-accent inline-flex items-center gap-0.5">
+              <Plus size={10} /> {tags.length === 0 ? 'add tag' : 'more'}
+            </button>
+          )}
+        </div>
       </div>
       <div className="flex flex-shrink-0 items-center gap-0.5">
         <button onClick={onEdit} className="text-on-surface-subtle hover:text-accent p-1" title="Edit">
@@ -372,12 +531,13 @@ function TaskRow({ task, showAssignee, showCreator, isEditing, onEdit, onCancelE
 function TaskEditRow({ task, onCancel, onSave }: {
   task: TodoTask;
   onCancel: () => void;
-  onSave: (patch: { title: string; description: string; due_date: string; priority: 'low' | 'normal' | 'high' }) => void;
+  onSave: (patch: { title: string; description: string; due_date: string; priority: 'low' | 'normal' | 'high'; tags: string[] }) => void;
 }) {
   const [title, setTitle] = useState(task.title);
   const [description, setDescription] = useState(task.description ?? '');
   const [dueDate, setDueDate] = useState((task.due_date ?? '').slice(0, 10));
   const [priority, setPriority] = useState<'low' | 'normal' | 'high'>(task.priority);
+  const [tags, setTags] = useState((task.tags ?? []).join(', '));
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
 
@@ -385,7 +545,7 @@ function TaskEditRow({ task, onCancel, onSave }: {
     setError('');
     if (!title.trim()) { setError('Title is required'); return; }
     setBusy(true);
-    try { await onSave({ title, description, due_date: dueDate, priority }); }
+    try { await onSave({ title, description, due_date: dueDate, priority, tags: parseTags(tags) }); }
     finally { setBusy(false); }
   };
 
@@ -418,6 +578,12 @@ function TaskEditRow({ task, onCancel, onSave }: {
             <option value="high">High</option>
           </select>
         </div>
+      </div>
+      <div>
+        <label className="text-[10px] uppercase tracking-wide font-semibold text-on-surface-subtle mb-1 block">Tags</label>
+        <input value={tags} onChange={e => setTags(e.target.value)}
+          placeholder="client-work, follow-up…"
+          className="w-full text-sm border border-outline rounded-lg px-3 py-2 bg-surface focus:outline-none focus:ring-2 focus:ring-accent/20" />
       </div>
       {error && <p className="text-xs text-danger bg-danger-container/40 border border-danger/20 rounded-lg px-3 py-2">{error}</p>}
       <div className="flex gap-2">

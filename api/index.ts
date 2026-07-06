@@ -575,13 +575,12 @@ async function runStartupMigrations() {
   // full migration block.
   //
   // KEEP THIS PROBE POINTED AT THE MOST RECENT MIGRATION when you add one.
-  // Right now: hours_weekly_targets (added for the Hours Allocation sheet
-  // that replaces the Google Sheet workflow — per-week billing target per
-  // project, grouped by billing account holder). If you add a newer
+  // Right now: todo_tasks.tags (added for user-managed To-Do tags /
+  // categories that the widget can filter by). If you add a newer
   // column / table, update this SELECT to reference it so cold starts
   // re-run migrations once after each deploy.
   try {
-    await sql`SELECT target_hours FROM hours_weekly_targets LIMIT 0`;
+    await sql`SELECT tags FROM todo_tasks LIMIT 0`;
     _migrated = true;
     return;
   } catch {
@@ -1899,6 +1898,11 @@ async function runStartupMigrations() {
     // 'hubstaff' for tracker-driven work. Nullable — unassigned rows show
     // in an "Unassigned" bucket on the allocation sheet.
     await sql`ALTER TABLE projects ADD COLUMN IF NOT EXISTS billing_account_id TEXT`.catch(()=>{});
+    // User-managed tags on To-Do tasks. TEXT[] because a single task can
+    // wear multiple labels ("client-work" + "urgent"). Postgres arrays
+    // give us ANY() / && for cheap filter queries.
+    await sql`ALTER TABLE todo_tasks ADD COLUMN IF NOT EXISTS tags TEXT[] DEFAULT '{}'::text[]`.catch(()=>{});
+    await sql`CREATE INDEX IF NOT EXISTS idx_todo_tags ON todo_tasks USING GIN (tags)`.catch(()=>{});
   } catch { /* columns may already exist — non-fatal */ }
 
   // ── Hours Allocation (weekly billing planner) ────────────────────────────
@@ -4314,7 +4318,7 @@ app.post('/api/todos', async (req, res) => {
     const actorEmpId = await resolveUserToEmployee(u);
     if (!actorEmpId) return res.status(400).json({ error: 'No employee profile linked to this user' });
 
-    const { assignee_id: rawAssignee, title, description, due_date, priority } = req.body ?? {};
+    const { assignee_id: rawAssignee, title, description, due_date, priority, tags } = req.body ?? {};
     if (!title?.trim()) return res.status(400).json({ error: 'Title is required' });
     const assigneeId = rawAssignee?.trim() || actorEmpId;
 
@@ -4327,13 +4331,22 @@ app.post('/api/todos', async (req, res) => {
 
     const role = assigneeId === actorEmpId ? 'self' : (u.role || 'manager');
     const id = `todo_${Date.now()}`;
+    // Normalize the tag list: trim, lowercase, drop empties, dedupe. Cap
+    // per-task to 8 tags so someone can't paste a novel in and blow the
+    // index.
+    const cleanTags: string[] = Array.isArray(tags)
+      ? Array.from(new Set(
+          tags.map((t: any) => String(t ?? '').trim().toLowerCase())
+              .filter((t: string) => t.length > 0 && t.length <= 32)
+        )).slice(0, 8)
+      : [];
     const row = (await sql`
       INSERT INTO todo_tasks
         (id, assignee_id, assignee_name, created_by_id, created_by_name, created_by_role,
-         title, description, due_date, priority)
+         title, description, due_date, priority, tags)
       VALUES (${id}, ${assigneeId}, ${assignee.name}, ${actorEmpId}, ${u.name}, ${role},
               ${title.trim()}, ${description?.trim() || null}, ${due_date || null},
-              ${priority || 'normal'})
+              ${priority || 'normal'}, ${cleanTags}::text[])
       RETURNING *`)[0];
 
     // Notify the assignee when someone else assigns them a task.
@@ -4363,16 +4376,28 @@ app.patch('/api/todos/:id', async (req, res) => {
     const isCreator  = actorEmpId === t.created_by_id;
     if (!isAdmin && !isAssignee && !isCreator) return res.status(403).json({ error: 'Not permitted' });
 
-    const { title, description, due_date, priority, status, completion_note } = req.body ?? {};
+    const { title, description, due_date, priority, status, completion_note, tags } = req.body ?? {};
     // Only creator/admin can edit content fields; assignee can only touch
-    // status/note. Compute final values up-front so the SQL is straight COALESCEs.
+    // status/note. Assignees can edit tags too — tags are the assignee's
+    // own organizational tool, so they need to be able to categorize
+    // whatever lands on their list.
     const canEditContent = isAdmin || isCreator;
+    const canEditTags    = isAdmin || isCreator || isAssignee;
     const finalTitle       = canEditContent && title != null ? title.trim() : t.title;
     const finalDescription = canEditContent && description !== undefined ? (description?.trim() || null) : t.description;
     const finalDueDate     = canEditContent && due_date !== undefined ? (due_date || null) : t.due_date;
     const finalPriority    = canEditContent && priority ? priority : t.priority;
     const finalStatus      = status ?? t.status;
     const finalNote        = completion_note !== undefined ? (completion_note?.trim() || null) : t.completion_note;
+    let   finalTags        = t.tags;
+    if (canEditTags && tags !== undefined) {
+      finalTags = Array.isArray(tags)
+        ? Array.from(new Set(
+            tags.map((tt: any) => String(tt ?? '').trim().toLowerCase())
+                .filter((tt: string) => tt.length > 0 && tt.length <= 32)
+          )).slice(0, 8)
+        : [];
+    }
     // Completed_at follows status: set when transitioning to 'done', cleared
     // when moving back to anything else.
     const movedToDone = status === 'done' && t.status !== 'done';
@@ -4385,6 +4410,7 @@ app.patch('/api/todos/:id', async (req, res) => {
         priority        = ${finalPriority},
         status          = ${finalStatus},
         completion_note = ${finalNote},
+        tags            = ${finalTags}::text[],
         completed_at    = ${movedToDone ? new Date().toISOString() : movedFromDone ? null : t.completed_at},
         updated_at      = NOW()
       WHERE id=${req.params.id}
