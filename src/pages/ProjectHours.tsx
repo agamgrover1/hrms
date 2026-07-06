@@ -1,5 +1,5 @@
 import { Fragment, useState, useEffect, useMemo, useCallback } from 'react';
-import { Plus, Trash2, X, Search, Copy, ExternalLink, Flag, ClipboardCheck, LayoutGrid, Pencil, Users as UsersIcon, ChevronRight, AlertTriangle, CalendarDays, ArrowUpDown, ChevronUp, ChevronDown, History, ArrowRight } from 'lucide-react';
+import { Plus, Trash2, X, Search, Copy, ExternalLink, Flag, ClipboardCheck, LayoutGrid, Pencil, Users as UsersIcon, ChevronRight, AlertTriangle, CalendarDays, ArrowUpDown, ChevronUp, ChevronDown, History, ArrowRight, Download } from 'lucide-react';
 import { Link } from 'react-router-dom';
 import { api } from '../services/api';
 import { useAuth } from '../context/AuthContext';
@@ -739,6 +739,102 @@ function TabButton({ active, onClick, icon: Icon, label, sub, badge }: {
   );
 }
 
+// ── Capacity CSV export ────────────────────────────────────────────────────
+// Long-format (one row per employee-week) because the discussion prompt is
+// "who was short this week and why". Filtering by Week in Sheets is the
+// natural way to answer that; wide format would force people to compare
+// values across 15 columns per row. A "Month" summary row per employee is
+// appended so at-a-glance totals are still one click away.
+//
+// Columns are chosen to expose the specific gap the user asked about:
+//   Plan vs Log with a signed Delta, the Pending pool (approved-but-not-yet-
+//   surfaced hours), and a Status token that filters cleanly in Sheets
+//   ("Missing", "Short", "On plan", "Over plan").
+function esc(v: any): string {
+  const s = v == null ? '' : String(v);
+  // Quote if the cell has a delimiter / newline / embedded quote, and
+  // double any internal quote per RFC 4180.
+  return /[",\n\r]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+}
+function round1(n: any): number {
+  const v = Number(n ?? 0);
+  return Number.isFinite(v) ? Math.round(v * 10) / 10 : 0;
+}
+function buildCapacityCsv(rows: any[], month: number, year: number): string {
+  const monthName = MONTHS[month - 1];
+  const HEADER = [
+    'Employee',
+    'Reporting Manager',
+    'Period',
+    'Dates',
+    'Plan (h)',
+    'Log approved (h)',
+    'Internal approved (h)',
+    'Total approved (h)',
+    'Delta vs plan (Log − Plan)',
+    'Shortfall (h)',
+    'Status',
+    'Discussion prompt',
+  ];
+  const lines: string[] = [HEADER.map(esc).join(',')];
+
+  const statusFor = (plan: number, log: number): { status: string; prompt: string } => {
+    if (plan === 0 && log === 0) return { status: 'No plan', prompt: '' };
+    if (log === 0 && plan > 0)   return { status: 'Missing', prompt: 'No approved hours yet — check with employee whether logs were submitted or blocked.' };
+    if (log >= plan * 1.05)      return { status: 'Over plan', prompt: 'Logged more than allocated — confirm whether extra work was billable or scope creep.' };
+    if (log >= plan * 0.95)      return { status: 'On plan', prompt: '' };
+    return { status: 'Short', prompt: 'Logged less than allocated — discuss whether the gap is time off, unlogged hours, or under-utilization.' };
+  };
+
+  const weekMeta = (w: 1 | 2 | 3 | 4 | 5) => {
+    if (isEmptyWeek(month, year, w)) return null;
+    return { label: `W${w}`, dates: `${formatWeekDays(month, year, w)} ${monthName} ${year}` };
+  };
+
+  for (const r of rows) {
+    const employeeName = r.employee_name ?? '';
+    const manager = r._manager ?? '';
+    // Per-week rows
+    for (const w of [1, 2, 3, 4, 5] as const) {
+      const meta = weekMeta(w);
+      if (!meta) continue;
+      const plan = round1(r[`w${w}`]);
+      const log  = round1(r[`w${w}_logged`]);
+      const int  = round1(r[`w${w}_internal`]);
+      const total = round1(log + int);
+      const delta = round1(log - plan);
+      const shortfall = round1(Math.max(0, plan - log));
+      const { status, prompt } = statusFor(plan, log);
+      lines.push([
+        employeeName, manager, meta.label, meta.dates,
+        plan, log, int, total, delta, shortfall, status, prompt,
+      ].map(esc).join(','));
+    }
+    // Month summary row per employee
+    const monthPlan = round1(r.monthly);
+    const monthLog  = round1(r.logged_approved);
+    const monthInt  = round1(r.month_internal);
+    const monthTotal = round1(monthLog + monthInt);
+    const monthDelta = round1(monthLog - monthPlan);
+    const monthShortfall = round1(Math.max(0, monthPlan - monthLog));
+    const { status: mStatus, prompt: mPrompt } = statusFor(monthPlan, monthLog);
+    lines.push([
+      employeeName, manager, 'Month', `${monthName} ${year}`,
+      monthPlan, monthLog, monthInt, monthTotal, monthDelta, monthShortfall, mStatus, mPrompt,
+    ].map(esc).join(','));
+  }
+  return lines.join('\r\n');
+}
+function downloadCsv(filename: string, csv: string) {
+  // BOM prefix so Excel / Sheets auto-detect UTF-8 on double-click.
+  const blob = new Blob([`﻿${csv}`], { type: 'text/csv;charset=utf-8;' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = filename;
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 500);
+}
+
 // ── Capacity view (full-width per-employee weekly) ─────────────────────────
 // "Team" = reporting manager — that's how the org defines teams. We expose
 // a single Team toggle (not separate Department/Manager options) so the
@@ -856,6 +952,22 @@ function CapacityView({ summary, employees, loading, search, month, year, openDe
           </p>
         </div>
         <div className="flex items-center gap-3 text-[11px] text-on-surface-muted flex-wrap">
+          {/* Export — long-format CSV (one row per employee-week + a
+              Month summary row) so a review meeting can filter to "just
+              W3" and see who was short at a glance. Whatever sort +
+              search filter is currently applied to the table is what
+              gets exported. */}
+          <button
+            onClick={() => {
+              const csv = buildCapacityCsv(rows, month, year);
+              const fname = `capacity-${MONTHS[month-1].toLowerCase()}-${year}.csv`;
+              downloadCsv(fname, csv);
+            }}
+            disabled={rows.length === 0}
+            title="Download visible rows as CSV — opens directly in Google Sheets / Excel"
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-accent text-on-accent text-[11px] font-semibold hover:opacity-90 disabled:opacity-40 disabled:cursor-not-allowed transition-opacity">
+            <Download size={12} /> Export CSV
+          </button>
           {/* Group-by selector — Team = reporting manager. */}
           <div className="inline-flex items-center gap-1.5 bg-surface-2 border border-outline rounded-lg px-1 py-0.5">
             <span className="text-[10px] uppercase tracking-[0.14em] font-bold text-on-surface-subtle pl-1.5">Group</span>
