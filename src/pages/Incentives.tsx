@@ -47,12 +47,17 @@ function ActionModal({ target, type, onClose, onConfirm, requireAmount, errorMsg
   const [amt, setAmt] = useState('');
   const [reason, setReason] = useState('');
   const [note, setNote] = useState('');
+  // Approver's optional comment attached to Approve. Shown to the
+  // employee inside the approval notification and on the approved
+  // row so context isn't lost after the modal closes.
+  const [approverNote, setApproverNote] = useState('');
   const [saving, setSaving] = useState(false);
   const handleSave = async () => {
     setSaving(true);
     try {
       const data: any = { status: type==='approve'?'approved':type==='pay'?'paid':'rejected' };
       if (type==='approve' && amt) data.approved_amount = Number(amt);
+      if (type==='approve' && approverNote.trim()) data.approver_note = approverNote.trim();
       if (type==='reject') data.rejection_reason = reason;
       if (type==='pay') data.payment_note = note;
       await onConfirm(data);
@@ -77,15 +82,24 @@ function ActionModal({ target, type, onClose, onConfirm, requireAmount, errorMsg
         </div>
         <div className="space-y-3">
           {type==='approve' && (
-            <div>
-              <label className="text-xs font-semibold text-on-surface-muted block mb-1.5">
-                {requireAmount ? 'Incentive Amount for Employee (₹) *' : 'Approved Amount (₹)'}
-              </label>
-              <input type="number" value={amt} onChange={e=>setAmt(e.target.value)}
-                placeholder="Enter the amount employee will receive"
-                className="w-full text-sm bg-surface border border-outline rounded-lg px-3 py-2.5 text-on-surface placeholder:text-on-surface-subtle focus:outline-none focus:ring-2 focus:ring-accent/30"/>
-              {requireAmount && <p className="text-xs text-on-surface-subtle mt-1">Employee will be notified with this amount.</p>}
-            </div>
+            <>
+              <div>
+                <label className="text-xs font-semibold text-on-surface-muted block mb-1.5">
+                  {requireAmount ? 'Incentive Amount for Employee (₹) *' : 'Approved Amount (₹)'}
+                </label>
+                <input type="number" value={amt} onChange={e=>setAmt(e.target.value)}
+                  placeholder="Enter the amount employee will receive"
+                  className="w-full text-sm bg-surface border border-outline rounded-lg px-3 py-2.5 text-on-surface placeholder:text-on-surface-subtle focus:outline-none focus:ring-2 focus:ring-accent/30"/>
+                {requireAmount && <p className="text-xs text-on-surface-subtle mt-1">Employee will be notified with this amount.</p>}
+              </div>
+              <div>
+                <label className="text-xs font-semibold text-on-surface-muted block mb-1.5">Note for employee (optional)</label>
+                <textarea value={approverNote} onChange={e=>setApproverNote(e.target.value)} rows={2}
+                  placeholder="e.g. Great work closing the retainer — paid with the July cycle."
+                  className="w-full text-sm bg-surface border border-outline rounded-lg px-3 py-2.5 text-on-surface placeholder:text-on-surface-subtle resize-none focus:outline-none focus:ring-2 focus:ring-accent/30"/>
+                <p className="text-xs text-on-surface-subtle mt-1">Included in the approval notification. Stays with the row after saving.</p>
+              </div>
+            </>
           )}
           {type==='reject' && (
             <div>
@@ -185,7 +199,12 @@ function RequestTable({ rows, onAction, isIncentive }: { rows: any[]; onAction:(
                 </td>
                 <td className="px-4 py-3.5">
                   <span className={`text-xs px-2.5 py-1 rounded-full font-semibold ${cfg.cls}`}>{cfg.label}</span>
-                  {r.rejection_reason&&<p className="text-[10px] text-danger mt-0.5 italic max-w-[100px] truncate">"{r.rejection_reason}"</p>}
+                  {r.rejection_reason&&<p className="text-[10px] text-danger mt-0.5 italic max-w-[140px] truncate" title={r.rejection_reason}>"{r.rejection_reason}"</p>}
+                  {r.approver_note && (r.status === 'approved' || r.status === 'paid') && (
+                    <p className="text-[10px] text-success mt-0.5 italic max-w-[140px] truncate" title={r.approver_note}>
+                      "{r.approver_note}"
+                    </p>
+                  )}
                 </td>
                 <td className="px-4 py-3.5">
                   <div className="flex gap-1.5 flex-wrap">

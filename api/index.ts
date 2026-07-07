@@ -591,13 +591,13 @@ async function runStartupMigrations() {
   // full migration block.
   //
   // KEEP THIS PROBE POINTED AT THE MOST RECENT MIGRATION when you add one.
-  // Right now: monthly_performance.pillars_null_ok, the marker that
-  // proves the DROP NOT NULL migration on the pillar columns has run
-  // (required for the N/A toggle to save cleanly). If you add a newer
-  // column / table, update this SELECT to reference it so cold starts
-  // re-run migrations once after each deploy.
+  // Right now: upsell_requests.approver_note (added so admin/HR can
+  // attach a comment when approving an upsell/expense — the note is
+  // saved and included in the employee's approval notification). If
+  // you add a newer column / table, update this SELECT to reference it
+  // so cold starts re-run migrations once after each deploy.
   try {
-    await sql`SELECT pillars_null_ok FROM monthly_performance LIMIT 0`;
+    await sql`SELECT approver_note FROM upsell_requests LIMIT 0`;
     _migrated = true;
     return;
   } catch {
@@ -740,6 +740,12 @@ async function runStartupMigrations() {
     await sql`ALTER TABLE upsell_requests ADD COLUMN IF NOT EXISTS currency TEXT DEFAULT 'INR'`;
     await sql`ALTER TABLE upsell_requests ADD COLUMN IF NOT EXISTS fx_rate NUMERIC`;
     await sql`ALTER TABLE upsell_requests ADD COLUMN IF NOT EXISTS deal_value_inr NUMERIC`;
+    // Optional note the approver writes at review time — surfaces in
+    // the employee's notification and on the row itself. Same shape
+    // on expense_requests so the shared review modal can populate
+    // either table.
+    await sql`ALTER TABLE upsell_requests  ADD COLUMN IF NOT EXISTS approver_note TEXT`;
+    await sql`ALTER TABLE expense_requests ADD COLUMN IF NOT EXISTS approver_note TEXT`.catch(()=>{});
     await sql`
       UPDATE upsell_requests
       SET currency=COALESCE(currency, 'INR'),
@@ -8586,7 +8592,7 @@ app.post('/api/upsell', async (req, res) => {
 });
 app.patch('/api/upsell/:id', async (req, res) => {
   try {
-    const { status, reviewed_by, rejection_reason, approved_amount, payment_note } = req.body;
+    const { status, reviewed_by, rejection_reason, approved_amount, payment_note, approver_note } = req.body;
     // Validate status is a known value
     if (!['approved','rejected','paid'].includes(status))
       return res.status(400).json({ error: 'Invalid status' });
@@ -8599,11 +8605,21 @@ app.patch('/api/upsell/:id', async (req, res) => {
     const currentStatus = (current[0] as any).status;
     if (currentStatus === 'paid') return res.status(400).json({ error: 'Paid requests cannot be changed' });
     if (currentStatus === 'approved' && status === 'approved') return res.status(400).json({ error: 'Already approved' });
-    const rows = await sql`UPDATE upsell_requests SET status=${status},reviewed_by=${reviewed_by??null},reviewed_at=NOW(),rejection_reason=${status==='rejected'?(rejection_reason??null):null},approved_amount=${approved_amount??null},payment_note=${payment_note??null} WHERE id=${req.params.id} RETURNING *`;
+    // approver_note: only kept for the approve/pay transitions (rejection
+    // has its own dedicated rejection_reason field). Empty string → NULL
+    // so the column doesn't accumulate placeholder blanks.
+    const noteToSave = status === 'rejected' ? null : (typeof approver_note === 'string' && approver_note.trim() ? approver_note.trim() : null);
+    const rows = await sql`UPDATE upsell_requests
+      SET status=${status},reviewed_by=${reviewed_by??null},reviewed_at=NOW(),
+          rejection_reason=${status==='rejected'?(rejection_reason??null):null},
+          approved_amount=${approved_amount??null},payment_note=${payment_note??null},
+          approver_note=COALESCE(${noteToSave}, approver_note)
+      WHERE id=${req.params.id} RETURNING *`;
     if (!(rows as any[]).length) return res.status(404).json({ error: 'Not found' });
     const r = rows[0] as any;
     if (status === 'approved') {
-      notifyEmployeeUser(r.employee_id,'upsell_approved','Incentive Request Approved 🎉',`Your upsell request for "${r.client_name}" is approved! Incentive: ₹${Number(approved_amount).toLocaleString('en-IN')}.`).catch(()=>{});
+      const noteSuffix = noteToSave ? ` Note: ${noteToSave}` : '';
+      notifyEmployeeUser(r.employee_id,'upsell_approved','Incentive Request Approved 🎉',`Your upsell request for "${r.client_name}" is approved! Incentive: ₹${Number(approved_amount).toLocaleString('en-IN')}.${noteSuffix}`).catch(()=>{});
     } else if (status === 'rejected') {
       notifyEmployeeUser(r.employee_id,'upsell_rejected','Incentive Request Not Approved',`Your upsell request for "${r.client_name}" was not approved.${rejection_reason?` Reason: ${rejection_reason}`:''}`).catch(()=>{});
     } else if (status === 'paid') {
@@ -8641,7 +8657,7 @@ app.post('/api/expenses', async (req, res) => {
 });
 app.patch('/api/expenses/:id', async (req, res) => {
   try {
-    const { status, reviewed_by, rejection_reason, approved_amount, payment_note } = req.body;
+    const { status, reviewed_by, rejection_reason, approved_amount, payment_note, approver_note } = req.body;
     if (!['approved','rejected','paid'].includes(status))
       return res.status(400).json({ error: 'Invalid status' });
     // Fetch current record to validate transition
@@ -8653,11 +8669,18 @@ app.patch('/api/expenses/:id', async (req, res) => {
     if (cur.status === 'approved' && status === 'approved') return res.status(400).json({ error: 'Already approved' });
     if (approved_amount !== undefined && approved_amount !== null && Number(approved_amount) <= 0)
       return res.status(400).json({ error: 'Approved amount must be greater than 0' });
-    const rows = await sql`UPDATE expense_requests SET status=${status},reviewed_by=${reviewed_by??null},reviewed_at=NOW(),rejection_reason=${status==='rejected'?(rejection_reason??null):null},approved_amount=${approved_amount??null},payment_note=${payment_note??null} WHERE id=${req.params.id} RETURNING *`;
+    const noteToSave = status === 'rejected' ? null : (typeof approver_note === 'string' && approver_note.trim() ? approver_note.trim() : null);
+    const rows = await sql`UPDATE expense_requests
+      SET status=${status},reviewed_by=${reviewed_by??null},reviewed_at=NOW(),
+          rejection_reason=${status==='rejected'?(rejection_reason??null):null},
+          approved_amount=${approved_amount??null},payment_note=${payment_note??null},
+          approver_note=COALESCE(${noteToSave}, approver_note)
+      WHERE id=${req.params.id} RETURNING *`;
     if (!(rows as any[]).length) return res.status(404).json({ error: 'Not found' });
     const e = rows[0] as any;
     const displayAmt = approved_amount ?? e.amount;
-    if (status==='approved') notifyEmployeeUser(e.employee_id,'expense_approved','Expense Approved ✅',`Your ${e.category} expense of ₹${Number(displayAmt).toLocaleString('en-IN')} has been approved.`).catch(()=>{});
+    const noteSuffix = noteToSave ? ` Note: ${noteToSave}` : '';
+    if (status==='approved') notifyEmployeeUser(e.employee_id,'expense_approved','Expense Approved ✅',`Your ${e.category} expense of ₹${Number(displayAmt).toLocaleString('en-IN')} has been approved.${noteSuffix}`).catch(()=>{});
     else if (status==='rejected') notifyEmployeeUser(e.employee_id,'expense_rejected','Expense Not Approved',`Your ${e.category} expense was not approved.${rejection_reason?` Reason: ${rejection_reason}`:''}`).catch(()=>{});
     else if (status==='paid') notifyEmployeeUser(e.employee_id,'expense_paid','Expense Reimbursed 💸',`Your ${e.category} expense of ₹${Number(e.approved_amount??e.amount).toLocaleString('en-IN')} has been reimbursed.${payment_note?` Note: ${payment_note}`:''}`).catch(()=>{});
     res.json(e);
