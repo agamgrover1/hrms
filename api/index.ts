@@ -597,7 +597,7 @@ async function runStartupMigrations() {
   // you add a newer column / table, update this SELECT to reference it
   // so cold starts re-run migrations once after each deploy.
   try {
-    await sql`SELECT approver_note FROM upsell_requests LIMIT 0`;
+    await sql`SELECT billable_hours FROM hour_logs LIMIT 0`;
     _migrated = true;
     return;
   } catch {
@@ -746,6 +746,15 @@ async function runStartupMigrations() {
     // either table.
     await sql`ALTER TABLE upsell_requests  ADD COLUMN IF NOT EXISTS approver_note TEXT`;
     await sql`ALTER TABLE expense_requests ADD COLUMN IF NOT EXISTS approver_note TEXT`.catch(()=>{});
+    // Split logged vs. billable hours on hour_logs. NULL means "same as
+    // hours_logged" — the common case where you bill exactly what you
+    // worked. Only diverges when the employee under- or over-bills a
+    // specific project-week (client goodwill, fixed retainer that
+    // rounds up, overrun on our end, etc.). Hours Allocation (the
+    // Upwork billing planner) uses COALESCE(billable_hours,
+    // hours_logged); every other surface (Compliance, Utilization,
+    // Performance) keeps reading hours_logged untouched.
+    await sql`ALTER TABLE hour_logs ADD COLUMN IF NOT EXISTS billable_hours NUMERIC`.catch(()=>{});
     await sql`
       UPDATE upsell_requests
       SET currency=COALESCE(currency, 'INR'),
@@ -10244,9 +10253,15 @@ app.post('/api/hour-logs', async (req, res) => {
   try {
     invalidateHourLogsCache();
     await runStartupMigrations();
-    const { project_id, employee_id, employee_name, month, year, week_num, hours_logged, work_description } = req.body;
+    const { project_id, employee_id, employee_name, month, year, week_num, hours_logged, work_description, billable_hours } = req.body;
     if (!project_id || !employee_id || !month || !year || !week_num)
       return res.status(400).json({ error: 'project_id, employee_id, month, year, week_num are required' });
+    // billable_hours: explicit null / undefined / empty string → NULL
+    // (means "same as logged"). Numeric → clamp to non-negative.
+    const billableClean: number | null =
+      billable_hours == null || billable_hours === ''
+        ? null
+        : Math.max(0, Number(billable_hours));
     const aRows = await sql`
       SELECT id FROM project_assignments
       WHERE project_id=${project_id} AND employee_id=${employee_id}
@@ -10260,11 +10275,12 @@ app.post('/api/hour-logs', async (req, res) => {
     const id = existing?.id ?? newId('hl');
     const rows = await sql`
       INSERT INTO hour_logs (id, assignment_id, project_id, employee_id, employee_name,
-        month, year, week_num, hours_logged, work_description, status)
+        month, year, week_num, hours_logged, billable_hours, work_description, status)
       VALUES (${id}, ${assignment_id}, ${project_id}, ${employee_id}, ${employee_name ?? null},
-        ${month}, ${year}, ${week_num}, ${Number(hours_logged) || 0}, ${work_description ?? null}, 'pending')
+        ${month}, ${year}, ${week_num}, ${Number(hours_logged) || 0}, ${billableClean}::numeric, ${work_description ?? null}, 'pending')
       ON CONFLICT (assignment_id, week_num) DO UPDATE SET
         hours_logged=EXCLUDED.hours_logged,
+        billable_hours=EXCLUDED.billable_hours,
         work_description=EXCLUDED.work_description,
         status='pending',
         rejection_reason=NULL,
@@ -10312,7 +10328,13 @@ app.post('/api/hour-logs', async (req, res) => {
 app.put('/api/hour-logs/:id', async (req, res) => {
   try {
     invalidateHourLogsCache();
-    const { hours_logged, work_description, actor_id, actor_name, actor_role, keep_status, reason } = req.body;
+    const { hours_logged, work_description, actor_id, actor_name, actor_role, keep_status, reason, billable_hours } = req.body;
+    const billableClean: number | null =
+      billable_hours === undefined
+        ? undefined as any        // undefined → leave column untouched below
+        : billable_hours == null || billable_hours === ''
+          ? null                  // explicit null / '' → reset to default (same as logged)
+          : Math.max(0, Number(billable_hours));
     const existing = await sql`SELECT * FROM hour_logs WHERE id=${req.params.id}`;
     if (!(existing as any[]).length) return res.status(404).json({ error: 'Log not found' });
     const cur = (existing as any[])[0];
@@ -10330,22 +10352,17 @@ app.put('/api/hour-logs/:id', async (req, res) => {
     const preserve = isPrivileged && keep_status;
     const newHours = Number(hours_logged) || 0;
     const newDesc = work_description ?? null;
+    // billable_hours only overwrites when the request explicitly sent
+    // a value (including null to reset). If the client omitted the
+    // field entirely we leave the existing DB value alone.
+    const billableTouched = billable_hours !== undefined;
     const rows = preserve
-      ? await sql`
-        UPDATE hour_logs SET
-          hours_logged=${newHours},
-          work_description=${newDesc},
-          updated_at=NOW()
-        WHERE id=${req.params.id} RETURNING *`
-      : await sql`
-        UPDATE hour_logs SET
-          hours_logged=${newHours},
-          work_description=${newDesc},
-          status='pending',
-          rejection_reason=NULL,
-          reviewed_by_id=NULL, reviewed_by_name=NULL, reviewed_at=NULL,
-          updated_at=NOW()
-        WHERE id=${req.params.id} RETURNING *`;
+      ? billableTouched
+        ? await sql`UPDATE hour_logs SET hours_logged=${newHours}, work_description=${newDesc}, billable_hours=${billableClean}::numeric, updated_at=NOW() WHERE id=${req.params.id} RETURNING *`
+        : await sql`UPDATE hour_logs SET hours_logged=${newHours}, work_description=${newDesc}, updated_at=NOW() WHERE id=${req.params.id} RETURNING *`
+      : billableTouched
+        ? await sql`UPDATE hour_logs SET hours_logged=${newHours}, work_description=${newDesc}, billable_hours=${billableClean}::numeric, status='pending', rejection_reason=NULL, reviewed_by_id=NULL, reviewed_by_name=NULL, reviewed_at=NULL, updated_at=NOW() WHERE id=${req.params.id} RETURNING *`
+        : await sql`UPDATE hour_logs SET hours_logged=${newHours}, work_description=${newDesc}, status='pending', rejection_reason=NULL, reviewed_by_id=NULL, reviewed_by_name=NULL, reviewed_at=NULL, updated_at=NOW() WHERE id=${req.params.id} RETURNING *`;
     const updated = (rows as any[])[0];
     // Audit — 'admin_edit' is reserved for a privileged actor overriding an
     // already-approved log. Any edit on a pending/rejected log is just 'edited'
@@ -11436,10 +11453,18 @@ app.get('/api/hours/allocations', async (req, res) => {
                             UNION SELECT project_id FROM hours_weekly_targets WHERE year=${year})
     ` as any[];
 
-    // Actuals — sum of hour_logs per (project, week_num) for the month.
+    // Actuals — for the Upwork billing planner, "actual" means BILLABLE
+    // hours (what we invoice to the client), not raw work time. Most
+    // rows have NULL billable_hours meaning "same as logged" — the
+    // COALESCE folds that into the same number. Rows where the
+    // employee explicitly under- or over-billed diverge, and we return
+    // BOTH numbers so the UI can show `logged X · billed Y` when they
+    // differ.
     // Include pending/approved/on_hold. Exclude rejected (didn't happen).
     const actuals = await sql`
-      SELECT project_id, week_num, COALESCE(SUM(hours_logged), 0)::numeric AS actual
+      SELECT project_id, week_num,
+             COALESCE(SUM(COALESCE(billable_hours, hours_logged)), 0)::numeric AS billable,
+             COALESCE(SUM(hours_logged), 0)::numeric AS logged
       FROM hour_logs
       WHERE month = ${month} AND year = ${year}
         AND status IN ('approved', 'pending', 'on_hold')
@@ -11460,24 +11485,30 @@ app.get('/api/hours/allocations', async (req, res) => {
     // Build target + actual lookup tables keyed by "projectId:weekNum".
     const targetMap = new Map<string, any>();
     for (const t of targets) targetMap.set(`${t.project_id}:${t.week_num}`, t);
-    const actualMap = new Map<string, number>();
-    for (const a of actuals) actualMap.set(`${a.project_id}:${a.week_num}`, Number(a.actual));
+    // actualMap holds { billable, logged } per (project, week) so the
+    // response can carry both — client uses billable for the pill and
+    // logged for the delta line.
+    const actualMap = new Map<string, { billable: number; logged: number }>();
+    for (const a of actuals) actualMap.set(`${a.project_id}:${a.week_num}`, { billable: Number(a.billable), logged: Number(a.logged) });
 
     // Assemble one row per project with weeks[1..5].
     const rows = projectsRows.map(p => {
       const weeks: any[] = [];
       for (let w = 1; w <= 5; w++) {
         const t = targetMap.get(`${p.id}:${w}`);
-        const rawActual = actualMap.get(`${p.id}:${w}`) ?? 0;
+        const raw = actualMap.get(`${p.id}:${w}`) ?? { billable: 0, logged: 0 };
         const override = t?.actual_override != null ? Number(t.actual_override) : null;
-        const actual = override != null ? override : rawActual;
+        // actual_hours drives pill vs target — overrides win, then
+        // billable (what hits Upwork).
+        const actual = override != null ? override : raw.billable;
         const target = t ? Number(t.target_hours) : 0;
         weeks.push({
           week_num: w,
           target_hours: target,
           actual_hours: actual,
-          actual_computed: rawActual, // what hour_logs actually say (pre-override)
-          actual_override: override,   // null when not overridden
+          actual_computed: raw.billable, // billable-aware sum from hour_logs (pre-override)
+          logged_computed: raw.logged,    // raw work time (for the delta line)
+          actual_override: override,       // null when not overridden
           pending: Math.max(0, target - actual),
           status: !target ? 'unset' : actual >= target ? 'met' : actual > 0 ? 'partial' : 'missing',
           notes: t?.notes ?? null,

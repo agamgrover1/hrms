@@ -3370,6 +3370,9 @@ interface MHLog {
   assignment_id?: string;
   month: number; year: number; week_num: number;
   hours_logged: number;
+  // Optional weekly override: what actually gets billed to Upwork.
+  // NULL / undefined means "same as logged" — the common case.
+  billable_hours?: number | null;
   work_description: string | null;
   effective_description?: string | null;
   status: string;
@@ -3866,6 +3869,16 @@ function HourLogModal({
   const [saving, setSaving] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [error, setError] = useState('');
+  // Billable-hours split: default OFF (billable == logged). When the
+  // employee toggles this on, they enter what actually goes to Upwork
+  // separate from the time they worked. Prefilled from existing.billable_hours
+  // when a saved override is already there — so editing preserves it.
+  const [billableOn, setBillableOn] = useState<boolean>(
+    existing?.billable_hours != null && Number(existing.billable_hours) !== Number(existing.hours_logged)
+  );
+  const [billableInput, setBillableInput] = useState<string>(
+    existing?.billable_hours != null ? String(existing.billable_hours) : ''
+  );
 
   // Employee can wipe their OWN weekly log when it's NOT yet approved.
   // The backend lets pending / on_hold / rejected go; approved is reserved
@@ -3922,6 +3935,22 @@ function HourLogModal({
 
   const save = async () => {
     setError('');
+    // Validate billable input if the toggle is on. Empty is treated as
+    // "no override" — same as toggle-off — so we just quietly disable it.
+    let billableToSend: number | null | undefined;
+    if (billableOn && billableInput.trim() !== '') {
+      const bn = Number(billableInput);
+      if (Number.isNaN(bn) || bn < 0) {
+        setError('Billable hours must be a positive number.');
+        return;
+      }
+      billableToSend = bn;
+    } else {
+      // Toggle off (or empty input) → send explicit null to reset the
+      // column so a prior override doesn't linger after the user changed
+      // their mind.
+      billableToSend = null;
+    }
     setSaving(true);
     try {
       const ops: Promise<any>[] = [];
@@ -3944,7 +3973,35 @@ function HourLogModal({
         }
       }
       await Promise.all(ops);
-      toast.success('Hours saved', `${total}h on ${assignment.project_name} · W${weekNum}.`);
+      // Day upserts run the aggregator which creates/refreshes the
+      // parent hour_logs row. Once that's settled, attach the weekly
+      // billable_hours override with a PUT on the parent row. Skip when
+      // there's no total hours (nothing to bill anyway).
+      if (total > 0) {
+        try {
+          // Pull the parent row's id (aggregator writes it) then patch it.
+          const parentLogs = await api.getHourLogs({ employee_id: employeeId, month: assignment.month, year: assignment.year });
+          const parent = (parentLogs as any[]).find(l =>
+            l.assignment_id === assignment.id && l.week_num === weekNum
+          );
+          if (parent) {
+            await api.editHourLog(parent.id, {
+              hours_logged: parent.hours_logged, // required by endpoint contract
+              work_description: parent.work_description ?? undefined,
+              billable_hours: billableToSend,
+              actor_id: employeeId,
+              actor_name: employeeName,
+              actor_role: user?.role ?? 'employee',
+              keep_status: true, // don't push back to pending just for a billable tweak
+            });
+          }
+        } catch { /* non-fatal — day-level entries are the source of truth */ }
+      }
+      const savedBillable = billableToSend != null ? billableToSend : total;
+      const suffix = savedBillable !== total
+        ? ` · billing ${savedBillable}h`
+        : '';
+      toast.success('Hours saved', `${total}h on ${assignment.project_name} · W${weekNum}${suffix}.`);
       onSaved();
     } catch (err: any) {
       setError(err.message ?? 'Save failed.');
@@ -4038,6 +4095,62 @@ function HourLogModal({
               </div>
             );
           })}
+          {/* Billable-vs-logged toggle. Zero friction when the two match
+              (the common case) — checkbox stays off, no extra input. Flip
+              it on when this week needs to be billed at a different
+              number than time actually spent: goodwill discount, fixed
+              retainer that rounds up, overrun the client shouldn't
+              wear. Only the Hours Allocation planner uses the billable
+              number; every other surface (Compliance, Utilization,
+              performance pulse) reads the raw logged hours untouched. */}
+          <div className="mt-3 rounded-xl-2 border border-outline bg-surface-2/40 p-3">
+            <label className="flex items-start gap-2 cursor-pointer select-none">
+              <input
+                type="checkbox"
+                checked={billableOn}
+                onChange={e => {
+                  setBillableOn(e.target.checked);
+                  // Pre-fill the input with the current total on first flip
+                  // so the user just tweaks it instead of retyping.
+                  if (e.target.checked && !billableInput) setBillableInput(String(total));
+                }}
+                className="mt-0.5 accent-accent"
+              />
+              <div className="flex-1 min-w-0">
+                <p className="text-sm font-semibold text-on-surface">Bill different hours to Upwork?</p>
+                <p className="text-[11px] text-on-surface-subtle mt-0.5">
+                  Off by default — we bill exactly what you worked. Turn on when the billable amount for this week
+                  differs from your logged time (client goodwill, fixed retainer, overrun on our end).
+                </p>
+              </div>
+            </label>
+            {billableOn && (
+              <div className="mt-3 flex items-center gap-3 flex-wrap">
+                <div className="flex items-center gap-2">
+                  <label className="text-xs font-semibold text-on-surface-muted">Billable this week</label>
+                  <input
+                    type="number"
+                    step="0.25"
+                    min="0"
+                    value={billableInput}
+                    onChange={e => setBillableInput(e.target.value)}
+                    placeholder={String(total)}
+                    className="w-24 text-center num-mono text-base font-semibold bg-surface border border-outline rounded-lg px-2 py-1.5 focus:outline-none focus:border-accent focus:ring-2 focus:ring-accent/20"
+                  />
+                  <span className="text-xs text-on-surface-muted">h</span>
+                </div>
+                {billableInput.trim() !== '' && Number(billableInput) !== total && (
+                  <p className="text-[11px] text-on-surface-muted">
+                    Logged {total}h · billing {Number(billableInput)}h
+                    <span className={Number(billableInput) < total ? 'text-danger' : 'text-warning'}>
+                      {' '}({Number(billableInput) < total ? '−' : '+'}{Math.abs(Number(billableInput) - total)}h)
+                    </span>
+                  </p>
+                )}
+              </div>
+            )}
+          </div>
+
           {existing?.status === 'rejected' && existing.rejection_reason && (
             <div className="text-xs bg-danger-container border border-danger/20 rounded-xl-2 p-3 text-danger mt-3">
               <p className="font-semibold mb-0.5">Last rejection</p>

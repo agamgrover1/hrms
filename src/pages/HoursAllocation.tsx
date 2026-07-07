@@ -15,7 +15,14 @@ interface WeekCell {
   week_num: number;
   target_hours: number;
   actual_hours: number;
+  // Billable-aware SUM from hour_logs (pre-override). Same number as
+  // actual_hours when nothing's overridden — surfaced separately so
+  // the edit modal can pre-fill from the auto value.
   actual_computed: number;
+  // Raw work time from hour_logs (SUM of hours_logged). When this
+  // diverges from actual_computed the pill still shows billable but
+  // we render a small "logged X · billed Y" line below.
+  logged_computed?: number;
   actual_override: number | null;
   pending: number;
   status: Status;
@@ -295,6 +302,16 @@ export default function HoursAllocation() {
                                     {w.status === 'partial' && <Circle className="w-3 h-3" />}
                                     <span>{pill.label}</span>
                                   </div>
+                                  {/* An admin override is its own truth — drowns out the split. */}
+                                  {w.actual_override == null
+                                    && w.logged_computed != null
+                                    && Math.abs(Number(w.logged_computed) - Number(w.actual_computed)) > 0.01 && (
+                                    <div
+                                      className="text-[10px] text-on-surface-subtle font-mono"
+                                      title="Pill shows billable hours (what hits Upwork). Team logged the amount below.">
+                                      logged {fmtHM(Number(w.logged_computed))}
+                                    </div>
+                                  )}
                                   {w.target_hours > 0 && (
                                     <div className="text-[10px] text-on-surface-subtle font-mono">
                                       / {fmtHM(w.target_hours)}
