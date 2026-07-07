@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { TrendingUp, CheckCircle, XCircle, Clock, DollarSign, X, Check, Receipt } from 'lucide-react';
+import { TrendingUp, CheckCircle, XCircle, Clock, DollarSign, X, Check, Receipt, Plus } from 'lucide-react';
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend } from 'recharts';
 import { api } from '../services/api';
 import { useAuth } from '../context/AuthContext';
@@ -137,6 +137,149 @@ function ActionModal({ target, type, onClose, onConfirm, requireAmount, errorMsg
   );
 }
 
+// ── Admin: grant incentive directly (skips the employee-side flow) ──────────
+function GrantIncentiveModal({ employees, onClose, onSaved }: {
+  employees: any[];
+  onClose: () => void;
+  onSaved: (row: any) => void;
+}) {
+  const [empId, setEmpId] = useState('');
+  const [empQuery, setEmpQuery] = useState('');
+  const [client, setClient] = useState('');
+  const [service, setService] = useState('');
+  const [dealValue, setDealValue] = useState('');
+  const [amount, setAmount] = useState('');
+  const [note, setNote] = useState('');
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState('');
+
+  const filteredEmployees = employees
+    .filter(e => !empQuery.trim() || (e.name ?? '').toLowerCase().includes(empQuery.trim().toLowerCase()))
+    .slice(0, 8);
+  const selectedEmp = employees.find(e => e.id === empId);
+
+  const canSave = empId && client.trim() && service.trim() && Number(amount) > 0 && !saving;
+
+  const handleSave = async () => {
+    if (!canSave) return;
+    setSaving(true); setError('');
+    try {
+      const row = await api.grantUpsell({
+        employee_id: empId,
+        employee_name: selectedEmp?.name,
+        client_name: client.trim(),
+        service_description: service.trim(),
+        approved_amount: Number(amount),
+        approver_note: note.trim() || undefined,
+        deal_value: dealValue ? Number(dealValue) : undefined,
+        currency: 'INR',
+      });
+      onSaved(row);
+    } catch (e: any) {
+      setError(e?.message ?? 'Could not grant incentive');
+    } finally { setSaving(false); }
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 backdrop-blur-sm p-4">
+      <div className="bg-surface rounded-xl-2 shadow-elev-3 border border-outline w-full max-w-md p-6">
+        <div className="flex items-center justify-between mb-4">
+          <div>
+            <h3 className="font-display text-base font-bold tracking-tight text-on-surface">Grant Incentive</h3>
+            <p className="text-xs text-on-surface-subtle mt-0.5">Creates an already-approved incentive & notifies the employee.</p>
+          </div>
+          <button onClick={onClose}><X size={16} className="text-on-surface-subtle" /></button>
+        </div>
+
+        <div className="space-y-3">
+          <div>
+            <label className="text-xs font-semibold text-on-surface-muted block mb-1.5">Employee *</label>
+            {selectedEmp ? (
+              <div className="flex items-center justify-between gap-2 p-2 rounded-lg bg-surface-2 border border-outline">
+                <div className="min-w-0">
+                  <p className="text-sm font-semibold text-on-surface truncate">{selectedEmp.name}</p>
+                  <p className="text-[11px] text-on-surface-subtle truncate">
+                    {selectedEmp.designation ?? '—'}{selectedEmp.department ? ` · ${selectedEmp.department}` : ''}
+                  </p>
+                </div>
+                <button onClick={() => { setEmpId(''); setEmpQuery(''); }}
+                  className="text-xs text-on-surface-muted hover:text-danger flex-shrink-0">Change</button>
+              </div>
+            ) : (
+              <>
+                <input value={empQuery} onChange={e => setEmpQuery(e.target.value)}
+                  placeholder="Search by name…" autoFocus
+                  className="w-full text-sm bg-surface border border-outline rounded-lg px-3 py-2 text-on-surface placeholder:text-on-surface-subtle focus:outline-none focus:ring-2 focus:ring-accent/30" />
+                {empQuery.trim() && (
+                  <div className="mt-1 max-h-44 overflow-y-auto rounded-lg border border-outline divide-y divide-outline">
+                    {filteredEmployees.length === 0 ? (
+                      <p className="px-3 py-2 text-xs text-on-surface-subtle italic">No matches.</p>
+                    ) : filteredEmployees.map(e => (
+                      <button key={e.id} onClick={() => { setEmpId(e.id); setEmpQuery(''); }}
+                        className="w-full flex items-center justify-between gap-2 px-3 py-2 text-left hover:bg-surface-2">
+                        <div className="min-w-0">
+                          <p className="text-sm text-on-surface truncate">{e.name}</p>
+                          <p className="text-[10px] text-on-surface-subtle truncate">{e.designation ?? '—'}</p>
+                        </div>
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </>
+            )}
+          </div>
+
+          <div>
+            <label className="text-xs font-semibold text-on-surface-muted block mb-1.5">Client *</label>
+            <input value={client} onChange={e => setClient(e.target.value)}
+              placeholder="e.g. Sylvera"
+              className="w-full text-sm bg-surface border border-outline rounded-lg px-3 py-2 text-on-surface placeholder:text-on-surface-subtle focus:outline-none focus:ring-2 focus:ring-accent/30" />
+          </div>
+
+          <div>
+            <label className="text-xs font-semibold text-on-surface-muted block mb-1.5">Service / what earned it *</label>
+            <textarea value={service} onChange={e => setService(e.target.value)} rows={2}
+              placeholder="e.g. Upsold 2 new websites at $10/hr, 40–45 hours each"
+              className="w-full text-sm bg-surface border border-outline rounded-lg px-3 py-2 text-on-surface placeholder:text-on-surface-subtle resize-none focus:outline-none focus:ring-2 focus:ring-accent/30" />
+          </div>
+
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="text-xs font-semibold text-on-surface-muted block mb-1.5">Deal value (₹, optional)</label>
+              <input type="number" value={dealValue} onChange={e => setDealValue(e.target.value)}
+                placeholder="0"
+                className="w-full text-sm bg-surface border border-outline rounded-lg px-3 py-2 text-on-surface placeholder:text-on-surface-subtle focus:outline-none focus:ring-2 focus:ring-accent/30" />
+            </div>
+            <div>
+              <label className="text-xs font-semibold text-on-surface-muted block mb-1.5">Incentive (₹) *</label>
+              <input type="number" value={amount} onChange={e => setAmount(e.target.value)}
+                placeholder="Amount employee receives"
+                className="w-full text-sm bg-surface border border-outline rounded-lg px-3 py-2 text-on-surface placeholder:text-on-surface-subtle focus:outline-none focus:ring-2 focus:ring-accent/30" />
+            </div>
+          </div>
+
+          <div>
+            <label className="text-xs font-semibold text-on-surface-muted block mb-1.5">Note to employee (optional)</label>
+            <textarea value={note} onChange={e => setNote(e.target.value)} rows={2}
+              placeholder="e.g. Great job. Paid with the July cycle."
+              className="w-full text-sm bg-surface border border-outline rounded-lg px-3 py-2 text-on-surface placeholder:text-on-surface-subtle resize-none focus:outline-none focus:ring-2 focus:ring-accent/30" />
+            <p className="text-xs text-on-surface-subtle mt-1">Included in the notification. Stays with the row afterwards.</p>
+          </div>
+
+          {error && <p className="text-xs font-medium text-danger bg-danger-container border border-danger/20 rounded-lg px-3 py-2">{error}</p>}
+          <div className="flex gap-3 pt-1">
+            <button onClick={onClose} className="flex-1 py-2.5 border border-outline rounded-xl-2 text-sm font-medium text-on-surface-muted hover:bg-surface-2 transition-colors">Cancel</button>
+            <button onClick={handleSave} disabled={!canSave}
+              className="flex-1 py-2.5 bg-accent text-on-accent hover:opacity-90 rounded-xl-2 text-sm font-semibold disabled:opacity-50 flex items-center justify-center gap-2 shadow-elev-1 hover:shadow-elev-2 transition-all">
+              {saving ? 'Granting…' : <><Check size={14} /> Grant & notify</>}
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ── Table component ───────────────────────────────────────────────────────────
 function RequestTable({ rows, onAction, isIncentive }: { rows: any[]; onAction:(r:any,t:'approve'|'reject'|'pay',isInc:boolean)=>void; isIncentive:boolean }) {
   if (!rows.length) return (
@@ -235,6 +378,13 @@ export default function FinancePage() {
   const [expenses, setExpenses] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [action, setAction] = useState<{target:any;type:'approve'|'reject'|'pay';isIncentive:boolean}|null>(null);
+  // Grant modal — admin-only shortcut to file an already-approved
+  // incentive for any employee without them having submitted anything.
+  const [grantOpen, setGrantOpen] = useState(false);
+  const [employees, setEmployees] = useState<any[]>([]);
+  useEffect(() => {
+    if (user?.role === 'admin') api.getEmployees().then(setEmployees).catch(() => {});
+  }, [user?.role]);
   const currentYear = new Date().getFullYear();
 
   useEffect(()=>{
@@ -322,13 +472,26 @@ export default function FinancePage() {
 
       {/* Page tabs: Incentives | Expenses */}
       <div className="flex items-center justify-between flex-wrap gap-3">
-        <div className="flex gap-1 bg-surface rounded-xl-2 p-1 border border-outline shadow-elev-1">
-          {([{key:'incentives',label:'Upsell Incentives'},{key:'expenses',label:'Expenses'}] as const).map(t=>(
-            <button key={t.key} onClick={()=>{setPageTab(t.key);setStatusTab('all');}}
-              className={`px-4 py-2 rounded-lg text-sm font-semibold transition-all ${pageTab===t.key?'bg-accent text-on-accent shadow-elev-1':'text-on-surface-muted hover:text-on-surface'}`}>
-              {t.label}
+        <div className="flex items-center gap-3 flex-wrap">
+          <div className="flex gap-1 bg-surface rounded-xl-2 p-1 border border-outline shadow-elev-1">
+            {([{key:'incentives',label:'Upsell Incentives'},{key:'expenses',label:'Expenses'}] as const).map(t=>(
+              <button key={t.key} onClick={()=>{setPageTab(t.key);setStatusTab('all');}}
+                className={`px-4 py-2 rounded-lg text-sm font-semibold transition-all ${pageTab===t.key?'bg-accent text-on-accent shadow-elev-1':'text-on-surface-muted hover:text-on-surface'}`}>
+                {t.label}
+              </button>
+            ))}
+          </div>
+          {/* Admin-only shortcut to grant an incentive directly to any
+              employee. Distinct from the review flow (which acts on
+              rows the employee submitted). Only shows on the
+              Incentives tab; expenses aren't granted by admin — they
+              start life as an employee claim. */}
+          {user?.role === 'admin' && pageTab === 'incentives' && (
+            <button onClick={() => setGrantOpen(true)}
+              className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl-2 text-sm font-semibold bg-accent text-on-accent hover:opacity-90 shadow-elev-1 hover:shadow-elev-2 transition-all">
+              <Plus size={14} /> Grant incentive
             </button>
-          ))}
+          )}
         </div>
         <div className="flex gap-1 bg-surface-2 p-1 rounded-lg border border-outline">
           {(['all','pending','approved','rejected','paid'] as const).map(t=>(
@@ -354,6 +517,17 @@ export default function FinancePage() {
           requireAmount={action.isIncentive && action.type==='approve'}
           onClose={()=>{setAction(null);setActionError('');}} onConfirm={handleAction}
           errorMsg={actionError}/>
+      )}
+
+      {grantOpen && (
+        <GrantIncentiveModal
+          employees={employees.filter(e => e.status === 'active')}
+          onClose={() => setGrantOpen(false)}
+          onSaved={row => {
+            setUpsells(prev => [row, ...prev]);
+            setGrantOpen(false);
+          }}
+        />
       )}
     </div>
   );

@@ -8590,6 +8590,65 @@ app.post('/api/upsell', async (req, res) => {
     res.status(201).json(rows[0]);
   } catch (e: any) { res.status(500).json({ error: e.message }); }
 });
+
+// POST /api/upsell/grant — admin-initiated incentive.
+// Different flow from POST /api/upsell (which is what an employee
+// self-submits and requires the 30-char justification):
+//   - Admin picks any employee → row is created ALREADY approved with
+//     the amount + optional note.
+//   - Employee gets the same 'upsell_approved' notification as if HR
+//     had reviewed a request. The story reads "Your incentive is
+//     approved" whether the request originated from them or from admin.
+// Notes minimum on employee self-submit stays — it forces context for
+// HR review. This admin path bypasses because admin already knows the
+// context (they're the one filling it in).
+app.post('/api/upsell/grant', async (req, res) => {
+  try {
+    const uid = req.header('x-user-id');
+    if (!uid) return res.status(401).json({ error: 'Sign in required' });
+    const u = (await sql`SELECT id, name, role FROM app_users WHERE id=${uid} LIMIT 1`)[0] as any;
+    if (!u || u.role !== 'admin') return res.status(403).json({ error: 'Admin only' });
+    const { employee_id, employee_name, client_name, service_description, deal_value, currency, fx_rate, approved_amount, approver_note, notes } = req.body ?? {};
+    if (!employee_id || !client_name?.trim() || !service_description?.trim())
+      return res.status(400).json({ error: 'employee_id, client_name, service_description are required' });
+    if (!approved_amount || Number(approved_amount) <= 0)
+      return res.status(400).json({ error: 'approved_amount is required and must be greater than 0' });
+    // Optional deal_value + currency handling mirrors the employee
+    // submit path so downstream reporting stays consistent.
+    const ccy = (currency || 'INR').toUpperCase();
+    let rate: number;
+    if (fx_rate != null) rate = Number(fx_rate);
+    else if (ccy === 'INR') rate = 1;
+    else {
+      const today = new Date().toISOString().slice(0, 10);
+      rate = (await getFxRate(today, ccy, 'INR')).rate;
+    }
+    const dv = deal_value != null && deal_value !== '' ? Number(deal_value) : null;
+    const dvInr = dv != null ? dv * rate : null;
+    const trimmedNote = (approver_note ?? '').trim() || null;
+    const trimmedNotes = (notes ?? '').trim() || null;
+    const id = `ups_${Date.now()}`;
+    const rows = await sql`
+      INSERT INTO upsell_requests
+        (id, employee_id, employee_name, client_name, service_description,
+         deal_value, currency, fx_rate, deal_value_inr, notes,
+         status, reviewed_by, reviewed_at, approved_amount, approver_note)
+      VALUES (${id}, ${employee_id}, ${employee_name ?? null}, ${client_name.trim()}, ${service_description.trim()},
+              ${dv}, ${ccy}, ${rate}, ${dvInr}, ${trimmedNotes},
+              'approved', ${u.name}, NOW(), ${Number(approved_amount)}, ${trimmedNote})
+      RETURNING *`;
+    const r = rows[0] as any;
+    const noteSuffix = trimmedNote ? ` Note: ${trimmedNote}` : '';
+    notifyEmployeeUser(
+      r.employee_id,
+      'upsell_approved',
+      'Incentive Granted 🎉',
+      `${u.name} granted you an incentive of ₹${Number(approved_amount).toLocaleString('en-IN')} for "${r.client_name}".${noteSuffix}`
+    ).catch(()=>{});
+    res.status(201).json(r);
+  } catch (e: any) { res.status(500).json({ error: e.message ?? 'Server error' }); }
+});
+
 app.patch('/api/upsell/:id', async (req, res) => {
   try {
     const { status, reviewed_by, rejection_reason, approved_amount, payment_note, approver_note } = req.body;

@@ -327,7 +327,18 @@ export const api = {
     request<any[]>(`/upsell${employeeId ? `?employee_id=${employeeId}` : ''}`),
   submitUpsell: (data: { employee_id: string; employee_name?: string; client_name: string; service_description: string; deal_value?: number; currency?: string; fx_rate?: number; notes?: string }) =>
     request<any>('/upsell', { method: 'POST', body: JSON.stringify(data) }),
-  reviewUpsell: (id: string, data: { status: string; reviewed_by?: string; rejection_reason?: string; approved_amount?: number; payment_note?: string }) =>
+  // Admin-only: create an already-approved incentive for any employee.
+  // Skips the 30-char notes minimum that the employee self-submit
+  // requires (admin fills in the context themselves).
+  grantUpsell: (data: {
+    employee_id: string; employee_name?: string;
+    client_name: string; service_description: string;
+    approved_amount: number;
+    approver_note?: string;
+    deal_value?: number; currency?: string;
+    notes?: string;
+  }) => request<any>('/upsell/grant', { method: 'POST', body: JSON.stringify(data) }),
+  reviewUpsell: (id: string, data: { status: string; reviewed_by?: string; rejection_reason?: string; approved_amount?: number; payment_note?: string; approver_note?: string }) =>
     request<any>(`/upsell/${id}`, { method: 'PATCH', body: JSON.stringify(data) }),
 
   // Expenses
