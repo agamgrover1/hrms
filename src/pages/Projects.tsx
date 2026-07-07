@@ -506,6 +506,8 @@ export default function Projects() {
         <ProjectExpensesModal
           project={expensesFor}
           onClose={() => setExpensesFor(null)}
+          initialMonth={bulkMonth}
+          initialYear={bulkYear}
         />
       )}
 
@@ -513,6 +515,8 @@ export default function Projects() {
         <ProjectDailyActivityModal
           project={dailyFor}
           onClose={() => setDailyFor(null)}
+          initialMonth={bulkMonth}
+          initialYear={bulkYear}
         />
       )}
     </div>
@@ -522,10 +526,17 @@ export default function Projects() {
 // ── Daily activity modal — project-centric view: employees × days ──────────
 // Reporting managers / coordinators / admins use this to see how many hours
 // were spent on a specific project each day, by whom, with the day's notes.
-export function ProjectDailyActivityModal({ project, onClose }: { project: Project; onClose: () => void }) {
+export function ProjectDailyActivityModal({ project, onClose, initialMonth, initialYear }: {
+  project: Project; onClose: () => void;
+  // Preselect the month the modal opens with. Used when the caller
+  // already has a month picked (e.g. Projects page's Jun/2026 selector)
+  // so opening the drill-in doesn't force the user to reselect the
+  // period they were just looking at. Falls back to today's month.
+  initialMonth?: number; initialYear?: number;
+}) {
   const today = new Date();
-  const [month, setMonth] = useState(today.getMonth() + 1);
-  const [year, setYear] = useState(today.getFullYear());
+  const [month, setMonth] = useState(initialMonth ?? today.getMonth() + 1);
+  const [year, setYear] = useState(initialYear ?? today.getFullYear());
   const [days, setDays] = useState<Array<{
     id: string; employee_id: string; employee_name: string | null; log_date: string;
     hours: number; notes: string | null;
@@ -815,10 +826,13 @@ const fmtINR = (n: number) => `₹${Math.round(Number(n) || 0).toLocaleString('e
 const monthLabel = (m: number, y: number) =>
   new Date(y, m - 1, 1).toLocaleDateString('en-IN', { month: 'short', year: 'numeric' });
 
-function ProjectExpensesModal({ project, onClose }: { project: Project; onClose: () => void }) {
+function ProjectExpensesModal({ project, onClose, initialMonth, initialYear }: {
+  project: Project; onClose: () => void;
+  initialMonth?: number; initialYear?: number;
+}) {
   const today = new Date();
-  const [month, setMonth] = useState(today.getMonth() + 1);
-  const [year, setYear] = useState(today.getFullYear());
+  const [month, setMonth] = useState(initialMonth ?? today.getMonth() + 1);
+  const [year, setYear] = useState(initialYear ?? today.getFullYear());
   const [list, setList] = useState<FinProjectExpense[]>([]);
   const [loading, setLoading] = useState(true);
   const [draft, setDraft] = useState({ vendor: '', description: '', amount: '', category: 'outsource' });

@@ -1581,6 +1581,8 @@ function MineView({ summary, assignments, myProjects, reportsToIds, loading, mon
         <ProjectDailyActivityModal
           project={dailyFor}
           onClose={() => setDailyFor(null)}
+          initialMonth={month}
+          initialYear={year}
         />
       )}
     </div>

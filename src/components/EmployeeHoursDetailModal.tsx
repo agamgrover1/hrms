@@ -838,6 +838,8 @@ export default function EmployeeHoursDetailModal({ employeeId, employeeName, mon
         <ProjectDailyActivityModal
           project={openProject as any}
           onClose={() => setOpenProject(null)}
+          initialMonth={month}
+          initialYear={year}
         />
       )}
     </div>
