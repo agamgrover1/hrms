@@ -11978,7 +11978,18 @@ async function _finComputeMonthUncached(month: number, year: number) {
       billable_hours: Number(r?.billable_hours || 0), fixed_amount: Number(r?.fixed_amount || 0),
       revenue, directCost, directHours, projectExpenses,
       invoiced: Number(inv?.invoiced || 0),
-      received: Number(inv?.received || 0),
+      // Received precedence mirrors revenueOf(): invoices win when
+      // present. Otherwise, if this project has an Upwork billing-
+      // setup row that's been cleared, its received_inr counts toward
+      // the row's Received column too. Without this branch the org-
+      // wide Received tile (which already counts billing-setup
+      // clearances at :11909) disagreed with the per-project row —
+      // users saw ₹0 in the row despite the billing being cleared.
+      received: (inv && Number(inv.invoiced) > 0)
+        ? Number(inv.received || 0)
+        : (r?.status === 'cleared' && r?.received_inr != null
+            ? Number(r.received_inr)
+            : 0),
       pendingCount: Number(inv?.pending_count || 0),
       clearedCount: Number(inv?.cleared_count || 0),
       invoiceCount: Number(inv?.invoice_count || 0),

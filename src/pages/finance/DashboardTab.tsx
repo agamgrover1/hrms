@@ -183,8 +183,27 @@ export default function DashboardTab({ month, year, rev }: { month: number; year
                       <div className="text-xs text-on-surface-subtle">{p.client_name || '—'} · {p.billing_type === 'hourly' ? `${money(p.hourly_rate, c)}/h` : 'fixed'} · {hrs(p.directHours)}</div>
                     </td>
                     <td className="px-3 py-2.5 text-right tabular-nums text-on-surface">{money(p.revenue, c)}</td>
-                    <td className={`px-3 py-2.5 text-right tabular-nums ${p.received > 0 ? (p.received < p.invoiced ? 'text-warning' : 'text-success') : 'text-on-surface-subtle'}`} title={p.invoiceCount > 0 ? `${p.clearedCount} cleared, ${p.pendingCount} pending of ${p.invoiceCount}` : 'No invoices raised yet'}>
-                      {p.invoiceCount > 0 ? money(p.received, c) : <span className="text-on-surface-subtle">—</span>}
+                    <td className={`px-3 py-2.5 text-right tabular-nums ${p.received > 0 ? (p.received < p.invoiced ? 'text-warning' : 'text-success') : 'text-on-surface-subtle'}`}
+                      title={
+                        p.invoiceCount > 0
+                          ? `${p.clearedCount} cleared, ${p.pendingCount} pending of ${p.invoiceCount}`
+                          : p.billing_source === 'upwork' && p.billing_status === 'cleared'
+                            ? 'Upwork billing cleared'
+                            : p.billing_source === 'upwork'
+                              ? 'Upwork billing awaiting clearance'
+                              : 'No invoices raised yet'
+                      }>
+                      {/* Show Received whenever any source has landed
+                          money — invoices OR a cleared Upwork billing
+                          setup row. Previously we hid this cell unless
+                          the project had at least one invoice; that
+                          left users with cleared Upwork billings
+                          staring at "—" despite the money being in the
+                          bank (backend already had it in the field,
+                          the frontend was gating on the wrong signal). */}
+                      {p.received > 0
+                        ? money(p.received, c)
+                        : <span className="text-on-surface-subtle">—</span>}
                     </td>
                     <td className="px-3 py-2.5 text-right tabular-nums text-on-surface-muted">{money(p.directCost, c)}</td>
                     <td className={`px-3 py-2.5 text-right tabular-nums ${p.projectExpenses > 0 ? 'text-warning' : 'text-on-surface-subtle'}`}>{money(p.projectExpenses || 0, c)}</td>
