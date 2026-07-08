@@ -676,6 +676,13 @@ export const api = {
       `/projects/${project_id}/billing-account`,
       { method: 'PATCH', body: JSON.stringify({ billing_account_id }) },
     ),
+  setProjectBillingProfile: (project_id: string, billing_profile: string | null) =>
+    request<{ ok: true; billing_profile: string | null }>(
+      `/projects/${project_id}/billing-profile`,
+      { method: 'PATCH', body: JSON.stringify({ billing_profile }) },
+    ),
+  getBillingProfiles: () =>
+    request<string[]>(`/projects/billing-profiles`),
 
   getHoursSummary: (month: number, year: number) =>
     request<{

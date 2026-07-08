@@ -1,5 +1,5 @@
 import { Fragment, useEffect, useMemo, useState, useCallback } from 'react';
-import { AlertTriangle, CheckCircle2, ChevronDown, ChevronRight, Circle, Pencil, X, Layers, Building2 } from 'lucide-react';
+import { AlertTriangle, CheckCircle2, ChevronDown, ChevronRight, Circle, Pencil, X, Layers, Building2, Tag, User } from 'lucide-react';
 import { api } from '../services/api';
 import { useAuth } from '../context/AuthContext';
 import { formatWeekDays, isCurrentWeekOfMonth, isEmptyWeek } from '../utils/weekRange';
@@ -37,8 +37,14 @@ interface AllocRow {
   client_name: string | null;
   billing_account_id: string | null;
   billing_account_name: string | null;
+  // Free-form tag for the Upwork profile this project is billed under
+  // ("Agam", "Sarab", …). Orthogonal to billing_account_id; used for the
+  // alternate grouping lens.
+  billing_profile: string | null;
   weeks: WeekCell[];
 }
+
+type GroupBy = 'account' | 'profile';
 
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 const SYNTHETIC_BILLERS = [
@@ -78,6 +84,14 @@ export default function HoursAllocation() {
     target: string; override: string; notes: string;
   } | null>(null);
   const [billingEdit, setBillingEdit] = useState<AllocRow | null>(null);
+  const [profileEdit, setProfileEdit] = useState<AllocRow | null>(null);
+  const [profileInput, setProfileInput] = useState('');
+  const [knownProfiles, setKnownProfiles] = useState<string[]>([]);
+  const [groupBy, setGroupBy] = useState<GroupBy>(() => {
+    // Sticky per browser — coord flips it once and it stays.
+    const saved = typeof window !== 'undefined' ? window.localStorage.getItem('hoursAllocGroupBy') : null;
+    return saved === 'profile' ? 'profile' : 'account';
+  });
   const [saving, setSaving] = useState(false);
 
   const load = useCallback(() => {
@@ -90,28 +104,40 @@ export default function HoursAllocation() {
 
   useEffect(() => { load(); }, [load]);
   useEffect(() => { api.getEmployees().then(setEmployees).catch(() => {}); }, []);
+  useEffect(() => { api.getBillingProfiles().then(setKnownProfiles).catch(() => setKnownProfiles([])); }, []);
+  useEffect(() => {
+    if (typeof window !== 'undefined') window.localStorage.setItem('hoursAllocGroupBy', groupBy);
+  }, [groupBy]);
 
-  // Group rows by billing account. Preserve project name order within.
+  // Group rows by either billing account (individual biller / tracker tag)
+  // or billing profile (Upwork profile the project bills through). The
+  // two dimensions are orthogonal — a project on "Agam" profile can be
+  // logged by any biller, so both lenses are useful.
   const groups = useMemo(() => {
     const buckets = new Map<string, { key: string; label: string; rows: AllocRow[] }>();
     for (const r of rows) {
-      const key = r.billing_account_id || UNASSIGNED_KEY;
-      const label = r.billing_account_id
-        ? (r.billing_account_name || r.billing_account_id)
-        : 'Unassigned';
+      const key = groupBy === 'profile'
+        ? (r.billing_profile ? `profile:${r.billing_profile}` : UNASSIGNED_KEY)
+        : (r.billing_account_id || UNASSIGNED_KEY);
+      const label = groupBy === 'profile'
+        ? (r.billing_profile || 'Unassigned')
+        : (r.billing_account_id ? (r.billing_account_name || r.billing_account_id) : 'Unassigned');
       if (!buckets.has(key)) buckets.set(key, { key, label, rows: [] });
       buckets.get(key)!.rows.push(r);
     }
-    // Sort: employees alphabetically first, synthetic tags next, Unassigned last.
+    // Sort: named groups alphabetically first, synthetic tags (only for
+    // the account lens) next, Unassigned last.
     return Array.from(buckets.values()).sort((a, b) => {
       if (a.key === UNASSIGNED_KEY) return 1;
       if (b.key === UNASSIGNED_KEY) return -1;
-      const aSyn = SYNTHETIC_BILLERS.some(s => s.id === a.key);
-      const bSyn = SYNTHETIC_BILLERS.some(s => s.id === b.key);
-      if (aSyn !== bSyn) return aSyn ? 1 : -1;
+      if (groupBy === 'account') {
+        const aSyn = SYNTHETIC_BILLERS.some(s => s.id === a.key);
+        const bSyn = SYNTHETIC_BILLERS.some(s => s.id === b.key);
+        if (aSyn !== bSyn) return aSyn ? 1 : -1;
+      }
       return a.label.localeCompare(b.label);
     });
-  }, [rows]);
+  }, [rows, groupBy]);
 
   const groupTotals = (g: { rows: AllocRow[] }) => {
     const t = [0, 0, 0, 0, 0]; const a = [0, 0, 0, 0, 0];
@@ -158,6 +184,24 @@ export default function HoursAllocation() {
     } finally { setSaving(false); }
   };
 
+  const openProfileEdit = (row: AllocRow) => {
+    setProfileInput(row.billing_profile ?? '');
+    setProfileEdit(row);
+  };
+  const saveProfile = async () => {
+    if (!profileEdit) return;
+    setSaving(true);
+    try {
+      const clean = profileInput.trim().replace(/\s+/g, ' ') || null;
+      await api.setProjectBillingProfile(profileEdit.project_id, clean);
+      setProfileEdit(null);
+      // Refresh the autocomplete list along with the rows so a new
+      // profile the coord just typed shows up next time.
+      api.getBillingProfiles().then(setKnownProfiles).catch(() => {});
+      load();
+    } finally { setSaving(false); }
+  };
+
   return (
     <div className="space-y-6 p-6 max-w-[1600px]">
       <div className="flex flex-wrap items-end justify-between gap-4">
@@ -182,13 +226,28 @@ export default function HoursAllocation() {
         </div>
       </div>
 
-      {/* Legend */}
+      {/* Legend + group-by toggle */}
       <div className="flex flex-wrap items-center gap-3 text-xs text-on-surface-muted">
         <span className="flex items-center gap-1.5"><span className="w-3 h-3 rounded-sm bg-success/40 border border-success/50" /> Met target</span>
         <span className="flex items-center gap-1.5"><span className="w-3 h-3 rounded-sm bg-warning/40 border border-warning/50" /> Partial</span>
         <span className="flex items-center gap-1.5"><span className="w-3 h-3 rounded-sm bg-danger/40 border border-danger/50" /> Missing / behind</span>
         <span className="flex items-center gap-1.5"><span className="w-3 h-3 rounded-sm bg-surface-3 border border-outline" /> No target set</span>
-        {canEdit && <span className="ml-auto text-on-surface-subtle">Click any cell to edit target / override actual.</span>}
+        <div className="ml-auto flex items-center gap-2">
+          <span className="text-on-surface-subtle">Group by</span>
+          <div className="inline-flex items-center gap-0.5 bg-surface rounded-md border border-outline p-0.5">
+            <button
+              onClick={() => setGroupBy('account')}
+              className={`px-2 py-1 rounded text-[11px] font-semibold flex items-center gap-1 ${groupBy === 'account' ? 'bg-accent text-on-accent' : 'text-on-surface-muted hover:text-on-surface'}`}>
+              <Building2 className="w-3 h-3" /> Billing account
+            </button>
+            <button
+              onClick={() => setGroupBy('profile')}
+              className={`px-2 py-1 rounded text-[11px] font-semibold flex items-center gap-1 ${groupBy === 'profile' ? 'bg-accent text-on-accent' : 'text-on-surface-muted hover:text-on-surface'}`}>
+              <Tag className="w-3 h-3" /> Profile
+            </button>
+          </div>
+          {canEdit && <span className="text-on-surface-subtle">· Click a cell to edit.</span>}
+        </div>
       </div>
 
       <div className="bg-surface rounded-xl-2 border border-outline shadow-elev-1 overflow-x-auto">
@@ -244,7 +303,9 @@ export default function HoursAllocation() {
                         }}
                         className="flex items-center gap-2 font-semibold text-on-surface hover:text-accent">
                         {isCollapsed ? <ChevronRight className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
-                        <Building2 className="w-4 h-4 text-on-surface-muted" />
+                        {groupBy === 'profile'
+                          ? <Tag className="w-4 h-4 text-on-surface-muted" />
+                          : <Building2 className="w-4 h-4 text-on-surface-muted" />}
                         <span>{g.label}</span>
                         <span className="text-xs text-on-surface-subtle">({g.rows.length})</span>
                       </button>
@@ -267,12 +328,37 @@ export default function HoursAllocation() {
                     const totalTarget = r.weeks.reduce((s, w) => s + w.target_hours, 0);
                     const totalActual = r.weeks.reduce((s, w) => s + w.actual_hours, 0);
                     return (
-                      <tr key={r.project_id} className="hover:bg-surface-2/30">
+                      <tr key={r.project_id} className="hover:bg-surface-2/30 group">
                         <td className="px-3 py-2">
                           <div className="flex items-start justify-between gap-2">
-                            <div>
+                            <div className="min-w-0">
                               <div className="font-medium text-on-surface">{r.project_name}</div>
-                              {r.client_name && <div className="text-xs text-on-surface-muted">{r.client_name}</div>}
+                              <div className="flex items-center gap-2 flex-wrap mt-0.5">
+                                {r.client_name && <span className="text-xs text-on-surface-muted">{r.client_name}</span>}
+                                {/* Profile pill — always render a slot so an unset
+                                   profile still gets a click target, but keep it
+                                   dim + hover-only when empty to avoid noise. */}
+                                {canEdit ? (
+                                  <button
+                                    onClick={() => openProfileEdit(r)}
+                                    title={r.billing_profile ? `Profile: ${r.billing_profile}` : 'Set billing profile'}
+                                    className={
+                                      r.billing_profile
+                                        ? 'inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-medium bg-accent/10 text-accent border border-accent/20 hover:bg-accent/20'
+                                        : 'inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-medium text-on-surface-subtle border border-dashed border-outline opacity-0 group-hover:opacity-100 hover:text-accent hover:border-accent/40'
+                                    }>
+                                    <Tag className="w-2.5 h-2.5" />
+                                    {r.billing_profile || 'Set profile'}
+                                  </button>
+                                ) : (
+                                  r.billing_profile && (
+                                    <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-medium bg-accent/10 text-accent border border-accent/20">
+                                      <Tag className="w-2.5 h-2.5" />
+                                      {r.billing_profile}
+                                    </span>
+                                  )
+                                )}
+                              </div>
                             </div>
                             {canEdit && (
                               <button
@@ -438,6 +524,74 @@ export default function HoursAllocation() {
                     <span className="text-[11px] text-on-surface-subtle">{emp.designation || ''}</span>
                   </button>
                 ))}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Billing profile editor — free-form with autocomplete against
+         existing distinct values. Enter saves; Esc / backdrop cancels. */}
+      {profileEdit && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" onClick={() => setProfileEdit(null)}>
+          <div className="bg-surface rounded-xl-2 border border-outline shadow-elev-3 max-w-md w-full p-6" onClick={e => e.stopPropagation()}>
+            <div className="flex items-start justify-between gap-4 mb-4">
+              <div>
+                <h3 className="text-lg font-bold text-on-surface">Billing profile</h3>
+                <div className="text-xs text-on-surface-muted mt-0.5">{profileEdit.project_name}</div>
+              </div>
+              <button onClick={() => setProfileEdit(null)} className="text-on-surface-muted hover:text-on-surface">
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+            <p className="text-xs text-on-surface-muted mb-3">
+              Which Upwork profile is this project billed under? Free-form — pick from below or type a new one.
+            </p>
+            <input
+              list="billing-profile-suggestions"
+              type="text"
+              value={profileInput}
+              onChange={e => setProfileInput(e.target.value)}
+              onKeyDown={e => {
+                if (e.key === 'Enter') { e.preventDefault(); saveProfile(); }
+                if (e.key === 'Escape') setProfileEdit(null);
+              }}
+              placeholder="e.g. Agam, Sarab"
+              autoFocus
+              className="w-full px-3 py-2 bg-surface-2 border border-outline rounded-lg text-on-surface" />
+            <datalist id="billing-profile-suggestions">
+              {knownProfiles.map(p => <option key={p} value={p} />)}
+            </datalist>
+            {knownProfiles.length > 0 && (
+              <div className="mt-3 flex flex-wrap gap-1.5">
+                {knownProfiles.map(p => (
+                  <button
+                    key={p}
+                    onClick={() => setProfileInput(p)}
+                    className={`inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs border ${
+                      profileInput === p
+                        ? 'bg-accent/15 text-accent border-accent/40'
+                        : 'bg-surface-2 text-on-surface-muted border-outline hover:text-on-surface'
+                    }`}>
+                    <User className="w-3 h-3" /> {p}
+                  </button>
+                ))}
+              </div>
+            )}
+            <div className="flex items-center justify-between gap-2 mt-6">
+              <button
+                onClick={() => { setProfileInput(''); saveProfile(); }}
+                disabled={saving || !profileEdit.billing_profile}
+                className="px-3 py-2 text-xs text-danger hover:bg-danger/10 rounded-lg disabled:opacity-30 disabled:hover:bg-transparent">
+                Clear profile
+              </button>
+              <div className="flex items-center gap-2">
+                <button onClick={() => setProfileEdit(null)}
+                  className="px-4 py-2 text-sm text-on-surface-muted hover:text-on-surface">Cancel</button>
+                <button onClick={saveProfile} disabled={saving}
+                  className="px-4 py-2 text-sm bg-accent text-on-accent rounded-lg font-semibold hover:opacity-90 disabled:opacity-50">
+                  {saving ? 'Saving…' : 'Save'}
+                </button>
+              </div>
             </div>
           </div>
         </div>

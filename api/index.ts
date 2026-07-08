@@ -597,7 +597,7 @@ async function runStartupMigrations() {
   // you add a newer column / table, update this SELECT to reference it
   // so cold starts re-run migrations once after each deploy.
   try {
-    await sql`SELECT billable_hours FROM hour_logs LIMIT 0`;
+    await sql`SELECT billing_profile FROM projects LIMIT 0`;
     _migrated = true;
     return;
   } catch {
@@ -1960,6 +1960,13 @@ async function runStartupMigrations() {
     // 'hubstaff' for tracker-driven work. Nullable — unassigned rows show
     // in an "Unassigned" bucket on the allocation sheet.
     await sql`ALTER TABLE projects ADD COLUMN IF NOT EXISTS billing_account_id TEXT`.catch(()=>{});
+    // Billing profile — a free-form tag (e.g. "Agam", "Sarab") for grouping
+    // projects by the Upwork profile they're actually billed under. This is
+    // orthogonal to billing_account_id: the profile owner and the individual
+    // biller are not always the same person. Free-form so a new profile is
+    // one keystroke, not a code change; the Allocation view autocompletes
+    // against existing distinct values to keep spellings honest.
+    await sql`ALTER TABLE projects ADD COLUMN IF NOT EXISTS billing_profile TEXT`.catch(()=>{});
     // User-managed tags on To-Do tasks. TEXT[] because a single task can
     // wear multiple labels ("client-work" + "urgent"). Postgres arrays
     // give us ANY() / && for cheap filter queries.
@@ -11435,7 +11442,7 @@ app.get('/api/hours/allocations', async (req, res) => {
     const projectsRows = await memoTtl(`hwt:projects:${month}:${year}`, 30_000, async () =>
       await sql`
         SELECT p.id, p.name, p.client_name, p.status, p.billing_account_id,
-               p.total_hours_cap
+               p.billing_profile, p.total_hours_cap
         FROM projects p
         WHERE p.status = 'active'
            OR p.id IN (SELECT project_id FROM hours_weekly_targets WHERE year=${year} AND (
@@ -11525,6 +11532,7 @@ app.get('/api/hours/allocations', async (req, res) => {
         billing_account_name: billingId
           ? (holderName.get(billingId) || billingId) // synthetic tags fall through as-is
           : null,
+        billing_profile: p.billing_profile || null,
         weeks,
       };
     });
@@ -11583,6 +11591,42 @@ app.patch('/api/projects/:id/billing-account', async (req, res) => {
     await sql`UPDATE projects SET billing_account_id = ${value} WHERE id = ${req.params.id}`;
     memoBust(`hwt:projects:*`);
     res.json({ ok: true, billing_account_id: value });
+  } catch (err: any) {
+    res.status(500).json({ error: err?.message || 'Server error' });
+  }
+});
+
+// PATCH /api/projects/:id/billing-profile — free-form profile tag
+// ("Agam", "Sarab", …) used only for the alternate grouping lens on
+// the allocation sheet. Trim + collapse whitespace, but preserve case
+// (the UI autocomplete against distinct values keeps duplicates in
+// check without the backend having to normalize).
+app.patch('/api/projects/:id/billing-profile', async (req, res) => {
+  try {
+    await runStartupMigrations();
+    const auth = await requireAdminOrCoord(req, res); if (!auth.ok) return;
+    const { billing_profile } = req.body || {};
+    const raw = billing_profile == null ? null : String(billing_profile).trim();
+    const value = raw ? raw.replace(/\s+/g, ' ') : null;
+    await sql`UPDATE projects SET billing_profile = ${value} WHERE id = ${req.params.id}`;
+    memoBust(`hwt:projects:*`);
+    memoBust(`hwt:profiles`);
+    res.json({ ok: true, billing_profile: value });
+  } catch (err: any) {
+    res.status(500).json({ error: err?.message || 'Server error' });
+  }
+});
+
+// GET /api/projects/billing-profiles — distinct values for the
+// autocomplete on the allocation sheet. Cheap + cached briefly.
+app.get('/api/projects/billing-profiles', async (_req, res) => {
+  try {
+    await runStartupMigrations();
+    const rows = await memoTtl(`hwt:profiles`, 60_000, async () =>
+      await sql`SELECT DISTINCT billing_profile AS name FROM projects
+                WHERE billing_profile IS NOT NULL AND billing_profile <> ''
+                ORDER BY billing_profile`) as any[];
+    res.json(rows.map(r => r.name));
   } catch (err: any) {
     res.status(500).json({ error: err?.message || 'Server error' });
   }
