@@ -2292,7 +2292,22 @@ async function actorRoleOf(req: any): Promise<string> {
 
 app.get('/api/employees', async (req, res) => {
   try {
-    const { reporting_manager_id, descendants } = req.query as any;
+    const { reporting_manager_id, descendants, fields } = req.query as any;
+    // ?fields=slim → return only the light directory columns that ~15
+    // callers actually need (pickers, mentions, "resolve my emp record",
+    // group headers). No salary/PII in the response, so we skip both
+    // actorRole + stripSalaryForIntern for this branch and cache under
+    // a separate key. Payload drops from ~15KB to ~4KB.
+    const wantSlim = fields === 'slim';
+    if (wantSlim && !reporting_manager_id) {
+      const rows = await memoTtl('employees:all:slim', 60_000, async () =>
+        sql`SELECT id, employee_id, name, designation, department, status,
+                   shift, reporting_manager_id, email, avatar
+            FROM employees ORDER BY name`
+      );
+      res.json(rows);
+      return;
+    }
     const actorRole = await actorRoleOf(req);
     const ownEmpId = actorRole === 'hr_intern' ? await actorOwnEmployeeId(req) : null;
     if (reporting_manager_id) {
@@ -2493,8 +2508,9 @@ app.patch('/api/employees/:id/probation', async (req, res) => {
 });
 
 function invalidateEmployeesCache() {
-  // Drop the org-wide list. memoTtl key matches employees:all.
+  // Drop the org-wide list. memoTtl keys match employees:all + slim variant.
   _memoCache.delete('employees:all');
+  _memoCache.delete('employees:all:slim');
 }
 
 app.delete('/api/employees/:id', async (req, res) => {

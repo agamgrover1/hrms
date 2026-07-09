@@ -1385,7 +1385,7 @@ function EmployeeDashboardView({
   // events on a live timer.
   useEffect(() => {
     if (!user?.employee_id_ref) return;
-    api.getEmployees().then((emps: any[]) => {
+    api.getEmployeesSlim().then((emps: any[]) => {
       const me = emps.find(e => e.employee_id === user.employee_id_ref);
       if (!me) return;
       setEmpRow(me);

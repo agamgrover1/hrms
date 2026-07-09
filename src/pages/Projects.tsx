@@ -163,7 +163,7 @@ export default function Projects() {
     setLoading(true);
     Promise.all([
       api.getProjects().then(setProjects).catch(() => {}),
-      api.getEmployees().then(setEmployees).catch(() => {}),
+      api.getEmployeesSlim().then(setEmployees).catch(() => {}),
     ]).finally(() => setLoading(false));
   };
 

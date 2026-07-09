@@ -476,7 +476,7 @@ export default function MyTeam() {
   useEffect(() => {
     if (!user?.employee_id_ref) return;
     setLoading(true);
-    api.getEmployees().then(emps => {
+    api.getEmployeesSlim().then(emps => {
       const emp = emps.find(e => e.employee_id === user.employee_id_ref);
       if (!emp) { setLoading(false); return; }
       const eid = emp.id;

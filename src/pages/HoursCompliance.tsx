@@ -34,7 +34,7 @@ export default function HoursCompliance() {
   // Resolve current user's employee db-id so "Mine" mode can scope to their reports.
   useEffect(() => {
     if (!user?.employee_id_ref) return;
-    api.getEmployees()
+    api.getEmployeesSlim()
       .then(emps => {
         const m = (emps as any[]).find(e => e.employee_id === user.employee_id_ref);
         if (m) setMe({ id: m.id, name: m.name });

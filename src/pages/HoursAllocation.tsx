@@ -103,7 +103,7 @@ export default function HoursAllocation() {
   }, [month, year]);
 
   useEffect(() => { load(); }, [load]);
-  useEffect(() => { api.getEmployees().then(setEmployees).catch(() => {}); }, []);
+  useEffect(() => { api.getEmployeesSlim().then(setEmployees).catch(() => {}); }, []);
   useEffect(() => { api.getBillingProfiles().then(setKnownProfiles).catch(() => setKnownProfiles([])); }, []);
   useEffect(() => {
     if (typeof window !== 'undefined') window.localStorage.setItem('hoursAllocGroupBy', groupBy);

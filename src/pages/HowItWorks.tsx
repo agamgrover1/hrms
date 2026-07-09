@@ -529,7 +529,7 @@ export default function HowItWorks() {
   const [isProjectReviewer, setIsProjectReviewer] = useState(false);
   useEffect(() => {
     if (!user?.employee_id_ref) return;
-    api.getEmployees()
+    api.getEmployeesSlim()
       .then(emps => {
         const me = (emps as any[]).find(e => e.employee_id === user.employee_id_ref);
         if (!me) return;

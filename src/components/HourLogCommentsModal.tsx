@@ -122,7 +122,7 @@ export default function HourLogCommentsModal({
 
   // Employee directory — used by the @-mention picker. Loaded once.
   useEffect(() => {
-    api.getEmployees()
+    api.getEmployeesSlim()
       .then(rows => setEmployees((rows as any[])
         .filter(e => e.status !== 'inactive')
         .map(e => ({ id: e.id, name: e.name, designation: e.designation }))))

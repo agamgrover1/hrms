@@ -790,7 +790,7 @@ export default function Performance() {
   const [appraisalEmpFilter, setAppraisalEmpFilter] = useState('');
 
   useEffect(() => {
-    api.getEmployees().then(emps => {
+    api.getEmployeesSlim().then(emps => {
       setEmployees(emps);
       if (emps.length) setSelectedEmpId(emps[0].id);
     });

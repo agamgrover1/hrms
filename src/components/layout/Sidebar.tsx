@@ -178,7 +178,7 @@ export default function Sidebar({ mobileOpen = false, onMobileClose }: { mobileO
     // compliance / Team utilization — just like a regular manager.
     const showPersonal = isEmployee || isCoord || isHRIntern || role === 'hr_manager' || role === 'admin';
     if (!showPersonal || !user?.employee_id_ref) return;
-    api.getEmployees()
+    api.getEmployeesSlim()
       .then(emps => {
         const emp = emps.find((e: any) => e.employee_id === user.employee_id_ref);
         if (!emp) return;

@@ -383,7 +383,7 @@ export default function FinancePage() {
   const [grantOpen, setGrantOpen] = useState(false);
   const [employees, setEmployees] = useState<any[]>([]);
   useEffect(() => {
-    if (user?.role === 'admin') api.getEmployees().then(setEmployees).catch(() => {});
+    if (user?.role === 'admin') api.getEmployeesSlim().then(setEmployees).catch(() => {});
   }, [user?.role]);
   const currentYear = new Date().getFullYear();
 

@@ -78,7 +78,7 @@ export default function AssetRepairs() {
 
   useEffect(() => {
     Promise.all([
-      api.getEmployees().then(setEmployees).catch(() => {}),
+      api.getEmployeesSlim().then(setEmployees).catch(() => {}),
       api.getVendors().then(setVendors).catch(() => {}),
       api.getAssets().then(setAssets).catch(() => {}),
       api.getRepairTickets().then(setTickets).catch(() => {}),

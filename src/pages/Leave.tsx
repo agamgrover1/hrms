@@ -718,7 +718,7 @@ export default function Leave() {
 
   useEffect(() => {
     Promise.all([
-      api.getEmployees(),
+      api.getEmployeesSlim(),
       loadRequests(),
       api.getWfhRequests().catch(() => []),
     ]).then(([emps, , wfh]) => {

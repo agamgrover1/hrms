@@ -51,7 +51,7 @@ function UserModal({
   const [employees, setEmployees] = useState<any[]>([]);
 
   useEffect(() => {
-    api.getEmployees().then(setEmployees).catch(() => {});
+    api.getEmployeesSlim().then(setEmployees).catch(() => {});
   }, []);
   const [showPass, setShowPass] = useState(false);
   const [error, setError] = useState('');

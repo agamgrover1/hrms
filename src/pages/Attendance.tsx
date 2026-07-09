@@ -251,7 +251,7 @@ export default function Attendance() {
   };
 
   useEffect(() => {
-    api.getEmployees().then(emps => {
+    api.getEmployeesSlim().then(emps => {
       setEmployees(emps);
       if (emps.length) setSelectedEmpId(emps[0].id);
     });

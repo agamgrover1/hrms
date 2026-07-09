@@ -743,7 +743,7 @@ export default function MyPortal() {
     if (tab !== 'todos') return;
     if (allEmployeesForTodo.length) return;
     if (user?.role !== 'admin' && user?.role !== 'hr_manager') return;
-    api.getEmployees().then(setAllEmployeesForTodo).catch(() => {});
+    api.getEmployeesSlim().then(setAllEmployeesForTodo).catch(() => {});
   }, [tab, user?.role, allEmployeesForTodo.length]);
 
   // Performance Pulse fetch — must NOT depend on empRef. The /me endpoint
@@ -782,7 +782,7 @@ export default function MyPortal() {
     (async () => {
       // Resolve the internal employee id from the human code. Employee
       // list is memoTtl'd server-side so this is cheap.
-      const emps = await api.getEmployees().catch(() => [] as any[]);
+      const emps = await api.getEmployeesSlim().catch(() => [] as any[]);
       const emp = emps.find(e => e.employee_id === empRef);
       if (!emp) return;
       setEmpDbId(emp.id);
@@ -864,7 +864,7 @@ export default function MyPortal() {
 
   const handleApplyLeave = async (data: any) => {
     if (!empRef) return;
-    const emps = await api.getEmployees();
+    const emps = await api.getEmployeesSlim();
     const emp = emps.find(e => e.employee_id === empRef);
     if (!emp) return;
     await api.applyLeave({ ...data, employee_id: emp.id, employee_name: user?.name });

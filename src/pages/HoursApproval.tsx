@@ -90,7 +90,7 @@ export default function HoursApproval() {
   // Resolve current user's employee.id once
   useEffect(() => {
     if (!user?.employee_id_ref) return;
-    api.getEmployees()
+    api.getEmployeesSlim()
       .then(emps => {
         const me = emps.find((e: any) => e.employee_id === user.employee_id_ref);
         if (me) setReviewerEmpId(me.id);

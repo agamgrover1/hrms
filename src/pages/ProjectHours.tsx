@@ -117,7 +117,7 @@ export default function ProjectHours() {
   const [me, setMe] = useState<{ id: string; name: string } | null>(null);
   useEffect(() => {
     if (!user?.employee_id_ref) return;
-    api.getEmployees()
+    api.getEmployeesSlim()
       .then(emps => {
         const found = (emps as any[]).find(e => e.employee_id === user.employee_id_ref);
         if (found) setMe({ id: found.id, name: found.name });
@@ -174,7 +174,7 @@ export default function ProjectHours() {
     Promise.all([
       api.getProjectAssignments({ month, year }).then(d => setAssignments(d as Assignment[])).catch(() => {}),
       api.getProjects({ status: 'active' }).then(setProjects).catch(() => {}),
-      api.getEmployees().then(setEmployees).catch(() => {}),
+      api.getEmployeesSlim().then(setEmployees).catch(() => {}),
       api.getHoursSummary(month, year).then(s => setSummary(s)).catch(() => {}),
     ]).finally(() => setLoading(false));
   }, [month, year]);

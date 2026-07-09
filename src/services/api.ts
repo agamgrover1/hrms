@@ -125,6 +125,12 @@ export const api = {
 
   // Employees
   getEmployees: () => request<any[]>('/employees'),
+  // Slim variant — 10 columns instead of ~25. Use this from pickers,
+  // sidebars, mentions lookups, and any place that just needs
+  // { id, employee_id, name, designation, department, status, shift,
+  //   reporting_manager_id, email, avatar }. The full endpoint should be
+  // reserved for the Employees directory + individual profile screens.
+  getEmployeesSlim: () => request<any[]>('/employees?fields=slim'),
   getTeamMembers: (reporting_manager_id: string, includeDescendants = false) =>
     request<any[]>(`/employees?reporting_manager_id=${reporting_manager_id}${includeDescendants ? '&descendants=true' : ''}`),
   createEmployee: (data: any) => request<any>('/employees', { method: 'POST', body: JSON.stringify(data) }),

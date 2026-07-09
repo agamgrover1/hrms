@@ -59,7 +59,7 @@ export default function CommandPalette() {
   // Lazy-load employees the first time the palette opens (for People search)
   useEffect(() => {
     if (open && employees.length === 0) {
-      api.getEmployees().then(setEmployees).catch(() => {});
+      api.getEmployeesSlim().then(setEmployees).catch(() => {});
     }
   }, [open, employees.length]);
 
