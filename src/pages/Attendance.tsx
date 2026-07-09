@@ -758,7 +758,7 @@ export default function Attendance() {
                           worked hours over the short-day threshold would
                           hide the chip — the note row below still renders,
                           but losing the chip looked like the note was wiped. */}
-                      {(!!attendanceNotes[r.date] || isShortDay || (r.status === 'late' && !r.check_out)) && (() => {
+                      {(!!attendanceNotes[r.date] || isShortDay || r.status === 'late' || (r.status === 'present' && !r.check_out)) && (() => {
                         const has = !!attendanceNotes[r.date];
                         return (
                           <button onClick={(e) => { e.stopPropagation(); setEditingNoteDate(r.date); }}

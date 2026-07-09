@@ -1409,10 +1409,11 @@ export default function MyPortal() {
               const isShortDay = (r.status === 'present' || r.status === 'late')
                 && r.check_out && Number(r.total_hours) > 0 && Number(r.total_hours) < 9;
               const note = attendanceNotes[r.date];
-              // Show the note affordance on short days (the original ask)
-              // AND on any incomplete day (Late with no check_out, etc.) —
-              // those are also "needs context" cases that benefit from a note.
-              const noteApplies = isShortDay || (r.status === 'late' && !r.check_out);
+              // Any "needs context" day gets a note button: short days,
+              // late arrivals (with or without a check-out — the reason
+              // is what matters, not the hours worked), and incomplete
+              // days that never got a check-out.
+              const noteApplies = isShortDay || r.status === 'late' || (r.status === 'present' && !r.check_out);
               return (
                 <div key={r.date} className="px-5 py-3 hover:bg-surface-2/50">
                   <div className="flex items-center justify-between gap-3 flex-wrap">
