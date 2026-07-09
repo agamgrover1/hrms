@@ -3,7 +3,6 @@ import { Outlet, useLocation } from 'react-router-dom';
 import Sidebar from './Sidebar';
 import TopBar from './TopBar';
 import CommandPalette from '../CommandPalette';
-import ShiftEndReminder from '../ShiftEndReminder';
 import FeaturePopup from '../FeaturePopup';
 import GlobalQuickActionsFab from '../GlobalQuickActionsFab';
 import Toaster from '../Toaster';
@@ -74,7 +73,6 @@ export default function Layout() {
       <Sidebar mobileOpen={mobileSidebarOpen} onMobileClose={() => setMobileSidebarOpen(false)} />
       <div className="flex-1 flex flex-col min-w-0">
         <TopBar title={title} onMenuClick={() => setMobileSidebarOpen(true)} />
-        <ShiftEndReminder />
         {/* Lighter horizontal padding on phones — 6 (24px) eats too much of
             an iPhone width when content has its own card padding inside. */}
         <main ref={mainRef} className="flex-1 p-3 sm:p-4 md:p-6 overflow-auto">
