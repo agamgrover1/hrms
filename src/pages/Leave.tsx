@@ -682,6 +682,45 @@ function monthName(m: number): string {
   return ['January','February','March','April','May','June','July','August','September','October','November','December'][m - 1] ?? '';
 }
 
+// Compact "who's out on this date" picker. Small native date input plus a
+// clear button when set. Two quick shortcuts (Today / Clear) keep the
+// common lookup one click away.
+function DateOnFilter({ value, onChange }: { value: string; onChange: (v: string) => void }) {
+  const today = new Date();
+  const todayIso = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`;
+  return (
+    <div className="flex items-center gap-1.5">
+      <div className="relative">
+        <Calendar size={14} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-on-surface-subtle pointer-events-none" />
+        <input
+          type="date"
+          value={value}
+          onChange={e => onChange(e.target.value)}
+          title="Show only requests overlapping this date"
+          className={`pl-8 pr-2 py-2 text-sm border rounded-lg bg-surface focus:outline-none focus:ring-2 focus:ring-brand/20 min-w-[160px] ${
+            value ? 'border-accent text-on-surface' : 'border-outline text-on-surface-muted'
+          }`}
+        />
+      </div>
+      {!value && (
+        <button
+          onClick={() => onChange(todayIso)}
+          className="px-2 py-1 text-xs font-medium text-on-surface-muted hover:text-on-surface hover:bg-surface-2 rounded-md">
+          Today
+        </button>
+      )}
+      {value && (
+        <button
+          onClick={() => onChange('')}
+          title="Clear date filter"
+          className="p-1.5 text-on-surface-muted hover:text-on-surface hover:bg-surface-2 rounded-md">
+          <X size={14} />
+        </button>
+      )}
+    </div>
+  );
+}
+
 export default function Leave() {
   const { user } = useAuth();
   const [pageView, setPageView] = useState<'leaves' | 'wfh'>('leaves');
@@ -705,6 +744,10 @@ export default function Leave() {
   const [selectedEmpId, setSelectedEmpId] = useState('');
   const [empBalance, setEmpBalance] = useState<any>(null);
   const [loadingEmpBal, setLoadingEmpBal] = useState(false);
+  // Date filter — "who's out on this day". Applies to both Leave (range
+  // overlap) and WFH (single date). Empty string = filter off. Shared
+  // across the two page views so flipping between them keeps the date.
+  const [dateOn, setDateOn] = useState('');
   // Current HR/admin user's own employee DB id (for applying their own leave)
   const [myEmpDbId, setMyEmpDbId] = useState('');
 
@@ -747,7 +790,13 @@ export default function Leave() {
     ]).finally(() => setLoadingEmpBal(false));
   }, [selectedEmpId]);
 
-  const displayed = tab === 'all' ? requests : requests.filter(r => r.status === tab);
+  // Leave row overlaps the picked date when from_date <= dateOn <= to_date.
+  // String comparison is safe because both sides are ISO YYYY-MM-DD.
+  const leaveMatchesDate = (r: any) =>
+    !dateOn || (String(r.from_date).slice(0, 10) <= dateOn && String(r.to_date).slice(0, 10) >= dateOn);
+  const wfhMatchesDate = (w: any) => !dateOn || String(w.date).slice(0, 10) === dateOn;
+  const displayed = (tab === 'all' ? requests : requests.filter(r => r.status === tab))
+    .filter(leaveMatchesDate);
 
   const handleApprove = async (id: string, approver_note?: string) => {
     setActionError('');
@@ -836,17 +885,24 @@ export default function Leave() {
       {/* ── WFH management view ─────────────────────────────────────────────── */}
       {pageView === 'wfh' && (
         <div className="space-y-4">
-          <div className="flex gap-1 bg-surface-2 p-1 rounded-lg w-fit">
-            {(['all','pending','approved','rejected'] as const).map(t => (
-              <button key={t} onClick={() => setWfhTab(t)}
-                className={`px-3 py-1.5 text-sm font-medium rounded-md capitalize transition-all ${wfhTab === t ? 'bg-accent text-on-accent shadow-elev-1' : 'text-on-surface-muted hover:text-on-surface'}`}>
-                {t}
-              </button>
-            ))}
+          <div className="flex flex-wrap items-center gap-3">
+            <div className="flex gap-1 bg-surface-2 p-1 rounded-lg w-fit">
+              {(['all','pending','approved','rejected'] as const).map(t => (
+                <button key={t} onClick={() => setWfhTab(t)}
+                  className={`px-3 py-1.5 text-sm font-medium rounded-md capitalize transition-all ${wfhTab === t ? 'bg-accent text-on-accent shadow-elev-1' : 'text-on-surface-muted hover:text-on-surface'}`}>
+                  {t}
+                </button>
+              ))}
+            </div>
+            <DateOnFilter value={dateOn} onChange={setDateOn} />
           </div>
           <div className="bg-surface rounded-xl-2 border border-outline shadow-elev-1 overflow-hidden">
-            {(wfhTab === 'all' ? wfhRequests : wfhRequests.filter(w => w.status === wfhTab)).length === 0 ? (
-              <p className="text-center text-on-surface-subtle text-sm py-16">No WFH requests</p>
+            {((wfhTab === 'all' ? wfhRequests : wfhRequests.filter(w => w.status === wfhTab)).filter(wfhMatchesDate)).length === 0 ? (
+              <p className="text-center text-on-surface-subtle text-sm py-16">
+                {dateOn
+                  ? `No one on WFH on ${parseLocalDate(dateOn).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' })}${wfhTab !== 'all' ? ` (${wfhTab})` : ''}.`
+                  : 'No WFH requests'}
+              </p>
             ) : (
               <div className="overflow-x-auto">
                 <table className="w-full text-sm">
@@ -858,7 +914,7 @@ export default function Leave() {
                     </tr>
                   </thead>
                   <tbody>
-                    {(wfhTab === 'all' ? wfhRequests : wfhRequests.filter(w => w.status === wfhTab)).map(w => (
+                    {((wfhTab === 'all' ? wfhRequests : wfhRequests.filter(w => w.status === wfhTab)).filter(wfhMatchesDate)).map(w => (
                       <tr key={w.id} className="border-b border-outline last:border-0 hover:bg-surface-2 transition-colors">
                         <td className="px-4 py-3 font-medium text-on-surface">{w.employee_name}</td>
                         <td className="px-4 py-3 whitespace-nowrap text-on-surface-muted">
@@ -1017,6 +1073,9 @@ export default function Leave() {
           ))}
         </div>
 
+        {/* Date filter — "who's out on this date" */}
+        <DateOnFilter value={dateOn} onChange={setDateOn} />
+
         <div className="ml-auto flex items-center gap-2">
           {(user?.role === 'admin' || user?.role === 'hr_manager') && (
             <MonthlyCreditButton />
@@ -1150,7 +1209,9 @@ export default function Leave() {
         )}
         {!loading && displayed.length === 0 && (
           <div className="py-16 text-center text-on-surface-subtle text-sm">
-            {selectedEmpId ? `No ${tab === 'all' ? '' : tab + ' '}leave requests for ${selectedEmp?.name}.` : 'No leave requests found.'}
+            {dateOn
+              ? `No one on leave on ${parseLocalDate(dateOn).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' })}${tab !== 'all' ? ` (${tab})` : ''}.`
+              : selectedEmpId ? `No ${tab === 'all' ? '' : tab + ' '}leave requests for ${selectedEmp?.name}.` : 'No leave requests found.'}
           </div>
         )}
       </div>
