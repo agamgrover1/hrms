@@ -393,9 +393,14 @@ export default function HoursAllocation() {
                                     && w.logged_computed != null
                                     && Math.abs(Number(w.logged_computed) - Number(w.actual_computed)) > 0.01 && (
                                     <div
-                                      className="text-[10px] text-on-surface-subtle font-mono"
+                                      className={`text-[10px] font-mono ${Number(w.actual_computed) < 0.01 ? 'text-danger' : 'text-on-surface-subtle'}`}
                                       title="Pill shows billable hours (what hits Upwork). Team logged the amount below.">
-                                      logged {fmtHM(Number(w.logged_computed))}
+                                      {/* When billable = 0 but hours were logged, spell out
+                                         "not billed" — reads clearer than a "0:00" pill next
+                                         to a "logged 5h" line. */}
+                                      {Number(w.actual_computed) < 0.01
+                                        ? `logged ${fmtHM(Number(w.logged_computed))} · not billed`
+                                        : `logged ${fmtHM(Number(w.logged_computed))}`}
                                     </div>
                                   )}
                                   {w.target_hours > 0 && (

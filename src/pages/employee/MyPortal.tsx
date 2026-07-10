@@ -3870,15 +3870,19 @@ function HourLogModal({
   const [saving, setSaving] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [error, setError] = useState('');
-  // Billable-hours split: default OFF (billable == logged). When the
-  // employee toggles this on, they enter what actually goes to Upwork
-  // separate from the time they worked. Prefilled from existing.billable_hours
-  // when a saved override is already there — so editing preserves it.
+  // Upwork billing toggle. Default OFF — a week's hours do NOT hit the
+  // Upwork billing planner unless the employee opts in.
+  // Prefill: toggle ON iff a positive billable value is saved. The input
+  // holds that value verbatim so editing preserves the exact number
+  // (including "same as logged" which is stored explicitly, not
+  // implicit-via-null anymore).
   const [billableOn, setBillableOn] = useState<boolean>(
-    existing?.billable_hours != null && Number(existing.billable_hours) !== Number(existing.hours_logged)
+    existing?.billable_hours != null && Number(existing.billable_hours) > 0
   );
   const [billableInput, setBillableInput] = useState<string>(
-    existing?.billable_hours != null ? String(existing.billable_hours) : ''
+    existing?.billable_hours != null && Number(existing.billable_hours) > 0
+      ? String(existing.billable_hours)
+      : ''
   );
 
   // Employee can wipe their OWN weekly log when it's NOT yet approved.
@@ -3936,21 +3940,24 @@ function HourLogModal({
 
   const save = async () => {
     setError('');
-    // Validate billable input if the toggle is on. Empty is treated as
-    // "no override" — same as toggle-off — so we just quietly disable it.
-    let billableToSend: number | null | undefined;
-    if (billableOn && billableInput.trim() !== '') {
+    // New semantics (2026-07-09): the toggle decides whether this week's
+    // hours hit Upwork billing AT ALL.
+    //   Toggle OFF                     → billable_hours = 0 (not billed)
+    //   Toggle ON, input empty         → billable_hours = total logged
+    //                                     (bill the full amount)
+    //   Toggle ON, input = number      → billable_hours = that number
+    let billableToSend: number;
+    if (!billableOn) {
+      billableToSend = 0;
+    } else if (billableInput.trim() === '') {
+      billableToSend = total;
+    } else {
       const bn = Number(billableInput);
       if (Number.isNaN(bn) || bn < 0) {
         setError('Billable hours must be a positive number.');
         return;
       }
       billableToSend = bn;
-    } else {
-      // Toggle off (or empty input) → send explicit null to reset the
-      // column so a prior override doesn't linger after the user changed
-      // their mind.
-      billableToSend = null;
     }
     setSaving(true);
     try {
@@ -3998,10 +4005,15 @@ function HourLogModal({
           }
         } catch { /* non-fatal — day-level entries are the source of truth */ }
       }
-      const savedBillable = billableToSend != null ? billableToSend : total;
-      const suffix = savedBillable !== total
-        ? ` · billing ${savedBillable}h`
-        : '';
+      // Toast copy adapts to the new semantics:
+      //   billable = 0                    → "not billed to Upwork"
+      //   billable = total (bill in full) → no suffix
+      //   billable != total               → "billing Xh"
+      const suffix = billableToSend === 0
+        ? ' · not billed'
+        : billableToSend !== total
+          ? ` · billing ${billableToSend}h`
+          : '';
       toast.success('Hours saved', `${total}h on ${assignment.project_name} · W${weekNum}${suffix}.`);
       onSaved();
     } catch (err: any) {
@@ -4096,15 +4108,17 @@ function HourLogModal({
               </div>
             );
           })}
-          {/* Billable-vs-logged toggle. Zero friction when the two match
-              (the common case) — checkbox stays off, no extra input. Flip
-              it on when this week needs to be billed at a different
-              number than time actually spent: goodwill discount, fixed
-              retainer that rounds up, overrun the client shouldn't
-              wear. Only the Hours Allocation planner uses the billable
-              number; every other surface (Compliance, Utilization,
-              performance pulse) reads the raw logged hours untouched. */}
-          <div className="mt-3 rounded-xl-2 border border-outline bg-surface-2/40 p-3">
+          {/* Upwork billing opt-in. Toggle OFF (default) means this week's
+              hours are NOT sent to the Upwork billing planner — the log
+              still exists for capacity / performance / compliance, but it
+              doesn't show up in the coordinator's billing sheet. Toggle
+              ON pre-fills with the full logged amount so a common "yes
+              bill it in full" is one click; edit the number for goodwill
+              discounts, fixed-retainer rounding, or overruns you don't
+              want the client to wear. Only the Hours Allocation planner
+              reads billable_hours; everything else uses the raw logged
+              value untouched. */}
+          <div className={`mt-3 rounded-xl-2 border p-3 ${billableOn ? 'border-accent/40 bg-accent/5' : 'border-outline bg-surface-2/40'}`}>
             <label className="flex items-start gap-2 cursor-pointer select-none">
               <input
                 type="checkbox"
@@ -4112,23 +4126,24 @@ function HourLogModal({
                 onChange={e => {
                   setBillableOn(e.target.checked);
                   // Pre-fill the input with the current total on first flip
-                  // so the user just tweaks it instead of retyping.
+                  // so a "yes, bill it all" is a single click.
                   if (e.target.checked && !billableInput) setBillableInput(String(total));
                 }}
                 className="mt-0.5 accent-accent"
               />
               <div className="flex-1 min-w-0">
-                <p className="text-sm font-semibold text-on-surface">Bill different hours to Upwork?</p>
+                <p className="text-sm font-semibold text-on-surface">Bill this week to Upwork?</p>
                 <p className="text-[11px] text-on-surface-subtle mt-0.5">
-                  Off by default — we bill exactly what you worked. Turn on when the billable amount for this week
-                  differs from your logged time (client goodwill, fixed retainer, overrun on our end).
+                  {billableOn
+                    ? 'Turn off for internal / non-Upwork work — the log still counts for capacity but skips the billing sheet.'
+                    : 'Off by default. Turn on when this week\'s hours should appear on the coordinator\'s Upwork billing sheet.'}
                 </p>
               </div>
             </label>
             {billableOn && (
               <div className="mt-3 flex items-center gap-3 flex-wrap">
                 <div className="flex items-center gap-2">
-                  <label className="text-xs font-semibold text-on-surface-muted">Billable this week</label>
+                  <label className="text-xs font-semibold text-on-surface-muted">Bill</label>
                   <input
                     type="number"
                     step="0.25"
@@ -4138,7 +4153,7 @@ function HourLogModal({
                     placeholder={String(total)}
                     className="w-24 text-center num-mono text-base font-semibold bg-surface border border-outline rounded-lg px-2 py-1.5 focus:outline-none focus:border-accent focus:ring-2 focus:ring-accent/20"
                   />
-                  <span className="text-xs text-on-surface-muted">h</span>
+                  <span className="text-xs text-on-surface-muted">h of {total}h logged</span>
                 </div>
                 {billableInput.trim() !== '' && Number(billableInput) !== total && (
                   <p className="text-[11px] text-on-surface-muted">

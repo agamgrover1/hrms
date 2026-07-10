@@ -597,7 +597,9 @@ async function runStartupMigrations() {
   // you add a newer column / table, update this SELECT to reference it
   // so cold starts re-run migrations once after each deploy.
   try {
-    await sql`SELECT billing_profile FROM projects LIMIT 0`;
+    // Bump this probe whenever a new migration lands; existing warm
+    // Lambdas will fail the SELECT and re-run runStartupMigrations().
+    await sql`SELECT bill_semantics_v2 FROM hour_logs LIMIT 0`;
     _migrated = true;
     return;
   } catch {
@@ -746,15 +748,29 @@ async function runStartupMigrations() {
     // either table.
     await sql`ALTER TABLE upsell_requests  ADD COLUMN IF NOT EXISTS approver_note TEXT`;
     await sql`ALTER TABLE expense_requests ADD COLUMN IF NOT EXISTS approver_note TEXT`.catch(()=>{});
-    // Split logged vs. billable hours on hour_logs. NULL means "same as
-    // hours_logged" — the common case where you bill exactly what you
-    // worked. Only diverges when the employee under- or over-bills a
-    // specific project-week (client goodwill, fixed retainer that
-    // rounds up, overrun on our end, etc.). Hours Allocation (the
-    // Upwork billing planner) uses COALESCE(billable_hours,
-    // hours_logged); every other surface (Compliance, Utilization,
-    // Performance) keeps reading hours_logged untouched.
+    // Split logged vs. billable hours on hour_logs. Semantics were
+    // FLIPPED on 2026-07-09: NULL / 0 now means "don't bill this week
+    // to Upwork" — the toggle in the log modal is off by default and
+    // the coordinator must opt in per week. Prior to that, NULL meant
+    // "bill exactly what you worked" (COALESCE fallback to
+    // hours_logged), so every historical row was implicitly billed.
+    //
+    // The migration block below backfills those historical rows to
+    // preserve their old billed amounts (billable_hours = hours_logged
+    // where NULL), then a marker column locks the version.
     await sql`ALTER TABLE hour_logs ADD COLUMN IF NOT EXISTS billable_hours NUMERIC`.catch(()=>{});
+    // One-shot backfill for the semantics flip. Idempotent: after the
+    // first run every eligible NULL is populated, so subsequent probes
+    // in warm Lambdas UPDATE 0 rows. Scoped to rows that were actually
+    // billable (approved / pending / on_hold — excludes rejected).
+    await sql`UPDATE hour_logs SET billable_hours = hours_logged
+              WHERE billable_hours IS NULL
+                AND status IN ('approved','pending','on_hold')`.catch(()=>{});
+    // Marker column — its only job is to make the fast-path probe fail
+    // on the deploy that introduced the flip, forcing warm Lambdas to
+    // re-run the block above. Default TRUE so newly inserted rows
+    // automatically carry the marker.
+    await sql`ALTER TABLE hour_logs ADD COLUMN IF NOT EXISTS bill_semantics_v2 BOOLEAN NOT NULL DEFAULT TRUE`.catch(()=>{});
     await sql`
       UPDATE upsell_requests
       SET currency=COALESCE(currency, 'INR'),
@@ -11477,16 +11493,18 @@ app.get('/api/hours/allocations', async (req, res) => {
     ` as any[];
 
     // Actuals — for the Upwork billing planner, "actual" means BILLABLE
-    // hours (what we invoice to the client), not raw work time. Most
-    // rows have NULL billable_hours meaning "same as logged" — the
-    // COALESCE folds that into the same number. Rows where the
-    // employee explicitly under- or over-billed diverge, and we return
-    // BOTH numbers so the UI can show `logged X · billed Y` when they
-    // differ.
+    // hours (what we invoice to the client), not raw work time. Under
+    // the flipped semantics (2026-07-09), billable_hours is the source
+    // of truth: 0 / NULL means "don't bill this week", any positive
+    // number is the billable amount. The employee opts in per week via
+    // the toggle in the log modal. All historical rows were backfilled
+    // to hours_logged so their existing billed amounts are preserved.
+    // Any leftover NULL rows fall through as 0 (the safe default under
+    // the new semantics).
     // Include pending/approved/on_hold. Exclude rejected (didn't happen).
     const actuals = await sql`
       SELECT project_id, week_num,
-             COALESCE(SUM(COALESCE(billable_hours, hours_logged)), 0)::numeric AS billable,
+             COALESCE(SUM(COALESCE(billable_hours, 0)), 0)::numeric AS billable,
              COALESCE(SUM(hours_logged), 0)::numeric AS logged
       FROM hour_logs
       WHERE month = ${month} AND year = ${year}
