@@ -10289,9 +10289,39 @@ function invalidateHourLogsCache() {
   // Both lists are derived from the same write surface — any hour-log
   // mutation can affect either, so drop both buckets together.
   for (const k of Array.from(_memoCache.keys())) {
-    if (k.startsWith('hourLogs:') || k.startsWith('hourLogDays:')) _memoCache.delete(k);
+    if (k.startsWith('hourLogs:') || k.startsWith('hourLogDays:') || k.startsWith('hourLogCounts:')) _memoCache.delete(k);
   }
 }
+
+// Status-count summary for the Approvals dashboard KPIs. The full
+// getHourLogs endpoint carries heavy JSON aggregations (day_notes,
+// audit joins) that are wasteful when the caller just needs 4 tiny
+// numbers. Same filter surface as getHourLogs minus `status` — that's
+// what we group by.
+app.get('/api/hour-logs/counts', async (req, res) => {
+  try {
+    await runStartupMigrations();
+    const month = req.query.month ? Number(req.query.month) : null;
+    const year = req.query.year ? Number(req.query.year) : null;
+    const employee_id = (req.query.employee_id as string) || null;
+    const reviewer_id = (req.query.reviewer_id as string) || null;
+    const cacheKey = `hourLogCounts:${employee_id ?? ''}:${reviewer_id ?? ''}:${month ?? ''}:${year ?? ''}`;
+    const rows = await memoTtl(cacheKey, 60_000, async () => sql`
+      SELECT hl.status, COUNT(*)::int AS n
+      FROM hour_logs hl
+      JOIN projects p ON p.id = hl.project_id
+      WHERE (${month}::int IS NULL OR hl.month=${month})
+        AND (${year}::int IS NULL  OR hl.year=${year})
+        AND (${employee_id}::text IS NULL OR hl.employee_id=${employee_id})
+        AND (${reviewer_id}::text IS NULL
+             OR p.project_reporting_id=${reviewer_id}
+             OR p.project_lead_id=${reviewer_id})
+      GROUP BY hl.status`);
+    const out = { pending: 0, on_hold: 0, approved: 0, rejected: 0 };
+    for (const r of rows as any[]) if (r.status in out) (out as any)[r.status] = Number(r.n) || 0;
+    res.json(out);
+  } catch (err: any) { res.status(500).json({ error: err.message || 'Server error' }); }
+});
 
 app.post('/api/hour-logs', async (req, res) => {
   try {

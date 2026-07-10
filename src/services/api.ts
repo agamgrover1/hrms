@@ -553,6 +553,17 @@ export const api = {
     if (params?.reviewer_id) qs.set('reviewer_id', params.reviewer_id);
     return request<any[]>(`/hour-logs?${qs}`);
   },
+  // Lightweight KPI counts across all statuses. Same filter surface as
+  // getHourLogs minus `status`. Cheap enough to refetch after every
+  // approve/reject/hold action so the top cards stay honest.
+  getHourLogCounts: (params?: { employee_id?: string; month?: number; year?: number; reviewer_id?: string }) => {
+    const qs = new URLSearchParams();
+    if (params?.employee_id) qs.set('employee_id', params.employee_id);
+    if (params?.month) qs.set('month', String(params.month));
+    if (params?.year) qs.set('year', String(params.year));
+    if (params?.reviewer_id) qs.set('reviewer_id', params.reviewer_id);
+    return request<{ pending: number; on_hold: number; approved: number; rejected: number }>(`/hour-logs/counts?${qs}`);
+  },
   submitHourLog: (data: {
     project_id: string; employee_id: string; employee_name?: string;
     month: number; year: number; week_num: number;

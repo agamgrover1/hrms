@@ -69,6 +69,10 @@ export default function HoursApproval() {
   // Map app_user → their employee.id (for project_reporting_id matching)
   const [reviewerEmpId, setReviewerEmpId] = useState<string | null>(null);
   const [logs, setLogs] = useState<HourLog[]>([]);
+  // KPI cards need cross-status totals — the `logs` list is scoped to the
+  // active filter tab, so counting off it gives (pending, 0, 0, 0). Load a
+  // separate counts fetch and refresh it alongside the list.
+  const [statusCounts, setStatusCounts] = useState({ pending: 0, on_hold: 0, approved: 0, rejected: 0 });
   const [loading, setLoading] = useState(true);
   const [filterStatus, setFilterStatus] = useState<'pending' | 'on_hold' | 'approved' | 'rejected' | 'all'>('pending');
   const [scope, setScope] = useState<'mine' | 'all'>(isAdmin ? 'all' : 'mine');
@@ -110,10 +114,15 @@ export default function HoursApproval() {
     const params: any = {};
     if (filterStatus !== 'all') params.status = filterStatus;
     if (scope === 'mine' && reviewerEmpId) params.reviewer_id = reviewerEmpId;
-    api.getHourLogs(params)
-      .then(d => setLogs(d as HourLog[]))
-      .catch(() => {})
-      .finally(() => { if (!opts?.silent) setLoading(false); });
+    // Fire the list + KPI counts in parallel. Counts respect scope (mine
+    // vs all-projects) but NOT the active filter tab — that's the whole
+    // point: the cards show every status regardless of what's selected.
+    const countParams: any = {};
+    if (scope === 'mine' && reviewerEmpId) countParams.reviewer_id = reviewerEmpId;
+    Promise.all([
+      api.getHourLogs(params).then(d => setLogs(d as HourLog[])).catch(() => {}),
+      api.getHourLogCounts(countParams).then(setStatusCounts).catch(() => {}),
+    ]).finally(() => { if (!opts?.silent) setLoading(false); });
   }, [filterStatus, scope, reviewerEmpId]);
 
   useEffect(() => {
@@ -259,12 +268,11 @@ export default function HoursApproval() {
     , null as HourLog | null);
   }, [sortedLogs]);
 
-  const counts = {
-    pending:  logs.filter(l => l.status === 'pending').length,
-    on_hold:  logs.filter(l => l.status === 'on_hold').length,
-    approved: logs.filter(l => l.status === 'approved').length,
-    rejected: logs.filter(l => l.status === 'rejected').length,
-  };
+  // KPI cards use cross-status totals from the counts endpoint (see
+  // statusCounts state). The local `logs` list — scoped to the active
+  // filter tab — can't answer "how many approved" when you're on the
+  // Pending tab, hence the split.
+  const counts = statusCounts;
 
   return (
     <div className="space-y-5">
