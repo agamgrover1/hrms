@@ -599,7 +599,7 @@ async function runStartupMigrations() {
   try {
     // Bump this probe whenever a new migration lands; existing warm
     // Lambdas will fail the SELECT and re-run runStartupMigrations().
-    await sql`SELECT bill_semantics_v2 FROM hour_logs LIMIT 0`;
+    await sql`SELECT paid_on FROM fin_other_costs LIMIT 0`;
     _migrated = true;
     return;
   } catch {
@@ -771,6 +771,11 @@ async function runStartupMigrations() {
     // re-run the block above. Default TRUE so newly inserted rows
     // automatically carry the marker.
     await sql`ALTER TABLE hour_logs ADD COLUMN IF NOT EXISTS bill_semantics_v2 BOOLEAN NOT NULL DEFAULT TRUE`.catch(()=>{});
+    // Overhead: track when + how each fixed cost was paid. Both nullable
+    // so historical rows don't need a backfill and the coordinator can
+    // fill them in as they audit each row.
+    await sql`ALTER TABLE fin_other_costs ADD COLUMN IF NOT EXISTS paid_on DATE`.catch(()=>{});
+    await sql`ALTER TABLE fin_other_costs ADD COLUMN IF NOT EXISTS payment_mode TEXT`.catch(()=>{});
     await sql`
       UPDATE upsell_requests
       SET currency=COALESCE(currency, 'INR'),
@@ -12995,11 +13000,15 @@ app.post('/api/finance/overhead', async (req, res) => {
   await runStartupMigrations();
   if (!(await requireAdmin(req, res))) return;
   try {
-    const { month, year, name, amount, category } = req.body;
+    const { month, year, name, amount, category, paid_on, payment_mode } = req.body;
     if (!month || !year || !name?.trim()) return res.status(400).json({ error: 'month, year, name are required' });
+    // Both optional; empty strings coerce to NULL so the row stays clean.
+    const paidOnClean = paid_on && String(paid_on).trim() !== '' ? String(paid_on) : null;
+    const modeClean = payment_mode && String(payment_mode).trim() !== '' ? String(payment_mode).trim() : null;
     const rows = await sql`
-      INSERT INTO fin_other_costs (month, year, name, amount, category)
-      VALUES (${Number(month)}, ${Number(year)}, ${name.trim()}, ${Number(amount) || 0}, ${category || 'general'})
+      INSERT INTO fin_other_costs (month, year, name, amount, category, paid_on, payment_mode)
+      VALUES (${Number(month)}, ${Number(year)}, ${name.trim()}, ${Number(amount) || 0}, ${category || 'general'},
+              ${paidOnClean}::date, ${modeClean})
       RETURNING *`;
     res.json((rows as any[])[0]);
   } catch (err: any) { res.status(500).json({ error: err.message || 'Server error' }); }
@@ -13008,9 +13017,12 @@ app.put('/api/finance/overhead/:id', async (req, res) => {
   await runStartupMigrations();
   if (!(await requireAdmin(req, res))) return;
   try {
-    const { name, amount, category } = req.body;
+    const { name, amount, category, paid_on, payment_mode } = req.body;
+    const paidOnClean = paid_on && String(paid_on).trim() !== '' ? String(paid_on) : null;
+    const modeClean = payment_mode && String(payment_mode).trim() !== '' ? String(payment_mode).trim() : null;
     const rows = await sql`
-      UPDATE fin_other_costs SET name=${name?.trim() || ''}, amount=${Number(amount) || 0}, category=${category || 'general'}
+      UPDATE fin_other_costs SET name=${name?.trim() || ''}, amount=${Number(amount) || 0}, category=${category || 'general'},
+        paid_on=${paidOnClean}::date, payment_mode=${modeClean}
       WHERE id=${Number(req.params.id)} RETURNING *`;
     res.json((rows as any[])[0] || {});
   } catch (err: any) { res.status(500).json({ error: err.message || 'Server error' }); }

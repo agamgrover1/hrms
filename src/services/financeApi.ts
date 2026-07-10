@@ -268,10 +268,12 @@ export const financeApi = {
   copyMonth: (from_month: number, from_year: number, to_month: number, to_year: number) =>
     request<any>('/copy-month', { method: 'POST', body: JSON.stringify({ from_month, from_year, to_month, to_year }) }),
 
-  getOverhead: (month: number, year: number) => request<Array<{ id: number; name: string; amount: number; category: string }>>(`/overhead?month=${month}&year=${year}`),
-  addOverhead: (data: { month: number; year: number; name: string; amount: number; category: string }) =>
+  getOverhead: (month: number, year: number) =>
+    request<Array<{ id: number; name: string; amount: number; category: string; paid_on: string | null; payment_mode: string | null }>>(
+      `/overhead?month=${month}&year=${year}`),
+  addOverhead: (data: { month: number; year: number; name: string; amount: number; category: string; paid_on?: string | null; payment_mode?: string | null }) =>
     request<any>('/overhead', { method: 'POST', body: JSON.stringify(data) }),
-  updateOverhead: (id: number, data: { name: string; amount: number; category: string }) =>
+  updateOverhead: (id: number, data: { name: string; amount: number; category: string; paid_on?: string | null; payment_mode?: string | null }) =>
     request<any>(`/overhead/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
   deleteOverhead: (id: number) => request<any>(`/overhead/${id}`, { method: 'DELETE' }),
 
