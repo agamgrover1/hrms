@@ -74,7 +74,15 @@ export default function HoursUtilization() {
           <h1 className="font-display text-2xl font-bold tracking-tight text-on-surface">Direct staff utilization</h1>
           <p className="text-sm text-on-surface-muted mt-0.5">
             {scope === 'week'
-              ? <>Planned hours vs. capacity for <span className="font-semibold text-on-surface">W{week}</span> {data?.week_range ? <span className="text-on-surface-subtle">({FULL_MONTHS[month - 1]} {data.week_range.start_day}–{data.week_range.end_day} · {data.week_range.working_days} working days · {data.total?.capacity ?? 0}h/person target)</span> : null}</>
+              ? <>Planned hours vs. capacity for <span className="font-semibold text-on-surface">W{week}</span> {data?.week_range ? (
+                  <span className="text-on-surface-subtle">
+                    ({FULL_MONTHS[month - 1]} {data.week_range.start_day}–{data.week_range.end_day} · {data.week_range.working_days} working days · {data.total?.capacity ?? 0}h capacity
+                    {/* Approved leaves overlapping this week reduce the pool. */}
+                    {(data.total as any)?.leaveHours > 0 && (
+                      <>, {(data.total as any).leaveHours}h off for leaves</>
+                    )})
+                  </span>
+                ) : null}</>
               : data?.scope === 'team'
                 ? <>Your team's planned hours vs. monthly capacity. <span className="text-on-surface-subtle">No salary or cost data shown.</span></>
                 : <>Everyone on direct-cost work this month. <span className="text-on-surface-subtle">Hours only — no salary breakdown.</span></>}
@@ -217,7 +225,15 @@ export default function HoursUtilization() {
                       className="w-full flex items-center gap-4 px-5 py-2.5 text-left hover:bg-surface-2 transition-colors group">
                       <div className="w-44 shrink-0">
                         <div className="text-sm font-medium text-on-surface truncate group-hover:text-accent transition-colors">{e.name}</div>
-                        <div className="text-xs text-on-surface-subtle truncate">{e.designation || e.department || '—'}</div>
+                        <div className="text-xs text-on-surface-subtle truncate">
+                          {e.designation || e.department || '—'}
+                          {/* Approved-leave hours in this week shrink capacity.
+                             Surface it so a "40h/28h" line doesn't read as a
+                             typo — the coord can see the 7h delta is leave. */}
+                          {e.leaveHours > 0 && (
+                            <span className="ml-1 text-warning">· on leave {hrs(e.leaveHours)}</span>
+                          )}
+                        </div>
                       </div>
                       <div className="flex-1 h-2 rounded-full bg-surface-3 overflow-hidden">
                         <div className={`h-full rounded-full ${barColor}`} style={{ width: `${Math.min(u, 1) * 100}%` }} />

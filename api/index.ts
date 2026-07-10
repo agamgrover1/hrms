@@ -11257,19 +11257,80 @@ app.get('/api/hours-utilization', async (req, res) => {
       const allocBy = new Map<string, number>();
       for (const r of allocRows) allocBy.set(r.employee_id, Number(r.alloc) || 0);
 
+      // Approved leaves that overlap this week reduce each affected
+      // employee's capacity — you can't be "under-utilized" on a day
+      // you're not at work. Rules:
+      //   full_day / casual / sick / earned / unpaid  → 7h / weekday
+      //   half_day                                    → 3.5h (single day)
+      //   short_leave                                 → 1.75h (single day)
+      // Only 'approved' (HR-finalized) rows count. Pending / rejected /
+      // cancelled don't shrink capacity — planning still assumes those
+      // days are workable until the manager + HR sign off.
+      const weekStartIso = `${year}-${String(month).padStart(2, '0')}-${String(startDay).padStart(2, '0')}`;
+      const weekEndIso   = `${year}-${String(month).padStart(2, '0')}-${String(endDay).padStart(2, '0')}`;
+      const leaveRows = empIds.length === 0 ? [] : await sql`
+        SELECT employee_id, type, from_date::text AS from_date, to_date::text AS to_date, slot
+        FROM leave_requests
+        WHERE status = 'approved'
+          AND employee_id = ANY(${empIds}::text[])
+          AND from_date <= ${weekEndIso}::date
+          AND to_date   >= ${weekStartIso}::date
+      ` as any[];
+      const leaveHoursBy = new Map<string, number>();
+      const HALF_DAY_HOURS = 3.5;
+      const SHORT_LEAVE_HOURS = 1.75;
+      const FULL_DAY_HOURS = 7;
+      for (const lv of leaveRows) {
+        let hours = 0;
+        if (lv.type === 'half_day') {
+          // Single-day slot request — count if that day is a weekday in
+          // the window. from_date === to_date for these.
+          const d = new Date(lv.from_date);
+          const day = d.getDate();
+          const dow = d.getDay();
+          if (day >= startDay && day <= endDay && dow !== 0 && dow !== 6) {
+            hours = HALF_DAY_HOURS;
+          }
+        } else if (lv.type === 'short_leave') {
+          const d = new Date(lv.from_date);
+          const day = d.getDate();
+          const dow = d.getDay();
+          if (day >= startDay && day <= endDay && dow !== 0 && dow !== 6) {
+            hours = SHORT_LEAVE_HOURS;
+          }
+        } else {
+          // Multi-day types: count overlapping weekdays inside the window.
+          const from = new Date(lv.from_date);
+          const to   = new Date(lv.to_date);
+          const winStart = new Date(year, month - 1, startDay);
+          const winEnd   = new Date(year, month - 1, endDay);
+          const rangeStart = from > winStart ? from : winStart;
+          const rangeEnd   = to   < winEnd   ? to   : winEnd;
+          for (let d = new Date(rangeStart); d <= rangeEnd; d.setDate(d.getDate() + 1)) {
+            const dow = d.getDay();
+            if (dow !== 0 && dow !== 6) hours += FULL_DAY_HOURS;
+          }
+        }
+        if (hours > 0) leaveHoursBy.set(lv.employee_id, (leaveHoursBy.get(lv.employee_id) ?? 0) + hours);
+      }
+
       const weeklyRows = baseRows.map(e => {
         const allocatedHours = allocBy.get(e.id) ?? 0;
-        const capacity = weeklyCapacity;
+        const leaveHours = leaveHoursBy.get(e.id) ?? 0;
+        // Clamp: someone on 5 approved leave days can't have negative
+        // capacity even if the numbers round oddly.
+        const capacity = Math.max(0, weeklyCapacity - leaveHours);
         const benchHours = Math.max(0, capacity - allocatedHours);
         const utilization = capacity > 0 ? allocatedHours / capacity : 0;
         // Strip cost / salary for everyone except admin (mirrors monthly).
         const { salary, rate, allocatedCost, benchCost, ...rest } = e;
         const safe = isAdmin ? e : rest;
-        return { ...safe, allocatedHours, capacity, benchHours, utilization };
+        return { ...safe, allocatedHours, capacity, benchHours, utilization, leaveHours };
       });
       const totalAlloc = weeklyRows.reduce((s, e) => s + Number(e.allocatedHours), 0);
       const totalCap = weeklyRows.reduce((s, e) => s + Number(e.capacity), 0);
       const totalBench = weeklyRows.reduce((s, e) => s + Number(e.benchHours), 0);
+      const totalLeaveHours = weeklyRows.reduce((s, e) => s + Number((e as any).leaveHours || 0), 0);
       return res.json({
         month, year, week,
         week_range: { start_day: startDay, end_day: endDay, working_days: workingDays },
@@ -11281,6 +11342,10 @@ app.get('/api/hours-utilization', async (req, res) => {
           bench: totalBench,
           utilization: totalCap > 0 ? totalAlloc / totalCap : 0,
           headcount: weeklyRows.length,
+          // "Gross" = capacity before leaves; leaveHours = the reduction.
+          // Frontend uses this to render "742h (−28h leaves)" cleanly.
+          leaveHours: totalLeaveHours,
+          grossCapacity: totalCap + totalLeaveHours,
         },
       });
     }
