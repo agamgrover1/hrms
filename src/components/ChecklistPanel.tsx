@@ -367,6 +367,10 @@ function StatusPill({ status }: { status: 'in_progress' | 'completed' | 'cancell
 }
 
 function HistoryBlock({ history, onOpen, open, kind }: { history: any[]; onOpen: () => void; open: boolean; kind: Kind }) {
+  // Track which historical checklist is currently expanded so HR can dig
+  // into who ticked what without leaving the profile. Only one row open
+  // at a time — keeps the panel manageable at 5 rows.
+  const [expandedId, setExpandedId] = useState<string | null>(null);
   return (
     <div className="rounded-xl-2 border border-outline bg-surface">
       <button onClick={onOpen}
@@ -376,16 +380,71 @@ function HistoryBlock({ history, onOpen, open, kind }: { history: any[]; onOpen:
       </button>
       {open && (
         <div className="border-t border-outline divide-y divide-outline">
-          {history.map(h => (
-            <div key={h.id} className="px-4 py-2.5 text-xs flex items-center justify-between gap-3">
-              <div>
-                <StatusPill status={h.status} />
-                <span className="ml-2 text-on-surface-muted">Started {fmtDate(h.started_at)}</span>
-                {h.completed_at && <span className="ml-2 text-on-surface-subtle">· closed {fmtDate(h.completed_at)}</span>}
+          {history.map(h => {
+            const isExpanded = expandedId === h.id;
+            const items: ChecklistItem[] = h.items ?? [];
+            const doneCount = items.filter(i => i.done).length;
+            return (
+              <div key={h.id}>
+                <button
+                  onClick={() => setExpandedId(isExpanded ? null : h.id)}
+                  className="w-full px-4 py-2.5 text-xs flex items-center justify-between gap-3 hover:bg-surface-2/40">
+                  <div className="flex items-center gap-2 flex-wrap min-w-0">
+                    <StatusPill status={h.status} />
+                    <span className="text-on-surface-muted">Started {fmtDate(h.started_at)}</span>
+                    {h.started_by_name && <span className="text-on-surface-subtle">by {h.started_by_name}</span>}
+                    {h.completed_at && <span className="text-on-surface-subtle">· closed {fmtDate(h.completed_at)}</span>}
+                    {h.completed_by_name && <span className="text-on-surface-subtle">by {h.completed_by_name}</span>}
+                    {items.length > 0 && (
+                      <span className="text-on-surface-subtle num-mono">· {doneCount}/{items.length} items</span>
+                    )}
+                  </div>
+                  <ChevronDown className={`w-3.5 h-3.5 text-on-surface-subtle transition-transform ${isExpanded ? 'rotate-180' : ''}`} />
+                </button>
+                {isExpanded && (
+                  <div className="px-4 py-3 bg-surface-2/30 border-t border-outline">
+                    {h.cancel_reason && (
+                      <div className="mb-3 px-3 py-2 rounded-md bg-warning-container/40 border border-warning/30 text-xs">
+                        <span className="font-semibold text-on-surface">Cancel reason: </span>
+                        <span className="italic text-on-surface-muted">"{h.cancel_reason}"</span>
+                      </div>
+                    )}
+                    {items.length === 0 ? (
+                      <p className="text-xs text-on-surface-subtle italic">No items recorded.</p>
+                    ) : (
+                      <ul className="divide-y divide-outline rounded-md border border-outline bg-surface">
+                        {items.map(item => (
+                          <li key={item.id} className="px-3 py-2 flex items-start gap-3">
+                            {item.done ? (
+                              <CheckCircle2 className="w-4 h-4 text-success shrink-0 mt-0.5" />
+                            ) : (
+                              <Circle className="w-4 h-4 text-on-surface-subtle shrink-0 mt-0.5" />
+                            )}
+                            <div className="flex-1 min-w-0">
+                              <div className="flex items-center gap-2 flex-wrap">
+                                <span className={`text-xs ${item.done ? 'text-on-surface' : 'text-on-surface-muted'}`}>{item.label}</span>
+                                {item.is_custom && (
+                                  <span className="text-[9px] px-1 py-0.5 rounded bg-accent/10 text-accent border border-accent/20 uppercase tracking-wider">Custom</span>
+                                )}
+                              </div>
+                              {item.done && item.done_by_name && item.done_at && (
+                                <div className="text-[10px] text-on-surface-subtle mt-0.5">
+                                  Ticked by {item.done_by_name} · {fmtDate(item.done_at)}
+                                </div>
+                              )}
+                              {item.notes && (
+                                <div className="text-[11px] text-on-surface-muted mt-1 italic break-words">"{item.notes}"</div>
+                              )}
+                            </div>
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                  </div>
+                )}
               </div>
-              {h.cancel_reason && <span className="text-on-surface-subtle italic truncate">"{h.cancel_reason}"</span>}
-            </div>
-          ))}
+            );
+          })}
         </div>
       )}
     </div>

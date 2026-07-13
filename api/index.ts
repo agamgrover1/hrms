@@ -14056,13 +14056,25 @@ async function loadChecklistForEmployee(kind: ChecklistKind, employeeId: string)
     : await sql`SELECT * FROM offboarding_checklists WHERE employee_id=${employeeId} ORDER BY started_at DESC LIMIT 6` as any[];
   const current = checklists.find(c => c.status === 'in_progress') ?? null;
   const history = checklists.filter(c => c.status !== 'in_progress').slice(0, 5);
-  let items: any[] = [];
-  if (current) {
-    items = kind === 'onboarding'
-      ? await sql`SELECT * FROM onboarding_items WHERE checklist_id=${current.id} ORDER BY sort_order, id` as any[]
-      : await sql`SELECT * FROM offboarding_items WHERE checklist_id=${current.id} ORDER BY sort_order, id` as any[];
+  // Fetch items for EVERY checklist (current + history) in one round-trip
+  // so the history rows can expand to show who ticked what, when, and any
+  // per-item notes — the audit trail HR wants.
+  const allIds = [current?.id, ...history.map(h => h.id)].filter(Boolean) as string[];
+  const allItems = allIds.length === 0 ? [] : kind === 'onboarding'
+    ? await sql`SELECT * FROM onboarding_items WHERE checklist_id = ANY(${allIds}::text[]) ORDER BY sort_order, id` as any[]
+    : await sql`SELECT * FROM offboarding_items WHERE checklist_id = ANY(${allIds}::text[]) ORDER BY sort_order, id` as any[];
+  const itemsByChecklist = new Map<string, any[]>();
+  for (const it of allItems) {
+    const arr = itemsByChecklist.get(it.checklist_id) ?? [];
+    arr.push(it);
+    itemsByChecklist.set(it.checklist_id, arr);
   }
-  return { current: current ? { ...current, items } : null, history, table: { c: cTable, i: iTable } };
+  const withItems = (c: any) => ({ ...c, items: itemsByChecklist.get(c.id) ?? [] });
+  return {
+    current: current ? withItems(current) : null,
+    history: history.map(withItems),
+    table: { c: cTable, i: iTable },
+  };
 }
 
 // Seed items from the standard template + insert the checklist header
