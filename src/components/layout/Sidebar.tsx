@@ -1,7 +1,7 @@
 import { NavLink, useLocation } from 'react-router-dom';
 import {
   LayoutDashboard, Users, Clock3, CalendarDays, Wallet, Sparkles,
-  ChevronLeft, ChevronRight, UserCog, User, SlidersHorizontal, TrendingUp, Wrench,
+  ChevronLeft, ChevronRight, ChevronDown, UserCog, User, SlidersHorizontal, TrendingUp, Wrench,
   Briefcase, ClipboardCheck, Layers, LineChart, AlertTriangle, Activity, Megaphone, BookOpen, HelpCircle, Mail, UserPlus, type LucideIcon,
 } from 'lucide-react';
 import { useState, useEffect, useRef } from 'react';
@@ -154,6 +154,26 @@ export default function Sidebar({ mobileOpen = false, onMobileClose }: { mobileO
     return () => mq.removeEventListener('change', handler);
   }, []);
   const collapsed = isDesktop && collapsedRaw;
+  // Per-section collapse — persisted per browser via localStorage. Sidebar
+  // groups (Workspace, Operations, Project Mgmt, etc.) can be individually
+  // folded so a long nav doesn't dominate the viewport. Auto-expand still
+  // fires for the group containing the active route so navigating a
+  // bookmark never leaves the user staring at a folded parent.
+  const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(() => {
+    if (typeof window === 'undefined') return new Set();
+    try {
+      const raw = window.localStorage.getItem('sidebarCollapsedGroups');
+      return new Set(raw ? (JSON.parse(raw) as string[]) : []);
+    } catch { return new Set(); }
+  });
+  const toggleGroup = (id: string) => {
+    setCollapsedGroups(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      try { window.localStorage.setItem('sidebarCollapsedGroups', JSON.stringify(Array.from(next))); } catch { /* quota — ignore */ }
+      return next;
+    });
+  };
   const [isManager, setIsManager] = useState(false);
   const [isProjectReviewer, setIsProjectReviewer] = useState(false);
   const { user } = useAuth();
@@ -373,7 +393,14 @@ export default function Sidebar({ mobileOpen = false, onMobileClose }: { mobileO
       {/* Nav */}
       <nav className="flex-1 px-2 py-2 overflow-y-auto space-y-3" style={{ scrollbarWidth: 'thin' }}>
         {groups.map(group => (
-          <SidebarGroup key={group.id} group={group} collapsed={collapsed} pathname={location.pathname} />
+          <SidebarGroup
+            key={group.id}
+            group={group}
+            collapsed={collapsed}
+            pathname={location.pathname}
+            groupCollapsed={collapsedGroups.has(group.id)}
+            onToggleGroup={() => toggleGroup(group.id)}
+          />
         ))}
       </nav>
 
@@ -392,7 +419,13 @@ export default function Sidebar({ mobileOpen = false, onMobileClose }: { mobileO
   );
 }
 
-function SidebarGroup({ group, collapsed, pathname }: { group: NavGroup; collapsed: boolean; pathname: string }) {
+function SidebarGroup({ group, collapsed, pathname, groupCollapsed, onToggleGroup }: {
+  group: NavGroup;
+  collapsed: boolean;
+  pathname: string;
+  groupCollapsed: boolean;
+  onToggleGroup: () => void;
+}) {
   // Track the active item index for the morphing pill background.
   // Pick the LONGEST prefix match so that on `/hours/approvals`, the
   // "Approvals" item wins over the parent "Hours grid" (/hours) — otherwise
@@ -413,15 +446,34 @@ function SidebarGroup({ group, collapsed, pathname }: { group: NavGroup; collaps
     });
     return bestIdx;
   })();
+  // Auto-expand override: whenever the active route lives inside this
+  // group, force the items visible regardless of the persisted state.
+  // Ensures a bookmark / cross-link into a folded group still shows the
+  // user where they are.
+  const containsActive = activeIndex >= 0;
+  const showItems = collapsed || !groupCollapsed || containsActive;
 
   return (
     <div ref={containerRef}>
       {!collapsed && (
-        <p className="px-3 mb-1.5 text-[10px] font-bold uppercase tracking-[0.16em] text-white/35 font-display">
-          {group.label}
-        </p>
+        <button
+          onClick={onToggleGroup}
+          title={groupCollapsed ? `Show ${group.label}` : `Hide ${group.label}`}
+          className="w-full flex items-center gap-1.5 px-3 mb-1.5 text-[10px] font-bold uppercase tracking-[0.16em] text-white/35 hover:text-white/60 transition-colors font-display group">
+          <ChevronDown
+            size={11}
+            strokeWidth={2.5}
+            className={`transition-transform duration-200 ${groupCollapsed && !containsActive ? '-rotate-90' : ''}`}
+          />
+          <span>{group.label}</span>
+          {/* Dim active-item indicator when collapsed so the user can still
+              see "this fold has something live in it" at a glance. */}
+          {groupCollapsed && containsActive && (
+            <span className="ml-auto w-1 h-1 rounded-full" style={{ background: '#EE2770', boxShadow: '0 0 6px #EE2770' }} />
+          )}
+        </button>
       )}
-      <div className="space-y-0.5">
+      <div className={`space-y-0.5 overflow-hidden transition-all ${showItems ? '' : 'max-h-0 opacity-0'}`}>
         {group.items.map((item, i) => {
           const Icon = item.icon;
           const active = i === activeIndex;
