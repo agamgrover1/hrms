@@ -197,9 +197,26 @@ async function recordHourLogAudit(p: {
 
 async function notifyEmployeeUser(employeeDbId: string, type: string, title: string, body?: string, link?: string) {
   try {
-    const users = await sql`SELECT u.id FROM app_users u JOIN employees e ON e.employee_id = u.employee_id_ref WHERE e.id = ${employeeDbId}`;
+    // Widened JOIN — some app_users rows store the HUMAN code (DL0092)
+    // in employee_id_ref, others store the INTERNAL id (e_XX). Matching
+    // only one form silently missed users linked with the other, so
+    // notifications for a review / approval / comment never landed and
+    // nobody saw it (fire-and-forget silence). Mirror the pattern
+    // actorOwnEmployeeId already uses (line ~335).
+    const users = await sql`
+      SELECT u.id FROM app_users u
+      JOIN employees e ON e.employee_id = u.employee_id_ref OR e.id = u.employee_id_ref
+      WHERE e.id = ${employeeDbId} AND u.active = TRUE`;
+    if ((users as any[]).length === 0) {
+      // Visibility: log the miss so future "why didn't X get the ping?"
+      // shows up in Vercel logs instead of vanishing.
+      console.warn(`[notifyEmployeeUser] no active app_user for employee ${employeeDbId} · type=${type}`);
+      return;
+    }
     await Promise.all((users as any[]).map((u: any) => notifyUser(u.id, type, title, body, link)));
-  } catch { /* non-fatal */ }
+  } catch (err: any) {
+    console.warn(`[notifyEmployeeUser] failed for employee ${employeeDbId} · type=${type}:`, err?.message ?? err);
+  }
 }
 
 async function notifyManagerOfEmployee(employeeDbId: string, type: string, title: string, body?: string) {
