@@ -30,6 +30,7 @@ import Notifications from './pages/Notifications';
 import Features from './pages/Features';
 import HowItWorks from './pages/HowItWorks';
 import Finance from './pages/finance/Finance';
+import Lifecycle from './pages/Lifecycle';
 
 function landingFor(_role: string): string {
   // Everyone lands on the unified dashboard. The page renders role-aware
@@ -74,6 +75,8 @@ function AppRoutes() {
         <Route path="config" element={<ProtectedRoute roles={['admin', 'hr_manager']}><Config /></ProtectedRoute>} />
         <Route path="incentives" element={<ProtectedRoute roles={['admin', 'hr_manager']}><Incentives /></ProtectedRoute>} />
         <Route path="asset-repairs" element={<ProtectedRoute roles={['admin', 'hr_manager', 'hr_intern']}><AssetRepairs /></ProtectedRoute>} />
+        {/* Lifecycle — onboarding + offboarding checklists across the org. HR intern included per plan. */}
+        <Route path="lifecycle" element={<ProtectedRoute roles={['admin', 'hr_manager', 'hr_intern']}><Lifecycle /></ProtectedRoute>} />
 
         {/* Finance / CFO — admin sees everything; project_coordinator only sees the Invoices tab. */}
         <Route path="finance" element={<ProtectedRoute roles={['admin', 'project_coordinator']}><Finance /></ProtectedRoute>} />

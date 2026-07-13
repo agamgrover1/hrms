@@ -2,7 +2,7 @@ import { NavLink, useLocation } from 'react-router-dom';
 import {
   LayoutDashboard, Users, Clock3, CalendarDays, Wallet, Sparkles,
   ChevronLeft, ChevronRight, UserCog, User, SlidersHorizontal, TrendingUp, Wrench,
-  Briefcase, ClipboardCheck, Layers, LineChart, AlertTriangle, Activity, Megaphone, BookOpen, HelpCircle, Mail, type LucideIcon,
+  Briefcase, ClipboardCheck, Layers, LineChart, AlertTriangle, Activity, Megaphone, BookOpen, HelpCircle, Mail, UserPlus, type LucideIcon,
 } from 'lucide-react';
 import { useState, useEffect, useRef } from 'react';
 import { useAuth } from '../../context/AuthContext';
@@ -17,6 +17,7 @@ const workspaceGroup: NavGroup = {
   items: [
     { to: '/', icon: LayoutDashboard, label: 'Overview', end: true },
     { to: '/employees', icon: Users, label: 'People' },
+    { to: '/lifecycle', icon: UserPlus, label: 'Lifecycle' },
     { to: '/attendance', icon: Clock3, label: 'Attendance' },
     { to: '/leave', icon: CalendarDays, label: 'Time off' },
   ],
@@ -218,6 +219,7 @@ export default function Sidebar({ mobileOpen = false, onMobileClose }: { mobileO
       items: [
         { to: '/', icon: LayoutDashboard, label: 'Overview', end: true },
         { to: '/employees', icon: Users, label: 'People' },
+        { to: '/lifecycle', icon: UserPlus, label: 'Lifecycle' },
         { to: '/attendance', icon: Clock3, label: 'Attendance' },
         { to: '/leave', icon: CalendarDays, label: 'Time off' },
         { to: '/asset-repairs', icon: Wrench, label: 'IT & Repairs' },

@@ -1032,6 +1032,28 @@ export const api = {
     request<AllocationChangeRequest>(`/allocation-requests/${id}/reject`, { method: 'PATCH', body: JSON.stringify(data) }),
   cancelAllocationRequest: (id: string) =>
     request<AllocationChangeRequest>(`/allocation-requests/${id}/cancel`, { method: 'PATCH' }),
+
+  // ── Onboarding + offboarding checklists ─────────────────────────────
+  getChecklist: (employeeId: string, kind: 'onboarding' | 'offboarding') =>
+    request<{ current: any | null; history: any[] }>(`/employees/${employeeId}/checklist/${kind}`),
+  startChecklist: (employeeId: string, kind: 'onboarding' | 'offboarding') =>
+    request<{ id: string; current: any; history: any[] }>(`/employees/${employeeId}/checklist/${kind}`, { method: 'POST', body: JSON.stringify({}) }),
+  updateChecklistItem: (itemId: string, kind: 'onboarding' | 'offboarding', data: { done?: boolean; notes?: string | null }) =>
+    request<{ item: any; checklist_completed: boolean }>(`/checklist-items/${itemId}?kind=${kind}`, { method: 'PATCH', body: JSON.stringify(data) }),
+  addChecklistItem: (checklistId: string, kind: 'onboarding' | 'offboarding', label: string) =>
+    request<any>(`/checklists/${checklistId}/items?kind=${kind}`, { method: 'POST', body: JSON.stringify({ label }) }),
+  deleteChecklistItem: (itemId: string, kind: 'onboarding' | 'offboarding') =>
+    request<{ ok: true }>(`/checklist-items/${itemId}?kind=${kind}`, { method: 'DELETE' }),
+  completeChecklist: (checklistId: string, kind: 'onboarding' | 'offboarding') =>
+    request<any>(`/checklists/${checklistId}/complete?kind=${kind}`, { method: 'POST', body: JSON.stringify({}) }),
+  cancelChecklist: (checklistId: string, kind: 'onboarding' | 'offboarding', reason: string) =>
+    request<any>(`/checklists/${checklistId}/cancel?kind=${kind}`, { method: 'POST', body: JSON.stringify({ reason }) }),
+  getLifecycleDashboard: () =>
+    request<{
+      onboarding: any[]; offboarding: any[];
+      summary: { onboarding_in_progress: number; offboarding_in_progress: number; overdue: number };
+      recent: any[];
+    }>(`/lifecycle-dashboard`),
 };
 
 export interface AllocationChangeRequest {

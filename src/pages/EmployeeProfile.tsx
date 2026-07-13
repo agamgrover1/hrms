@@ -13,6 +13,7 @@ import { useAuth } from '../context/AuthContext';
 import { EditEmployeeModal } from './Employees';
 import EmployeeResponsibilitiesPanel from '../components/EmployeeResponsibilitiesPanel';
 import EmployeeHoursDetailModal from '../components/EmployeeHoursDetailModal';
+import ChecklistPanel from '../components/ChecklistPanel';
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 function toDateStr(val: any): string {
@@ -154,7 +155,7 @@ function ActionModal({ title, info, type, isIncentive, onClose, onConfirm }: {
 }
 
 // ── Tabs ──────────────────────────────────────────────────────────────────────
-const TABS = ['Overview','Attendance','Leave','Hours','Performance','Incentives','Expenses','Warnings','Responsibilities'] as const;
+const TABS = ['Overview','Attendance','Leave','Hours','Performance','Incentives','Expenses','Warnings','Responsibilities','Onboarding','Offboarding'] as const;
 type Tab = typeof TABS[number];
 
 // ── Main page ─────────────────────────────────────────────────────────────────
@@ -169,7 +170,13 @@ export default function EmployeeProfile() {
   const [departments, setDepartments] = useState<string[]>([]);
   const [designations, setDesignations] = useState<string[]>([]);
   const [loading, setLoading]       = useState(true);
-  const [tab, setTab]               = useState<Tab>('Overview');
+  const [tab, setTab]               = useState<Tab>(() => {
+    // Deep-link: /employees/:id?tab=Onboarding lets the Lifecycle page
+    // (and future notifications) jump straight into a checklist tab.
+    if (typeof window === 'undefined') return 'Overview';
+    const raw = new URLSearchParams(window.location.search).get('tab');
+    return raw && (TABS as readonly string[]).includes(raw) ? (raw as Tab) : 'Overview';
+  });
   const [showEdit, setShowEdit]     = useState(false);
   const [showDelete, setShowDelete] = useState(false);
   const [deleting, setDeleting]     = useState(false);
@@ -573,7 +580,14 @@ export default function EmployeeProfile() {
         {/* Tab nav (pill style) */}
         <div className="bg-surface rounded-xl-2 border border-outline shadow-elev-1 mt-4 px-3 overflow-x-auto">
           <div className="flex gap-1 py-2">
-            {TABS.map(t => (
+            {TABS.filter(t => {
+              // Lifecycle checklists are HR/admin territory — a manager
+              // viewing a report's profile doesn't need to see FnF status.
+              if (t === 'Onboarding' || t === 'Offboarding') {
+                return me?.role === 'admin' || me?.role === 'hr_manager' || me?.role === 'hr_intern';
+              }
+              return true;
+            }).map(t => (
               <button key={t} onClick={() => setTab(t)}
                 className={`px-4 py-2 text-sm font-semibold rounded-full whitespace-nowrap transition-all ${tab===t
                   ? 'bg-accent text-on-accent shadow-elev-1'
@@ -1279,6 +1293,16 @@ export default function EmployeeProfile() {
       {/* ── Responsibilities ─────────────────────────────────────────────── */}
       {tab === 'Responsibilities' && emp && (
         <EmployeeResponsibilitiesPanel employeeId={emp.id} employeeName={emp.name} />
+      )}
+
+      {/* ── Onboarding checklist ─────────────────────────────────────────── */}
+      {tab === 'Onboarding' && emp && (
+        <ChecklistPanel employeeId={emp.id} kind="onboarding" />
+      )}
+
+      {/* ── Offboarding checklist ────────────────────────────────────────── */}
+      {tab === 'Offboarding' && emp && (
+        <ChecklistPanel employeeId={emp.id} kind="offboarding" exitDate={emp.exit_date ?? null} />
       )}
 
       {/* ── Hours & Allocation ───────────────────────────────────────────── */}

@@ -599,7 +599,7 @@ async function runStartupMigrations() {
   try {
     // Bump this probe whenever a new migration lands; existing warm
     // Lambdas will fail the SELECT and re-run runStartupMigrations().
-    await sql`SELECT paid_on FROM fin_other_costs LIMIT 0`;
+    await sql`SELECT started_at FROM onboarding_checklists LIMIT 0`;
     _migrated = true;
     return;
   } catch {
@@ -1306,6 +1306,80 @@ async function runStartupMigrations() {
       created_at TIMESTAMPTZ DEFAULT NOW()
     )`;
   await sql`CREATE INDEX IF NOT EXISTS idx_emp_resp_audit_emp ON employee_responsibilities_audit(employee_id, created_at DESC)`.catch(()=>{});
+
+  // ── Onboarding + offboarding checklists ─────────────────────────────────
+  // Replaces ClickUp-tracked lifecycle tasks (appointment letter, seat, email
+  // setup on joining; asset handover, credential removal, FnF on exit). HR
+  // starts a checklist per employee, ticks items, adds ad-hoc ones when
+  // needed. When the last item is ticked the header row flips to
+  // 'completed'.
+  //
+  // Two matched pairs of tables — onboarding_* + offboarding_* — with the
+  // same shape so a shared frontend panel drives both. The partial UNIQUE
+  // index enforces "at most one in-progress checklist per (employee, kind)"
+  // without blocking historical completed rows.
+  await sql`
+    CREATE TABLE IF NOT EXISTS onboarding_checklists (
+      id TEXT PRIMARY KEY,
+      employee_id TEXT NOT NULL REFERENCES employees(id) ON DELETE CASCADE,
+      status TEXT NOT NULL DEFAULT 'in_progress',
+      started_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      started_by_id TEXT,
+      started_by_name TEXT,
+      completed_at TIMESTAMPTZ,
+      completed_by_id TEXT,
+      completed_by_name TEXT,
+      cancel_reason TEXT,
+      notes TEXT
+    )`;
+  await sql`CREATE UNIQUE INDEX IF NOT EXISTS ux_onboarding_active ON onboarding_checklists(employee_id) WHERE status='in_progress'`.catch(()=>{});
+  await sql`CREATE INDEX IF NOT EXISTS idx_onboarding_status ON onboarding_checklists(status, started_at DESC)`.catch(()=>{});
+  await sql`
+    CREATE TABLE IF NOT EXISTS onboarding_items (
+      id TEXT PRIMARY KEY,
+      checklist_id TEXT NOT NULL REFERENCES onboarding_checklists(id) ON DELETE CASCADE,
+      key TEXT NOT NULL,
+      label TEXT NOT NULL,
+      sort_order INTEGER NOT NULL DEFAULT 0,
+      done BOOLEAN NOT NULL DEFAULT FALSE,
+      done_by_id TEXT,
+      done_by_name TEXT,
+      done_at TIMESTAMPTZ,
+      notes TEXT,
+      is_custom BOOLEAN NOT NULL DEFAULT FALSE
+    )`;
+  await sql`CREATE INDEX IF NOT EXISTS idx_onboarding_items_checklist ON onboarding_items(checklist_id, sort_order)`.catch(()=>{});
+  await sql`
+    CREATE TABLE IF NOT EXISTS offboarding_checklists (
+      id TEXT PRIMARY KEY,
+      employee_id TEXT NOT NULL REFERENCES employees(id) ON DELETE CASCADE,
+      status TEXT NOT NULL DEFAULT 'in_progress',
+      started_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      started_by_id TEXT,
+      started_by_name TEXT,
+      completed_at TIMESTAMPTZ,
+      completed_by_id TEXT,
+      completed_by_name TEXT,
+      cancel_reason TEXT,
+      notes TEXT
+    )`;
+  await sql`CREATE UNIQUE INDEX IF NOT EXISTS ux_offboarding_active ON offboarding_checklists(employee_id) WHERE status='in_progress'`.catch(()=>{});
+  await sql`CREATE INDEX IF NOT EXISTS idx_offboarding_status ON offboarding_checklists(status, started_at DESC)`.catch(()=>{});
+  await sql`
+    CREATE TABLE IF NOT EXISTS offboarding_items (
+      id TEXT PRIMARY KEY,
+      checklist_id TEXT NOT NULL REFERENCES offboarding_checklists(id) ON DELETE CASCADE,
+      key TEXT NOT NULL,
+      label TEXT NOT NULL,
+      sort_order INTEGER NOT NULL DEFAULT 0,
+      done BOOLEAN NOT NULL DEFAULT FALSE,
+      done_by_id TEXT,
+      done_by_name TEXT,
+      done_at TIMESTAMPTZ,
+      notes TEXT,
+      is_custom BOOLEAN NOT NULL DEFAULT FALSE
+    )`;
+  await sql`CREATE INDEX IF NOT EXISTS idx_offboarding_items_checklist ON offboarding_items(checklist_id, sort_order)`.catch(()=>{});
 
   // ── Internal activities (non-project work) ────────────────────────────
   // Employees, HR, coordinators, and admin all log hours daily. People
@@ -2447,6 +2521,10 @@ app.put('/api/employees/:id', async (req, res) => {
     if (!(await requireFullHR(req, res)).ok) return;
     invalidateEmployeesCache();
     const { name, email, phone, department, designation, join_date, location, manager, reporting_manager_id, status, salary, ctc, biometric_id, shift, next_appraisal_month, next_appraisal_year, date_of_birth, exit_date, exit_salary_override } = req.body;
+    // Snapshot exit_date pre-update so we can hint the caller when it
+    // transitions NULL → set (that's when HR should think about
+    // starting the offboarding checklist).
+    const prior = (await sql`SELECT exit_date::text AS exit_date FROM employees WHERE id=${req.params.id} OR employee_id=${req.params.id}` as any[])[0];
     await sql`ALTER TABLE employees ADD COLUMN IF NOT EXISTS date_of_birth DATE`.catch(()=>{});
     await sql`ALTER TABLE employees ADD COLUMN IF NOT EXISTS exit_date DATE`.catch(()=>{});
     await sql`ALTER TABLE employees ADD COLUMN IF NOT EXISTS exit_salary_override NUMERIC`.catch(()=>{});
@@ -2500,7 +2578,12 @@ app.put('/api/employees/:id', async (req, res) => {
       // Best-effort — a missing table (in a fresh DB) shouldn't fail the update.
       await Promise.all(cascades.map(p => (p as any).catch(() => {})));
     }
-    res.json(updated);
+    // Offboarding-checklist hint: fires only on the NULL → set transition
+    // so a plain edit (payroll, phone, etc.) after exit_date was already
+    // present doesn't nag. The frontend uses this to surface a toast
+    // "Start offboarding?" that deep-links to the profile Offboarding tab.
+    const offboardingHint = !prior?.exit_date && !!exit_date;
+    res.json({ ...updated, __hint_start_offboarding: offboardingHint });
   } catch (err) { res.status(500).json({ error: 'Server error' }); }
 });
 
@@ -13903,6 +13986,368 @@ app.get('/api/finance/invoices/audit', async (req, res) => {
       ORDER BY changed_at DESC
       LIMIT ${limit}`;
     res.json(rows);
+  } catch (err: any) { res.status(500).json({ error: err.message || 'Server error' }); }
+});
+
+// ════════════════════════════════════════════════════════════════════════
+// ── Onboarding + offboarding checklists ───────────────────────────────────
+// Replaces ClickUp-tracked employee-lifecycle tasks. HR/admin picks the
+// employee, hits "Start onboarding" (or "Start offboarding" when
+// exit_date is set), ticks the standard items + any ad-hoc ones they
+// add, and the checklist auto-completes when the last box is checked.
+// Two matched pairs of tables — onboarding_* + offboarding_* — driven
+// by a shared helper so ~9 endpoints stay under one screen of code.
+// ════════════════════════════════════════════════════════════════════════
+
+// Standard step template — order matters (sort_order is derived from index).
+const ONBOARDING_TEMPLATE = [
+  { key: 'appointment_letter',  label: 'Issue appointment letter'          },
+  { key: 'email_slack',         label: 'Email + Slack setup'               },
+  { key: 'system_assigned',     label: 'System assigned'                   },
+  { key: 'seat_assigned',       label: 'Seat assigned'                     },
+  { key: 'documents_collected', label: 'Documents collected'               },
+  { key: 'punch_in_setup',      label: 'Punch-in setup'                    },
+  { key: 'hrms_added',          label: 'Added on HRMS'                     },
+];
+const OFFBOARDING_TEMPLATE = [
+  { key: 'resignation',         label: 'Resignation'                       },
+  { key: 'exit_interview',      label: 'Exit interview'                    },
+  { key: 'asset_handover',      label: 'Asset handover'                    },
+  { key: 'removed_from_sheets', label: 'Removed from all sheets'           },
+  { key: 'thunderbird_removed', label: 'Thunderbird credentials removed'   },
+  { key: 'slack_removed',       label: 'Slack removed'                     },
+  { key: 'whatsapp_removed',    label: 'Removed from WhatsApp group'       },
+  { key: 'hrms_removed',        label: 'Removed from HRMS'                 },
+  { key: 'fnf_completed',       label: 'FnF completed'                     },
+];
+
+// Guard for `?kind=` query params on all checklist routes. Kept tight to
+// two literals so a typo never picks a wrong table.
+type ChecklistKind = 'onboarding' | 'offboarding';
+function parseKind(v: any): ChecklistKind | null {
+  return v === 'onboarding' || v === 'offboarding' ? v : null;
+}
+
+// Fetch the current in-progress checklist + last 5 completed for one
+// employee. The frontend shows the current one prominently and lets HR
+// expand a "history" section for the rest.
+async function loadChecklistForEmployee(kind: ChecklistKind, employeeId: string) {
+  const cTable = kind === 'onboarding' ? 'onboarding_checklists' : 'offboarding_checklists';
+  const iTable = kind === 'onboarding' ? 'onboarding_items' : 'offboarding_items';
+  const checklists = kind === 'onboarding'
+    ? await sql`SELECT * FROM onboarding_checklists WHERE employee_id=${employeeId} ORDER BY started_at DESC LIMIT 6` as any[]
+    : await sql`SELECT * FROM offboarding_checklists WHERE employee_id=${employeeId} ORDER BY started_at DESC LIMIT 6` as any[];
+  const current = checklists.find(c => c.status === 'in_progress') ?? null;
+  const history = checklists.filter(c => c.status !== 'in_progress').slice(0, 5);
+  let items: any[] = [];
+  if (current) {
+    items = kind === 'onboarding'
+      ? await sql`SELECT * FROM onboarding_items WHERE checklist_id=${current.id} ORDER BY sort_order, id` as any[]
+      : await sql`SELECT * FROM offboarding_items WHERE checklist_id=${current.id} ORDER BY sort_order, id` as any[];
+  }
+  return { current: current ? { ...current, items } : null, history, table: { c: cTable, i: iTable } };
+}
+
+// Seed items from the standard template + insert the checklist header
+// row in one transaction-lite pattern. sort_order = index so the UI
+// renders them in the same order every time.
+async function createChecklistForEmployee(kind: ChecklistKind, employeeId: string, actor: { id?: string; name?: string }) {
+  const id = `${kind === 'onboarding' ? 'onb' : 'off'}_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+  const template = kind === 'onboarding' ? ONBOARDING_TEMPLATE : OFFBOARDING_TEMPLATE;
+  if (kind === 'onboarding') {
+    await sql`INSERT INTO onboarding_checklists (id, employee_id, status, started_by_id, started_by_name)
+              VALUES (${id}, ${employeeId}, 'in_progress', ${actor.id ?? null}, ${actor.name ?? null})`;
+    for (let i = 0; i < template.length; i++) {
+      const t = template[i];
+      const itemId = `onbi_${id}_${i}`;
+      await sql`INSERT INTO onboarding_items (id, checklist_id, key, label, sort_order, is_custom)
+                VALUES (${itemId}, ${id}, ${t.key}, ${t.label}, ${i}, FALSE)`;
+    }
+  } else {
+    await sql`INSERT INTO offboarding_checklists (id, employee_id, status, started_by_id, started_by_name)
+              VALUES (${id}, ${employeeId}, 'in_progress', ${actor.id ?? null}, ${actor.name ?? null})`;
+    for (let i = 0; i < template.length; i++) {
+      const t = template[i];
+      const itemId = `offi_${id}_${i}`;
+      await sql`INSERT INTO offboarding_items (id, checklist_id, key, label, sort_order, is_custom)
+                VALUES (${itemId}, ${id}, ${t.key}, ${t.label}, ${i}, FALSE)`;
+    }
+  }
+  return id;
+}
+
+// After any item mutation, check whether every item is done. If so, flip
+// the checklist to 'completed' and fan out a notification. Returns the
+// updated checklist status so the caller can surface it in the response.
+async function maybeAutoComplete(kind: ChecklistKind, checklistId: string, actor: { id?: string; name?: string }) {
+  const items = kind === 'onboarding'
+    ? await sql`SELECT done FROM onboarding_items WHERE checklist_id=${checklistId}` as any[]
+    : await sql`SELECT done FROM offboarding_items WHERE checklist_id=${checklistId}` as any[];
+  if (items.length === 0 || items.some(i => !i.done)) return null;
+  const updated = kind === 'onboarding'
+    ? (await sql`UPDATE onboarding_checklists SET status='completed', completed_at=NOW(),
+                        completed_by_id=${actor.id ?? null}, completed_by_name=${actor.name ?? null}
+                 WHERE id=${checklistId} AND status='in_progress' RETURNING *` as any[])[0]
+    : (await sql`UPDATE offboarding_checklists SET status='completed', completed_at=NOW(),
+                        completed_by_id=${actor.id ?? null}, completed_by_name=${actor.name ?? null}
+                 WHERE id=${checklistId} AND status='in_progress' RETURNING *` as any[])[0];
+  if (updated) {
+    const emp = (await sql`SELECT name FROM employees WHERE id=${updated.employee_id}` as any[])[0];
+    const empName = emp?.name ?? 'An employee';
+    notifyAdminsAndHR(
+      kind === 'onboarding' ? 'onboarding_completed' : 'offboarding_completed',
+      kind === 'onboarding' ? 'Onboarding complete' : 'Offboarding complete',
+      `${actor.name ?? 'Someone'} finished ${kind} for ${empName}.`
+    ).catch(() => {});
+  }
+  return updated;
+}
+
+// GET /api/employees/:id/checklist/:kind — current + history for one emp.
+app.get('/api/employees/:id/checklist/:kind', async (req, res) => {
+  try {
+    await runStartupMigrations();
+    if (!(await requireHROrAbove(req, res))) return;
+    const kind = parseKind(req.params.kind);
+    if (!kind) return res.status(400).json({ error: 'kind must be onboarding or offboarding' });
+    const payload = await loadChecklistForEmployee(kind, req.params.id);
+    res.json({ current: payload.current, history: payload.history });
+  } catch (err: any) { res.status(500).json({ error: err.message || 'Server error' }); }
+});
+
+// POST /api/employees/:id/checklist/:kind — start a checklist. Blocked
+// when one is already in-progress (the partial UNIQUE index enforces it
+// at the DB layer too; catching here gives a clearer message).
+app.post('/api/employees/:id/checklist/:kind', async (req, res) => {
+  try {
+    await runStartupMigrations();
+    if (!(await requireHROrAbove(req, res))) return;
+    const kind = parseKind(req.params.kind);
+    if (!kind) return res.status(400).json({ error: 'kind must be onboarding or offboarding' });
+    const emp = (await sql`SELECT id, name, exit_date::text AS exit_date FROM employees WHERE id=${req.params.id}` as any[])[0];
+    if (!emp) return res.status(404).json({ error: 'Employee not found' });
+    if (kind === 'offboarding' && !emp.exit_date) {
+      return res.status(400).json({ error: 'Set exit_date on the employee before starting offboarding.' });
+    }
+    // Look up which app_user is doing this so notifications + timestamps
+    // are attributed to a human rather than "someone".
+    const uid = req.header('x-user-id') as string;
+    const actorRow = (await sql`SELECT id, name FROM app_users WHERE id=${uid}` as any[])[0];
+    const actor = { id: actorRow?.id, name: actorRow?.name };
+    try {
+      const id = await createChecklistForEmployee(kind, req.params.id, actor);
+      notifyAdminsAndHR(
+        kind === 'onboarding' ? 'onboarding_started' : 'offboarding_started',
+        kind === 'onboarding' ? 'Onboarding started' : 'Offboarding started',
+        `${actor.name ?? 'Someone'} started ${kind} for ${emp.name}.`
+      ).catch(() => {});
+      const payload = await loadChecklistForEmployee(kind, req.params.id);
+      res.status(201).json({ id, current: payload.current, history: payload.history });
+    } catch (e: any) {
+      // Partial UNIQUE index violation → checklist already in progress.
+      if (String(e?.message).includes('ux_onboarding_active') || String(e?.message).includes('ux_offboarding_active')) {
+        return res.status(409).json({ error: `A ${kind} checklist is already in progress for this employee.` });
+      }
+      throw e;
+    }
+  } catch (err: any) { res.status(500).json({ error: err.message || 'Server error' }); }
+});
+
+// PATCH /api/checklist-items/:id?kind= — tick / untick / edit note.
+// Body: { done?, notes? }. Auto-completes the checklist when the last
+// remaining item flips to done.
+app.patch('/api/checklist-items/:id', async (req, res) => {
+  try {
+    await runStartupMigrations();
+    if (!(await requireHROrAbove(req, res))) return;
+    const kind = parseKind(req.query.kind);
+    if (!kind) return res.status(400).json({ error: 'kind must be onboarding or offboarding' });
+    const { done, notes } = req.body ?? {};
+    const uid = req.header('x-user-id') as string;
+    const actorRow = (await sql`SELECT id, name FROM app_users WHERE id=${uid}` as any[])[0];
+    const actor = { id: actorRow?.id, name: actorRow?.name };
+    // Lock in the current row to know: (1) which checklist it belongs to
+    // (for the auto-complete check), (2) whether the caller only wants
+    // to update notes without flipping done. Missing item = 404.
+    const existing = (kind === 'onboarding'
+      ? await sql`SELECT * FROM onboarding_items WHERE id=${req.params.id}` as any[]
+      : await sql`SELECT * FROM offboarding_items WHERE id=${req.params.id}` as any[])[0];
+    if (!existing) return res.status(404).json({ error: 'Item not found' });
+    const willBeDone = done === undefined ? existing.done : !!done;
+    const newNotes = notes === undefined ? existing.notes : (String(notes).trim() || null);
+    // Only stamp done_by / done_at when done is being SET to true;
+    // untick clears them so a re-tick starts a fresh timestamp.
+    const updated = (kind === 'onboarding'
+      ? await sql`UPDATE onboarding_items SET
+                    done=${willBeDone},
+                    done_by_id=${willBeDone ? (actor.id ?? null) : null},
+                    done_by_name=${willBeDone ? (actor.name ?? null) : null},
+                    done_at=${willBeDone ? (existing.done ? existing.done_at : new Date().toISOString()) : null}::timestamptz,
+                    notes=${newNotes}
+                  WHERE id=${req.params.id} RETURNING *` as any[]
+      : await sql`UPDATE offboarding_items SET
+                    done=${willBeDone},
+                    done_by_id=${willBeDone ? (actor.id ?? null) : null},
+                    done_by_name=${willBeDone ? (actor.name ?? null) : null},
+                    done_at=${willBeDone ? (existing.done ? existing.done_at : new Date().toISOString()) : null}::timestamptz,
+                    notes=${newNotes}
+                  WHERE id=${req.params.id} RETURNING *` as any[])[0];
+    const completed = await maybeAutoComplete(kind, existing.checklist_id, actor);
+    res.json({ item: updated, checklist_completed: !!completed });
+  } catch (err: any) { res.status(500).json({ error: err.message || 'Server error' }); }
+});
+
+// POST /api/checklists/:id/items?kind= — add ad-hoc item to a live
+// checklist. sort_order goes to the end. is_custom=true so the UI knows
+// it's safe to delete.
+app.post('/api/checklists/:id/items', async (req, res) => {
+  try {
+    await runStartupMigrations();
+    if (!(await requireHROrAbove(req, res))) return;
+    const kind = parseKind(req.query.kind);
+    if (!kind) return res.status(400).json({ error: 'kind must be onboarding or offboarding' });
+    const label = String(req.body?.label ?? '').trim();
+    if (!label) return res.status(400).json({ error: 'label is required' });
+    const maxRow = (kind === 'onboarding'
+      ? await sql`SELECT COALESCE(MAX(sort_order), -1) AS m FROM onboarding_items WHERE checklist_id=${req.params.id}` as any[]
+      : await sql`SELECT COALESCE(MAX(sort_order), -1) AS m FROM offboarding_items WHERE checklist_id=${req.params.id}` as any[])[0];
+    const nextOrder = Number(maxRow?.m ?? -1) + 1;
+    const itemId = `${kind === 'onboarding' ? 'onbi' : 'offi'}_c_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+    const key = 'custom_' + label.toLowerCase().replace(/[^a-z0-9]+/g, '_').slice(0, 40);
+    const row = (kind === 'onboarding'
+      ? await sql`INSERT INTO onboarding_items (id, checklist_id, key, label, sort_order, is_custom)
+                  VALUES (${itemId}, ${req.params.id}, ${key}, ${label}, ${nextOrder}, TRUE) RETURNING *` as any[]
+      : await sql`INSERT INTO offboarding_items (id, checklist_id, key, label, sort_order, is_custom)
+                  VALUES (${itemId}, ${req.params.id}, ${key}, ${label}, ${nextOrder}, TRUE) RETURNING *` as any[])[0];
+    res.status(201).json(row);
+  } catch (err: any) { res.status(500).json({ error: err.message || 'Server error' }); }
+});
+
+// DELETE /api/checklist-items/:id?kind= — only custom items are
+// deletable. Template items must stay so the checklist stays honest.
+app.delete('/api/checklist-items/:id', async (req, res) => {
+  try {
+    await runStartupMigrations();
+    if (!(await requireHROrAbove(req, res))) return;
+    const kind = parseKind(req.query.kind);
+    if (!kind) return res.status(400).json({ error: 'kind must be onboarding or offboarding' });
+    const row = (kind === 'onboarding'
+      ? await sql`SELECT is_custom, checklist_id FROM onboarding_items WHERE id=${req.params.id}` as any[]
+      : await sql`SELECT is_custom, checklist_id FROM offboarding_items WHERE id=${req.params.id}` as any[])[0];
+    if (!row) return res.status(404).json({ error: 'Item not found' });
+    if (!row.is_custom) return res.status(400).json({ error: 'Template items cannot be removed.' });
+    if (kind === 'onboarding') await sql`DELETE FROM onboarding_items WHERE id=${req.params.id}`;
+    else await sql`DELETE FROM offboarding_items WHERE id=${req.params.id}`;
+    res.json({ ok: true });
+  } catch (err: any) { res.status(500).json({ error: err.message || 'Server error' }); }
+});
+
+// POST /api/checklists/:id/complete?kind= — manual complete. Auto-
+// complete already fires when the last item is ticked, so this is the
+// "close it out even though something's still unchecked" escape hatch.
+app.post('/api/checklists/:id/complete', async (req, res) => {
+  try {
+    await runStartupMigrations();
+    if (!(await requireHROrAbove(req, res))) return;
+    const kind = parseKind(req.query.kind);
+    if (!kind) return res.status(400).json({ error: 'kind must be onboarding or offboarding' });
+    const uid = req.header('x-user-id') as string;
+    const actorRow = (await sql`SELECT id, name FROM app_users WHERE id=${uid}` as any[])[0];
+    const updated = (kind === 'onboarding'
+      ? await sql`UPDATE onboarding_checklists SET status='completed', completed_at=NOW(),
+                          completed_by_id=${actorRow?.id ?? null}, completed_by_name=${actorRow?.name ?? null}
+                   WHERE id=${req.params.id} AND status='in_progress' RETURNING *` as any[]
+      : await sql`UPDATE offboarding_checklists SET status='completed', completed_at=NOW(),
+                          completed_by_id=${actorRow?.id ?? null}, completed_by_name=${actorRow?.name ?? null}
+                   WHERE id=${req.params.id} AND status='in_progress' RETURNING *` as any[])[0];
+    if (!updated) return res.status(404).json({ error: 'Checklist not found or not in progress.' });
+    const emp = (await sql`SELECT name FROM employees WHERE id=${updated.employee_id}` as any[])[0];
+    notifyAdminsAndHR(
+      kind === 'onboarding' ? 'onboarding_completed' : 'offboarding_completed',
+      kind === 'onboarding' ? 'Onboarding complete' : 'Offboarding complete',
+      `${actorRow?.name ?? 'Someone'} closed ${kind} for ${emp?.name ?? 'an employee'}.`
+    ).catch(() => {});
+    res.json(updated);
+  } catch (err: any) { res.status(500).json({ error: err.message || 'Server error' }); }
+});
+
+// POST /api/checklists/:id/cancel?kind= — cancel with a reason. Frees
+// the partial UNIQUE index so a fresh checklist can be started.
+app.post('/api/checklists/:id/cancel', async (req, res) => {
+  try {
+    await runStartupMigrations();
+    if (!(await requireHROrAbove(req, res))) return;
+    const kind = parseKind(req.query.kind);
+    if (!kind) return res.status(400).json({ error: 'kind must be onboarding or offboarding' });
+    const reason = String(req.body?.reason ?? '').trim();
+    if (!reason) return res.status(400).json({ error: 'reason is required to cancel.' });
+    const uid = req.header('x-user-id') as string;
+    const actorRow = (await sql`SELECT id, name FROM app_users WHERE id=${uid}` as any[])[0];
+    const updated = (kind === 'onboarding'
+      ? await sql`UPDATE onboarding_checklists SET status='cancelled', completed_at=NOW(),
+                          completed_by_id=${actorRow?.id ?? null}, completed_by_name=${actorRow?.name ?? null},
+                          cancel_reason=${reason}
+                   WHERE id=${req.params.id} AND status='in_progress' RETURNING *` as any[]
+      : await sql`UPDATE offboarding_checklists SET status='cancelled', completed_at=NOW(),
+                          completed_by_id=${actorRow?.id ?? null}, completed_by_name=${actorRow?.name ?? null},
+                          cancel_reason=${reason}
+                   WHERE id=${req.params.id} AND status='in_progress' RETURNING *` as any[])[0];
+    if (!updated) return res.status(404).json({ error: 'Checklist not found or not in progress.' });
+    res.json(updated);
+  } catch (err: any) { res.status(500).json({ error: err.message || 'Server error' }); }
+});
+
+// GET /api/lifecycle-dashboard — aggregate view for the sidebar page +
+// the Home KPI tile. Both kinds in one round-trip. Overdue = in-progress
+// for > 14 days.
+app.get('/api/lifecycle-dashboard', async (_req, res) => {
+  try {
+    await runStartupMigrations();
+    if (!(await requireHROrAbove(_req, res))) return;
+    const rows = await sql`
+      SELECT 'onboarding' AS kind, c.id, c.employee_id, c.status, c.started_at,
+             e.name AS employee_name, e.designation, e.department,
+             (SELECT COUNT(*)::int FROM onboarding_items WHERE checklist_id=c.id) AS total_items,
+             (SELECT COUNT(*)::int FROM onboarding_items WHERE checklist_id=c.id AND done=TRUE) AS done_items
+      FROM onboarding_checklists c
+      JOIN employees e ON e.id = c.employee_id
+      WHERE c.status='in_progress'
+      UNION ALL
+      SELECT 'offboarding' AS kind, c.id, c.employee_id, c.status, c.started_at,
+             e.name AS employee_name, e.designation, e.department,
+             (SELECT COUNT(*)::int FROM offboarding_items WHERE checklist_id=c.id) AS total_items,
+             (SELECT COUNT(*)::int FROM offboarding_items WHERE checklist_id=c.id AND done=TRUE) AS done_items
+      FROM offboarding_checklists c
+      JOIN employees e ON e.id = c.employee_id
+      WHERE c.status='in_progress'
+      ORDER BY started_at ASC` as any[];
+    const now = Date.now();
+    const withOverdue = rows.map(r => ({
+      ...r,
+      overdue: (now - new Date(r.started_at).getTime()) > 14 * 24 * 60 * 60 * 1000,
+    }));
+    const onboarding = withOverdue.filter(r => r.kind === 'onboarding');
+    const offboarding = withOverdue.filter(r => r.kind === 'offboarding');
+    const summary = {
+      onboarding_in_progress: onboarding.length,
+      offboarding_in_progress: offboarding.length,
+      overdue: withOverdue.filter(r => r.overdue).length,
+    };
+    // Also grab the last handful of recently completed so the page can
+    // show closure without a second call.
+    const recent = await sql`
+      SELECT 'onboarding' AS kind, c.id, c.employee_id, c.status, c.completed_at,
+             e.name AS employee_name, e.designation, e.department
+      FROM onboarding_checklists c JOIN employees e ON e.id=c.employee_id
+      WHERE c.status IN ('completed','cancelled')
+      ORDER BY c.completed_at DESC NULLS LAST LIMIT 5` as any[];
+    const recentOff = await sql`
+      SELECT 'offboarding' AS kind, c.id, c.employee_id, c.status, c.completed_at,
+             e.name AS employee_name, e.designation, e.department
+      FROM offboarding_checklists c JOIN employees e ON e.id=c.employee_id
+      WHERE c.status IN ('completed','cancelled')
+      ORDER BY c.completed_at DESC NULLS LAST LIMIT 5` as any[];
+    res.json({ onboarding, offboarding, summary, recent: [...recent, ...recentOff] });
   } catch (err: any) { res.status(500).json({ error: err.message || 'Server error' }); }
 });
 

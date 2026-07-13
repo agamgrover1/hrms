@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState, type ReactNode } from 'react';
 import {
   AreaChart, Area, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, PieChart, Pie, Cell
 } from 'recharts';
-import { Users, Calendar, DollarSign, TrendingUp, AlertCircle, CheckCircle2, UserCheck, Clock as ClockIcon, Wrench, XCircle, MessageCircle } from 'lucide-react';
+import { Users, Calendar, DollarSign, TrendingUp, AlertCircle, CheckCircle2, UserCheck, Clock as ClockIcon, Wrench, XCircle, MessageCircle, UserPlus } from 'lucide-react';
 import { leaveTypeLabel } from '../utils/leaveLabel';
 import { toast } from '../components/Toaster';
 import { useLiveRefresh } from '../hooks/useLiveRefresh';
@@ -318,6 +318,10 @@ export default function Dashboard() {
   const [optionalThisYear, setOptionalThisYear] = useState<any[]>([]);
   const [optionalNextYear, setOptionalNextYear] = useState<any[]>([]);
   const [outToday, setOutToday] = useState<Awaited<ReturnType<typeof api.getOutToday>> | null>(null);
+  // Lifecycle KPI feeds the Home tile ("2 onboarding · 1 offboarding · 1 overdue").
+  // Separate call so a slow lifecycle query doesn't hold up the main dashboard;
+  // failures fall back to zeros silently.
+  const [lifecycleSummary, setLifecycleSummary] = useState<{ onboarding_in_progress: number; offboarding_in_progress: number; overdue: number } | null>(null);
   const [loading, setLoading] = useState(true);
   const [approvingLeave, setApprovingLeave] = useState<Record<string, boolean>>({});
 
@@ -364,6 +368,15 @@ export default function Dashboard() {
       api.getHoursSummary(currentMonth, currentYear).then(setHoursSummary).catch(() => setHoursSummary(null)),
     ]).finally(() => setLoading(false));
   }, [currentMonth, currentYear]);
+
+  // Lifecycle summary — HR/admin only. Fires alongside the bootstrap so a
+  // slow response doesn't hold up the main dashboard load.
+  useEffect(() => {
+    if (!isAdminOrHR) return;
+    api.getLifecycleDashboard()
+      .then(d => setLifecycleSummary(d.summary))
+      .catch(() => setLifecycleSummary(null));
+  }, [isAdminOrHR]);
 
   // Upcoming events (holidays + birthdays + anniversaries) turn over
   // once a day. Guard the fetch with a localStorage snapshot keyed by
@@ -658,6 +671,32 @@ export default function Dashboard() {
           </div>
         ))}
       </div>
+
+      {/* Lifecycle strip — compact, always visible when HR/admin. Hidden
+         entirely when there's nothing in progress AND no overdue, so we
+         don't waste vertical space on quiet weeks. */}
+      {lifecycleSummary && (lifecycleSummary.onboarding_in_progress > 0 || lifecycleSummary.offboarding_in_progress > 0 || lifecycleSummary.overdue > 0) && (
+        <button onClick={() => window.location.href = '/lifecycle'}
+          className="w-full flex items-center gap-3 bg-surface rounded-xl-2 border border-outline shadow-elev-1 hover:shadow-elev-2 hover:border-accent/30 transition-all px-5 py-3 text-left">
+          <div className="w-9 h-9 rounded-xl bg-accent-container flex items-center justify-center shrink-0">
+            <UserPlus size={16} className="text-on-accent-container" strokeWidth={1.75} />
+          </div>
+          <div className="min-w-0 flex-1">
+            <div className="flex items-center gap-3 flex-wrap">
+              <span className="text-[10px] font-bold text-on-surface-muted uppercase tracking-[0.14em]">Lifecycle</span>
+              <span className="text-sm text-on-surface num-mono">
+                {lifecycleSummary.onboarding_in_progress} onboarding
+                {' · '}
+                {lifecycleSummary.offboarding_in_progress} offboarding
+                {lifecycleSummary.overdue > 0 && (
+                  <span className="text-danger font-semibold"> · {lifecycleSummary.overdue} overdue</span>
+                )}
+              </span>
+            </div>
+            <div className="text-[11px] text-on-surface-subtle mt-0.5">Click to open the lifecycle board</div>
+          </div>
+        </button>
+      )}
 
       {/* IT Repairs alert — shown when there's any open ticket activity */}
       {(() => {
