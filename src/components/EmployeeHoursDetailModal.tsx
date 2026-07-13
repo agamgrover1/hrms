@@ -527,7 +527,7 @@ export default function EmployeeHoursDetailModal({ employeeId, employeeName, mon
                                 ) : (
                                   <>
                                     {(log.effective_description || log.work_description) && (
-                                      <p className="text-xs text-on-surface-muted mt-1 leading-relaxed line-clamp-2">{log.effective_description || log.work_description}</p>
+                                      <p className="text-xs text-on-surface-muted mt-1 leading-relaxed whitespace-pre-wrap break-words">{log.effective_description || log.work_description}</p>
                                     )}
                                     {log.status === 'rejected' && log.rejection_reason && (
                                       <p className="text-xs text-danger mt-1 flex items-center gap-1">
@@ -688,13 +688,13 @@ export default function EmployeeHoursDetailModal({ employeeId, employeeName, mon
                                       const dt = new Date(iso + 'T12:00:00Z');
                                       const dayName = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'][dt.getUTCDay()];
                                       return (
-                                        <li key={d.id} className="px-3 py-1.5 flex items-center gap-3 text-xs">
+                                        <li key={d.id} className="px-3 py-1.5 flex items-start gap-3 text-xs">
                                           <div className="w-16 flex-shrink-0">
                                             <p className="text-[10px] uppercase font-bold text-on-surface-subtle">{dayName}</p>
                                             <p className="num-mono font-semibold text-on-surface leading-tight">{dt.getUTCDate()}</p>
                                           </div>
                                           <p className="num-mono font-bold text-on-surface w-12 flex-shrink-0">{Number(d.hours)}<span className="text-on-surface-muted font-normal text-[10px]">h</span></p>
-                                          <p className="flex-1 min-w-0 text-on-surface-muted truncate">{d.notes || <span className="text-on-surface-subtle italic">No note</span>}</p>
+                                          <p className="flex-1 min-w-0 text-on-surface-muted break-words whitespace-pre-wrap leading-snug">{d.notes || <span className="text-on-surface-subtle italic">No note</span>}</p>
                                         </li>
                                       );
                                     })}
