@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useMemo } from 'react';
-import { CheckCircle, XCircle, AlertTriangle, X, Filter, ClipboardCheck, ArrowUpDown, Clock, PauseCircle, MessageSquare } from 'lucide-react';
+import { CheckCircle, XCircle, AlertTriangle, X, Filter, ClipboardCheck, ArrowUpDown, Clock, PauseCircle, MessageSquare, Check, User as UserIcon, Calendar as CalendarIcon } from 'lucide-react';
 import { api } from '../services/api';
 import { useAuth } from '../context/AuthContext';
 import HourLogCommentsModal from '../components/HourLogCommentsModal';
@@ -61,272 +61,161 @@ function weekAllocFor(log: HourLog): number {
   return Number(log[k] ?? 0);
 }
 
-export default function HoursApproval() {
-  const { user } = useAuth();
-  const role = user?.role ?? 'employee';
-  const isAdmin = role === 'admin' || role === 'hr_manager' || role === 'project_coordinator';
+// ── Day-grain approval queue ──────────────────────────────────────────────
+// Reviewer approves / holds / rejects ONE day at a time. Rows come pre-
+// grouped by (employee, project, week) on the frontend so the reviewer
+// can scan a colleague's week end-to-end without losing context.
+// Weekly hour_logs.status is derived on the backend from the child day
+// statuses (see rollupWeeklyStatusFromDays in api/index.ts) so downstream
+// filters + reports keep working unchanged.
 
-  // Map app_user → their employee.id (for project_reporting_id matching)
-  const [reviewerEmpId, setReviewerEmpId] = useState<string | null>(null);
-  const [logs, setLogs] = useState<HourLog[]>([]);
-  // KPI cards need cross-status totals — the `logs` list is scoped to the
-  // active filter tab, so counting off it gives (pending, 0, 0, 0). Load a
-  // separate counts fetch and refresh it alongside the list.
-  const [statusCounts, setStatusCounts] = useState({ pending: 0, on_hold: 0, approved: 0, rejected: 0 });
+interface DayRow {
+  id: string;
+  log_date: string;
+  hours: number;
+  notes: string | null;
+  status: 'pending' | 'approved' | 'on_hold' | 'rejected';
+  reviewed_by_name: string | null;
+  reviewed_at: string | null;
+  rejection_reason: string | null;
+  assignment_id: string;
+  hour_log_id: string;
+  week_num: number;
+  month: number;
+  year: number;
+  employee_id: string;
+  employee_name: string;
+  project_id: string;
+  project_name: string;
+  project_client_name: string | null;
+  weekly_description: string | null;
+  weekly_hours: number;
+  weekly_billable_hours: number | null;
+  comment_count: number;
+}
+
+function fmtDayLabel(iso: string): string {
+  const dt = new Date(String(iso).slice(0, 10) + 'T12:00:00Z');
+  return dt.toLocaleDateString('en-IN', { weekday: 'short', day: 'numeric', month: 'short' });
+}
+
+function DayApprovalView({ reviewerEmpId, isAdmin, user }: {
+  reviewerEmpId: string | null;
+  isAdmin: boolean;
+  user: any;
+}) {
+  const [rows, setRows] = useState<DayRow[]>([]);
+  const [counts, setCounts] = useState({ pending: 0, on_hold: 0, approved: 0, rejected: 0 });
   const [loading, setLoading] = useState(true);
   const [filterStatus, setFilterStatus] = useState<'pending' | 'on_hold' | 'approved' | 'rejected' | 'all'>('pending');
   const [scope, setScope] = useState<'mine' | 'all'>(isAdmin ? 'all' : 'mine');
-  const [sortBy, setSortBy] = useState<SortKey>('oldest');
-  const [rejecting, setRejecting] = useState<HourLog | null>(null);
-  const [holding, setHolding]   = useState<HourLog | null>(null);
-  const [commentingOn, setCommentingOn] = useState<HourLog | null>(null);
-  // Top-level tab. The existing weekly-log queue stays the default; the new
-  // allocation-change queue lives alongside it so reviewers don't get a
-  // second sidebar item to remember.
-  const [topTab, setTopTab] = useState<'logs' | 'allocations' | 'internal'>(() => {
-    // Deep-link support: bell notifications on internal-hour reviews
-    // carry ?queue=internal so the reviewer lands on the right tab.
-    const q = new URLSearchParams(window.location.search).get('queue');
-    return q === 'allocations' ? 'allocations' : q === 'internal' ? 'internal' : 'logs';
-  });
-  const canApproveAlloc = role === 'admin' || role === 'project_coordinator';
+  const [rejectTarget, setRejectTarget] = useState<DayRow | null>(null);
+  const [holdTarget, setHoldTarget] = useState<DayRow | null>(null);
+  const [discussLog, setDiscussLog] = useState<{ hourLogId: string; subtitle: string } | null>(null);
 
-  // Resolve current user's employee.id once
-  useEffect(() => {
-    if (!user?.employee_id_ref) return;
-    api.getEmployeesSlim()
-      .then(emps => {
-        const me = emps.find((e: any) => e.employee_id === user.employee_id_ref);
-        if (me) setReviewerEmpId(me.id);
-      })
-      .catch(() => {});
-  }, [user?.employee_id_ref]);
-
-  // load() supports a "silent" mode used by the 12s background poll —
-  // it refreshes the data without toggling `loading` to true. Without
-  // this, the live refresh kept replacing the table with the
-  // "Loading logs…" placeholder every 12 seconds and the whole screen
-  // appeared to flicker. The initial mount + filter / scope changes
-  // still go through the loud path so the user sees a clear loading
-  // signal when they explicitly asked for different data.
   const load = useCallback((opts?: { silent?: boolean }) => {
     if (!opts?.silent) setLoading(true);
     const params: any = {};
     if (filterStatus !== 'all') params.status = filterStatus;
     if (scope === 'mine' && reviewerEmpId) params.reviewer_id = reviewerEmpId;
-    // Fire the list + KPI counts in parallel. Counts respect scope (mine
-    // vs all-projects) but NOT the active filter tab — that's the whole
-    // point: the cards show every status regardless of what's selected.
     const countParams: any = {};
     if (scope === 'mine' && reviewerEmpId) countParams.reviewer_id = reviewerEmpId;
     Promise.all([
-      api.getHourLogs(params).then(d => setLogs(d as HourLog[])).catch(() => {}),
-      api.getHourLogCounts(countParams).then(setStatusCounts).catch(() => {}),
+      api.getHourLogDaysQueue(params).then(d => setRows(d as DayRow[])).catch(() => {}),
+      api.getHourLogDaysCounts(countParams).then(setCounts).catch(() => {}),
     ]).finally(() => { if (!opts?.silent) setLoading(false); });
   }, [filterStatus, scope, reviewerEmpId]);
 
   useEffect(() => {
-    if (scope === 'mine' && !reviewerEmpId) return; // wait until we know who I am
+    if (scope === 'mine' && !reviewerEmpId) return;
     load();
   }, [load, scope, reviewerEmpId]);
 
-  // Live refresh on the queue, silent mode so the placeholder doesn't
-  // flash every 12 seconds. Manager / coordinator sees new submissions
-  // pop into Pending automatically and comments accrue on the rows
-  // without the whole queue blinking.
   const silentLoad = useCallback(() => load({ silent: true }), [load]);
   useLiveRefresh(silentLoad);
 
-  // Deep-link auto-open: a notification can land here with ?logId=…&discuss=1
-  // (e.g. an employee replied on a held log, or an admin was @-mentioned in
-  // a comment on someone else's log) and we open the modal once the
-  // matching row is in state.
-  //
-  // We widen along both filters before giving up:
-  //   1. filterStatus → 'all' so a held / approved / rejected log still
-  //      surfaces from a "pending"-default view.
-  //   2. scope → 'all' if the log isn't in the current 'mine' bucket.
-  //      Necessary when an admin / HR gets tagged in a log they don't
-  //      normally review — they still need the modal to open.
-  //
-  // Clean the URL so a refresh doesn't re-pop the modal.
-  useEffect(() => {
-    const params = new URLSearchParams(window.location.search);
-    const logId = params.get('logId');
-    const wantDiscuss = params.get('discuss') === '1';
-    if (!logId || !wantDiscuss) return;
-    if (filterStatus !== 'all') { setFilterStatus('all'); return; }
-    const log = logs.find(l => l.id === logId);
-    if (!log) {
-      // Log not in state yet. If we're already scope='all', logs will
-      // arrive on the next render — do nothing, effect will re-run.
-      // If we're scope='mine' and the log isn't ours, widen and let the
-      // fetch complete.
-      if (scope !== 'all') setScope('all');
-      return;
+  // Group by (employee, project, week). Each group card renders one row
+  // per day inside it, so the reviewer can scan Komal's Mon-Fri on a
+  // single project together.
+  const groups = useMemo(() => {
+    const map = new Map<string, {
+      key: string;
+      employee_id: string; employee_name: string;
+      project_id: string; project_name: string; project_client_name: string | null;
+      week_num: number; month: number; year: number;
+      weekly_description: string | null;
+      hour_log_id: string;
+      rows: DayRow[];
+    }>();
+    for (const r of rows) {
+      const key = `${r.employee_id}__${r.project_id}__${r.year}-${r.month}-W${r.week_num}`;
+      let g = map.get(key);
+      if (!g) {
+        g = {
+          key,
+          employee_id: r.employee_id, employee_name: r.employee_name,
+          project_id: r.project_id, project_name: r.project_name,
+          project_client_name: r.project_client_name,
+          week_num: r.week_num, month: r.month, year: r.year,
+          weekly_description: r.weekly_description,
+          hour_log_id: r.hour_log_id,
+          rows: [],
+        };
+        map.set(key, g);
+      }
+      g.rows.push(r);
     }
-    setCommentingOn(log);
-    const u = new URL(window.location.href);
-    u.searchParams.delete('logId'); u.searchParams.delete('discuss');
-    window.history.replaceState({}, '', u.toString());
-  }, [logs, filterStatus, scope]);
+    // Order each group's days chronologically; groups by oldest-day-first
+    // so the queue naturally surfaces the longest-waiting entries.
+    for (const g of map.values()) {
+      g.rows.sort((a, b) => new Date(a.log_date).getTime() - new Date(b.log_date).getTime());
+    }
+    return Array.from(map.values()).sort((a, b) => {
+      const aMin = Math.min(...a.rows.map(r => new Date(r.log_date).getTime()));
+      const bMin = Math.min(...b.rows.map(r => new Date(r.log_date).getTime()));
+      return aMin - bMin;
+    });
+  }, [rows]);
 
-  // Optimistic UI: flip the row in local state immediately so the button
-  // press feels instant. If the server rejects (network blip, auth, etc.)
-  // we revert the row and surface a toast. The full silentLoad() after
-  // syncs any other fields the server populated (reviewed_by, reviewed_at).
-  const approve = async (log: HourLog) => {
-    const prev = log;
-    setLogs(curr => curr.map(l => l.id === log.id ? {
-      ...l, status: 'approved',
-      reviewed_by_name: user?.name ?? l.reviewed_by_name,
-      reviewed_at: new Date().toISOString(),
-    } : l));
-    toast.success('Hours approved', `${log.employee_name} · ${log.hours_logged}h on ${log.project_name}.`);
+  // Actions. Optimistic — flip local status, roll back on failure.
+  const approveDay = async (d: DayRow) => {
+    setRows(rs => rs.map(r => r.id === d.id ? { ...r, status: 'approved', reviewed_by_name: user?.name ?? r.reviewed_by_name, reviewed_at: new Date().toISOString() } : r));
+    toast.success('Approved', `${d.employee_name} · ${Number(d.hours)}h · ${fmtDayLabel(d.log_date)}.`);
     try {
-      await api.approveHourLog(log.id, {
-        reviewer_id: reviewerEmpId ?? user?.id,
-        reviewer_name: user?.name,
-      });
-      load();
-    } catch (err: any) {
-      // Revert the optimistic flip so the row goes back to its real state.
-      setLogs(curr => curr.map(l => l.id === log.id ? prev : l));
-      toast.error('Approve failed — change reverted', err?.message);
+      await api.approveHourLogDay(d.id, { reviewer_id: reviewerEmpId ?? user?.id, reviewer_name: user?.name });
+      silentLoad();
+    } catch (e: any) {
+      toast.error('Approve failed', e?.message);
+      silentLoad();
     }
   };
-
-  const reject = async (log: HourLog, reason: string) => {
-    const prev = log;
-    setLogs(curr => curr.map(l => l.id === log.id ? {
-      ...l, status: 'rejected', rejection_reason: reason,
-      reviewed_by_name: user?.name ?? l.reviewed_by_name,
-      reviewed_at: new Date().toISOString(),
-    } : l));
-    setRejecting(null);
-    toast.success('Hours rejected', `${log.employee_name} has been notified with your reason.`);
+  const rejectDay = async (d: DayRow, reason: string) => {
+    setRows(rs => rs.map(r => r.id === d.id ? { ...r, status: 'rejected', rejection_reason: reason, reviewed_by_name: user?.name ?? r.reviewed_by_name, reviewed_at: new Date().toISOString() } : r));
+    setRejectTarget(null);
+    toast.success('Rejected', `${d.employee_name} has been notified.`);
     try {
-      await api.rejectHourLog(log.id, {
-        reviewer_id: reviewerEmpId ?? user?.id,
-        reviewer_name: user?.name,
-        rejection_reason: reason,
-      });
-      load();
-    } catch (err: any) {
-      setLogs(curr => curr.map(l => l.id === log.id ? prev : l));
-      toast.error('Reject failed — change reverted', err?.message);
-    }
+      await api.rejectHourLogDay(d.id, { reviewer_id: reviewerEmpId ?? user?.id, reviewer_name: user?.name, rejection_reason: reason });
+      silentLoad();
+    } catch (e: any) { toast.error('Reject failed', e?.message); silentLoad(); }
   };
-
-  const hold = async (log: HourLog, note: string) => {
+  const holdDay = async (d: DayRow, note: string) => {
+    setRows(rs => rs.map(r => r.id === d.id ? { ...r, status: 'on_hold', rejection_reason: note, reviewed_by_name: user?.name ?? r.reviewed_by_name, reviewed_at: new Date().toISOString() } : r));
+    setHoldTarget(null);
+    toast.success('On hold', `${d.employee_name} can reply on the thread.`);
     try {
-      await api.holdHourLog(log.id, {
-        reviewer_id: reviewerEmpId ?? user?.id,
-        reviewer_name: user?.name,
-        reviewer_role: user?.role,
-        note,
-      });
-      toast.success('Log put on hold', `${log.employee_name} can reply on the thread.`);
-    } catch (err: any) { toast.error('Hold failed', err?.message); }
-    setHolding(null);
-    load();
+      await api.holdHourLogDay(d.id, { reviewer_id: reviewerEmpId ?? user?.id, reviewer_name: user?.name, rejection_reason: note });
+      silentLoad();
+    } catch (e: any) { toast.error('Hold failed', e?.message); silentLoad(); }
   };
-
-  // Apply sort BEFORE grouping so groups inherit the order — for "oldest"
-  // sort, the project/week with the oldest submission floats to the top.
-  const sortedLogs = useMemo(() => {
-    const copy = [...logs];
-    const cmpDate = (a: HourLog, b: HourLog) => {
-      const ax = a.submitted_at ? new Date(a.submitted_at).getTime() : 0;
-      const bx = b.submitted_at ? new Date(b.submitted_at).getTime() : 0;
-      return ax - bx;
-    };
-    switch (sortBy) {
-      case 'oldest':     copy.sort(cmpDate); break;
-      case 'newest':     copy.sort((a, b) => -cmpDate(a, b)); break;
-      case 'project':    copy.sort((a, b) => (a.project_name ?? '').localeCompare(b.project_name ?? '')); break;
-      case 'hours_desc': copy.sort((a, b) => Number(b.hours_logged) - Number(a.hours_logged)); break;
-      case 'over_alloc': copy.sort((a, b) => (Number(b.hours_logged) - weekAllocFor(b)) - (Number(a.hours_logged) - weekAllocFor(a))); break;
-    }
-    return copy;
-  }, [logs, sortBy]);
-
-  // Group by project + week_num, but preserve sort order: first-seen wins.
-  const grouped: Record<string, HourLog[]> = {};
-  const groupOrder: string[] = [];
-  sortedLogs.forEach(l => {
-    const key = `${l.project_name ?? l.project_id}__${l.year}-${String(l.month).padStart(2, '0')}-W${l.week_num}`;
-    if (!grouped[key]) { grouped[key] = []; groupOrder.push(key); }
-    grouped[key].push(l);
-  });
-
-  const oldestPending = useMemo(() => {
-    const pending = sortedLogs.filter(l => l.status === 'pending');
-    if (!pending.length) return null;
-    return pending.reduce((acc, l) =>
-      (!acc || new Date(l.submitted_at).getTime() < new Date(acc.submitted_at).getTime()) ? l : acc
-    , null as HourLog | null);
-  }, [sortedLogs]);
-
-  // KPI cards use cross-status totals from the counts endpoint (see
-  // statusCounts state). The local `logs` list — scoped to the active
-  // filter tab — can't answer "how many approved" when you're on the
-  // Pending tab, hence the split.
-  const counts = statusCounts;
 
   return (
     <div className="space-y-5">
-      {/* Top-level tabs: weekly logs queue vs allocation change queue */}
-      <div className="inline-flex items-center gap-1.5 bg-surface rounded-lg border border-outline p-1">
-        <button onClick={() => setTopTab('logs')}
-          className={`px-3 py-1.5 rounded-md text-xs font-semibold ${topTab === 'logs' ? 'bg-accent text-on-accent' : 'text-on-surface-muted hover:text-on-surface'}`}>
-          Hour logs
-        </button>
-        <button onClick={() => setTopTab('allocations')}
-          className={`px-3 py-1.5 rounded-md text-xs font-semibold ${topTab === 'allocations' ? 'bg-accent text-on-accent' : 'text-on-surface-muted hover:text-on-surface'}`}>
-          Allocation requests
-        </button>
-        <button onClick={() => setTopTab('internal')}
-          className={`px-3 py-1.5 rounded-md text-xs font-semibold ${topTab === 'internal' ? 'bg-accent text-on-accent' : 'text-on-surface-muted hover:text-on-surface'}`}>
-          Internal activities
-        </button>
-      </div>
-
-      {topTab === 'internal' ? (
-        <InternalLogReviewView reviewerEmpId={reviewerEmpId} />
-      ) : topTab === 'allocations' ? (
-        <AllocationRequestsView canApprove={canApproveAlloc} currentUserId={user?.id ?? ''} />
-      ) : (<>
-      {/* Summary */}
+      {/* KPI cards */}
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
-        <div className="group relative bg-surface rounded-xl-2 p-4 border border-outline shadow-elev-1 overflow-hidden animate-fade-up stagger-1">
-          <div className="absolute -top-8 -right-8 w-28 h-28 rounded-full bg-warning-container blur-2xl opacity-50" />
-          <div className="relative">
-            <p className="num-mono text-2xl font-bold text-warning">{counts.pending}</p>
-            <p className="text-xs text-on-surface-muted mt-0.5">Pending</p>
-          </div>
-        </div>
-        <div className="group relative bg-surface rounded-xl-2 p-4 border border-outline shadow-elev-1 overflow-hidden animate-fade-up stagger-2">
-          <div className="absolute -top-8 -right-8 w-28 h-28 rounded-full bg-accent/15 blur-2xl opacity-50" />
-          <div className="relative">
-            <p className="num-mono text-2xl font-bold text-accent">{counts.on_hold}</p>
-            <p className="text-xs text-on-surface-muted mt-0.5">On hold</p>
-          </div>
-        </div>
-        <div className="group relative bg-surface rounded-xl-2 p-4 border border-outline shadow-elev-1 overflow-hidden animate-fade-up stagger-3">
-          <div className="absolute -top-8 -right-8 w-28 h-28 rounded-full bg-success-container blur-2xl opacity-50" />
-          <div className="relative">
-            <p className="num-mono text-2xl font-bold text-success">{counts.approved}</p>
-            <p className="text-xs text-on-surface-muted mt-0.5">Approved</p>
-          </div>
-        </div>
-        <div className="group relative bg-surface rounded-xl-2 p-4 border border-outline shadow-elev-1 overflow-hidden animate-fade-up stagger-4">
-          <div className="absolute -top-8 -right-8 w-28 h-28 rounded-full bg-danger-container blur-2xl opacity-50" />
-          <div className="relative">
-            <p className="num-mono text-2xl font-bold text-danger">{counts.rejected}</p>
-            <p className="text-xs text-on-surface-muted mt-0.5">Rejected</p>
-          </div>
-        </div>
+        <KpiCard label="Pending" value={counts.pending} tone="text-warning" bg="bg-warning-container" />
+        <KpiCard label="On hold" value={counts.on_hold} tone="text-accent" bg="bg-accent/15" />
+        <KpiCard label="Approved" value={counts.approved} tone="text-success" bg="bg-success-container" />
+        <KpiCard label="Rejected" value={counts.rejected} tone="text-danger" bg="bg-danger-container" />
       </div>
 
       {/* Filters */}
@@ -351,196 +240,288 @@ export default function HoursApproval() {
             </button>
           </div>
         )}
-        <div className="inline-flex items-center gap-1.5 bg-surface rounded-lg border border-outline px-2 py-1">
-          <ArrowUpDown size={12} className="text-on-surface-subtle" />
-          <select value={sortBy} onChange={e => setSortBy(e.target.value as SortKey)}
-            className="text-xs bg-transparent focus:outline-none font-semibold text-on-surface-muted">
-            <option value="oldest">Oldest first</option>
-            <option value="newest">Newest first</option>
-            <option value="project">By project</option>
-            <option value="hours_desc">Most hours</option>
-            <option value="over_alloc">Over allocation</option>
-          </select>
-        </div>
+        <span className="text-xs text-on-surface-subtle ml-auto">
+          Approve day-by-day. The weekly rollup follows: 'rejected' wins over 'on_hold' wins over 'pending' wins over 'approved'.
+        </span>
       </div>
-
-      {/* Stale-pending nudge — if the oldest pending log has been sitting more
-          than 48h, surface it so the reviewer knows people are waiting. */}
-      {filterStatus === 'pending' && oldestPending && (Date.now() - new Date(oldestPending.submitted_at).getTime()) > 48 * 3600 * 1000 && (
-        <div className="rounded-xl-2 border border-warning/40 bg-warning-container/40 px-4 py-2.5 flex items-center gap-2 text-sm">
-          <Clock size={14} className="text-warning shrink-0" />
-          <span className="text-on-surface">
-            <b>{oldestPending.employee_name}</b>'s log on <b>{oldestPending.project_name}</b> has been pending for <b>{ago(oldestPending.submitted_at)}</b>.
-          </span>
-        </div>
-      )}
 
       {/* Groups */}
-      <div className="space-y-4">
-        {loading ? (
-          <div className="bg-surface rounded-xl-2 p-12 border border-outline text-center text-on-surface-subtle">Loading logs…</div>
-        ) : Object.keys(grouped).length === 0 ? (
-          <div className="bg-surface rounded-xl-2 p-12 border border-outline text-center">
-            <ClipboardCheck size={32} className="mx-auto text-on-surface-subtle mb-2" />
-            <p className="text-sm text-on-surface-muted">Nothing to review here.</p>
-          </div>
-        ) : groupOrder.map(key => {
-          const group = grouped[key];
-          const sample = group[0];
-          // Newest-submitted in this group — used to show "submitted Xh ago"
-          // alongside the week label.
-          const groupLatest = group.reduce((acc: HourLog | null, l) =>
-            (!acc || new Date(l.submitted_at).getTime() > new Date(acc.submitted_at).getTime()) ? l : acc
-          , null as HourLog | null);
-          return (
-            <div key={key} className="relative bg-surface rounded-xl-3 border border-outline shadow-elev-2 overflow-hidden group hover:shadow-elev-3 transition-shadow">
-              <div className="absolute -top-8 -right-8 w-28 h-28 rounded-full bg-brand/15 blur-2xl opacity-0 group-hover:opacity-50 transition-opacity duration-500" />
-              <div className="relative px-4 py-3 bg-gradient-to-r from-brand-container/50 to-surface border-b border-outline flex items-center justify-between">
-                <div>
-                  <p className="font-display text-xl font-bold tracking-tight text-on-surface">{sample.project_name}{sample.project_client_name ? ` · ${sample.project_client_name}` : ''}</p>
-                  <p className="text-xs text-on-surface-muted">
-                    {MONTHS[sample.month-1]} {sample.year} · Week {sample.week_num}
-                    {groupLatest?.submitted_at && (
-                      <> · <span className="text-on-surface">last submitted {ago(groupLatest.submitted_at)}</span></>
-                    )}
-                  </p>
-                </div>
-                <p className="text-xs text-on-surface-subtle">{group.length} {group.length === 1 ? 'entry' : 'entries'}</p>
-              </div>
-              <table className="relative w-full text-sm">
-                <thead className="bg-surface-2 border-b border-outline text-left text-xs font-semibold text-on-surface-muted uppercase">
-                  <tr>
-                    <th className="px-4 py-2">Employee</th>
-                    <th className="px-4 py-2 text-right">Allocated</th>
-                    <th className="px-4 py-2 text-right">Logged</th>
-                    <th className="px-4 py-2">Submitted</th>
-                    <th className="px-4 py-2">What they worked on</th>
-                    <th className="px-4 py-2">Status</th>
-                    <th className="px-4 py-2 text-right">Action</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-outline">
-                  {group.map(log => {
-                    const alloc = weekAllocFor(log);
-                    const delta = Number(log.hours_logged) - alloc;
-                    const overAlloc = delta > 0;
-                    const isStale = log.status === 'pending' && log.submitted_at && (Date.now() - new Date(log.submitted_at).getTime()) > 48 * 3600 * 1000;
-                    return (
-                      <tr key={log.id} className="hover:bg-surface-2 transition-colors">
-                        <td className="px-4 py-3 font-medium text-on-surface">{log.employee_name}</td>
-                        <td className="px-4 py-3 text-right text-on-surface-muted num-mono">{alloc}h</td>
-                        <td className="px-4 py-3 text-right">
-                          <span className={`num-mono inline-flex items-center gap-1 font-semibold ${overAlloc ? 'text-danger' : 'text-on-surface'}`}>
-                            {log.hours_logged}h
-                            {delta !== 0 && (
-                              <span className="text-[10px] font-normal text-on-surface-subtle">
-                                {overAlloc && <AlertTriangle size={10} className="inline text-danger mr-0.5" />}
-                                {overAlloc ? '+' : ''}{delta}
-                              </span>
-                            )}
-                          </span>
-                        </td>
-                        <td className="px-4 py-3 text-xs">
-                          <div className="text-on-surface num-mono">{fmtSubmitted(log.submitted_at)}</div>
-                          <div className={`text-[10px] mt-0.5 ${isStale ? 'text-warning font-semibold' : 'text-on-surface-subtle'}`}>
-                            {ago(log.submitted_at)}
-                            {isStale && <span className="ml-1">· stale</span>}
-                          </div>
-                        </td>
-                        <td className="px-4 py-3 text-on-surface-muted text-xs min-w-[320px] max-w-[560px] whitespace-normal break-words">
-                          <DescriptionCell log={log} />
-                          {log.status === 'rejected' && log.rejection_reason && (
-                            <p className="text-danger mt-1 flex items-center gap-1">
-                              <XCircle size={11} /> {log.rejection_reason}
-                            </p>
-                          )}
-                          {log.status === 'on_hold' && log.rejection_reason && (
-                            <p className="text-accent mt-1 flex items-center gap-1">
-                              <PauseCircle size={11} /> {log.rejection_reason}
-                            </p>
-                          )}
-                          {!!log.comment_count && log.comment_count > 0 && (
-                            <button onClick={() => setCommentingOn(log)}
-                              className="mt-1 inline-flex items-center gap-1 text-[11px] font-semibold text-accent hover:underline">
-                              <MessageSquare size={11} /> {log.comment_count} {log.comment_count === 1 ? 'comment' : 'comments'}
-                            </button>
-                          )}
-                        </td>
-                        <td className="px-4 py-3">
-                          <StatusPill status={log.status} />
-                        </td>
-                        <td className="px-4 py-3 text-right">
-                          {(log.status === 'pending' || log.status === 'on_hold') ? (
-                            <div className="inline-flex items-center gap-1 flex-wrap justify-end">
-                              <button onClick={() => approve(log)}
-                                className="px-2.5 py-1.5 rounded-md text-xs font-semibold text-white bg-success hover:bg-success/90 transition-colors"
-                                title="Approve these hours">
-                                <CheckCircle size={12} className="inline mr-1" />Approve
-                              </button>
-                              {log.status === 'pending' && (
-                                <button onClick={() => setHolding(log)}
-                                  className="px-2.5 py-1.5 rounded-md text-xs font-semibold text-accent border border-accent/40 hover:bg-accent/10 transition-colors"
-                                  title="Park this log and ask the employee for clarification">
-                                  <PauseCircle size={12} className="inline mr-1" />Hold
-                                </button>
-                              )}
-                              <button onClick={() => setCommentingOn(log)}
-                                className="px-2.5 py-1.5 rounded-md text-xs font-semibold text-on-surface-muted border border-outline hover:bg-surface-2 transition-colors"
-                                title="Open the comments thread">
-                                <MessageSquare size={12} className="inline mr-1" />Discuss
-                              </button>
-                              <button onClick={() => setRejecting(log)}
-                                className="px-2.5 py-1.5 rounded-md text-xs font-semibold text-danger border border-danger/30 hover:bg-danger-container transition-colors">
-                                <XCircle size={12} className="inline mr-1" />Reject
-                              </button>
-                            </div>
-                          ) : (
-                            <div className="inline-flex items-center gap-2">
-                              <button onClick={() => setCommentingOn(log)}
-                                className="px-2 py-1 rounded-md text-[11px] font-semibold text-on-surface-muted border border-outline hover:bg-surface-2 transition-colors"
-                                title="Open the comments thread">
-                                <MessageSquare size={11} className="inline mr-1" />Discuss
-                              </button>
-                              <span className="text-xs text-on-surface-subtle">{log.reviewed_by_name || '—'}</span>
-                            </div>
-                          )}
-                        </td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-            </div>
-          );
-        })}
+      {loading ? (
+        <div className="bg-surface rounded-xl-2 p-12 border border-outline text-center text-on-surface-subtle">Loading logs…</div>
+      ) : groups.length === 0 ? (
+        <div className="bg-surface rounded-xl-2 p-12 border border-outline text-center">
+          <ClipboardCheck size={32} className="mx-auto text-on-surface-subtle mb-2" />
+          <p className="text-sm text-on-surface-muted">Nothing to review here.</p>
+        </div>
+      ) : (
+        <div className="space-y-4">
+          {groups.map(g => (
+            <DayGroupCard
+              key={g.key} group={g}
+              onApprove={approveDay}
+              onReject={setRejectTarget}
+              onHold={setHoldTarget}
+              onDiscuss={() => setDiscussLog({
+                hourLogId: g.hour_log_id,
+                subtitle: `${g.employee_name} · ${g.project_name} · W${g.week_num}`,
+              })}
+            />
+          ))}
+        </div>
+      )}
+
+      {rejectTarget && (
+        <DayReasonModal
+          title="Reject this day"
+          confirmLabel="Confirm Reject"
+          tone="danger"
+          subtitle={`${Number(rejectTarget.hours)}h from ${rejectTarget.employee_name} on ${rejectTarget.project_name} · ${fmtDayLabel(rejectTarget.log_date)}.`}
+          placeholder="Explain what's wrong so the employee can resubmit that day."
+          onClose={() => setRejectTarget(null)}
+          onConfirm={r => rejectDay(rejectTarget, r)}
+        />
+      )}
+      {holdTarget && (
+        <DayReasonModal
+          title="Put this day on hold"
+          confirmLabel="Put on hold"
+          tone="accent"
+          subtitle={`Parking ${Number(holdTarget.hours)}h from ${holdTarget.employee_name} on ${holdTarget.project_name} · ${fmtDayLabel(holdTarget.log_date)}.`}
+          placeholder="What do you need clarified? The employee will get pinged."
+          onClose={() => setHoldTarget(null)}
+          onConfirm={n => holdDay(holdTarget, n)}
+        />
+      )}
+      {discussLog && (
+        <HourLogCommentsModal
+          logId={discussLog.hourLogId}
+          subtitle={discussLog.subtitle}
+          currentUser={{ id: reviewerEmpId ?? user?.id ?? '', name: user?.name ?? '', role: user?.role ?? '' }}
+          onClose={() => setDiscussLog(null)}
+          onAfterPost={silentLoad}
+        />
+      )}
+    </div>
+  );
+}
+
+function KpiCard({ label, value, tone, bg }: { label: string; value: number; tone: string; bg: string }) {
+  return (
+    <div className="group relative bg-surface rounded-xl-2 p-4 border border-outline shadow-elev-1 overflow-hidden">
+      <div className={`absolute -top-8 -right-8 w-28 h-28 rounded-full ${bg} blur-2xl opacity-50`} />
+      <div className="relative">
+        <p className={`num-mono text-2xl font-bold ${tone}`}>{value}</p>
+        <p className="text-xs text-on-surface-muted mt-0.5">{label}</p>
+      </div>
+    </div>
+  );
+}
+
+function DayGroupCard({ group, onApprove, onReject, onHold, onDiscuss }: {
+  group: {
+    employee_id: string; employee_name: string;
+    project_id: string; project_name: string; project_client_name: string | null;
+    week_num: number; month: number; year: number;
+    weekly_description: string | null;
+    hour_log_id: string;
+    rows: DayRow[];
+  };
+  onApprove: (d: DayRow) => void;
+  onReject: (d: DayRow) => void;
+  onHold: (d: DayRow) => void;
+  onDiscuss: () => void;
+}) {
+  const totalHours = group.rows.reduce((s, r) => s + Number(r.hours), 0);
+  const approvedHours = group.rows.filter(r => r.status === 'approved').reduce((s, r) => s + Number(r.hours), 0);
+  return (
+    <div className="bg-surface rounded-xl-2 border border-outline shadow-elev-1 overflow-hidden">
+      <div className="px-4 py-3 bg-gradient-to-r from-brand-container/40 to-surface border-b border-outline flex items-center justify-between flex-wrap gap-2">
+        <div className="min-w-0">
+          <p className="font-display text-base font-bold text-on-surface truncate">
+            {group.project_name}
+            {group.project_client_name && <span className="text-on-surface-muted font-normal"> · {group.project_client_name}</span>}
+          </p>
+          <p className="text-xs text-on-surface-muted mt-0.5 flex items-center gap-1.5 flex-wrap">
+            <UserIcon size={11} className="text-on-surface-subtle" />
+            <span className="font-semibold text-on-surface">{group.employee_name}</span>
+            <span className="text-on-surface-subtle">·</span>
+            <span>{MONTHS[group.month - 1]} {group.year} · Week {group.week_num}</span>
+            <span className="text-on-surface-subtle">·</span>
+            <span className="num-mono">{approvedHours}/{totalHours}h approved</span>
+          </p>
+          {group.weekly_description && (
+            <p className="mt-1.5 text-xs text-on-surface-muted italic whitespace-pre-wrap break-words leading-snug max-w-3xl">
+              "{group.weekly_description}"
+            </p>
+          )}
+        </div>
+        <button onClick={onDiscuss}
+          className="shrink-0 px-2.5 py-1.5 rounded-md text-xs font-semibold text-on-surface-muted border border-outline hover:bg-surface-2 transition-colors">
+          <MessageSquare size={11} className="inline mr-1" />Discuss
+        </button>
+      </div>
+      <ul className="divide-y divide-outline">
+        {group.rows.map(d => <DayRowItem key={d.id} d={d} onApprove={onApprove} onReject={onReject} onHold={onHold} />)}
+      </ul>
+    </div>
+  );
+}
+
+function DayRowItem({ d, onApprove, onReject, onHold }: {
+  d: DayRow;
+  onApprove: (d: DayRow) => void;
+  onReject: (d: DayRow) => void;
+  onHold: (d: DayRow) => void;
+}) {
+  const actionable = d.status === 'pending' || d.status === 'on_hold';
+  return (
+    <li className="px-4 py-3 flex items-start gap-4">
+      <div className="w-24 shrink-0">
+        <p className="text-[10px] uppercase tracking-wider font-bold text-on-surface-subtle flex items-center gap-1">
+          <CalendarIcon size={10} /> {fmtDayLabel(d.log_date)}
+        </p>
+        <p className="num-mono text-base font-bold text-on-surface mt-0.5">{Number(d.hours)}h</p>
+      </div>
+      <div className="flex-1 min-w-0">
+        <p className="text-sm text-on-surface whitespace-pre-wrap break-words leading-snug">
+          {d.notes || <span className="text-on-surface-subtle italic">No note</span>}
+        </p>
+        <div className="mt-2 flex items-center gap-2 flex-wrap">
+          <StatusPill status={d.status} />
+          {d.reviewed_by_name && (
+            <span className="text-[10px] text-on-surface-subtle">
+              by {d.reviewed_by_name}
+              {d.reviewed_at && ` · ${new Date(d.reviewed_at).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' })}`}
+            </span>
+          )}
+        </div>
+        {d.status === 'rejected' && d.rejection_reason && (
+          <p className="text-xs text-danger mt-1.5 flex items-center gap-1"><XCircle size={11} /> {d.rejection_reason}</p>
+        )}
+        {d.status === 'on_hold' && d.rejection_reason && (
+          <p className="text-xs text-accent mt-1.5 flex items-center gap-1"><PauseCircle size={11} /> {d.rejection_reason}</p>
+        )}
+      </div>
+      {actionable && (
+        <div className="shrink-0 flex items-center gap-1 flex-wrap justify-end">
+          <button onClick={() => onApprove(d)}
+            className="px-2.5 py-1.5 rounded-md text-xs font-semibold text-white bg-success hover:bg-success/90 transition-colors"
+            title="Approve this day">
+            <Check size={12} className="inline mr-1" />Approve
+          </button>
+          {d.status === 'pending' && (
+            <button onClick={() => onHold(d)}
+              className="px-2.5 py-1.5 rounded-md text-xs font-semibold text-accent border border-accent/40 hover:bg-accent/10 transition-colors"
+              title="Ask for clarification on this day">
+              <PauseCircle size={12} className="inline mr-1" />Hold
+            </button>
+          )}
+          <button onClick={() => onReject(d)}
+            className="px-2.5 py-1.5 rounded-md text-xs font-semibold text-danger border border-danger/30 hover:bg-danger-container transition-colors"
+            title="Reject this day">
+            <XCircle size={12} className="inline mr-1" />Reject
+          </button>
+        </div>
+      )}
+    </li>
+  );
+}
+
+// Small reason-input modal shared by reject / hold on the day queue.
+function DayReasonModal({ title, subtitle, placeholder, confirmLabel, tone, onClose, onConfirm }: {
+  title: string;
+  subtitle: string;
+  placeholder: string;
+  confirmLabel: string;
+  tone: 'danger' | 'accent';
+  onClose: () => void;
+  onConfirm: (text: string) => void;
+}) {
+  const [text, setText] = useState('');
+  const btn = tone === 'danger'
+    ? 'bg-danger hover:bg-danger/90'
+    : 'bg-accent hover:opacity-90';
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-bg/55 backdrop-blur-sm p-4">
+      <div className="bg-surface rounded-2xl shadow-elev-4 border border-outline w-full max-w-md">
+        <div className="flex items-center justify-between px-6 py-5 border-b border-outline">
+          <h3 className="font-display text-lg font-semibold text-on-surface">{title}</h3>
+          <button onClick={onClose} className="p-1.5 hover:bg-surface-2 rounded-lg"><X size={16} className="text-on-surface-muted" /></button>
+        </div>
+        <div className="p-6 space-y-3">
+          <p className="text-sm text-on-surface-muted">{subtitle}</p>
+          <textarea value={text} onChange={e => setText(e.target.value)} rows={4} autoFocus
+            placeholder={placeholder}
+            className="w-full bg-surface border border-outline rounded-lg px-3 py-2.5 text-sm text-on-surface focus:outline-none focus:ring-2 focus:ring-accent/30 resize-none" />
+        </div>
+        <div className="px-6 py-4 border-t border-outline flex justify-end gap-2">
+          <button onClick={onClose} className="px-4 py-2 text-sm font-medium text-on-surface-muted hover:bg-surface-2 rounded-lg">Cancel</button>
+          <button onClick={() => text.trim() && onConfirm(text.trim())} disabled={!text.trim()}
+            className={`px-4 py-2 text-sm font-semibold text-white rounded-lg disabled:opacity-50 ${btn}`}>
+            {confirmLabel}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+export default function HoursApproval() {
+  const { user } = useAuth();
+  const role = user?.role ?? 'employee';
+  const isAdmin = role === 'admin' || role === 'hr_manager' || role === 'project_coordinator';
+
+  // Map app_user → their employee.id (for project_reporting_id matching)
+  const [reviewerEmpId, setReviewerEmpId] = useState<string | null>(null);
+  // Top-level tab. Deep-link `?queue=internal` lands on the internal-log
+  // review sub-view; `?queue=allocations` on the allocation-change queue.
+  const [topTab, setTopTab] = useState<'logs' | 'allocations' | 'internal'>(() => {
+    const q = new URLSearchParams(window.location.search).get('queue');
+    return q === 'allocations' ? 'allocations' : q === 'internal' ? 'internal' : 'logs';
+  });
+  const canApproveAlloc = role === 'admin' || role === 'project_coordinator';
+
+  // Resolve current user's employee.id once — DayApprovalView reads this
+  // to filter its queue when scope='mine'.
+  useEffect(() => {
+    if (!user?.employee_id_ref) return;
+    api.getEmployeesSlim()
+      .then(emps => {
+        const me = emps.find((e: any) => e.employee_id === user.employee_id_ref);
+        if (me) setReviewerEmpId(me.id);
+      })
+      .catch(() => {});
+  }, [user?.employee_id_ref]);
+
+  return (
+    <div className="space-y-5">
+      {/* Top-level tabs: weekly logs queue vs allocation change queue */}
+      <div className="inline-flex items-center gap-1.5 bg-surface rounded-lg border border-outline p-1">
+        <button onClick={() => setTopTab('logs')}
+          className={`px-3 py-1.5 rounded-md text-xs font-semibold ${topTab === 'logs' ? 'bg-accent text-on-accent' : 'text-on-surface-muted hover:text-on-surface'}`}>
+          Hour logs
+        </button>
+        <button onClick={() => setTopTab('allocations')}
+          className={`px-3 py-1.5 rounded-md text-xs font-semibold ${topTab === 'allocations' ? 'bg-accent text-on-accent' : 'text-on-surface-muted hover:text-on-surface'}`}>
+          Allocation requests
+        </button>
+        <button onClick={() => setTopTab('internal')}
+          className={`px-3 py-1.5 rounded-md text-xs font-semibold ${topTab === 'internal' ? 'bg-accent text-on-accent' : 'text-on-surface-muted hover:text-on-surface'}`}>
+          Internal activities
+        </button>
       </div>
 
-      {rejecting && (
-        <RejectModal
-          log={rejecting}
-          onClose={() => setRejecting(null)}
-          onConfirm={reason => reject(rejecting, reason)}
+      {topTab === 'internal' ? (
+        <InternalLogReviewView reviewerEmpId={reviewerEmpId} />
+      ) : topTab === 'allocations' ? (
+        <AllocationRequestsView canApprove={canApproveAlloc} currentUserId={user?.id ?? ''} />
+      ) : (
+        <DayApprovalView
+          reviewerEmpId={reviewerEmpId}
+          isAdmin={isAdmin}
+          user={user}
         />
       )}
-
-      {holding && (
-        <HoldModal
-          log={holding}
-          onClose={() => setHolding(null)}
-          onConfirm={note => hold(holding, note)}
-        />
-      )}
-
-      {commentingOn && (
-        <HourLogCommentsModal
-          logId={commentingOn.id}
-          subtitle={`${commentingOn.employee_name} · ${commentingOn.project_name ?? ''} · W${commentingOn.week_num} · ${commentingOn.hours_logged}h`}
-          currentUser={{ id: reviewerEmpId ?? user?.id ?? '', name: user?.name ?? '', role: user?.role ?? '' }}
-          onClose={() => setCommentingOn(null)}
-          onAfterPost={load}
-        />
-      )}
-      </>)}
     </div>
   );
 }

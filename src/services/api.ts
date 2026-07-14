@@ -637,6 +637,31 @@ export const api = {
     request<any>(`/hour-logs/${id}/reject`, { method: 'PATCH', body: JSON.stringify(data) }),
   holdHourLog: (id: string, data: { reviewer_id?: string; reviewer_name?: string; reviewer_role?: string; note: string }) =>
     request<any>(`/hour-logs/${id}/hold`, { method: 'PATCH', body: JSON.stringify(data) }),
+  // Per-day approval endpoints. Reviewer picks a day, not a whole
+  // week. Weekly hour_logs.status is derived from these actions.
+  approveHourLogDay: (id: string, data: { reviewer_id?: string; reviewer_name?: string }) =>
+    request<any>(`/hour-log-days/${id}/approve`, { method: 'PATCH', body: JSON.stringify(data) }),
+  rejectHourLogDay: (id: string, data: { reviewer_id?: string; reviewer_name?: string; rejection_reason: string }) =>
+    request<any>(`/hour-log-days/${id}/reject`, { method: 'PATCH', body: JSON.stringify(data) }),
+  holdHourLogDay: (id: string, data: { reviewer_id?: string; reviewer_name?: string; rejection_reason: string }) =>
+    request<any>(`/hour-log-days/${id}/hold`, { method: 'PATCH', body: JSON.stringify(data) }),
+  getHourLogDaysQueue: (params?: { status?: string; reviewer_id?: string; employee_id?: string; month?: number; year?: number }) => {
+    const qs = new URLSearchParams();
+    if (params?.status) qs.set('status', params.status);
+    if (params?.reviewer_id) qs.set('reviewer_id', params.reviewer_id);
+    if (params?.employee_id) qs.set('employee_id', params.employee_id);
+    if (params?.month) qs.set('month', String(params.month));
+    if (params?.year) qs.set('year', String(params.year));
+    return request<any[]>(`/hour-log-days/queue?${qs}`);
+  },
+  getHourLogDaysCounts: (params?: { reviewer_id?: string; employee_id?: string; month?: number; year?: number }) => {
+    const qs = new URLSearchParams();
+    if (params?.reviewer_id) qs.set('reviewer_id', params.reviewer_id);
+    if (params?.employee_id) qs.set('employee_id', params.employee_id);
+    if (params?.month) qs.set('month', String(params.month));
+    if (params?.year) qs.set('year', String(params.year));
+    return request<{ pending: number; on_hold: number; approved: number; rejected: number }>(`/hour-log-days/counts?${qs}`);
+  },
   getHourLogComments: (id: string) =>
     request<Array<{ id: string; author_id: string | null; author_name: string | null; author_role: string | null; body: string; created_at: string }>>(`/hour-logs/${id}/comments`),
   addHourLogComment: (id: string, data: { author_id?: string; author_name?: string; author_role?: string; body: string }) =>

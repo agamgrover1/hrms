@@ -3861,8 +3861,17 @@ function HourLogModal({
   const alloc = Number(assignment[allocKey] ?? 0);
   const dates = useMemo(() => daysOfWeek(assignment.month, assignment.year, weekNum), [assignment.month, assignment.year, weekNum]);
   // Per-day draft state: { date → { id?, hours: string, notes: string } }
-  const [days, setDays] = useState<Record<string, { id?: string; hours: string; notes: string; existing?: boolean }>>(() => {
-    const init: Record<string, { id?: string; hours: string; notes: string; existing?: boolean }> = {};
+  const [days, setDays] = useState<Record<string, {
+    id?: string; hours: string; notes: string; existing?: boolean;
+    // Per-day approval state (2026-07-15). Employee can see which of
+    // their days got approved / rejected / put on hold. Reset to
+    // 'pending' when the day is re-saved (see POST/PUT hour-log-days
+    // in api/index.ts).
+    status?: 'pending' | 'approved' | 'on_hold' | 'rejected';
+    rejection_reason?: string | null;
+    reviewed_by_name?: string | null;
+  }>>(() => {
+    const init: Record<string, any> = {};
     for (const d of dates) init[d] = { hours: '', notes: '' };
     return init;
   });
@@ -3921,7 +3930,15 @@ function HourLogModal({
           for (const r of rows) {
             const iso = String(r.log_date).slice(0, 10);
             if (next[iso] !== undefined) {
-              next[iso] = { id: r.id, hours: String(r.hours), notes: r.notes ?? '', existing: true };
+              next[iso] = {
+                id: r.id,
+                hours: String(r.hours),
+                notes: r.notes ?? '',
+                existing: true,
+                status: r.status ?? 'pending',
+                rejection_reason: r.rejection_reason ?? null,
+                reviewed_by_name: r.reviewed_by_name ?? null,
+              };
             }
           }
           return next;
@@ -4104,7 +4121,27 @@ function HourLogModal({
                         : 'bg-transparent border border-transparent'
                     }`}
                   />
+                  {/* Per-day approval pill — shown only for days the reviewer
+                     has actually actioned. Editing the day resets status to
+                     'pending' (see backend), so an active pill = server truth. */}
+                  {d.existing && d.status && d.status !== 'pending' && (
+                    <span className={`shrink-0 text-[10px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded border ${
+                      d.status === 'approved' ? 'bg-success/15 text-success border-success/30'
+                      : d.status === 'rejected' ? 'bg-danger/15 text-danger border-danger/30'
+                      : 'bg-accent/15 text-accent border-accent/30'
+                    }`}>
+                      {d.status === 'on_hold' ? 'On hold' : d.status}
+                    </span>
+                  )}
                 </div>
+                {/* Reviewer's reason for reject / hold. Editing the note or
+                   hours will re-set the day to pending on save. */}
+                {d.existing && (d.status === 'rejected' || d.status === 'on_hold') && d.rejection_reason && (
+                  <p className={`mt-1.5 ml-14 text-[11px] italic ${d.status === 'rejected' ? 'text-danger' : 'text-accent'}`}>
+                    "{d.rejection_reason}"
+                    {d.reviewed_by_name && <span className="ml-1 text-on-surface-subtle not-italic">— {d.reviewed_by_name}</span>}
+                  </p>
+                )}
               </div>
             );
           })}

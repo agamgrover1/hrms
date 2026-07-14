@@ -616,7 +616,7 @@ async function runStartupMigrations() {
   try {
     // Bump this probe whenever a new migration lands; existing warm
     // Lambdas will fail the SELECT and re-run runStartupMigrations().
-    await sql`SELECT sort_order FROM checklist_templates LIMIT 0`;
+    await sql`SELECT reviewed_at FROM hour_log_days LIMIT 0`;
     _migrated = true;
     return;
   } catch {
@@ -969,6 +969,32 @@ async function runStartupMigrations() {
     )`;
   await sql`CREATE INDEX IF NOT EXISTS idx_hour_log_days_employee_month ON hour_log_days(employee_id, month, year)`.catch(()=>{});
   await sql`CREATE INDEX IF NOT EXISTS idx_hour_log_days_week ON hour_log_days(assignment_id, week_num)`.catch(()=>{});
+  // Per-day approval — status was previously carried on the weekly
+  // hour_logs parent, but reviewers wanted to approve individual days
+  // (log a great Tue "Tech Proposal" while holding Wed "still figuring
+  // it out"). Split status down to hour_log_days.
+  await sql`ALTER TABLE hour_log_days ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'pending'`.catch(()=>{});
+  await sql`ALTER TABLE hour_log_days ADD COLUMN IF NOT EXISTS reviewed_by_id TEXT`.catch(()=>{});
+  await sql`ALTER TABLE hour_log_days ADD COLUMN IF NOT EXISTS reviewed_by_name TEXT`.catch(()=>{});
+  await sql`ALTER TABLE hour_log_days ADD COLUMN IF NOT EXISTS reviewed_at TIMESTAMPTZ`.catch(()=>{});
+  await sql`ALTER TABLE hour_log_days ADD COLUMN IF NOT EXISTS rejection_reason TEXT`.catch(()=>{});
+  await sql`CREATE INDEX IF NOT EXISTS idx_hour_log_days_status ON hour_log_days(status, log_date DESC)`.catch(()=>{});
+  // One-shot backfill: existing day rows inherit their weekly parent's
+  // status + reviewer stamp so historical approvals survive intact.
+  // Idempotent: guarded by "status is still the DEFAULT and parent is
+  // not pending" — after first run, day rows have their own real
+  // status and this UPDATE matches zero rows.
+  await sql`
+    UPDATE hour_log_days d SET
+      status = hl.status,
+      reviewed_by_id = hl.reviewed_by_id,
+      reviewed_by_name = hl.reviewed_by_name,
+      reviewed_at = hl.reviewed_at,
+      rejection_reason = hl.rejection_reason
+    FROM hour_logs hl
+    WHERE d.hour_log_id = hl.id
+      AND d.reviewed_at IS NULL
+      AND hl.status IN ('approved','rejected','on_hold')`.catch(()=>{});
 
   await sql`
     CREATE TABLE IF NOT EXISTS asset_activity_log (
@@ -10447,10 +10473,13 @@ app.get('/api/hour-logs', async (req, res) => {
 });
 
 function invalidateHourLogsCache() {
-  // Both lists are derived from the same write surface — any hour-log
-  // mutation can affect either, so drop both buckets together.
+  // Every derived read shares the same write surface — any hour-log
+  // mutation can affect any of these buckets, so drop them together.
   for (const k of Array.from(_memoCache.keys())) {
-    if (k.startsWith('hourLogs:') || k.startsWith('hourLogDays:') || k.startsWith('hourLogCounts:')) _memoCache.delete(k);
+    if (k.startsWith('hourLogs:') || k.startsWith('hourLogDays:') || k.startsWith('hourLogCounts:')
+        || k.startsWith('hlDaysQueue:') || k.startsWith('hlDaysCounts:')) {
+      _memoCache.delete(k);
+    }
   }
 }
 
@@ -10792,7 +10821,13 @@ app.post('/api/hour-log-days', async (req, res) => {
       VALUES (${id}, ${assignment_id}, ${a.project_id}, ${employee_id ?? a.employee_id}, ${employee_name ?? null},
         ${log_date}, ${week_num}, ${a.month}, ${a.year}, ${hoursN}, ${notes ?? null})
       ON CONFLICT (assignment_id, log_date) DO UPDATE SET
-        hours=EXCLUDED.hours, notes=EXCLUDED.notes, updated_at=NOW()`;
+        hours=EXCLUDED.hours, notes=EXCLUDED.notes, updated_at=NOW(),
+        -- Employee edits a day → status resets to pending so a
+        -- previously approved / rejected day gets a fresh review.
+        -- Reviewer stamps clear too; the audit trail on the log's
+        -- comment thread keeps the history.
+        status='pending', reviewed_by_id=NULL, reviewed_by_name=NULL,
+        reviewed_at=NULL, rejection_reason=NULL`;
     const parentId = await recomputeWeeklyFromDays(assignment_id, week_num);
     res.status(201).json({ assignment_id, log_date, week_num, hours: hoursN, hour_log_id: parentId });
   } catch (err: any) { res.status(500).json({ error: err.message || 'Server error' }); }
@@ -10809,7 +10844,9 @@ app.put('/api/hour-log-days/:id', async (req, res) => {
       UPDATE hour_log_days SET
         hours=${Number(hours) || 0},
         notes=${notes ?? null},
-        updated_at=NOW()
+        updated_at=NOW(),
+        status='pending', reviewed_by_id=NULL, reviewed_by_name=NULL,
+        reviewed_at=NULL, rejection_reason=NULL
       WHERE id=${req.params.id}`;
     const parentId = await recomputeWeeklyFromDays(cur.assignment_id, cur.week_num);
     res.json({ id: cur.id, assignment_id: cur.assignment_id, week_num: cur.week_num, hour_log_id: parentId });
@@ -10825,6 +10862,194 @@ app.delete('/api/hour-log-days/:id', async (req, res) => {
     await sql`DELETE FROM hour_log_days WHERE id=${req.params.id}`;
     const parentId = await recomputeWeeklyFromDays(cur.assignment_id, cur.week_num);
     res.json({ success: true, hour_log_id: parentId });
+  } catch (err: any) { res.status(500).json({ error: err.message || 'Server error' }); }
+});
+
+// ── Per-day approval endpoints ────────────────────────────────────────────
+// The reviewer approves / holds / rejects one day at a time. Weekly status
+// on hour_logs stays derived — see rollupWeeklyStatusFromDays below.
+
+// Roll a checked-out weekly status up from its child day rows. Rules:
+//   all approved     → 'approved'
+//   any rejected     → 'rejected'  (surfaces the problem prominently)
+//   any on_hold      → 'on_hold'
+//   any pending      → 'pending'
+//   otherwise (no children or all deleted) → leave whatever's there
+// Preserves the existing 4-status contract on hour_logs so downstream
+// surfaces (pulse, historical filters, notifications) still work.
+async function rollupWeeklyStatusFromDays(hourLogId: string) {
+  if (!hourLogId) return;
+  const rows = await sql`SELECT status FROM hour_log_days WHERE hour_log_id=${hourLogId}` as any[];
+  if (rows.length === 0) return;
+  const statuses = new Set(rows.map(r => r.status));
+  const weekly = statuses.has('rejected') ? 'rejected'
+                : statuses.has('on_hold') ? 'on_hold'
+                : statuses.has('pending') ? 'pending'
+                : 'approved';
+  await sql`UPDATE hour_logs SET status=${weekly}, updated_at=NOW() WHERE id=${hourLogId}`.catch(()=>{});
+}
+
+// PATCH /api/hour-log-days/:id/approve — approve one day.
+app.patch('/api/hour-log-days/:id/approve', async (req, res) => {
+  try {
+    invalidateHourLogsCache();
+    const { reviewer_id, reviewer_name } = req.body ?? {};
+    const rows = await sql`
+      UPDATE hour_log_days SET
+        status='approved',
+        reviewed_by_id=${reviewer_id ?? null},
+        reviewed_by_name=${reviewer_name ?? null},
+        reviewed_at=NOW(),
+        rejection_reason=NULL,
+        updated_at=NOW()
+      WHERE id=${req.params.id}
+      RETURNING *` as any[];
+    if (!rows.length) return res.status(404).json({ error: 'Day entry not found' });
+    const r = rows[0];
+    res.json(r);
+    void (async () => {
+      try {
+        await rollupWeeklyStatusFromDays(r.hour_log_id);
+        const proj = (await sql`SELECT name FROM projects WHERE id=${r.project_id}` as any[])[0];
+        const dt = new Date(String(r.log_date).slice(0, 10) + 'T12:00:00Z')
+          .toLocaleDateString('en-IN', { weekday: 'short', day: 'numeric', month: 'short' });
+        await notifyEmployeeUser(r.employee_id, 'hours_approved', 'Hours approved',
+          `Your ${Number(r.hours)}h on ${proj?.name ?? 'a project'} · ${dt} was approved by ${reviewer_name ?? 'reviewer'}.`);
+      } catch { /* non-fatal */ }
+    })();
+  } catch (err: any) { res.status(500).json({ error: err.message || 'Server error' }); }
+});
+
+// PATCH /api/hour-log-days/:id/reject — reject with a reason.
+app.patch('/api/hour-log-days/:id/reject', async (req, res) => {
+  try {
+    invalidateHourLogsCache();
+    const { reviewer_id, reviewer_name, rejection_reason } = req.body ?? {};
+    if (!String(rejection_reason ?? '').trim()) return res.status(400).json({ error: 'rejection_reason is required' });
+    const rows = await sql`
+      UPDATE hour_log_days SET
+        status='rejected',
+        reviewed_by_id=${reviewer_id ?? null},
+        reviewed_by_name=${reviewer_name ?? null},
+        reviewed_at=NOW(),
+        rejection_reason=${String(rejection_reason).trim()},
+        updated_at=NOW()
+      WHERE id=${req.params.id}
+      RETURNING *` as any[];
+    if (!rows.length) return res.status(404).json({ error: 'Day entry not found' });
+    const r = rows[0];
+    res.json(r);
+    void (async () => {
+      try {
+        await rollupWeeklyStatusFromDays(r.hour_log_id);
+        const proj = (await sql`SELECT name FROM projects WHERE id=${r.project_id}` as any[])[0];
+        const dt = new Date(String(r.log_date).slice(0, 10) + 'T12:00:00Z')
+          .toLocaleDateString('en-IN', { weekday: 'short', day: 'numeric', month: 'short' });
+        await notifyEmployeeUser(r.employee_id, 'hours_rejected', 'Hours rejected',
+          `Your ${Number(r.hours)}h on ${proj?.name ?? 'a project'} · ${dt} was rejected: ${String(rejection_reason).slice(0, 140)}`);
+      } catch { /* non-fatal */ }
+    })();
+  } catch (err: any) { res.status(500).json({ error: err.message || 'Server error' }); }
+});
+
+// PATCH /api/hour-log-days/:id/hold — parked for clarification.
+app.patch('/api/hour-log-days/:id/hold', async (req, res) => {
+  try {
+    invalidateHourLogsCache();
+    const { reviewer_id, reviewer_name, rejection_reason } = req.body ?? {};
+    if (!String(rejection_reason ?? '').trim()) return res.status(400).json({ error: 'A note is required to put a day on hold.' });
+    const rows = await sql`
+      UPDATE hour_log_days SET
+        status='on_hold',
+        reviewed_by_id=${reviewer_id ?? null},
+        reviewed_by_name=${reviewer_name ?? null},
+        reviewed_at=NOW(),
+        rejection_reason=${String(rejection_reason).trim()},
+        updated_at=NOW()
+      WHERE id=${req.params.id}
+      RETURNING *` as any[];
+    if (!rows.length) return res.status(404).json({ error: 'Day entry not found' });
+    const r = rows[0];
+    res.json(r);
+    void (async () => {
+      try {
+        await rollupWeeklyStatusFromDays(r.hour_log_id);
+        const proj = (await sql`SELECT name FROM projects WHERE id=${r.project_id}` as any[])[0];
+        const dt = new Date(String(r.log_date).slice(0, 10) + 'T12:00:00Z')
+          .toLocaleDateString('en-IN', { weekday: 'short', day: 'numeric', month: 'short' });
+        await notifyEmployeeUser(r.employee_id, 'hours_on_hold', 'Hours on hold',
+          `${reviewer_name ?? 'Reviewer'} asked for clarification on your ${Number(r.hours)}h · ${dt} log for ${proj?.name ?? 'a project'}: ${String(rejection_reason).slice(0, 140)}`);
+      } catch { /* non-fatal */ }
+    })();
+  } catch (err: any) { res.status(500).json({ error: err.message || 'Server error' }); }
+});
+
+// GET /api/hour-log-days/queue — day-grain approval queue for the
+// HoursApproval page. Returns pending / approved / etc. day rows with
+// enough context (employee, project, weekly summary, comment count) to
+// render + action without a second call. Groups on the frontend by
+// (employee, project, week).
+app.get('/api/hour-log-days/queue', async (req, res) => {
+  try {
+    await runStartupMigrations();
+    const status = (req.query.status as string) || null;   // 'pending' | 'approved' | 'on_hold' | 'rejected' | null (=all)
+    const reviewer_id = (req.query.reviewer_id as string) || null;
+    const employee_id = (req.query.employee_id as string) || null;
+    const month = req.query.month ? Number(req.query.month) : null;
+    const year  = req.query.year  ? Number(req.query.year)  : null;
+    const cacheKey = `hlDaysQueue:${status ?? ''}:${reviewer_id ?? ''}:${employee_id ?? ''}:${month ?? ''}:${year ?? ''}`;
+    const rows = await memoTtl(cacheKey, 60_000, async () => sql`
+      SELECT d.id, d.log_date, d.hours, d.notes, d.status,
+             d.reviewed_by_id, d.reviewed_by_name, d.reviewed_at, d.rejection_reason,
+             d.assignment_id, d.hour_log_id, d.week_num, d.month, d.year,
+             d.employee_id, e.name AS employee_name,
+             d.project_id, p.name AS project_name, p.client_name AS project_client_name,
+             p.project_reporting_id, p.project_reporting_name,
+             hl.work_description AS weekly_description,
+             hl.hours_logged AS weekly_hours,
+             hl.billable_hours AS weekly_billable_hours,
+             (SELECT COUNT(*) FROM hour_log_comments c WHERE c.hour_log_id = d.hour_log_id)::int AS comment_count
+      FROM hour_log_days d
+      JOIN projects p ON p.id = d.project_id
+      JOIN employees e ON e.id = d.employee_id
+      LEFT JOIN hour_logs hl ON hl.id = d.hour_log_id
+      WHERE (${status}::text IS NULL OR d.status = ${status})
+        AND (${employee_id}::text IS NULL OR d.employee_id = ${employee_id})
+        AND (${month}::int IS NULL OR d.month = ${month})
+        AND (${year}::int IS NULL OR d.year = ${year})
+        AND (${reviewer_id}::text IS NULL
+             OR p.project_reporting_id = ${reviewer_id}
+             OR p.project_lead_id = ${reviewer_id})
+      ORDER BY d.log_date DESC, d.employee_id, d.project_id`);
+    res.json(rows);
+  } catch (err: any) { res.status(500).json({ error: err.message || 'Server error' }); }
+});
+
+// GET /api/hour-log-days/counts — 4-status KPI counts at day grain.
+// Same filter surface as the queue minus `status`. Feeds the top cards
+// on the Approvals page.
+app.get('/api/hour-log-days/counts', async (req, res) => {
+  try {
+    await runStartupMigrations();
+    const reviewer_id = (req.query.reviewer_id as string) || null;
+    const employee_id = (req.query.employee_id as string) || null;
+    const month = req.query.month ? Number(req.query.month) : null;
+    const year  = req.query.year  ? Number(req.query.year)  : null;
+    const cacheKey = `hlDaysCounts:${reviewer_id ?? ''}:${employee_id ?? ''}:${month ?? ''}:${year ?? ''}`;
+    const rows = await memoTtl(cacheKey, 60_000, async () => sql`
+      SELECT d.status, COUNT(*)::int AS n
+      FROM hour_log_days d
+      JOIN projects p ON p.id = d.project_id
+      WHERE (${employee_id}::text IS NULL OR d.employee_id = ${employee_id})
+        AND (${month}::int IS NULL OR d.month = ${month})
+        AND (${year}::int IS NULL OR d.year = ${year})
+        AND (${reviewer_id}::text IS NULL
+             OR p.project_reporting_id = ${reviewer_id}
+             OR p.project_lead_id = ${reviewer_id})
+      GROUP BY d.status`);
+    const out = { pending: 0, on_hold: 0, approved: 0, rejected: 0 };
+    for (const r of rows as any[]) if (r.status in out) (out as any)[r.status] = Number(r.n) || 0;
+    res.json(out);
   } catch (err: any) { res.status(500).json({ error: err.message || 'Server error' }); }
 });
 
@@ -11755,22 +11980,44 @@ app.get('/api/hours/allocations', async (req, res) => {
 
     // Actuals — for the Upwork billing planner, "actual" means BILLABLE
     // hours (what we invoice to the client), not raw work time. Under
-    // the flipped semantics (2026-07-09), billable_hours is the source
-    // of truth: 0 / NULL means "don't bill this week", any positive
-    // number is the billable amount. The employee opts in per week via
-    // the toggle in the log modal. All historical rows were backfilled
-    // to hours_logged so their existing billed amounts are preserved.
-    // Any leftover NULL rows fall through as 0 (the safe default under
-    // the new semantics).
-    // Include pending/approved/on_hold. Exclude rejected (didn't happen).
+    // the day-grain approval model (2026-07-14):
+    //   billable = min(approved-day hours, weekly billable_hours override)
+    //     where a weekly billable_hours of 0 means "don't bill" and NULL
+    //     falls through to the approved-day total (legacy rows are safe).
+    // Only APPROVED days count toward billing. Pending / on_hold / rejected
+    // days are excluded — a reviewer's "not yet" or "no" removes those
+    // hours from the Upwork sheet immediately.
+    // `logged` still shows total logged (for the "logged X" delta hint).
+    // Two GROUP BYs joined on (project_id, week_num) — one at hour_logs
+    // grain (weekly totals + billable override), one at hour_log_days
+    // grain (approved-only hours). Avoids the multiplicative inflation
+    // that a naive LEFT JOIN + SUM(hl.hours_logged) would introduce.
     const actuals = await sql`
-      SELECT project_id, week_num,
-             COALESCE(SUM(COALESCE(billable_hours, 0)), 0)::numeric AS billable,
-             COALESCE(SUM(hours_logged), 0)::numeric AS logged
-      FROM hour_logs
-      WHERE month = ${month} AND year = ${year}
-        AND status IN ('approved', 'pending', 'on_hold')
-      GROUP BY project_id, week_num
+      WITH weekly AS (
+        SELECT project_id, week_num,
+               COALESCE(SUM(hours_logged), 0)::numeric AS logged,
+               SUM(COALESCE(billable_hours, 0))::numeric AS billable_override_total,
+               BOOL_AND(billable_hours IS NULL) AS all_null_override
+        FROM hour_logs
+        WHERE month = ${month} AND year = ${year}
+          AND status IN ('approved', 'pending', 'on_hold')
+        GROUP BY project_id, week_num
+      ),
+      daily AS (
+        SELECT project_id, week_num,
+               COALESCE(SUM(hours), 0)::numeric AS approved_hours
+        FROM hour_log_days
+        WHERE month = ${month} AND year = ${year}
+          AND status = 'approved'
+        GROUP BY project_id, week_num
+      )
+      SELECT w.project_id, w.week_num, w.logged,
+             CASE
+               WHEN w.all_null_override THEN COALESCE(dl.approved_hours, 0)
+               ELSE LEAST(w.billable_override_total, COALESCE(dl.approved_hours, 0))
+             END::numeric AS billable
+      FROM weekly w
+      LEFT JOIN daily dl ON dl.project_id = w.project_id AND dl.week_num = w.week_num
     ` as any[];
 
     // Billing account holder names — for the group headers. Only need the
