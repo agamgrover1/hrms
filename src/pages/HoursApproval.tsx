@@ -937,27 +937,24 @@ function InternalLogReviewView({ reviewerEmpId }: { reviewerEmpId: string | null
   const [logs, setLogs] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [statusFilter, setStatusFilter] = useState<'pending' | 'approved' | 'rejected' | 'all'>('pending');
+  // Team roster kept only for header context; the queue itself uses the
+  // /for-team batch endpoint so we no longer fan-out N HTTP calls.
   const [members, setMembers] = useState<any[]>([]);
   useEffect(() => {
     if (!reviewerEmpId) return;
     api.getTeamMembers(reviewerEmpId, true).then(setMembers).catch(() => setMembers([]));
   }, [reviewerEmpId]);
   const load = useCallback(async () => {
-    if (!members.length) { setLogs([]); setLoading(false); return; }
+    if (!reviewerEmpId) { setLogs([]); setLoading(false); return; }
     setLoading(true);
     try {
-      // 60-day window covers the typical "log last month's hours" pattern
-      // without bloating the queue.
+      // 60-day window covers the typical "log last month's hours" pattern.
       const from = new Date(Date.now() - 60 * 86400000).toISOString().slice(0, 10);
       const to = new Date().toISOString().slice(0, 10);
-      const all = await Promise.all(members.map(m =>
-        api.getInternalHourLogs({ employee_id: m.id, from, to })
-          .then(r => (r as any[]).map(l => ({ ...l, employee_name: m.name })))
-          .catch(() => [])
-      ));
-      setLogs(all.flat().sort((a, b) => String(b.log_date).localeCompare(String(a.log_date))));
+      const rows = await api.getInternalHourLogsForTeam(reviewerEmpId, from, to).catch(() => [] as any[]);
+      setLogs(rows.slice().sort((a: any, b: any) => String(b.log_date).localeCompare(String(a.log_date))));
     } finally { setLoading(false); }
-  }, [members]);
+  }, [reviewerEmpId]);
   useEffect(() => { load(); }, [load]);
 
   const filtered = useMemo(() =>

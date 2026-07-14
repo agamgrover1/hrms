@@ -415,25 +415,11 @@ export default function Dashboard() {
 
   // Focus refetch — re-hydrate everything through bootstrap when the tab
   // regains focus (came back after lunch). Still ONE round-trip.
-  useEffect(() => {
-    const refetch = () => {
-      api.getDashboardBootstrap(currentMonth, currentYear).then(applyBootstrap).catch(() => {});
-    };
-    const onVisible = () => { if (document.visibilityState === 'visible') refetch(); };
-    window.addEventListener('focus', refetch);
-    document.addEventListener('visibilitychange', onVisible);
-    return () => {
-      window.removeEventListener('focus', refetch);
-      document.removeEventListener('visibilitychange', onVisible);
-    };
-  }, [currentMonth, currentYear]);
-
-  // Live-refresh tick — kept only for announcements so a fresh post
-  // surfaces without a manual reload. Upcoming events USED to fire here
-  // too but was pointless churn: the widget's data is day-granular and
-  // is already loaded once from localStorage on mount. Removing it
-  // dropped the tick's edge-request cost in half.
+  // Focus + visibility refetch — routed through useLiveRefresh so the
+  // 60s throttle applies. Previously fired on every Alt-Tab; a chatty
+  // user was hitting the endpoint 20x/hr instead of ~1x/hr.
   useLiveRefresh(() => {
+    api.getDashboardBootstrap(currentMonth, currentYear).then(applyBootstrap).catch(() => {});
     api.getAnnouncements().then(setAnnouncements).catch(() => {});
   });
 

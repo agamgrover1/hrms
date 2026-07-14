@@ -271,6 +271,14 @@ export const api = {
     if (year) qs.set('year', String(year));
     return request<any[]>(`/performance/monthly?${qs}`);
   },
+  // Batch variant — one round-trip per team of employees. The response is
+  // ORDERed by employee_id + month, so the caller can group as it iterates.
+  getMonthlyPerformanceBatch: (employee_ids: string[], year?: number) => {
+    if (employee_ids.length === 0) return Promise.resolve([] as any[]);
+    const qs = new URLSearchParams({ employee_ids: employee_ids.join(',') });
+    if (year) qs.set('year', String(year));
+    return request<any[]>(`/performance/monthly?${qs}`);
+  },
   lockPerformanceReview: (id: string, lock: boolean, lockedBy?: string, requesterRole?: string) =>
     request<any>(`/performance/monthly/${id}/lock`, { method: 'PATCH', body: JSON.stringify({ lock, locked_by: lockedBy, requester_role: requesterRole }) }),
 
@@ -925,6 +933,21 @@ export const api = {
       reviewed_by_id: string | null; reviewed_by_name: string | null;
       reviewed_at: string | null; rejection_reason: string | null;
     }>>(`/internal-hour-logs?${qs}`);
+  },
+  // Batch variant for reviewers — one HTTP + one JOIN across the whole
+  // reviewer's reporting tree, instead of N HTTPs / N SQL. Rows include
+  // employee_name so the caller can group inline.
+  getInternalHourLogsForTeam: (reviewer_id: string, from?: string, to?: string) => {
+    const qs = new URLSearchParams({ reviewer_id });
+    if (from) qs.set('from', from);
+    if (to) qs.set('to', to);
+    return request<Array<{
+      id: string; employee_id: string; employee_name: string; activity_id: string; activity_name: string;
+      log_date: string; hours: number; notes: string | null;
+      status: 'pending' | 'approved' | 'rejected';
+      reviewed_by_id: string | null; reviewed_by_name: string | null;
+      reviewed_at: string | null; rejection_reason: string | null;
+    }>>(`/internal-hour-logs/for-team?${qs}`);
   },
   saveInternalHourLog: (data: { activity_id: string; log_date: string; hours: number; notes: string }) =>
     request(`/internal-hour-logs`, { method: 'POST', body: JSON.stringify(data) }),

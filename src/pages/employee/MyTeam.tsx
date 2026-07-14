@@ -499,9 +499,18 @@ export default function MyTeam() {
           .then(lv => setPendingLeaves(lv.filter((l: any) => l.manager_status === 'pending')));
         api.getWfhRequests({ reporting_manager_id: eid })
           .then((wfh: any[]) => setPendingWfh(wfh.filter(w => w.manager_status === 'pending' && w.status === 'pending')));
+        // Monthly performance: one batch call replaces N per-member fetches.
+        api.getMonthlyPerformanceBatch(members.map((m: any) => m.id), currentYear)
+          .then(rows => {
+            const byEmp: Record<string, any[]> = {};
+            for (const r of rows as any[]) {
+              const arr = byEmp[r.employee_id] ?? (byEmp[r.employee_id] = []);
+              arr.push(r);
+            }
+            setTeamPerf(byEmp);
+          })
+          .catch(() => {});
         members.forEach((m: any) => {
-          api.getMonthlyPerformance(m.id, currentYear)
-            .then(perf => setTeamPerf(prev => ({ ...prev, [m.id]: perf })));
           api.getAppraisalGoals({ employee_id: m.id })
             .then(ap => setAppraisals(prev => ({ ...prev, [m.id]: Array.isArray(ap) ? ap : [] })));
           api.getAttendance({ employee_id: m.id, month: now.getMonth() + 1, year: now.getFullYear() })

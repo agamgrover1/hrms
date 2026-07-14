@@ -99,6 +99,19 @@ app.use((req: any, res: any, next: any) => {
   else if (p === '/api/repair-tickets')        apply(30,   'private');
   else if (p === '/api/payroll')               apply(120,  'private');  // 2 min
   else if (p === '/api/dashboard/bootstrap')   apply(30,   'private');  // 30 s — bundle refreshes on focus anyway
+  // Heavy read endpoints previously left uncached — browser was refetching
+  // on every mount / focus. 30–60s browser cache lets Alt-Tabs skip the
+  // Lambda entirely; the server-side memoTtl on each endpoint keeps miss
+  // cost bounded too.
+  else if (p === '/api/hours-utilization')     apply(45,   'private');
+  else if (p === '/api/hours-compliance')      apply(30,   'private');
+  else if (p === '/api/hours/allocations')     apply(30,   'private');
+  else if (p === '/api/lifecycle-dashboard')   apply(60,   'private');
+  else if (p === '/api/finance/trends')        apply(300,  'private');  // 5 min — 12× finComputeMonth is heavy
+  else if (p === '/api/finance/optimization')  apply(120,  'private');
+  else if (p === '/api/finance/manager-pnl')   apply(120,  'private');
+  else if (p === '/api/hour-log-days/queue')   apply(30,   'private');
+  else if (p === '/api/hour-log-days/counts')  apply(30,   'private');
   next();
 });
 
@@ -2851,9 +2864,7 @@ async function recalcAttendanceTotals(employeeId: string, date: string) {
         check_out=${lastOut}
     WHERE employee_id=${employeeId} AND date::date=${date}::date
   `;
-  // extension_hours + activity_score — newer columns, update separately
-  await sql`ALTER TABLE attendance_records ADD COLUMN IF NOT EXISTS extension_hours NUMERIC DEFAULT 0`.catch(()=>{});
-  await sql`ALTER TABLE attendance_records ADD COLUMN IF NOT EXISTS activity_score NUMERIC`.catch(()=>{});
+  // extension_hours + activity_score — columns created in runStartupMigrations.
   await sql`
     UPDATE attendance_records
     SET extension_hours=${extHrs},
@@ -2899,22 +2910,7 @@ app.post('/api/attendance/activity', async (req, res) => {
 // GET /api/attendance/today — used by the Chrome extension
 app.get('/api/attendance/today', async (req, res) => {
   try {
-    await sql`
-      CREATE TABLE IF NOT EXISTS attendance_sessions (
-        id TEXT PRIMARY KEY,
-        employee_id TEXT NOT NULL,
-        date DATE NOT NULL,
-        clock_in TEXT NOT NULL,
-        clock_out TEXT,
-        duration_minutes NUMERIC DEFAULT 0,
-        active_minutes NUMERIC DEFAULT 0,
-        source TEXT DEFAULT 'manual',
-        created_at TIMESTAMPTZ DEFAULT NOW()
-      )
-    `.catch(() => {});
-    await sql`ALTER TABLE attendance_sessions ADD COLUMN IF NOT EXISTS active_minutes NUMERIC DEFAULT 0`.catch(() => {});
-    await sql`ALTER TABLE attendance_records ADD COLUMN IF NOT EXISTS extension_hours NUMERIC DEFAULT 0`.catch(() => {});
-
+    await runStartupMigrations(); // creates attendance_sessions + extension columns; fast-path after cold start
     const { employee_id } = req.query as any;
     if (!employee_id) return res.status(400).json({ error: 'employee_id required' });
     const { date: today } = istNow();
@@ -2972,17 +2968,7 @@ app.get('/api/attendance/today', async (req, res) => {
 
 app.post('/api/attendance/clock-in', async (req, res) => {
   try {
-    await sql`ALTER TABLE attendance_records ADD COLUMN IF NOT EXISTS extension_hours NUMERIC DEFAULT 0`.catch(() => {});
-    await sql`
-      CREATE TABLE IF NOT EXISTS attendance_sessions (
-        id TEXT PRIMARY KEY, employee_id TEXT NOT NULL, date DATE NOT NULL,
-        clock_in TEXT NOT NULL, clock_out TEXT, duration_minutes NUMERIC DEFAULT 0,
-        active_minutes NUMERIC DEFAULT 0,
-        source TEXT DEFAULT 'manual', created_at TIMESTAMPTZ DEFAULT NOW()
-      )
-    `.catch(() => {});
-    await sql`ALTER TABLE attendance_sessions ADD COLUMN IF NOT EXISTS active_minutes NUMERIC DEFAULT 0`.catch(() => {});
-
+    await runStartupMigrations(); // idempotent; fast-path after cold start
     const { employee_id, source } = req.body;
     const { date: today, time } = istNow();
     if (isWeekendV(today)) return res.status(400).json({ error: 'Weekends are non-working days' });
@@ -6586,6 +6572,58 @@ app.get('/api/internal-hour-logs', async (req, res) => {
     res.json(rows);
   } catch (err: any) { res.status(500).json({ error: err.message ?? 'Server error' }); }
 });
+// GET /api/internal-hour-logs/for-team?reviewer_id=X&from=&to=
+// Batch replacement for the Promise.all(members.map(getInternalHourLogs))
+// pattern in HoursApproval — one HTTP + one JOIN instead of N HTTPs and
+// N SQL. Rows are tagged with employee_name so the frontend can group
+// without a second employees lookup.
+app.get('/api/internal-hour-logs/for-team', async (req, res) => {
+  try {
+    await runStartupMigrations();
+    const uid = req.header('x-user-id');
+    if (!uid) return res.status(401).json({ error: 'Sign in required' });
+    const u = (await sql`SELECT id, role, employee_id_ref FROM app_users WHERE id=${uid}`)[0] as any;
+    if (!u) return res.status(401).json({ error: 'Unknown user' });
+    const reviewerId = String(req.query.reviewer_id ?? '');
+    if (!reviewerId) return res.status(400).json({ error: 'reviewer_id required' });
+    const { from, to } = req.query as any;
+    const fromD = from || new Date(Date.now() - 60 * 86400000).toISOString().slice(0, 10);
+    const toD = to || new Date().toISOString().slice(0, 10);
+    // Resolve the reviewer's direct + descendant reports in one recursive
+    // CTE (mirrors the descendants branch of /api/employees). Admin / HR
+    // can view any reviewer; other roles can only view their own team.
+    const selfRow = (await sql`
+      SELECT id FROM employees WHERE employee_id=${u.employee_id_ref} OR id=${u.employee_id_ref} LIMIT 1`)[0] as any;
+    const isAdminish = u.role === 'admin' || u.role === 'hr_manager';
+    if (!isAdminish && selfRow?.id !== reviewerId) {
+      return res.status(403).json({ error: 'Not permitted' });
+    }
+    const cacheKey = `internalHrsTeam:${reviewerId}:${fromD}:${toD}`;
+    const rows = await memoTtl(cacheKey, 60_000, async () => sql`
+      WITH RECURSIVE mgr AS (
+        SELECT id, employee_id FROM employees WHERE id=${reviewerId} LIMIT 1
+      ),
+      team AS (
+        SELECT e.* FROM employees e, mgr
+        WHERE e.reporting_manager_id = mgr.id OR e.reporting_manager_id = mgr.employee_id
+        UNION
+        SELECT e.* FROM employees e JOIN team t ON
+          (NULLIF(TRIM(e.reporting_manager_id), '') IS NOT NULL)
+          AND (
+            (NULLIF(TRIM(t.id), '') IS NOT NULL AND e.reporting_manager_id = t.id)
+            OR (NULLIF(TRIM(t.employee_id), '') IS NOT NULL AND e.reporting_manager_id = t.employee_id)
+          )
+      )
+      SELECT l.*, a.name AS activity_name, e.name AS employee_name
+      FROM internal_hour_logs l
+      JOIN team e ON e.id = l.employee_id
+      LEFT JOIN internal_activities a ON a.id = l.activity_id
+      WHERE l.log_date BETWEEN ${fromD}::date AND ${toD}::date
+      ORDER BY l.log_date DESC`);
+    res.json(rows);
+  } catch (err: any) { res.status(500).json({ error: err.message ?? 'Server error' }); }
+});
+
 app.post('/api/internal-hour-logs', async (req, res) => {
   try {
     await runStartupMigrations();
@@ -7539,8 +7577,23 @@ app.get('/api/performance/reviews', async (req, res) => {
 // ── Monthly Performance ───────────────────────────────────────────────────
 app.get('/api/performance/monthly', async (req, res) => {
   try {
-    const { employee_id, year } = req.query as any;
-    if (!employee_id) return res.status(400).json({ error: 'employee_id required' });
+    const { employee_id, employee_ids, year } = req.query as any;
+    // Batch mode: employee_ids=csv → one round-trip for a whole team.
+    // Replaces the Promise.all(members.map(getMonthlyPerformance)) fan-out
+    // in MyPortal / MyTeam. 60s memo cheapens the "focus refresh" case.
+    if (employee_ids) {
+      const ids = String(employee_ids).split(',').map(s => s.trim()).filter(Boolean);
+      if (ids.length === 0) return res.json([]);
+      const yNum = year ? Number(year) : null;
+      const cacheKey = `perfMonthly:batch:${yNum ?? ''}:${ids.slice().sort().join(',')}`;
+      const rows = await memoTtl(cacheKey, 60_000, async () =>
+        yNum
+          ? sql`SELECT * FROM monthly_performance WHERE employee_id = ANY(${ids}::text[]) AND year=${yNum} ORDER BY employee_id, month`
+          : sql`SELECT * FROM monthly_performance WHERE employee_id = ANY(${ids}::text[]) ORDER BY employee_id, year, month`
+      );
+      return res.json(rows);
+    }
+    if (!employee_id) return res.status(400).json({ error: 'employee_id or employee_ids required' });
     const rows = year
       ? await sql`SELECT * FROM monthly_performance WHERE employee_id=${employee_id} AND year=${Number(year)} ORDER BY month`
       : await sql`SELECT * FROM monthly_performance WHERE employee_id=${employee_id} ORDER BY year, month`;
@@ -7552,9 +7605,7 @@ app.get('/api/performance/monthly', async (req, res) => {
 app.patch('/api/performance/monthly/:id/lock', async (req, res) => {
   try {
     if (!(await requireFullHR(req, res)).ok) return;
-    await sql`ALTER TABLE monthly_performance ADD COLUMN IF NOT EXISTS is_locked BOOLEAN DEFAULT FALSE`.catch(() => {});
-    await sql`ALTER TABLE monthly_performance ADD COLUMN IF NOT EXISTS locked_by TEXT`.catch(() => {});
-    await sql`ALTER TABLE monthly_performance ADD COLUMN IF NOT EXISTS locked_at TIMESTAMPTZ`.catch(() => {});
+    // Columns exist per CREATE TABLE monthly_performance at boot.
     const { lock, locked_by, requester_role } = req.body;
     if (!lock && requester_role !== 'admin') return res.status(403).json({ error: 'Only admins can unlock a review' });
     const rows = await sql`
@@ -7585,10 +7636,8 @@ app.post('/api/performance/monthly', async (req, res) => {
       overall_score, comments, parameter_notes, requester_role,
     } = req.body;
     const paramNotesJson = JSON.stringify(parameter_notes ?? {});
-    // Ensure columns exist (idempotent)
-    await sql`ALTER TABLE monthly_performance ADD COLUMN IF NOT EXISTS ai_usage INTEGER DEFAULT 75`.catch(() => {});
-    await sql`ALTER TABLE monthly_performance ADD COLUMN IF NOT EXISTS parameter_notes JSONB DEFAULT '{}'`.catch(() => {});
-    await sql`ALTER TABLE monthly_performance ADD COLUMN IF NOT EXISTS is_locked BOOLEAN DEFAULT FALSE`.catch(() => {});
+    // Columns come from runStartupMigrations at boot; no per-request DDL.
+    await runStartupMigrations();
     // Block edits on locked reviews for non-admins
     const existing = await sql`SELECT is_locked FROM monthly_performance WHERE employee_id=${employee_id} AND month=${month} AND year=${year}`;
     if ((existing[0] as any)?.is_locked && requester_role !== 'admin') {
@@ -13063,13 +13112,19 @@ app.get('/api/finance/trends', async (req, res) => {
   try {
     const month = Number(req.query.month), year = Number(req.query.year);
     if (!month || !year) return res.status(400).json({ error: 'month and year are required' });
-    const out: any[] = [];
-    for (let i = 11; i >= 0; i--) {
-      const idx = (year * 12 + (month - 1)) - i;
-      const y = Math.floor(idx / 12), m = (idx % 12) + 1;
-      const model = await finComputeMonth(m, y);
-      out.push({ month: m, year: y, ...model.totals });
-    }
+    // 12× finComputeMonth is expensive even memoized. Memo the whole
+    // response for 5 min — the browser also caches for 5 min via apply(),
+    // so Alt-Tabs on the Trends tab hit neither layer.
+    const out = await memoTtl(`finTrends:${month}:${year}`, 5 * 60_000, async () => {
+      const rows: any[] = [];
+      for (let i = 11; i >= 0; i--) {
+        const idx = (year * 12 + (month - 1)) - i;
+        const y = Math.floor(idx / 12), m = (idx % 12) + 1;
+        const model = await finComputeMonth(m, y);
+        rows.push({ month: m, year: y, ...model.totals });
+      }
+      return rows;
+    });
     res.json(out);
   } catch (err: any) { res.status(500).json({ error: err.message || 'Server error' }); }
 });
@@ -14740,50 +14795,54 @@ app.get('/api/lifecycle-dashboard', async (_req, res) => {
   try {
     await runStartupMigrations();
     if (!(await requireHROrAbove(_req, res))) return;
-    const rows = await sql`
-      SELECT 'onboarding' AS kind, c.id, c.employee_id, c.status, c.started_at,
-             e.name AS employee_name, e.designation, e.department,
-             (SELECT COUNT(*)::int FROM onboarding_items WHERE checklist_id=c.id) AS total_items,
-             (SELECT COUNT(*)::int FROM onboarding_items WHERE checklist_id=c.id AND done=TRUE) AS done_items
-      FROM onboarding_checklists c
-      JOIN employees e ON e.id = c.employee_id
-      WHERE c.status='in_progress'
-      UNION ALL
-      SELECT 'offboarding' AS kind, c.id, c.employee_id, c.status, c.started_at,
-             e.name AS employee_name, e.designation, e.department,
-             (SELECT COUNT(*)::int FROM offboarding_items WHERE checklist_id=c.id) AS total_items,
-             (SELECT COUNT(*)::int FROM offboarding_items WHERE checklist_id=c.id AND done=TRUE) AS done_items
-      FROM offboarding_checklists c
-      JOIN employees e ON e.id = c.employee_id
-      WHERE c.status='in_progress'
-      ORDER BY started_at ASC` as any[];
-    const now = Date.now();
-    const withOverdue = rows.map(r => ({
-      ...r,
-      overdue: (now - new Date(r.started_at).getTime()) > 14 * 24 * 60 * 60 * 1000,
-    }));
-    const onboarding = withOverdue.filter(r => r.kind === 'onboarding');
-    const offboarding = withOverdue.filter(r => r.kind === 'offboarding');
-    const summary = {
-      onboarding_in_progress: onboarding.length,
-      offboarding_in_progress: offboarding.length,
-      overdue: withOverdue.filter(r => r.overdue).length,
-    };
-    // Also grab the last handful of recently completed so the page can
-    // show closure without a second call.
-    const recent = await sql`
-      SELECT 'onboarding' AS kind, c.id, c.employee_id, c.status, c.completed_at,
-             e.name AS employee_name, e.designation, e.department
-      FROM onboarding_checklists c JOIN employees e ON e.id=c.employee_id
-      WHERE c.status IN ('completed','cancelled')
-      ORDER BY c.completed_at DESC NULLS LAST LIMIT 5` as any[];
-    const recentOff = await sql`
-      SELECT 'offboarding' AS kind, c.id, c.employee_id, c.status, c.completed_at,
-             e.name AS employee_name, e.designation, e.department
-      FROM offboarding_checklists c JOIN employees e ON e.id=c.employee_id
-      WHERE c.status IN ('completed','cancelled')
-      ORDER BY c.completed_at DESC NULLS LAST LIMIT 5` as any[];
-    res.json({ onboarding, offboarding, summary, recent: [...recent, ...recentOff] });
+    // Fetches don't depend on user identity — same payload for every HR
+    // caller. 60s memo mirrors the browser cache header so any Alt-Tab
+    // burst inside the window is a cheap hash lookup.
+    const payload = await memoTtl('lifecycleDashboard', 60_000, async () => {
+      const rows = await sql`
+        SELECT 'onboarding' AS kind, c.id, c.employee_id, c.status, c.started_at,
+               e.name AS employee_name, e.designation, e.department,
+               (SELECT COUNT(*)::int FROM onboarding_items WHERE checklist_id=c.id) AS total_items,
+               (SELECT COUNT(*)::int FROM onboarding_items WHERE checklist_id=c.id AND done=TRUE) AS done_items
+        FROM onboarding_checklists c
+        JOIN employees e ON e.id = c.employee_id
+        WHERE c.status='in_progress'
+        UNION ALL
+        SELECT 'offboarding' AS kind, c.id, c.employee_id, c.status, c.started_at,
+               e.name AS employee_name, e.designation, e.department,
+               (SELECT COUNT(*)::int FROM offboarding_items WHERE checklist_id=c.id) AS total_items,
+               (SELECT COUNT(*)::int FROM offboarding_items WHERE checklist_id=c.id AND done=TRUE) AS done_items
+        FROM offboarding_checklists c
+        JOIN employees e ON e.id = c.employee_id
+        WHERE c.status='in_progress'
+        ORDER BY started_at ASC` as any[];
+      const now = Date.now();
+      const withOverdue = rows.map(r => ({
+        ...r,
+        overdue: (now - new Date(r.started_at).getTime()) > 14 * 24 * 60 * 60 * 1000,
+      }));
+      const onboarding = withOverdue.filter(r => r.kind === 'onboarding');
+      const offboarding = withOverdue.filter(r => r.kind === 'offboarding');
+      const summary = {
+        onboarding_in_progress: onboarding.length,
+        offboarding_in_progress: offboarding.length,
+        overdue: withOverdue.filter(r => r.overdue).length,
+      };
+      const recent = await sql`
+        SELECT 'onboarding' AS kind, c.id, c.employee_id, c.status, c.completed_at,
+               e.name AS employee_name, e.designation, e.department
+        FROM onboarding_checklists c JOIN employees e ON e.id=c.employee_id
+        WHERE c.status IN ('completed','cancelled')
+        ORDER BY c.completed_at DESC NULLS LAST LIMIT 5` as any[];
+      const recentOff = await sql`
+        SELECT 'offboarding' AS kind, c.id, c.employee_id, c.status, c.completed_at,
+               e.name AS employee_name, e.designation, e.department
+        FROM offboarding_checklists c JOIN employees e ON e.id=c.employee_id
+        WHERE c.status IN ('completed','cancelled')
+        ORDER BY c.completed_at DESC NULLS LAST LIMIT 5` as any[];
+      return { onboarding, offboarding, summary, recent: [...recent, ...recentOff] };
+    });
+    res.json(payload);
   } catch (err: any) { res.status(500).json({ error: err.message || 'Server error' }); }
 });
 

@@ -1023,11 +1023,18 @@ export default function MyPortal() {
       api.getLeaveRequests({ reporting_manager_id: empDbId }).then(leavs =>
         setTeamPendingLeaves(leavs.filter((l: any) => l.manager_status === 'pending'))
       );
-      members.forEach((m: any) => {
-        api.getMonthlyPerformance(m.id, currentYear).then(perf =>
-          setTeamPerf(prev => ({ ...prev, [m.id]: perf }))
-        );
-      });
+      // One batch call instead of N. Rows come sorted by employee_id +
+      // month; bucket them locally.
+      api.getMonthlyPerformanceBatch(members.map((m: any) => m.id), currentYear)
+        .then(rows => {
+          const byEmp: Record<string, any[]> = {};
+          for (const r of rows as any[]) {
+            const arr = byEmp[r.employee_id] ?? (byEmp[r.employee_id] = []);
+            arr.push(r);
+          }
+          setTeamPerf(byEmp);
+        })
+        .catch(() => {});
     });
   }, [empDbId, currentYear]);
 
