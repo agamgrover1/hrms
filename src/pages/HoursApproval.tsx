@@ -447,7 +447,7 @@ export default function HoursApproval() {
                             {isStale && <span className="ml-1">· stale</span>}
                           </div>
                         </td>
-                        <td className="px-4 py-3 text-on-surface-muted text-xs max-w-md">
+                        <td className="px-4 py-3 text-on-surface-muted text-xs min-w-[320px] max-w-[560px] whitespace-normal break-words">
                           <DescriptionCell log={log} />
                           {log.status === 'rejected' && log.rejection_reason && (
                             <p className="text-danger mt-1 flex items-center gap-1">
@@ -814,31 +814,47 @@ function AllocationReviewModal({ req: r, mode, onClose, onDone }: {
   );
 }
 
-// Renders the "What they worked on" cell. Prefers structured per-day notes
-// (each day on its own row, with hours, so the reviewer sees the daily
-// shape of the work). Falls back to the aggregated effective_description
-// or the legacy work_description when day-level data is missing.
+// Renders the "What they worked on" cell. When day-level notes exist we
+// show each day + hours + note on its own row (the shape of the work).
+// When the employee ALSO wrote a distinct weekly summary in
+// work_description (i.e. something other than the stitched day notes),
+// we surface it above the day breakdown so the reviewer sees both.
+// Falls back to the aggregated description when no day notes exist.
 function DescriptionCell({ log }: { log: HourLog }) {
   const days = (log.day_notes ?? []).filter(d => (d.notes ?? '').trim().length > 0);
+  const weekly = (log.work_description ?? '').trim();
+  // effective_description = weekly if present, else stitched day notes.
+  // Suppress weekly when it equals the stitched form so we don't repeat.
+  const stitchedFromDays = days.map(d => {
+    const dt = new Date(String(d.date).slice(0, 10) + 'T12:00:00Z');
+    return `${String(dt.getUTCDate()).padStart(2, '0')}: ${(d.notes ?? '').trim()}`;
+  }).join(' · ');
+  const weeklyDistinct = weekly && weekly !== stitchedFromDays;
+
   if (days.length > 0) {
     return (
-      <ul className="space-y-1">
-        {days.map((d) => {
-          const dt = new Date(String(d.date).slice(0, 10) + 'T12:00:00Z');
-          const dayLabel = dt.toLocaleDateString('en-IN', { weekday: 'short', day: 'numeric' });
-          return (
-            <li key={d.date} className="flex items-start gap-2 leading-snug">
-              <span className="num-mono text-[10px] font-semibold text-on-surface-subtle min-w-[42px] uppercase tracking-wide">{dayLabel}</span>
-              <span className="num-mono text-[10px] font-bold text-accent min-w-[28px]">{Number(d.hours)}h</span>
-              <span className="text-on-surface flex-1">{d.notes}</span>
-            </li>
-          );
-        })}
-      </ul>
+      <div className="space-y-1.5">
+        {weeklyDistinct && (
+          <p className="text-on-surface whitespace-pre-wrap break-words leading-snug">{weekly}</p>
+        )}
+        <ul className="space-y-1">
+          {days.map((d) => {
+            const dt = new Date(String(d.date).slice(0, 10) + 'T12:00:00Z');
+            const dayLabel = dt.toLocaleDateString('en-IN', { weekday: 'short', day: 'numeric' });
+            return (
+              <li key={d.date} className="flex items-start gap-2 leading-snug">
+                <span className="num-mono text-[10px] font-semibold text-on-surface-subtle min-w-[42px] uppercase tracking-wide shrink-0 pt-0.5">{dayLabel}</span>
+                <span className="num-mono text-[10px] font-bold text-accent min-w-[28px] shrink-0 pt-0.5">{Number(d.hours)}h</span>
+                <span className="text-on-surface flex-1 whitespace-pre-wrap break-words">{d.notes}</span>
+              </li>
+            );
+          })}
+        </ul>
+      </div>
     );
   }
   const fallback = log.effective_description || log.work_description;
-  if (fallback) return <span>{fallback}</span>;
+  if (fallback) return <span className="whitespace-pre-wrap break-words">{fallback}</span>;
   return <span className="text-on-surface-subtle italic">—</span>;
 }
 
