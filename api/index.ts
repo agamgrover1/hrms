@@ -616,7 +616,7 @@ async function runStartupMigrations() {
   try {
     // Bump this probe whenever a new migration lands; existing warm
     // Lambdas will fail the SELECT and re-run runStartupMigrations().
-    await sql`SELECT started_at FROM onboarding_checklists LIMIT 0`;
+    await sql`SELECT sort_order FROM checklist_templates LIMIT 0`;
     _migrated = true;
     return;
   } catch {
@@ -1397,6 +1397,67 @@ async function runStartupMigrations() {
       is_custom BOOLEAN NOT NULL DEFAULT FALSE
     )`;
   await sql`CREATE INDEX IF NOT EXISTS idx_offboarding_items_checklist ON offboarding_items(checklist_id, sort_order)`.catch(()=>{});
+
+  // ── Editable checklist templates (admin-managed) ────────────────────────
+  // The onboarding + offboarding standard items used to live in two
+  // hardcoded arrays. Moved to a table so HR/admin can add / rename /
+  // reorder / remove without a deploy. Existing checklists are
+  // unaffected — items are snapshotted into onboarding_items /
+  // offboarding_items on creation.
+  await sql`
+    CREATE TABLE IF NOT EXISTS checklist_templates (
+      id TEXT PRIMARY KEY,
+      kind TEXT NOT NULL,
+      key TEXT NOT NULL,
+      label TEXT NOT NULL,
+      sort_order INTEGER NOT NULL DEFAULT 0,
+      created_at TIMESTAMPTZ DEFAULT NOW(),
+      updated_at TIMESTAMPTZ DEFAULT NOW()
+    )`;
+  await sql`CREATE UNIQUE INDEX IF NOT EXISTS ux_checklist_templates_kind_key ON checklist_templates(kind, key)`.catch(()=>{});
+  await sql`CREATE INDEX IF NOT EXISTS idx_checklist_templates_kind_order ON checklist_templates(kind, sort_order)`.catch(()=>{});
+  // First-run seed. Populate the table with the original hardcoded items
+  // exactly once so behavior on the first deploy after this migration
+  // matches the previous behavior. If admin later empties the table on
+  // purpose, we don't re-seed — the guard is "kind has zero rows".
+  try {
+    const onboardCount = (await sql`SELECT COUNT(*)::int AS n FROM checklist_templates WHERE kind='onboarding'` as any[])[0]?.n ?? 0;
+    if (onboardCount === 0) {
+      const seed = [
+        { key: 'appointment_letter',  label: 'Issue appointment letter'          },
+        { key: 'email_slack',         label: 'Email + Slack setup'               },
+        { key: 'system_assigned',     label: 'System assigned'                   },
+        { key: 'seat_assigned',       label: 'Seat assigned'                     },
+        { key: 'documents_collected', label: 'Documents collected'               },
+        { key: 'punch_in_setup',      label: 'Punch-in setup'                    },
+        { key: 'hrms_added',          label: 'Added on HRMS'                     },
+      ];
+      for (let i = 0; i < seed.length; i++) {
+        await sql`INSERT INTO checklist_templates (id, kind, key, label, sort_order)
+                  VALUES (${'tpl_onb_' + seed[i].key}, 'onboarding', ${seed[i].key}, ${seed[i].label}, ${i})
+                  ON CONFLICT (kind, key) DO NOTHING`.catch(()=>{});
+      }
+    }
+    const offboardCount = (await sql`SELECT COUNT(*)::int AS n FROM checklist_templates WHERE kind='offboarding'` as any[])[0]?.n ?? 0;
+    if (offboardCount === 0) {
+      const seed = [
+        { key: 'resignation',         label: 'Resignation'                       },
+        { key: 'exit_interview',      label: 'Exit interview'                    },
+        { key: 'asset_handover',      label: 'Asset handover'                    },
+        { key: 'removed_from_sheets', label: 'Removed from all sheets'           },
+        { key: 'thunderbird_removed', label: 'Thunderbird credentials removed'   },
+        { key: 'slack_removed',       label: 'Slack removed'                     },
+        { key: 'whatsapp_removed',    label: 'Removed from WhatsApp group'       },
+        { key: 'hrms_removed',        label: 'Removed from HRMS'                 },
+        { key: 'fnf_completed',       label: 'FnF completed'                     },
+      ];
+      for (let i = 0; i < seed.length; i++) {
+        await sql`INSERT INTO checklist_templates (id, kind, key, label, sort_order)
+                  VALUES (${'tpl_off_' + seed[i].key}, 'offboarding', ${seed[i].key}, ${seed[i].label}, ${i})
+                  ON CONFLICT (kind, key) DO NOTHING`.catch(()=>{});
+      }
+    }
+  } catch { /* seed is best-effort; endpoints tolerate an empty table */ }
 
   // ── Internal activities (non-project work) ────────────────────────────
   // Employees, HR, coordinators, and admin all log hours daily. People
@@ -14016,27 +14077,17 @@ app.get('/api/finance/invoices/audit', async (req, res) => {
 // by a shared helper so ~9 endpoints stay under one screen of code.
 // ════════════════════════════════════════════════════════════════════════
 
-// Standard step template — order matters (sort_order is derived from index).
-const ONBOARDING_TEMPLATE = [
-  { key: 'appointment_letter',  label: 'Issue appointment letter'          },
-  { key: 'email_slack',         label: 'Email + Slack setup'               },
-  { key: 'system_assigned',     label: 'System assigned'                   },
-  { key: 'seat_assigned',       label: 'Seat assigned'                     },
-  { key: 'documents_collected', label: 'Documents collected'               },
-  { key: 'punch_in_setup',      label: 'Punch-in setup'                    },
-  { key: 'hrms_added',          label: 'Added on HRMS'                     },
-];
-const OFFBOARDING_TEMPLATE = [
-  { key: 'resignation',         label: 'Resignation'                       },
-  { key: 'exit_interview',      label: 'Exit interview'                    },
-  { key: 'asset_handover',      label: 'Asset handover'                    },
-  { key: 'removed_from_sheets', label: 'Removed from all sheets'           },
-  { key: 'thunderbird_removed', label: 'Thunderbird credentials removed'   },
-  { key: 'slack_removed',       label: 'Slack removed'                     },
-  { key: 'whatsapp_removed',    label: 'Removed from WhatsApp group'       },
-  { key: 'hrms_removed',        label: 'Removed from HRMS'                 },
-  { key: 'fnf_completed',       label: 'FnF completed'                     },
-];
+// Template source of truth lives in the checklist_templates table (seeded
+// on first deploy — see runStartupMigrations). This helper reads the
+// current template rows for a kind, ordered as the admin configured them
+// via the Config → Onboarding / Offboarding templates screen.
+async function loadTemplateForKind(kind: ChecklistKind): Promise<Array<{ key: string; label: string }>> {
+  const rows = await sql`
+    SELECT key, label FROM checklist_templates
+    WHERE kind = ${kind}
+    ORDER BY sort_order, id` as any[];
+  return rows.map(r => ({ key: r.key as string, label: r.label as string }));
+}
 
 // Guard for `?kind=` query params on all checklist routes. Kept tight to
 // two literals so a typo never picks a wrong table.
@@ -14082,7 +14133,10 @@ async function loadChecklistForEmployee(kind: ChecklistKind, employeeId: string)
 // renders them in the same order every time.
 async function createChecklistForEmployee(kind: ChecklistKind, employeeId: string, actor: { id?: string; name?: string }) {
   const id = `${kind === 'onboarding' ? 'onb' : 'off'}_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-  const template = kind === 'onboarding' ? ONBOARDING_TEMPLATE : OFFBOARDING_TEMPLATE;
+  // Read the CURRENT template from DB — reflects any admin edits made
+  // through Config → Onboarding / Offboarding templates. Existing
+  // checklists are untouched; only fresh ones use the latest shape.
+  const template = await loadTemplateForKind(kind);
   if (kind === 'onboarding') {
     await sql`INSERT INTO onboarding_checklists (id, employee_id, status, started_by_id, started_by_name)
               VALUES (${id}, ${employeeId}, 'in_progress', ${actor.id ?? null}, ${actor.name ?? null})`;
@@ -14323,6 +14377,112 @@ app.post('/api/checklists/:id/cancel', async (req, res) => {
                    WHERE id=${req.params.id} AND status='in_progress' RETURNING *` as any[])[0];
     if (!updated) return res.status(404).json({ error: 'Checklist not found or not in progress.' });
     res.json(updated);
+  } catch (err: any) { res.status(500).json({ error: err.message || 'Server error' }); }
+});
+
+// ── Template editor endpoints (admin) ─────────────────────────────────────
+// Read/write the standard onboarding + offboarding items. Fresh checklists
+// seed from this table; existing checklists keep their snapshot untouched.
+
+// GET /api/config/checklist-templates?kind= — list all items for a kind.
+app.get('/api/config/checklist-templates', async (req, res) => {
+  try {
+    await runStartupMigrations();
+    if (!(await requireHROrAbove(req, res))) return;
+    const kind = parseKind(req.query.kind);
+    if (!kind) return res.status(400).json({ error: 'kind must be onboarding or offboarding' });
+    const rows = await sql`
+      SELECT * FROM checklist_templates
+      WHERE kind = ${kind}
+      ORDER BY sort_order, id`;
+    res.json(rows);
+  } catch (err: any) { res.status(500).json({ error: err.message || 'Server error' }); }
+});
+
+// POST /api/config/checklist-templates — add a new template item. Key
+// is auto-derived from label but can be overridden. sort_order defaults
+// to the end of the list.
+app.post('/api/config/checklist-templates', async (req, res) => {
+  try {
+    await runStartupMigrations();
+    if (!(await requireHROrAbove(req, res))) return;
+    const kind = parseKind(req.body?.kind);
+    if (!kind) return res.status(400).json({ error: 'kind must be onboarding or offboarding' });
+    const label = String(req.body?.label ?? '').trim();
+    if (!label) return res.status(400).json({ error: 'label is required' });
+    // Auto-slug the key from label if not provided. Keeps distinct
+    // items separate even when they read similarly ("send offer" vs
+    // "send offer letter") — the slug is scoped to (kind, key) unique.
+    const providedKey = String(req.body?.key ?? '').trim();
+    const key = providedKey || label.toLowerCase().replace(/[^a-z0-9]+/g, '_').slice(0, 60);
+    if (!key) return res.status(400).json({ error: 'key derives to empty — use different label' });
+    // sort_order defaults to end-of-list.
+    const maxRow = (await sql`SELECT COALESCE(MAX(sort_order), -1) AS m FROM checklist_templates WHERE kind=${kind}` as any[])[0];
+    const nextOrder = Number(maxRow?.m ?? -1) + 1;
+    const id = `tpl_${kind === 'onboarding' ? 'onb' : 'off'}_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+    try {
+      const row = (await sql`
+        INSERT INTO checklist_templates (id, kind, key, label, sort_order)
+        VALUES (${id}, ${kind}, ${key}, ${label}, ${nextOrder})
+        RETURNING *` as any[])[0];
+      res.status(201).json(row);
+    } catch (e: any) {
+      if (String(e?.message).includes('ux_checklist_templates_kind_key')) {
+        return res.status(409).json({ error: `An item with key "${key}" already exists for ${kind}.` });
+      }
+      throw e;
+    }
+  } catch (err: any) { res.status(500).json({ error: err.message || 'Server error' }); }
+});
+
+// PATCH /api/config/checklist-templates/:id — rename an item. Only the
+// label is user-editable; key stays stable so audit history keeps its
+// meaning across renames.
+app.patch('/api/config/checklist-templates/:id', async (req, res) => {
+  try {
+    await runStartupMigrations();
+    if (!(await requireHROrAbove(req, res))) return;
+    const label = String(req.body?.label ?? '').trim();
+    if (!label) return res.status(400).json({ error: 'label is required' });
+    const row = (await sql`
+      UPDATE checklist_templates SET label=${label}, updated_at=NOW()
+      WHERE id=${req.params.id} RETURNING *` as any[])[0];
+    if (!row) return res.status(404).json({ error: 'Template item not found' });
+    res.json(row);
+  } catch (err: any) { res.status(500).json({ error: err.message || 'Server error' }); }
+});
+
+// PATCH /api/config/checklist-templates/reorder — bulk update sort_order.
+// Body: { kind, ordered_ids: string[] }. Existing checklists don't care
+// about this — the order only affects fresh checklists' seed order.
+app.patch('/api/config/checklist-templates/reorder', async (req, res) => {
+  try {
+    await runStartupMigrations();
+    if (!(await requireHROrAbove(req, res))) return;
+    const kind = parseKind(req.body?.kind);
+    if (!kind) return res.status(400).json({ error: 'kind must be onboarding or offboarding' });
+    const orderedIds: string[] = Array.isArray(req.body?.ordered_ids) ? req.body.ordered_ids : [];
+    if (orderedIds.length === 0) return res.json({ ok: true, updated: 0 });
+    let n = 0;
+    for (let i = 0; i < orderedIds.length; i++) {
+      await sql`UPDATE checklist_templates SET sort_order=${i}, updated_at=NOW()
+                WHERE id=${orderedIds[i]} AND kind=${kind}`;
+      n++;
+    }
+    res.json({ ok: true, updated: n });
+  } catch (err: any) { res.status(500).json({ error: err.message || 'Server error' }); }
+});
+
+// DELETE /api/config/checklist-templates/:id — hard delete. Snapshotted
+// items on existing checklists are unaffected (they're copied into
+// onboarding_items / offboarding_items on creation), so there's no
+// referential concern.
+app.delete('/api/config/checklist-templates/:id', async (req, res) => {
+  try {
+    await runStartupMigrations();
+    if (!(await requireHROrAbove(req, res))) return;
+    await sql`DELETE FROM checklist_templates WHERE id=${req.params.id}`;
+    res.json({ ok: true });
   } catch (err: any) { res.status(500).json({ error: err.message || 'Server error' }); }
 });
 

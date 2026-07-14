@@ -1054,6 +1054,18 @@ export const api = {
       summary: { onboarding_in_progress: number; offboarding_in_progress: number; overdue: number };
       recent: any[];
     }>(`/lifecycle-dashboard`),
+
+  // ── Checklist template editor (admin) ────────────────────────────────
+  getChecklistTemplates: (kind: 'onboarding' | 'offboarding') =>
+    request<Array<{ id: string; kind: string; key: string; label: string; sort_order: number }>>(`/config/checklist-templates?kind=${kind}`),
+  addChecklistTemplate: (kind: 'onboarding' | 'offboarding', label: string) =>
+    request<any>(`/config/checklist-templates`, { method: 'POST', body: JSON.stringify({ kind, label }) }),
+  renameChecklistTemplate: (id: string, label: string) =>
+    request<any>(`/config/checklist-templates/${id}`, { method: 'PATCH', body: JSON.stringify({ label }) }),
+  reorderChecklistTemplates: (kind: 'onboarding' | 'offboarding', ordered_ids: string[]) =>
+    request<{ ok: true; updated: number }>(`/config/checklist-templates/reorder`, { method: 'PATCH', body: JSON.stringify({ kind, ordered_ids }) }),
+  deleteChecklistTemplate: (id: string) =>
+    request<{ ok: true }>(`/config/checklist-templates/${id}`, { method: 'DELETE' }),
 };
 
 export interface AllocationChangeRequest {
