@@ -296,13 +296,15 @@ function AddReviewModal({
   employee: any; month: number; year: number; existing?: any; reviewer: any;
   onSave: () => void; onClose: () => void;
 }) {
-  // Prefill from the saved review when editing. `existing[key]` is null
-  // when the reviewer previously marked that pillar N/A; keep it null.
-  // Only fall back to 75 when the field is truly absent (new review).
-  const initial = (key: string): number | null => {
-    if (!existing) return 75;
-    const v = (existing as any)[key];
-    return v == null ? null : Number(v);
+  // Prefill from the saved review. Any pillar that's NULL in the row
+  // (never rated OR previously N/A'd) starts at 75 on open — same as
+  // a brand-new review. Reviewer can still click N/A explicitly if a
+  // pillar truly doesn't apply. Previously we kept NULL as N/A, which
+  // silently hid pillars added AFTER the review was first saved
+  // (Communication / Ownership / Planning / Learning came in later).
+  const initial = (key: string): number => {
+    const v = existing ? (existing as any)[key] : null;
+    return v == null ? 75 : Number(v);
   };
   const [scores, setScores] = useState<Scores>({
     productivity:        initial('productivity'),
