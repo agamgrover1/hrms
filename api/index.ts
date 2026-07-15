@@ -829,11 +829,9 @@ async function runStartupMigrations() {
     // For a *seed* (rows, not columns), we probe with EXISTS-style: an
     // empty result set means "still needs to run", so we don't set the
     // flag and fall through.
-    const seedProbe = await sql`SELECT 1 FROM role_responsibilities WHERE role='hr_manager' LIMIT 1` as any[];
-    if (seedProbe.length > 0) {
-      _migrated = true;
-      return;
-    }
+    await sql`SELECT recipient_name FROM hr_documents LIMIT 0`;
+    _migrated = true;
+    return;
   } catch {
     // Schema is stale (or DB is fresh) — fall through to the full block.
   }
@@ -1729,6 +1727,15 @@ async function runStartupMigrations() {
     )`;
   await sql`CREATE INDEX IF NOT EXISTS idx_hr_docs_employee ON hr_documents(employee_id, issued_on DESC)`.catch(()=>{});
   await sql`CREATE INDEX IF NOT EXISTS idx_hr_docs_type ON hr_documents(doc_type, issued_on DESC)`.catch(()=>{});
+  // External recipients (interns pre-onboarding, candidates, contractors,
+  // ex-employees who need a fresh letter after their record was archived).
+  // employee_id becomes optional; when null, recipient_name is required.
+  // Numbering + type + all other rules stay identical to employee docs —
+  // an external appointment letter shares the same DL-APP-YYYY-#### sequence.
+  await sql`ALTER TABLE hr_documents ALTER COLUMN employee_id DROP NOT NULL`.catch(()=>{});
+  await sql`ALTER TABLE hr_documents ADD COLUMN IF NOT EXISTS recipient_name TEXT`.catch(()=>{});
+  await sql`ALTER TABLE hr_documents ADD COLUMN IF NOT EXISTS recipient_email TEXT`.catch(()=>{});
+  await sql`CREATE INDEX IF NOT EXISTS idx_hr_docs_recipient ON hr_documents(recipient_name) WHERE recipient_name IS NOT NULL`.catch(()=>{});
   await sql`
     CREATE TABLE IF NOT EXISTS hr_document_counters (
       doc_type TEXT NOT NULL,
@@ -10153,10 +10160,14 @@ app.get('/api/hr-documents', async (req, res) => {
     const q = ((req.query.q as string) || '').trim();
     const qLike = q ? `%${q}%` : null;
     const cacheKey = `hrDocs:${employee_id ?? ''}:${doc_type ?? ''}:${from ?? ''}:${to ?? ''}:${q}`;
+    // LEFT JOIN — external docs have employee_id NULL and use
+    // recipient_name / recipient_email instead. Free-text search also
+    // hits the recipient name so an intern's letter surfaces the same
+    // way an employee's does.
     const rows = await memoTtl(cacheKey, 60_000, async () => sql`
       SELECT d.*, e.name AS employee_name, e.employee_id AS employee_code, e.designation
       FROM hr_documents d
-      JOIN employees e ON e.id = d.employee_id
+      LEFT JOIN employees e ON e.id = d.employee_id
       WHERE (${employee_id}::text IS NULL OR d.employee_id = ${employee_id})
         AND (${doc_type}::text IS NULL OR d.doc_type = ${doc_type})
         AND (${from}::text IS NULL OR d.issued_on >= ${from}::date)
@@ -10165,7 +10176,8 @@ app.get('/api/hr-documents', async (req, res) => {
              OR d.doc_number ILIKE ${qLike}
              OR d.subject ILIKE ${qLike}
              OR d.notes ILIKE ${qLike}
-             OR e.name ILIKE ${qLike})
+             OR e.name ILIKE ${qLike}
+             OR d.recipient_name ILIKE ${qLike})
       ORDER BY d.issued_on DESC, d.doc_number DESC`);
     res.json(rows);
   } catch (err: any) { res.status(500).json({ error: err.message ?? 'Server error' }); }
@@ -10180,19 +10192,29 @@ app.post('/api/hr-documents', async (req, res) => {
     const {
       doc_type, doc_type_label, employee_id, issued_on,
       subject, notes, external_ref,
+      recipient_name, recipient_email,
     } = req.body ?? {};
     if (!doc_type) return res.status(400).json({ error: 'doc_type is required' });
     const typeMeta = await getDocTypeMeta(doc_type);
     if (!typeMeta) return res.status(400).json({ error: `Unknown doc_type: ${doc_type}` });
     if (!typeMeta.active) return res.status(400).json({ error: `Doc type "${typeMeta.label}" is inactive` });
-    if (!employee_id) return res.status(400).json({ error: 'employee_id is required' });
     if (!issued_on) return res.status(400).json({ error: 'issued_on is required' });
     if (doc_type === 'other' && !String(doc_type_label ?? '').trim()) {
       return res.status(400).json({ error: 'doc_type_label is required when doc_type = other' });
     }
-    // Verify the employee exists so a bad id doesn't consume a number.
-    const emp = (await sql`SELECT id, name FROM employees WHERE id=${employee_id} LIMIT 1` as any[])[0];
-    if (!emp) return res.status(404).json({ error: 'Employee not found' });
+    // Recipient — either an existing employee OR an ad-hoc recipient
+    // (intern before onboarding, candidate, contractor, ex-employee).
+    // Exactly one of the two paths must be provided.
+    const cleanRecipientName = recipient_name ? String(recipient_name).trim() : '';
+    const cleanRecipientEmail = recipient_email ? String(recipient_email).trim() : '';
+    if (!employee_id && !cleanRecipientName) {
+      return res.status(400).json({ error: 'Either employee_id or recipient_name is required' });
+    }
+    if (employee_id) {
+      // Verify the employee exists so a bad id doesn't consume a number.
+      const emp = (await sql`SELECT id, name FROM employees WHERE id=${employee_id} LIMIT 1` as any[])[0];
+      if (!emp) return res.status(404).json({ error: 'Employee not found' });
+    }
     const year = new Date(issued_on).getFullYear();
     if (!year || Number.isNaN(year)) return res.status(400).json({ error: 'issued_on must be a valid date' });
     const docNumber = await allocateDocNumber(doc_type, year);
@@ -10200,9 +10222,13 @@ app.post('/api/hr-documents', async (req, res) => {
     const actor = { id: gate.user!.id, name: gate.user!.name, role: gate.user!.role };
     const rows = await sql`
       INSERT INTO hr_documents (id, doc_number, doc_type, doc_type_label, employee_id,
+        recipient_name, recipient_email,
         issued_on, issued_by_id, issued_by_name, subject, notes, external_ref)
       VALUES (${id}, ${docNumber}, ${doc_type}, ${doc_type === 'other' ? String(doc_type_label).trim() : null},
-        ${employee_id}, ${issued_on}::date,
+        ${employee_id || null},
+        ${employee_id ? null : cleanRecipientName},
+        ${employee_id ? null : (cleanRecipientEmail || null)},
+        ${issued_on}::date,
         ${actor.id ?? null}, ${actor.name ?? null},
         ${subject ? String(subject).trim() : null},
         ${notes ? String(notes).trim() : null},
@@ -10211,17 +10237,21 @@ app.post('/api/hr-documents', async (req, res) => {
     const rec = (rows as any[])[0];
     invalidateHrDocsCache();
     res.status(201).json(rec);
-    // Fire-and-forget: notify employee + auto-tick a matching checklist item.
-    void (async () => {
-      try {
-        const label = doc_type === 'other' ? String(doc_type_label).trim() : typeMeta.label;
-        await notifyEmployeeUser(employee_id, 'hr_doc_issued', `${label} issued`,
-          `${actor.name ?? 'HR'} issued your ${label.toLowerCase()} as ${docNumber}. Contact HR if you need a copy.`);
-        if (doc_type === 'appointment_letter') await tryAutotickOnboardingItem(employee_id, 'appointment_letter', actor);
-        if (doc_type === 'experience_letter') await tryAutotickOffboardingItem(employee_id, 'experience_letter', actor);
-        if (doc_type === 'relieving_letter')  await tryAutotickOffboardingItem(employee_id, 'relieving_letter', actor);
-      } catch { /* non-fatal */ }
-    })();
+    // Fire-and-forget: notify + auto-tick checklist item. Skip for
+    // external recipients — no linked app_user to notify, no checklist
+    // to tick.
+    if (employee_id) {
+      void (async () => {
+        try {
+          const label = doc_type === 'other' ? String(doc_type_label).trim() : typeMeta.label;
+          await notifyEmployeeUser(employee_id, 'hr_doc_issued', `${label} issued`,
+            `${actor.name ?? 'HR'} issued your ${label.toLowerCase()} as ${docNumber}. Contact HR if you need a copy.`);
+          if (doc_type === 'appointment_letter') await tryAutotickOnboardingItem(employee_id, 'appointment_letter', actor);
+          if (doc_type === 'experience_letter') await tryAutotickOffboardingItem(employee_id, 'experience_letter', actor);
+          if (doc_type === 'relieving_letter')  await tryAutotickOffboardingItem(employee_id, 'relieving_letter', actor);
+        } catch { /* non-fatal */ }
+      })();
+    }
   } catch (err: any) { res.status(500).json({ error: err.message ?? 'Server error' }); }
 });
 

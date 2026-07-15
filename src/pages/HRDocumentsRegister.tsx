@@ -1,8 +1,10 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { FileText, Search, ExternalLink, ShieldAlert, X, Filter } from 'lucide-react';
+import { FileText, Search, ExternalLink, ShieldAlert, X, Filter, Plus, UserPlus } from 'lucide-react';
 import { api, type HrDocument } from '../services/api';
 import { useAuth } from '../context/AuthContext';
+import IssueDocumentModal, { type EmployeeOption } from '../components/hr/IssueDocumentModal';
+import { toast } from '../components/Toaster';
 
 // Global HR-document register — admin/HR view of every letter ever
 // issued. Filter by employee / type / date range / free-text search
@@ -20,9 +22,11 @@ function fmtDate(iso: string | null | undefined): string {
 export default function HRDocumentsRegister() {
   const { user } = useAuth();
   const isAllowed = user?.role === 'admin' || user?.role === 'hr_manager' || user?.role === 'hr_intern';
+  const canIssue = user?.role === 'admin' || user?.role === 'hr_manager';
 
   const [types, setTypes] = useState<DocTypeMeta[]>([]);
   const [docs, setDocs] = useState<HrDocument[]>([]);
+  const [employees, setEmployees] = useState<EmployeeOption[]>([]);
   const [loading, setLoading] = useState(true);
   const [filterType, setFilterType] = useState<string>('');
   const [filterFrom, setFilterFrom] = useState<string>('');
@@ -30,12 +34,22 @@ export default function HRDocumentsRegister() {
   const [query, setQuery] = useState('');
   // Debounce free-text search so every keystroke doesn't hit the API.
   const [debouncedQ, setDebouncedQ] = useState('');
+  // Issue modal — starts in the requested mode when opened.
+  const [issueMode, setIssueMode] = useState<null | 'employee' | 'external'>(null);
   useEffect(() => {
     const t = setTimeout(() => setDebouncedQ(query.trim()), 300);
     return () => clearTimeout(t);
   }, [query]);
 
   useEffect(() => { api.getHrDocumentTypes().then(setTypes).catch(() => setTypes([])); }, []);
+  // Employees list for the picker inside the modal. Slim endpoint keeps
+  // the payload small.
+  useEffect(() => {
+    if (!canIssue) return;
+    api.getEmployeesSlim()
+      .then(rows => setEmployees((rows as any[]).map(e => ({ id: e.id, name: e.name, employee_id: e.employee_id }))))
+      .catch(() => setEmployees([]));
+  }, [canIssue]);
 
   useEffect(() => {
     if (!isAllowed) return;
@@ -73,13 +87,29 @@ export default function HRDocumentsRegister() {
 
   return (
     <div className="space-y-5">
-      <div>
-        <h1 className="font-display text-2xl font-bold text-on-surface flex items-center gap-2">
-          <FileText className="w-6 h-6 text-accent" /> HR Documents
-        </h1>
-        <p className="text-sm text-on-surface-muted mt-1">
-          Every formal letter issued to employees. Numbers reset per (type, year); voided numbers are never reused.
-        </p>
+      <div className="flex items-start justify-between gap-4 flex-wrap">
+        <div>
+          <h1 className="font-display text-2xl font-bold text-on-surface flex items-center gap-2">
+            <FileText className="w-6 h-6 text-accent" /> HR Documents
+          </h1>
+          <p className="text-sm text-on-surface-muted mt-1">
+            Every letter issued — employees + external recipients (interns pre-onboarding, candidates, ex-employees).
+            Numbers reset per (type, year); voided numbers are never reused.
+          </p>
+        </div>
+        {canIssue && (
+          <div className="inline-flex items-center gap-2 shrink-0">
+            <button onClick={() => setIssueMode('external')}
+              className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg text-sm font-semibold text-accent border border-accent/40 hover:bg-accent/10 transition-colors"
+              title="Issue a letter to someone NOT on HRMS (intern, candidate, contractor)">
+              <UserPlus className="w-4 h-4" /> Issue to external
+            </button>
+            <button onClick={() => setIssueMode('employee')}
+              className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg text-sm font-semibold bg-accent text-on-accent hover:opacity-90">
+              <Plus className="w-4 h-4" /> Issue to employee
+            </button>
+          </div>
+        )}
       </div>
 
       {/* Filter bar */}
@@ -168,12 +198,26 @@ export default function HRDocumentsRegister() {
                         <p className="text-[11px] text-on-surface-muted mt-0.5">{typeLabel}</p>
                       </td>
                       <td className="px-4 py-2.5">
-                        <Link to={`/employees/${doc.employee_code || doc.employee_id}?tab=Documents`}
-                          className="text-sm text-on-surface font-medium hover:text-accent">
-                          {doc.employee_name ?? '—'}
-                        </Link>
-                        {doc.employee_code && (
-                          <p className="text-[10px] text-on-surface-subtle num-mono">{doc.employee_code}</p>
+                        {doc.employee_id ? (
+                          <>
+                            <Link to={`/employees/${doc.employee_code || doc.employee_id}?tab=Documents`}
+                              className="text-sm text-on-surface font-medium hover:text-accent">
+                              {doc.employee_name ?? '—'}
+                            </Link>
+                            {doc.employee_code && (
+                              <p className="text-[10px] text-on-surface-subtle num-mono">{doc.employee_code}</p>
+                            )}
+                          </>
+                        ) : (
+                          <>
+                            <div className="flex items-center gap-1.5">
+                              <span className="text-sm text-on-surface font-medium">{doc.recipient_name ?? '—'}</span>
+                              <span className="text-[9px] px-1 py-0.5 rounded bg-warning-container text-warning border border-warning/30 uppercase tracking-wider font-bold">Ext</span>
+                            </div>
+                            {doc.recipient_email && (
+                              <p className="text-[10px] text-on-surface-subtle">{doc.recipient_email}</p>
+                            )}
+                          </>
                         )}
                       </td>
                       <td className="px-4 py-2.5 text-xs text-on-surface-muted whitespace-nowrap">{fmtDate(doc.issued_on)}</td>
@@ -199,6 +243,20 @@ export default function HRDocumentsRegister() {
           </div>
         )}
       </div>
+
+      {issueMode && (
+        <IssueDocumentModal
+          types={types}
+          employees={employees}
+          initialMode={issueMode}
+          onClose={() => setIssueMode(null)}
+          onIssued={doc => {
+            setIssueMode(null);
+            setDocs(prev => [doc, ...prev]);
+            toast.success('Document issued', `Number ${doc.doc_number} allocated.`);
+          }}
+        />
+      )}
     </div>
   );
 }

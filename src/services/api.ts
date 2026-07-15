@@ -1134,9 +1134,15 @@ export const api = {
     if (params.q) qs.set('q', params.q);
     return request<HrDocument[]>(`/hr-documents?${qs}`);
   },
+  // Either employee_id (existing HRMS record) OR recipient_name +
+  // optional recipient_email (external — intern before onboarding,
+  // candidate, contractor, ex-employee). Backend rejects if neither
+  // is provided.
   issueHrDocument: (data: {
     doc_type: string; doc_type_label?: string;
-    employee_id: string; issued_on: string;
+    employee_id?: string;
+    recipient_name?: string; recipient_email?: string;
+    issued_on: string;
     subject?: string; notes?: string; external_ref?: string;
   }) =>
     request<HrDocument>(`/hr-documents`, { method: 'POST', body: JSON.stringify(data) }),
@@ -1151,10 +1157,15 @@ export interface HrDocument {
   doc_number: string;
   doc_type: string;
   doc_type_label: string | null;
-  employee_id: string;
-  employee_name?: string;
-  employee_code?: string;
-  designation?: string;
+  // employee_id is null for external recipients (interns pre-onboarding,
+  // candidates, contractors, ex-employees). recipient_name is required
+  // in that case.
+  employee_id: string | null;
+  employee_name?: string | null;
+  employee_code?: string | null;
+  designation?: string | null;
+  recipient_name?: string | null;
+  recipient_email?: string | null;
   issued_on: string;
   issued_by_id: string | null;
   issued_by_name: string | null;
