@@ -1116,8 +1116,15 @@ export const api = {
     request<{ ok: true }>(`/config/checklist-templates/${id}`, { method: 'DELETE' }),
 
   // ── HR Document Register ──────────────────────────────────────────────
-  getHrDocumentTypes: () =>
-    request<Array<{ key: string; code: string; label: string }>>(`/hr-documents/types`),
+  getHrDocumentTypes: (opts: { include_inactive?: boolean } = {}) =>
+    request<Array<{ id: string; key: string; code: string; label: string; sort_order: number; active: boolean }>>(
+      `/hr-documents/types${opts.include_inactive ? '?include_inactive=1' : ''}`),
+  addHrDocumentType: (data: { label: string; key?: string; code?: string }) =>
+    request<any>(`/config/hr-document-types`, { method: 'POST', body: JSON.stringify(data) }),
+  updateHrDocumentType: (id: string, data: { label?: string; code?: string; active?: boolean }) =>
+    request<any>(`/config/hr-document-types/${id}`, { method: 'PATCH', body: JSON.stringify(data) }),
+  reorderHrDocumentTypes: (ordered_ids: string[]) =>
+    request<{ ok: true; updated: number }>(`/config/hr-document-types/reorder`, { method: 'PATCH', body: JSON.stringify({ ordered_ids }) }),
   getHrDocuments: (params: { employee_id?: string; doc_type?: string; from?: string; to?: string; q?: string } = {}) => {
     const qs = new URLSearchParams();
     if (params.employee_id) qs.set('employee_id', params.employee_id);

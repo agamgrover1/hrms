@@ -629,7 +629,7 @@ async function runStartupMigrations() {
   try {
     // Bump this probe whenever a new migration lands; existing warm
     // Lambdas will fail the SELECT and re-run runStartupMigrations().
-    await sql`SELECT doc_number FROM hr_documents LIMIT 0`;
+    await sql`SELECT sort_order FROM hr_document_types LIMIT 0`;
     _migrated = true;
     return;
   } catch {
@@ -1534,6 +1534,52 @@ async function runStartupMigrations() {
       next_num INTEGER NOT NULL DEFAULT 1,
       PRIMARY KEY (doc_type, year)
     )`;
+
+  // ── HR document types catalog (admin-editable) ────────────────────────
+  // The list of doc types (Appointment, Experience, NOC, …) used to be a
+  // hardcoded const. Moved to a table so admin can add / rename / hide
+  // types without a deploy. Rules:
+  //   - `key` is IMMUTABLE — it's the foreign-key-ish string on every
+  //     hr_documents row, so renaming would orphan history.
+  //   - `code` (3-letter, used inside the doc_number) IS editable but
+  //     historical doc_numbers stay literal, so a rename only affects
+  //     future issues.
+  //   - `active=false` = soft-hidden. Existing docs still render; the
+  //     type just disappears from the Issue Document dropdown.
+  await sql`
+    CREATE TABLE IF NOT EXISTS hr_document_types (
+      id TEXT PRIMARY KEY,
+      key TEXT UNIQUE NOT NULL,
+      code TEXT NOT NULL,
+      label TEXT NOT NULL,
+      sort_order INTEGER NOT NULL DEFAULT 0,
+      active BOOLEAN NOT NULL DEFAULT TRUE,
+      created_at TIMESTAMPTZ DEFAULT NOW(),
+      updated_at TIMESTAMPTZ DEFAULT NOW()
+    )`;
+  await sql`CREATE INDEX IF NOT EXISTS idx_hr_doc_types_active ON hr_document_types(active, sort_order)`.catch(()=>{});
+  // First-run seed. Same shape as the old const so nothing changes
+  // visibly on cutover.
+  try {
+    const count = (await sql`SELECT COUNT(*)::int AS n FROM hr_document_types` as any[])[0]?.n ?? 0;
+    if (count === 0) {
+      const seed = [
+        { key: 'appointment_letter', code: 'APP', label: 'Appointment letter' },
+        { key: 'experience_letter',  code: 'EXP', label: 'Experience letter'  },
+        { key: 'relieving_letter',   code: 'REL', label: 'Relieving letter'   },
+        { key: 'salary_certificate', code: 'SAL', label: 'Salary certificate' },
+        { key: 'warning_letter',     code: 'WRN', label: 'Warning letter'     },
+        { key: 'increment_letter',   code: 'INC', label: 'Increment letter'   },
+        { key: 'noc',                code: 'NOC', label: 'NOC'                },
+        { key: 'other',              code: 'OTH', label: 'Other'              },
+      ];
+      for (let i = 0; i < seed.length; i++) {
+        await sql`INSERT INTO hr_document_types (id, key, code, label, sort_order)
+                  VALUES (${'dt_' + seed[i].key}, ${seed[i].key}, ${seed[i].code}, ${seed[i].label}, ${i})
+                  ON CONFLICT (key) DO NOTHING`.catch(()=>{});
+      }
+    }
+  } catch { /* seed is best-effort */ }
 
   // ── Internal activities (non-project work) ────────────────────────────
   // Employees, HR, coordinators, and admin all log hours daily. People
@@ -9823,25 +9869,23 @@ app.patch('/api/warnings/pips/:id', async (req, res) => {
 // (doc_type, year). Voided numbers are NEVER reused — the counter just
 // keeps climbing so the audit trail stays intact.
 
-type DocTypeKey = 'appointment_letter'|'experience_letter'|'relieving_letter'|'salary_certificate'|'warning_letter'|'increment_letter'|'noc'|'other';
-const DOC_TYPES: { key: DocTypeKey; code: string; label: string }[] = [
-  { key: 'appointment_letter', code: 'APP', label: 'Appointment letter' },
-  { key: 'experience_letter',  code: 'EXP', label: 'Experience letter'  },
-  { key: 'relieving_letter',   code: 'REL', label: 'Relieving letter'   },
-  { key: 'salary_certificate', code: 'SAL', label: 'Salary certificate' },
-  { key: 'warning_letter',     code: 'WRN', label: 'Warning letter'     },
-  { key: 'increment_letter',   code: 'INC', label: 'Increment letter'   },
-  { key: 'noc',                code: 'NOC', label: 'NOC'                },
-  { key: 'other',              code: 'OTH', label: 'Other'              },
-];
-const DOC_TYPE_BY_KEY: Record<string, { code: string; label: string }> = Object.fromEntries(
-  DOC_TYPES.map(t => [t.key, { code: t.code, label: t.label }])
-);
+// Types come from hr_document_types (admin-editable). Small memo — the
+// list is short, changes rarely, and every issue / list call reads it.
+async function getDocTypeMeta(key: string): Promise<{ key: string; code: string; label: string; active: boolean } | null> {
+  const rows = await memoTtl(`hrDocType:${key}`, 5 * 60_000, async () =>
+    sql`SELECT key, code, label, active FROM hr_document_types WHERE key=${key} LIMIT 1` as Promise<any[]>);
+  return (rows as any[])[0] ?? null;
+}
+function invalidateDocTypeMetaCache() {
+  for (const k of Array.from(_memoCache.keys())) {
+    if (k.startsWith('hrDocType:') || k === 'hrDocTypesList' || k === 'hrDocTypesListAll') _memoCache.delete(k);
+  }
+}
 
 // Atomic allocation. UPSERT increments the counter and returns the value
 // the caller should use — no race window even under concurrent inserts.
-async function allocateDocNumber(docTypeKey: DocTypeKey, year: number): Promise<string> {
-  const meta = DOC_TYPE_BY_KEY[docTypeKey];
+async function allocateDocNumber(docTypeKey: string, year: number): Promise<string> {
+  const meta = await getDocTypeMeta(docTypeKey);
   if (!meta) throw new Error(`Unknown doc_type: ${docTypeKey}`);
   const rows = await sql`
     INSERT INTO hr_document_counters (doc_type, year, next_num)
@@ -9935,7 +9979,10 @@ app.post('/api/hr-documents', async (req, res) => {
       doc_type, doc_type_label, employee_id, issued_on,
       subject, notes, external_ref,
     } = req.body ?? {};
-    if (!doc_type || !DOC_TYPE_BY_KEY[doc_type]) return res.status(400).json({ error: 'valid doc_type is required' });
+    if (!doc_type) return res.status(400).json({ error: 'doc_type is required' });
+    const typeMeta = await getDocTypeMeta(doc_type);
+    if (!typeMeta) return res.status(400).json({ error: `Unknown doc_type: ${doc_type}` });
+    if (!typeMeta.active) return res.status(400).json({ error: `Doc type "${typeMeta.label}" is inactive` });
     if (!employee_id) return res.status(400).json({ error: 'employee_id is required' });
     if (!issued_on) return res.status(400).json({ error: 'issued_on is required' });
     if (doc_type === 'other' && !String(doc_type_label ?? '').trim()) {
@@ -9946,7 +9993,7 @@ app.post('/api/hr-documents', async (req, res) => {
     if (!emp) return res.status(404).json({ error: 'Employee not found' });
     const year = new Date(issued_on).getFullYear();
     if (!year || Number.isNaN(year)) return res.status(400).json({ error: 'issued_on must be a valid date' });
-    const docNumber = await allocateDocNumber(doc_type as DocTypeKey, year);
+    const docNumber = await allocateDocNumber(doc_type, year);
     const id = newId('doc');
     const actor = { id: gate.user!.id, name: gate.user!.name, role: gate.user!.role };
     const rows = await sql`
@@ -9965,7 +10012,7 @@ app.post('/api/hr-documents', async (req, res) => {
     // Fire-and-forget: notify employee + auto-tick a matching checklist item.
     void (async () => {
       try {
-        const label = doc_type === 'other' ? String(doc_type_label).trim() : DOC_TYPE_BY_KEY[doc_type].label;
+        const label = doc_type === 'other' ? String(doc_type_label).trim() : typeMeta.label;
         await notifyEmployeeUser(employee_id, 'hr_doc_issued', `${label} issued`,
           `${actor.name ?? 'HR'} issued your ${label.toLowerCase()} as ${docNumber}. Contact HR if you need a copy.`);
         if (doc_type === 'appointment_letter') await tryAutotickOnboardingItem(employee_id, 'appointment_letter', actor);
@@ -10025,12 +10072,96 @@ app.patch('/api/hr-documents/:id/void', async (req, res) => {
   } catch (err: any) { res.status(500).json({ error: err.message ?? 'Server error' }); }
 });
 
-// GET /api/hr-documents/types — the standard type catalog. Cheap
-// constant, but wrapping it in an endpoint keeps the frontend from
-// having to hard-code the list.
-app.get('/api/hr-documents/types', async (_req, res) => {
-  res.setHeader('Cache-Control', 'private, max-age=3600');
-  res.json(DOC_TYPES);
+// GET /api/hr-documents/types — the catalog of doc types.
+// ?include_inactive=1 returns hidden types too (for the admin editor);
+// default returns only active ones (for the Issue Document dropdown).
+app.get('/api/hr-documents/types', async (req, res) => {
+  try {
+    await runStartupMigrations();
+    const wantAll = req.query.include_inactive === '1' || req.query.include_inactive === 'true';
+    const cacheKey = wantAll ? 'hrDocTypesListAll' : 'hrDocTypesList';
+    const rows = await memoTtl(cacheKey, 5 * 60_000, async () => wantAll
+      ? sql`SELECT id, key, code, label, sort_order, active FROM hr_document_types ORDER BY sort_order, key`
+      : sql`SELECT id, key, code, label, sort_order, active FROM hr_document_types WHERE active=TRUE ORDER BY sort_order, key`);
+    res.setHeader('Cache-Control', 'private, max-age=300');
+    res.json(rows);
+  } catch (err: any) { res.status(500).json({ error: err.message ?? 'Server error' }); }
+});
+
+// POST /api/config/hr-document-types — add a new type. Admin/HR only.
+// key + code are auto-derived from label if not provided; both must be
+// unique. The `other` key is special (freeform doc_type_label required
+// on issue) — we accept the same key from admin but it isn't magic.
+app.post('/api/config/hr-document-types', async (req, res) => {
+  try {
+    await runStartupMigrations();
+    if (!(await requireFullHR(req, res)).ok) return;
+    const label = String(req.body?.label ?? '').trim();
+    if (!label) return res.status(400).json({ error: 'label is required' });
+    const providedKey = String(req.body?.key ?? '').trim().toLowerCase().replace(/[^a-z0-9_]+/g, '_');
+    const key = providedKey || label.toLowerCase().replace(/[^a-z0-9]+/g, '_').slice(0, 60);
+    if (!key) return res.status(400).json({ error: 'Could not derive a key — use a different label.' });
+    const providedCode = String(req.body?.code ?? '').trim().toUpperCase().slice(0, 6);
+    const code = providedCode || label.replace(/[^a-zA-Z]/g, '').slice(0, 3).toUpperCase() || 'DOC';
+    // sort_order defaults to end-of-list.
+    const maxRow = (await sql`SELECT COALESCE(MAX(sort_order), -1) AS m FROM hr_document_types` as any[])[0];
+    const nextOrder = Number(maxRow?.m ?? -1) + 1;
+    const id = 'dt_' + key;
+    try {
+      const row = (await sql`
+        INSERT INTO hr_document_types (id, key, code, label, sort_order)
+        VALUES (${id}, ${key}, ${code}, ${label}, ${nextOrder})
+        RETURNING *` as any[])[0];
+      invalidateDocTypeMetaCache();
+      res.status(201).json(row);
+    } catch (e: any) {
+      if (String(e?.message).includes('hr_document_types_key_key')) {
+        return res.status(409).json({ error: `A type with key "${key}" already exists.` });
+      }
+      throw e;
+    }
+  } catch (err: any) { res.status(500).json({ error: err.message ?? 'Server error' }); }
+});
+
+// PATCH /api/config/hr-document-types/:id — rename label / code / toggle
+// active. `key` is immutable — it's the FK-ish string on every past
+// hr_documents row. `code` renames are safe: existing doc_numbers are
+// stored as literal strings so the historical prefix stays. Only future
+// issues use the new code.
+app.patch('/api/config/hr-document-types/:id', async (req, res) => {
+  try {
+    await runStartupMigrations();
+    if (!(await requireFullHR(req, res)).ok) return;
+    const existing = (await sql`SELECT * FROM hr_document_types WHERE id=${req.params.id}` as any[])[0];
+    if (!existing) return res.status(404).json({ error: 'Type not found' });
+    const label = req.body?.label !== undefined ? String(req.body.label).trim() : existing.label;
+    const code = req.body?.code !== undefined ? String(req.body.code).trim().toUpperCase().slice(0, 6) : existing.code;
+    const active = req.body?.active !== undefined ? !!req.body.active : existing.active;
+    if (!label) return res.status(400).json({ error: 'label is required' });
+    if (!code) return res.status(400).json({ error: 'code is required' });
+    const row = (await sql`
+      UPDATE hr_document_types SET
+        label=${label}, code=${code}, active=${active}, updated_at=NOW()
+      WHERE id=${req.params.id} RETURNING *` as any[])[0];
+    invalidateDocTypeMetaCache();
+    res.json(row);
+  } catch (err: any) { res.status(500).json({ error: err.message ?? 'Server error' }); }
+});
+
+// PATCH /api/config/hr-document-types/reorder — bulk sort_order update.
+// Body: { ordered_ids: string[] }.
+app.patch('/api/config/hr-document-types/reorder', async (req, res) => {
+  try {
+    await runStartupMigrations();
+    if (!(await requireFullHR(req, res)).ok) return;
+    const orderedIds: string[] = Array.isArray(req.body?.ordered_ids) ? req.body.ordered_ids : [];
+    if (orderedIds.length === 0) return res.json({ ok: true, updated: 0 });
+    for (let i = 0; i < orderedIds.length; i++) {
+      await sql`UPDATE hr_document_types SET sort_order=${i}, updated_at=NOW() WHERE id=${orderedIds[i]}`;
+    }
+    invalidateDocTypeMetaCache();
+    res.json({ ok: true, updated: orderedIds.length });
+  } catch (err: any) { res.status(500).json({ error: err.message ?? 'Server error' }); }
 });
 
 // ── WFH ───────────────────────────────────────────────────────────────────
