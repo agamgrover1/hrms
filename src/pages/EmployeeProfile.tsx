@@ -14,6 +14,7 @@ import { EditEmployeeModal } from './Employees';
 import EmployeeResponsibilitiesPanel from '../components/EmployeeResponsibilitiesPanel';
 import EmployeeHoursDetailModal from '../components/EmployeeHoursDetailModal';
 import ChecklistPanel from '../components/ChecklistPanel';
+import DocumentsPanel from '../components/hr/DocumentsPanel';
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 function toDateStr(val: any): string {
@@ -155,7 +156,7 @@ function ActionModal({ title, info, type, isIncentive, onClose, onConfirm }: {
 }
 
 // ── Tabs ──────────────────────────────────────────────────────────────────────
-const TABS = ['Overview','Attendance','Leave','Hours','Performance','Incentives','Expenses','Warnings','Responsibilities','Onboarding','Offboarding'] as const;
+const TABS = ['Overview','Attendance','Leave','Hours','Performance','Incentives','Expenses','Warnings','Responsibilities','Onboarding','Offboarding','Documents'] as const;
 type Tab = typeof TABS[number];
 
 // ── Main page ─────────────────────────────────────────────────────────────────
@@ -583,7 +584,7 @@ export default function EmployeeProfile() {
             {TABS.filter(t => {
               // Lifecycle checklists are HR/admin territory — a manager
               // viewing a report's profile doesn't need to see FnF status.
-              if (t === 'Onboarding' || t === 'Offboarding') {
+              if (t === 'Onboarding' || t === 'Offboarding' || t === 'Documents') {
                 return me?.role === 'admin' || me?.role === 'hr_manager' || me?.role === 'hr_intern';
               }
               return true;
@@ -1303,6 +1304,11 @@ export default function EmployeeProfile() {
       {/* ── Offboarding checklist ────────────────────────────────────────── */}
       {tab === 'Offboarding' && emp && (
         <ChecklistPanel employeeId={emp.id} kind="offboarding" exitDate={emp.exit_date ?? null} />
+      )}
+
+      {/* ── HR Documents ─────────────────────────────────────────────────── */}
+      {tab === 'Documents' && emp && (
+        <DocumentsPanel employeeId={emp.id} employeeName={emp.name} />
       )}
 
       {/* ── Hours & Allocation ───────────────────────────────────────────── */}

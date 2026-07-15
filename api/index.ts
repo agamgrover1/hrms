@@ -629,7 +629,7 @@ async function runStartupMigrations() {
   try {
     // Bump this probe whenever a new migration lands; existing warm
     // Lambdas will fail the SELECT and re-run runStartupMigrations().
-    await sql`SELECT reviewed_at FROM hour_log_days LIMIT 0`;
+    await sql`SELECT doc_number FROM hr_documents LIMIT 0`;
     _migrated = true;
     return;
   } catch {
@@ -1497,6 +1497,43 @@ async function runStartupMigrations() {
       }
     }
   } catch { /* seed is best-effort; endpoints tolerate an empty table */ }
+
+  // ── HR document register (numbered letters) ─────────────────────────────
+  // Every formal letter HR issues (appointment, experience, relieving,
+  // salary certificate, warning, increment, NOC, ad-hoc) gets a unique
+  // human-readable number so we can answer "what was Shubham's appointment
+  // letter number?" without hunting through Drive. Numbers are allocated
+  // per (doc_type, year) via hr_document_counters and never reused —
+  // voiding leaves a permanent gap so audit history stays intact.
+  await sql`
+    CREATE TABLE IF NOT EXISTS hr_documents (
+      id TEXT PRIMARY KEY,
+      doc_number TEXT UNIQUE NOT NULL,
+      doc_type TEXT NOT NULL,
+      doc_type_label TEXT,
+      employee_id TEXT NOT NULL REFERENCES employees(id) ON DELETE CASCADE,
+      issued_on DATE NOT NULL,
+      issued_by_id TEXT,
+      issued_by_name TEXT,
+      subject TEXT,
+      notes TEXT,
+      external_ref TEXT,
+      voided BOOLEAN NOT NULL DEFAULT FALSE,
+      voided_reason TEXT,
+      voided_by_name TEXT,
+      voided_at TIMESTAMPTZ,
+      created_at TIMESTAMPTZ DEFAULT NOW(),
+      updated_at TIMESTAMPTZ DEFAULT NOW()
+    )`;
+  await sql`CREATE INDEX IF NOT EXISTS idx_hr_docs_employee ON hr_documents(employee_id, issued_on DESC)`.catch(()=>{});
+  await sql`CREATE INDEX IF NOT EXISTS idx_hr_docs_type ON hr_documents(doc_type, issued_on DESC)`.catch(()=>{});
+  await sql`
+    CREATE TABLE IF NOT EXISTS hr_document_counters (
+      doc_type TEXT NOT NULL,
+      year INTEGER NOT NULL,
+      next_num INTEGER NOT NULL DEFAULT 1,
+      PRIMARY KEY (doc_type, year)
+    )`;
 
   // ── Internal activities (non-project work) ────────────────────────────
   // Employees, HR, coordinators, and admin all log hours daily. People
@@ -9779,6 +9816,221 @@ app.patch('/api/warnings/pips/:id', async (req, res) => {
     if (!(rows as any[]).length) return res.status(404).json({ error: 'Not found' });
     res.json((rows as any[])[0]);
   } catch { res.status(500).json({ error: 'Server error' }); }
+});
+
+// ── HR Document Register ─────────────────────────────────────────────────
+// Every HR-issued letter gets a unique doc_number. Sequence resets per
+// (doc_type, year). Voided numbers are NEVER reused — the counter just
+// keeps climbing so the audit trail stays intact.
+
+type DocTypeKey = 'appointment_letter'|'experience_letter'|'relieving_letter'|'salary_certificate'|'warning_letter'|'increment_letter'|'noc'|'other';
+const DOC_TYPES: { key: DocTypeKey; code: string; label: string }[] = [
+  { key: 'appointment_letter', code: 'APP', label: 'Appointment letter' },
+  { key: 'experience_letter',  code: 'EXP', label: 'Experience letter'  },
+  { key: 'relieving_letter',   code: 'REL', label: 'Relieving letter'   },
+  { key: 'salary_certificate', code: 'SAL', label: 'Salary certificate' },
+  { key: 'warning_letter',     code: 'WRN', label: 'Warning letter'     },
+  { key: 'increment_letter',   code: 'INC', label: 'Increment letter'   },
+  { key: 'noc',                code: 'NOC', label: 'NOC'                },
+  { key: 'other',              code: 'OTH', label: 'Other'              },
+];
+const DOC_TYPE_BY_KEY: Record<string, { code: string; label: string }> = Object.fromEntries(
+  DOC_TYPES.map(t => [t.key, { code: t.code, label: t.label }])
+);
+
+// Atomic allocation. UPSERT increments the counter and returns the value
+// the caller should use — no race window even under concurrent inserts.
+async function allocateDocNumber(docTypeKey: DocTypeKey, year: number): Promise<string> {
+  const meta = DOC_TYPE_BY_KEY[docTypeKey];
+  if (!meta) throw new Error(`Unknown doc_type: ${docTypeKey}`);
+  const rows = await sql`
+    INSERT INTO hr_document_counters (doc_type, year, next_num)
+    VALUES (${docTypeKey}, ${year}, 2)
+    ON CONFLICT (doc_type, year) DO UPDATE SET next_num = hr_document_counters.next_num + 1
+    RETURNING next_num - 1 AS allocated` as any[];
+  const n = Number(rows[0]?.allocated ?? 1);
+  return `DL-${meta.code}-${year}-${String(n).padStart(4, '0')}`;
+}
+
+// Best-effort: when an appointment letter is issued, tick the matching
+// onboarding item if there's a live checklist. Same shape will apply to
+// experience_letter / relieving_letter → offboarding items.
+async function tryAutotickOnboardingItem(employeeId: string, itemKey: string, actor: { id?: string; name?: string; role?: string }) {
+  try {
+    const openChecklist = (await sql`
+      SELECT id FROM onboarding_checklists
+      WHERE employee_id=${employeeId} AND status='in_progress'
+      LIMIT 1` as any[])[0];
+    if (!openChecklist?.id) return;
+    await sql`
+      UPDATE onboarding_items SET
+        done=TRUE,
+        done_by_id=COALESCE(done_by_id, ${actor.id ?? null}),
+        done_by_name=COALESCE(done_by_name, ${actor.name ?? null}),
+        done_at=COALESCE(done_at, NOW()),
+        updated_at=NOW()
+      WHERE checklist_id=${openChecklist.id} AND key=${itemKey} AND done=FALSE`;
+  } catch { /* non-fatal — auto-tick is a nicety, not a contract */ }
+}
+async function tryAutotickOffboardingItem(employeeId: string, itemKey: string, actor: { id?: string; name?: string; role?: string }) {
+  try {
+    const openChecklist = (await sql`
+      SELECT id FROM offboarding_checklists
+      WHERE employee_id=${employeeId} AND status='in_progress'
+      LIMIT 1` as any[])[0];
+    if (!openChecklist?.id) return;
+    await sql`
+      UPDATE offboarding_items SET
+        done=TRUE,
+        done_by_id=COALESCE(done_by_id, ${actor.id ?? null}),
+        done_by_name=COALESCE(done_by_name, ${actor.name ?? null}),
+        done_at=COALESCE(done_at, NOW()),
+        updated_at=NOW()
+      WHERE checklist_id=${openChecklist.id} AND key=${itemKey} AND done=FALSE`;
+  } catch { /* non-fatal */ }
+}
+function invalidateHrDocsCache() {
+  for (const k of Array.from(_memoCache.keys())) {
+    if (k.startsWith('hrDocs:')) _memoCache.delete(k);
+  }
+}
+
+// GET /api/hr-documents — list + filter. hr_intern can read.
+app.get('/api/hr-documents', async (req, res) => {
+  try {
+    await runStartupMigrations();
+    if (!(await requireHROrAbove(req, res))) return;
+    const employee_id = (req.query.employee_id as string) || null;
+    const doc_type = (req.query.doc_type as string) || null;
+    const from = (req.query.from as string) || null;
+    const to = (req.query.to as string) || null;
+    const q = ((req.query.q as string) || '').trim();
+    const qLike = q ? `%${q}%` : null;
+    const cacheKey = `hrDocs:${employee_id ?? ''}:${doc_type ?? ''}:${from ?? ''}:${to ?? ''}:${q}`;
+    const rows = await memoTtl(cacheKey, 60_000, async () => sql`
+      SELECT d.*, e.name AS employee_name, e.employee_id AS employee_code, e.designation
+      FROM hr_documents d
+      JOIN employees e ON e.id = d.employee_id
+      WHERE (${employee_id}::text IS NULL OR d.employee_id = ${employee_id})
+        AND (${doc_type}::text IS NULL OR d.doc_type = ${doc_type})
+        AND (${from}::text IS NULL OR d.issued_on >= ${from}::date)
+        AND (${to}::text IS NULL OR d.issued_on <= ${to}::date)
+        AND (${qLike}::text IS NULL
+             OR d.doc_number ILIKE ${qLike}
+             OR d.subject ILIKE ${qLike}
+             OR d.notes ILIKE ${qLike}
+             OR e.name ILIKE ${qLike})
+      ORDER BY d.issued_on DESC, d.doc_number DESC`);
+    res.json(rows);
+  } catch (err: any) { res.status(500).json({ error: err.message ?? 'Server error' }); }
+});
+
+// POST /api/hr-documents — issue a new doc. admin + hr_manager only.
+app.post('/api/hr-documents', async (req, res) => {
+  try {
+    await runStartupMigrations();
+    const gate = await requireFullHR(req, res);
+    if (!gate.ok) return;
+    const {
+      doc_type, doc_type_label, employee_id, issued_on,
+      subject, notes, external_ref,
+    } = req.body ?? {};
+    if (!doc_type || !DOC_TYPE_BY_KEY[doc_type]) return res.status(400).json({ error: 'valid doc_type is required' });
+    if (!employee_id) return res.status(400).json({ error: 'employee_id is required' });
+    if (!issued_on) return res.status(400).json({ error: 'issued_on is required' });
+    if (doc_type === 'other' && !String(doc_type_label ?? '').trim()) {
+      return res.status(400).json({ error: 'doc_type_label is required when doc_type = other' });
+    }
+    // Verify the employee exists so a bad id doesn't consume a number.
+    const emp = (await sql`SELECT id, name FROM employees WHERE id=${employee_id} LIMIT 1` as any[])[0];
+    if (!emp) return res.status(404).json({ error: 'Employee not found' });
+    const year = new Date(issued_on).getFullYear();
+    if (!year || Number.isNaN(year)) return res.status(400).json({ error: 'issued_on must be a valid date' });
+    const docNumber = await allocateDocNumber(doc_type as DocTypeKey, year);
+    const id = newId('doc');
+    const actor = { id: gate.user!.id, name: gate.user!.name, role: gate.user!.role };
+    const rows = await sql`
+      INSERT INTO hr_documents (id, doc_number, doc_type, doc_type_label, employee_id,
+        issued_on, issued_by_id, issued_by_name, subject, notes, external_ref)
+      VALUES (${id}, ${docNumber}, ${doc_type}, ${doc_type === 'other' ? String(doc_type_label).trim() : null},
+        ${employee_id}, ${issued_on}::date,
+        ${actor.id ?? null}, ${actor.name ?? null},
+        ${subject ? String(subject).trim() : null},
+        ${notes ? String(notes).trim() : null},
+        ${external_ref ? String(external_ref).trim() : null})
+      RETURNING *`;
+    const rec = (rows as any[])[0];
+    invalidateHrDocsCache();
+    res.status(201).json(rec);
+    // Fire-and-forget: notify employee + auto-tick a matching checklist item.
+    void (async () => {
+      try {
+        const label = doc_type === 'other' ? String(doc_type_label).trim() : DOC_TYPE_BY_KEY[doc_type].label;
+        await notifyEmployeeUser(employee_id, 'hr_doc_issued', `${label} issued`,
+          `${actor.name ?? 'HR'} issued your ${label.toLowerCase()} as ${docNumber}. Contact HR if you need a copy.`);
+        if (doc_type === 'appointment_letter') await tryAutotickOnboardingItem(employee_id, 'appointment_letter', actor);
+        if (doc_type === 'experience_letter') await tryAutotickOffboardingItem(employee_id, 'experience_letter', actor);
+        if (doc_type === 'relieving_letter')  await tryAutotickOffboardingItem(employee_id, 'relieving_letter', actor);
+      } catch { /* non-fatal */ }
+    })();
+  } catch (err: any) { res.status(500).json({ error: err.message ?? 'Server error' }); }
+});
+
+// PATCH /api/hr-documents/:id — edit mutable fields. doc_number,
+// doc_type, employee_id are immutable — fixing those means voiding +
+// re-issuing so the number history stays honest.
+app.patch('/api/hr-documents/:id', async (req, res) => {
+  try {
+    await runStartupMigrations();
+    if (!(await requireFullHR(req, res)).ok) return;
+    const { issued_on, subject, notes, external_ref } = req.body ?? {};
+    const existing = (await sql`SELECT * FROM hr_documents WHERE id=${req.params.id}` as any[])[0];
+    if (!existing) return res.status(404).json({ error: 'Document not found' });
+    if (existing.voided) return res.status(400).json({ error: 'Cannot edit a voided document' });
+    const rows = await sql`
+      UPDATE hr_documents SET
+        issued_on = COALESCE(${issued_on ?? null}::date, issued_on),
+        subject = ${subject === undefined ? existing.subject : (subject ? String(subject).trim() : null)},
+        notes = ${notes === undefined ? existing.notes : (notes ? String(notes).trim() : null)},
+        external_ref = ${external_ref === undefined ? existing.external_ref : (external_ref ? String(external_ref).trim() : null)},
+        updated_at = NOW()
+      WHERE id=${req.params.id} RETURNING *`;
+    invalidateHrDocsCache();
+    res.json((rows as any[])[0]);
+  } catch (err: any) { res.status(500).json({ error: err.message ?? 'Server error' }); }
+});
+
+// PATCH /api/hr-documents/:id/void — soft-delete with a reason.
+// The row + its allocated number stay in the register forever so the
+// sequence never repeats and the audit trail is complete.
+app.patch('/api/hr-documents/:id/void', async (req, res) => {
+  try {
+    await runStartupMigrations();
+    const gate = await requireFullHR(req, res);
+    if (!gate.ok) return;
+    const reason = String(req.body?.voided_reason ?? '').trim();
+    if (!reason) return res.status(400).json({ error: 'voided_reason is required' });
+    const rows = await sql`
+      UPDATE hr_documents SET
+        voided = TRUE,
+        voided_reason = ${reason},
+        voided_by_name = ${gate.user!.name ?? null},
+        voided_at = NOW(),
+        updated_at = NOW()
+      WHERE id=${req.params.id} AND voided = FALSE
+      RETURNING *`;
+    if (!(rows as any[]).length) return res.status(404).json({ error: 'Document not found or already voided' });
+    invalidateHrDocsCache();
+    res.json((rows as any[])[0]);
+  } catch (err: any) { res.status(500).json({ error: err.message ?? 'Server error' }); }
+});
+
+// GET /api/hr-documents/types — the standard type catalog. Cheap
+// constant, but wrapping it in an endpoint keeps the frontend from
+// having to hard-code the list.
+app.get('/api/hr-documents/types', async (_req, res) => {
+  res.setHeader('Cache-Control', 'private, max-age=3600');
+  res.json(DOC_TYPES);
 });
 
 // ── WFH ───────────────────────────────────────────────────────────────────

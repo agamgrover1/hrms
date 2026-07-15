@@ -1114,7 +1114,53 @@ export const api = {
     request<{ ok: true; updated: number }>(`/config/checklist-templates/reorder`, { method: 'PATCH', body: JSON.stringify({ kind, ordered_ids }) }),
   deleteChecklistTemplate: (id: string) =>
     request<{ ok: true }>(`/config/checklist-templates/${id}`, { method: 'DELETE' }),
+
+  // ── HR Document Register ──────────────────────────────────────────────
+  getHrDocumentTypes: () =>
+    request<Array<{ key: string; code: string; label: string }>>(`/hr-documents/types`),
+  getHrDocuments: (params: { employee_id?: string; doc_type?: string; from?: string; to?: string; q?: string } = {}) => {
+    const qs = new URLSearchParams();
+    if (params.employee_id) qs.set('employee_id', params.employee_id);
+    if (params.doc_type) qs.set('doc_type', params.doc_type);
+    if (params.from) qs.set('from', params.from);
+    if (params.to) qs.set('to', params.to);
+    if (params.q) qs.set('q', params.q);
+    return request<HrDocument[]>(`/hr-documents?${qs}`);
+  },
+  issueHrDocument: (data: {
+    doc_type: string; doc_type_label?: string;
+    employee_id: string; issued_on: string;
+    subject?: string; notes?: string; external_ref?: string;
+  }) =>
+    request<HrDocument>(`/hr-documents`, { method: 'POST', body: JSON.stringify(data) }),
+  updateHrDocument: (id: string, data: { issued_on?: string; subject?: string | null; notes?: string | null; external_ref?: string | null }) =>
+    request<HrDocument>(`/hr-documents/${id}`, { method: 'PATCH', body: JSON.stringify(data) }),
+  voidHrDocument: (id: string, voided_reason: string) =>
+    request<HrDocument>(`/hr-documents/${id}/void`, { method: 'PATCH', body: JSON.stringify({ voided_reason }) }),
 };
+
+export interface HrDocument {
+  id: string;
+  doc_number: string;
+  doc_type: string;
+  doc_type_label: string | null;
+  employee_id: string;
+  employee_name?: string;
+  employee_code?: string;
+  designation?: string;
+  issued_on: string;
+  issued_by_id: string | null;
+  issued_by_name: string | null;
+  subject: string | null;
+  notes: string | null;
+  external_ref: string | null;
+  voided: boolean;
+  voided_reason: string | null;
+  voided_by_name: string | null;
+  voided_at: string | null;
+  created_at: string;
+  updated_at: string;
+}
 
 export interface AllocationChangeRequest {
   id: string;
