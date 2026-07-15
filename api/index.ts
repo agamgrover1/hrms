@@ -502,6 +502,10 @@ async function healUserEmployeeLinks(): Promise<{ dangling: number; linkedByEmai
 // role has zero rows, so admins can freely edit / delete items without them
 // reappearing on every cold start.
 async function seedRoleResponsibilities() {
+  await seedProjectCoordinatorResponsibilities();
+  await seedHrManagerResponsibilities();
+}
+async function seedProjectCoordinatorResponsibilities() {
   try {
     const existing = (await sql`SELECT COUNT(*)::int AS c FROM role_responsibilities WHERE role='project_coordinator'`) as any[];
     if (Number(existing[0]?.c || 0) > 0) return;
@@ -605,6 +609,199 @@ async function seedRoleResponsibilities() {
   } catch { /* migrations are best-effort */ }
 }
 
+// HR Manager playbook — seeds once, then admin can edit freely via
+// Config → Roles & Responsibilities. Sections mirror how HR actually
+// works: daily (approvals + follow-ups), weekly (housekeeping),
+// month-end (payroll + reviews), joiner / exit lifecycle, HR docs
+// register, and ad-hoc actions that don't fit a cadence.
+async function seedHrManagerResponsibilities() {
+  try {
+    const existing = (await sql`SELECT COUNT(*)::int AS c FROM role_responsibilities WHERE role='hr_manager'`) as any[];
+    if (Number(existing[0]?.c || 0) > 0) return;
+
+    type Item = { section: string; sOrd: number; iOrd: number; title: string; details?: string; freq?: string; where?: string };
+    const items: Item[] = [
+      // ── Section 1: Daily ────────────────────────────────────────────────────
+      { section: 'Daily routine', sOrd: 1, iOrd: 1, freq: 'daily',
+        title: 'Sweep the notification bell first thing',
+        where: 'Top-right bell · also /notifications',
+        details: 'Pending leaves, WFH requests, attendance notes, held / rejected hour logs, and doc-issued acknowledgements land here. Anything unread is someone waiting on you.' },
+      { section: 'Daily routine', sOrd: 1, iOrd: 2, freq: 'daily',
+        title: 'Approve pending leaves',
+        where: 'Sidebar → Time off → Leave Management → Pending',
+        details: 'Manager\'s recommendation is shown alongside. HR is the final call; use Override to change what a manager approved / rejected when needed. Add a short approver note so the employee sees the reason.' },
+      { section: 'Daily routine', sOrd: 1, iOrd: 3, freq: 'daily',
+        title: 'Approve WFH requests',
+        where: 'Sidebar → Time off → Work From Home',
+        details: 'Same flow as leaves. Manager approval shows in-row; HR closes the loop. Use the date filter to check who\'s on WFH today or tomorrow.' },
+      { section: 'Daily routine', sOrd: 1, iOrd: 4, freq: 'daily',
+        title: 'Approve attendance notes',
+        where: 'Sidebar → Attendance → any day with an amber "+ Add note" chip',
+        details: 'Late arrivals, short days, missed check-outs — employees / managers can add a note; you approve or reject with a reason. Sit on nothing past 24h.' },
+      { section: 'Daily routine', sOrd: 1, iOrd: 5, freq: 'daily',
+        title: 'Watch for late arrivals / absentees + follow up',
+        where: 'Sidebar → Attendance (current month)',
+        details: 'Anyone marked Absent, Late, or without a check-out gets a quick ping. Persistent patterns get flagged for the monthly review or a warning.' },
+
+      // ── Section 2: Onboarding ───────────────────────────────────────────────
+      { section: 'New joiner onboarding', sOrd: 2, iOrd: 1, freq: 'as_needed',
+        title: 'Create the employee record',
+        where: 'Sidebar → People → + Add Employee',
+        details: 'Fill personal details, department, designation, reporting manager, shift, join date, salary, probation-end date (if any). Employee code (DL####) auto-generates.' },
+      { section: 'New joiner onboarding', sOrd: 2, iOrd: 2, freq: 'as_needed',
+        title: 'Create their app login',
+        where: 'Sidebar → Users → + Add User',
+        details: 'Link the user to the employee record you just created. Pick the right role (employee / project_coordinator / hr_intern etc). Share the temporary password over WhatsApp; they change it on first login.' },
+      { section: 'New joiner onboarding', sOrd: 2, iOrd: 3, freq: 'as_needed',
+        title: 'Start the onboarding checklist',
+        where: 'Employee profile → Onboarding tab → Start onboarding',
+        details: 'Seeds the 8 standard items (appointment letter, email/Slack, seat, docs, punch-in, etc). Tick each as it happens; add ad-hoc items for anything project-specific.' },
+      { section: 'New joiner onboarding', sOrd: 2, iOrd: 4, freq: 'as_needed',
+        title: 'Issue the appointment letter',
+        where: 'Employee profile → Documents tab → + Issue Document',
+        details: 'Pick "Appointment letter", paste the Drive link to the PDF, save. The system allocates the number (DL-APP-YYYY-####) and auto-ticks the "Issue appointment letter" item on the onboarding checklist.' },
+      { section: 'New joiner onboarding', sOrd: 2, iOrd: 5, freq: 'as_needed',
+        title: 'Set the probation end date (if applicable)',
+        where: 'Sidebar → People → edit employee',
+        details: 'Drives the "confirmation due" reminders and the probation salary rules. 30 days before it ends, schedule a confirmation review with the reporting manager.' },
+      { section: 'New joiner onboarding', sOrd: 2, iOrd: 6, freq: 'as_needed',
+        title: 'Assign biometric ID + shift',
+        where: 'Sidebar → People → edit employee',
+        details: 'Biometric ID links their attendance imports; shift decides their expected start / end time and the "late" cutoff.' },
+
+      // ── Section 3: Weekly ───────────────────────────────────────────────────
+      { section: 'Weekly review (Mon ~20min)', sOrd: 3, iOrd: 1, freq: 'weekly',
+        title: 'Check the Lifecycle dashboard for overdue checklists',
+        where: 'Sidebar → Lifecycle',
+        details: 'Any onboarding or offboarding older than 14 days shows an overdue badge. Chase whoever owns the stalled step.' },
+      { section: 'Weekly review (Mon ~20min)', sOrd: 3, iOrd: 2, freq: 'weekly',
+        title: 'Scan the attendance week',
+        where: 'Sidebar → Attendance → last week',
+        details: 'Look for patterns: repeat lates, half-days without notes, unusual absences. Flag concerns on the Performance page as private notes so team leads see them at review time.' },
+      { section: 'Weekly review (Mon ~20min)', sOrd: 3, iOrd: 3, freq: 'weekly',
+        title: 'Review the pulse for red / amber signals',
+        where: 'Sidebar → Pulse (auto)',
+        details: 'Auto-computed from hours, attendance, reviews. Anyone dropping into amber / red gets a quick 1:1 or a private note added to their profile for the next monthly review.' },
+      { section: 'Weekly review (Mon ~20min)', sOrd: 3, iOrd: 4, freq: 'weekly',
+        title: 'Post-audit HR document register',
+        where: 'Sidebar → Documents',
+        details: 'Scan for any doc issued this week that\'s missing a PDF link, subject, or has an obvious typo. Edit inline; void + re-issue if the number is wrong for the type.' },
+
+      // ── Section 4: Month-end ────────────────────────────────────────────────
+      { section: 'Month-end (25th–1st)', sOrd: 4, iOrd: 1, freq: 'monthly',
+        title: 'Run the monthly leave credit',
+        where: 'Sidebar → Time off → Leave Management → Run monthly credit',
+        details: 'Credits everyone the +1 for the new month. Idempotent — safe to click twice. If a new joiner missed a credit, the backfill fires the same button.' },
+      { section: 'Month-end (25th–1st)', sOrd: 4, iOrd: 2, freq: 'monthly',
+        title: 'Finalise payroll',
+        where: 'Sidebar → Payroll → select month',
+        details: 'Confirm every active employee has a row. Handle exit-month proration, override final salary where needed (leave encashment, bonuses, deductions), mark payments as paid once transferred.' },
+      { section: 'Month-end (25th–1st)', sOrd: 4, iOrd: 3, freq: 'monthly',
+        title: 'File monthly performance reviews',
+        where: 'Sidebar → Performance → Monthly reviews',
+        details: 'Each manager rates their reports across the standard pillars. HR chases missing ones and locks reviews when the cycle closes so scores can\'t be edited afterwards.' },
+      { section: 'Month-end (25th–1st)', sOrd: 4, iOrd: 4, freq: 'monthly',
+        title: 'Issue payslips + increment letters where applicable',
+        where: 'Employee profile → Documents tab',
+        details: 'Salary revisions → issue DL-INC. Anyone who requested a salary certificate → issue DL-SAL. Keep the PDFs in the usual Drive folder and paste the link into the register.' },
+      { section: 'Month-end (25th–1st)', sOrd: 4, iOrd: 5, freq: 'monthly',
+        title: 'Celebrate birthdays + work anniversaries',
+        where: 'Dashboard → Coming up widget',
+        details: 'Next-30-day list surfaces automatically. Post announcements + collect small notes from the team.' },
+
+      // ── Section 5: Exit / offboarding ───────────────────────────────────────
+      { section: 'Exit & offboarding', sOrd: 5, iOrd: 1, freq: 'as_needed',
+        title: 'Set the exit date on the employee record',
+        where: 'Sidebar → People → edit employee → Exit date',
+        details: 'The last working day. Drives salary proration for the exit month and unlocks the Offboarding tab.' },
+      { section: 'Exit & offboarding', sOrd: 5, iOrd: 2, freq: 'as_needed',
+        title: 'Start the offboarding checklist',
+        where: 'Employee profile → Offboarding tab → Start offboarding',
+        details: 'Seeds the 9 standard items: resignation, exit interview, asset handover, sheet removals, credential removal (Thunderbird / Slack / WhatsApp), HRMS deactivation, FnF. Tick as each happens.' },
+      { section: 'Exit & offboarding', sOrd: 5, iOrd: 3, freq: 'as_needed',
+        title: 'Schedule + conduct the exit interview',
+        where: 'Same offboarding checklist → tick when done',
+        details: 'Notes captured in the checklist item flow into the audit history so future reference checks have the context.' },
+      { section: 'Exit & offboarding', sOrd: 5, iOrd: 4, freq: 'as_needed',
+        title: 'Coordinate asset handover with IT',
+        where: 'Sidebar → IT & Repairs',
+        details: 'Return of laptop / peripherals / access cards. Update asset status once handover is confirmed.' },
+      { section: 'Exit & offboarding', sOrd: 5, iOrd: 5, freq: 'as_needed',
+        title: 'Issue experience + relieving letters',
+        where: 'Employee profile → Documents tab',
+        details: 'Issue DL-EXP and DL-REL on the last working day. Both auto-tick the matching offboarding checklist items. Paste the Drive PDF link into the register.' },
+      { section: 'Exit & offboarding', sOrd: 5, iOrd: 6, freq: 'as_needed',
+        title: 'Complete FnF settlement',
+        where: 'Sidebar → Payroll (exit month row) + Finance',
+        details: 'Apply leave encashment, notice period deductions, gratuity if applicable. Use the exit-salary override field to bake the final number in — proration alone doesn\'t cover all of these.' },
+      { section: 'Exit & offboarding', sOrd: 5, iOrd: 7, freq: 'as_needed',
+        title: 'Deactivate the app login',
+        where: 'Sidebar → Users → toggle Active off',
+        details: 'Kills their HRMS access. The employee record stays for historical reporting; only the login is disabled.' },
+
+      // ── Section 6: HR documents ─────────────────────────────────────────────
+      { section: 'HR documents', sOrd: 6, iOrd: 1, freq: 'as_needed',
+        title: 'Issue any HR letter',
+        where: 'Employee profile → Documents tab → + Issue Document',
+        details: 'Standard types: appointment (APP), experience (EXP), relieving (REL), salary certificate (SAL), warning (WRN), increment (INC), NOC (NOC). Use "Other" with a custom label for anything ad-hoc. Number allocates on save (DL-{TYPE}-{YEAR}-####).' },
+      { section: 'HR documents', sOrd: 6, iOrd: 2, freq: 'as_needed',
+        title: 'Void a wrong document',
+        where: 'Employee profile → Documents tab OR /hr/documents',
+        details: 'Never delete. Void with a short reason — the number stays reserved. Then issue a fresh doc; it gets the next number in the sequence.' },
+      { section: 'HR documents', sOrd: 6, iOrd: 3, freq: 'as_needed',
+        title: 'Look up a doc across the org',
+        where: 'Sidebar → Documents',
+        details: 'Search by number, subject, notes, or employee name. Filter by type + date range. Click the employee name to jump to their per-profile view.' },
+      { section: 'HR documents', sOrd: 6, iOrd: 4, freq: 'as_needed',
+        title: 'Add / rename / hide document types',
+        where: 'Sidebar → Config → HR Doc Types',
+        details: 'Rename freely; past numbers stay literal. Hide instead of delete — existing docs of that type still resolve. Machine key is locked once created (it\'s the foreign key on every past row).' },
+
+      // ── Section 7: Config / catalog upkeep ──────────────────────────────────
+      { section: 'Config catalog upkeep', sOrd: 7, iOrd: 1, freq: 'as_needed',
+        title: 'Add a new department / designation / shift',
+        where: 'Sidebar → Config',
+        details: 'Departments and designations are dropdown sources on the employee form. Shifts drive attendance late-cutoffs. Change once, applies everywhere.' },
+      { section: 'Config catalog upkeep', sOrd: 7, iOrd: 2, freq: 'as_needed',
+        title: 'Add public holidays + optional leave dates for the year',
+        where: 'Sidebar → Config → Holidays / Optional Leaves',
+        details: 'Do this at the start of every calendar year. Holidays block leave counting; optional-leave dates let employees pick 2 per year from a pre-approved list.' },
+      { section: 'Config catalog upkeep', sOrd: 7, iOrd: 3, freq: 'as_needed',
+        title: 'Edit onboarding / offboarding checklist items',
+        where: 'Sidebar → Config → Lifecycle Templates',
+        details: 'Add / rename / reorder / hide standard items. Only affects future checklists — in-progress ones keep the shape they were seeded with.' },
+
+      // ── Section 8: Ad-hoc actions ───────────────────────────────────────────
+      { section: 'Ad-hoc actions', sOrd: 8, iOrd: 1, freq: 'as_needed',
+        title: 'Issue a warning or place someone on PIP',
+        where: 'Employee profile → Warnings tab',
+        details: 'Warnings for isolated incidents. PIP for a structured 30–90 day improvement plan with goals + end date. Also issue a DL-WRN letter via Documents so there\'s a formal paper trail.' },
+      { section: 'Ad-hoc actions', sOrd: 8, iOrd: 2, freq: 'as_needed',
+        title: 'Reset an employee\'s password',
+        where: 'Sidebar → Users → the user row',
+        details: 'Set a temp password, share over WhatsApp, ask them to change on next login. If they\'ve enabled 2FA and lost access, admin can also reset the TOTP.' },
+      { section: 'Ad-hoc actions', sOrd: 8, iOrd: 3, freq: 'as_needed',
+        title: 'Publish an announcement',
+        where: 'Sidebar → Announcements (admin/HR only)',
+        details: 'Company-wide notice — policy update, holiday, event. Employees see it on their Dashboard.' },
+      { section: 'Ad-hoc actions', sOrd: 8, iOrd: 4, freq: 'as_needed',
+        title: 'Review expense + upsell approvals',
+        where: 'Sidebar → Finance → Approvals queue',
+        details: 'HR eyes on approvals gives finance a second pair. Add approver notes so the requester sees why.' },
+      { section: 'Ad-hoc actions', sOrd: 8, iOrd: 5, freq: 'as_needed',
+        title: 'Update an employee\'s personal info',
+        where: 'Sidebar → People → edit employee',
+        details: 'Address, phone, DOB, emergency contact. Employees can\'t self-edit these; HR is the single source of truth.' },
+    ];
+
+    for (const it of items) {
+      await sql`
+        INSERT INTO role_responsibilities (role, section_name, section_order, item_order, title, details, frequency, where_to_do)
+        VALUES ('hr_manager', ${it.section}, ${it.sOrd}, ${it.iOrd}, ${it.title}, ${it.details ?? null}, ${it.freq ?? null}, ${it.where ?? null})`;
+    }
+  } catch { /* migrations are best-effort */ }
+}
+
 async function runStartupMigrations() {
   if (_migrated) return;
   // _migrated gets set at the END (after every statement succeeds), so a
@@ -629,9 +826,14 @@ async function runStartupMigrations() {
   try {
     // Bump this probe whenever a new migration lands; existing warm
     // Lambdas will fail the SELECT and re-run runStartupMigrations().
-    await sql`SELECT sort_order FROM hr_document_types LIMIT 0`;
-    _migrated = true;
-    return;
+    // For a *seed* (rows, not columns), we probe with EXISTS-style: an
+    // empty result set means "still needs to run", so we don't set the
+    // flag and fall through.
+    const seedProbe = await sql`SELECT 1 FROM role_responsibilities WHERE role='hr_manager' LIMIT 1` as any[];
+    if (seedProbe.length > 0) {
+      _migrated = true;
+      return;
+    }
   } catch {
     // Schema is stale (or DB is fresh) — fall through to the full block.
   }
