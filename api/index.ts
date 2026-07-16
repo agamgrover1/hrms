@@ -829,7 +829,7 @@ async function runStartupMigrations() {
     // For a *seed* (rows, not columns), we probe with EXISTS-style: an
     // empty result set means "still needs to run", so we don't set the
     // flag and fall through.
-    await sql`SELECT recipient_name FROM hr_documents LIMIT 0`;
+    await sql`SELECT achievements FROM appraisal_goals LIMIT 0`;
     _migrated = true;
     return;
   } catch {
@@ -934,6 +934,12 @@ async function runStartupMigrations() {
       submitted_at TIMESTAMPTZ, updated_at TIMESTAMPTZ DEFAULT NOW(),
       UNIQUE(employee_id, month, year)
     )`;
+  // Achievements — a parallel running log to goals. Employees add wins
+  // as they happen so the year-end appraisal has concrete evidence
+  // beyond "did they hit the goals". Submit-locked separately: goals
+  // freeze once the cycle opens, but achievements can be appended right
+  // up until the review is filed.
+  await sql`ALTER TABLE appraisal_goals ADD COLUMN IF NOT EXISTS achievements JSONB DEFAULT '[]'`.catch(()=>{});
   await sql`
     CREATE TABLE IF NOT EXISTS wfh_requests (
       id TEXT PRIMARY KEY, employee_id TEXT NOT NULL, employee_name TEXT,
@@ -8377,26 +8383,48 @@ app.get('/api/performance/appraisal-goals', async (req, res) => {
 
 app.post('/api/performance/appraisal-goals', async (req, res) => {
   try {
-    const { employee_id, year, month, goals } = req.body;
+    // `goals` and `achievements` are both optional in the payload — the
+    // frontend saves either independently (goals draft OR an achievement
+    // added to an already-submitted goal set). We COALESCE against the
+    // existing row so a partial save doesn't wipe the other list.
+    const { employee_id, year, month, goals, achievements } = req.body;
+    const goalsArg = Array.isArray(goals) ? JSON.stringify(goals) : null;
+    const achArg = Array.isArray(achievements) ? JSON.stringify(achievements) : null;
+    // Fresh row insert: use whatever was sent, empty array otherwise.
+    // Guarded conflict path: block goals writes when the row is already
+    // submitted; achievements can still be appended.
     const rows = await sql`
-      INSERT INTO appraisal_goals (employee_id, year, month, goals, updated_at)
-      VALUES (${employee_id}, ${year}, ${month}, ${JSON.stringify(goals)}, NOW())
-      ON CONFLICT (employee_id, month, year) DO UPDATE SET goals=EXCLUDED.goals, updated_at=NOW()
-      WHERE appraisal_goals.submitted = FALSE
+      INSERT INTO appraisal_goals (employee_id, year, month, goals, achievements, updated_at)
+      VALUES (${employee_id}, ${year}, ${month},
+              ${goalsArg ?? '[]'}::jsonb, ${achArg ?? '[]'}::jsonb, NOW())
+      ON CONFLICT (employee_id, month, year) DO UPDATE SET
+        goals = CASE
+          WHEN ${goalsArg}::jsonb IS NULL THEN appraisal_goals.goals
+          WHEN appraisal_goals.submitted = TRUE THEN appraisal_goals.goals
+          ELSE ${goalsArg}::jsonb
+        END,
+        achievements = CASE
+          WHEN ${achArg}::jsonb IS NULL THEN appraisal_goals.achievements
+          ELSE ${achArg}::jsonb
+        END,
+        updated_at = NOW()
       RETURNING *`;
-    if (!rows.length) return res.status(403).json({ error: 'Goals already submitted and locked.' });
     res.json(rows[0]);
   } catch (err) { res.status(500).json({ error: 'Server error' }); }
 });
 
 app.post('/api/performance/appraisal-goals/submit', async (req, res) => {
   try {
-    const { employee_id, year, month, goals } = req.body;
+    const { employee_id, year, month, goals, achievements } = req.body;
+    const achArg = Array.isArray(achievements) ? JSON.stringify(achievements) : null;
     const rows = await sql`
-      INSERT INTO appraisal_goals (employee_id, year, month, goals, submitted, submitted_at, updated_at)
-      VALUES (${employee_id}, ${year}, ${month}, ${JSON.stringify(goals)}, TRUE, NOW(), NOW())
+      INSERT INTO appraisal_goals (employee_id, year, month, goals, achievements, submitted, submitted_at, updated_at)
+      VALUES (${employee_id}, ${year}, ${month}, ${JSON.stringify(goals)},
+              ${achArg ?? '[]'}::jsonb, TRUE, NOW(), NOW())
       ON CONFLICT (employee_id, month, year) DO UPDATE SET
-        goals=EXCLUDED.goals, submitted=TRUE, submitted_at=NOW(), updated_at=NOW()
+        goals=EXCLUDED.goals,
+        achievements = CASE WHEN ${achArg}::jsonb IS NULL THEN appraisal_goals.achievements ELSE ${achArg}::jsonb END,
+        submitted=TRUE, submitted_at=NOW(), updated_at=NOW()
       WHERE appraisal_goals.submitted = FALSE
       RETURNING *`;
     if (!rows.length) return res.status(403).json({ error: 'Already submitted.' });
@@ -8431,11 +8459,16 @@ app.patch('/api/performance/appraisal-goals/self-update', async (req, res) => {
 
 app.put('/api/performance/appraisal-goals/admin', async (req, res) => {
   try {
-    const { employee_id, year, month, goals } = req.body;
+    const { employee_id, year, month, goals, achievements } = req.body;
+    const achArg = Array.isArray(achievements) ? JSON.stringify(achievements) : null;
     const rows = await sql`
-      INSERT INTO appraisal_goals (employee_id, year, month, goals, updated_at)
-      VALUES (${employee_id}, ${year}, ${month}, ${JSON.stringify(goals)}, NOW())
-      ON CONFLICT (employee_id, month, year) DO UPDATE SET goals=EXCLUDED.goals, updated_at=NOW()
+      INSERT INTO appraisal_goals (employee_id, year, month, goals, achievements, updated_at)
+      VALUES (${employee_id}, ${year}, ${month}, ${JSON.stringify(goals)},
+              ${achArg ?? '[]'}::jsonb, NOW())
+      ON CONFLICT (employee_id, month, year) DO UPDATE SET
+        goals=EXCLUDED.goals,
+        achievements = CASE WHEN ${achArg}::jsonb IS NULL THEN appraisal_goals.achievements ELSE ${achArg}::jsonb END,
+        updated_at=NOW()
       RETURNING *`;
     const rec = rows[0] as any;
     const MN = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];

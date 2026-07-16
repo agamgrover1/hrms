@@ -1,6 +1,6 @@
 import { Fragment, useState, useEffect, useMemo, Component, type ReactNode } from 'react';
 import { useSearchParams } from 'react-router-dom';
-import { Clock, Calendar, DollarSign, User, CheckCircle, XCircle, AlertCircle, Plus, X, Target, FileText, Lock, Trash2, Save, Users, Monitor, Briefcase, Edit2, BookOpen, Wrench, ListChecks, Circle, CheckSquare, ShieldCheck, ChevronDown, ChevronRight, MessageSquare } from 'lucide-react';
+import { Clock, Calendar, DollarSign, User, CheckCircle, XCircle, AlertCircle, Plus, X, Target, FileText, Lock, Trash2, Save, Users, Monitor, Briefcase, Edit2, BookOpen, Wrench, ListChecks, Circle, CheckSquare, ShieldCheck, ChevronDown, ChevronRight, MessageSquare, Sparkles } from 'lucide-react';
 import MyRoleTab from '../../components/MyRoleTab';
 import TodoTab from '../../components/TodoTab';
 import TwoFactorSection from '../../components/TwoFactorSection';
@@ -103,6 +103,125 @@ function pillarColor(score: number | null): string {
   if (score >= 70) return '#3730a3';
   if (score >= 50) return '#d97706';
   return '#dc2626';
+}
+
+// Achievements section — mirrors the goals list but with a lighter
+// shape (title + optional impact / date / link). Rendered inside the
+// appraisal window on MyPortal so employees can add wins over the
+// cycle without needing a separate page.
+function AchievementsEditor({
+  items, onChange, onUpdateField, onSave, saving, error,
+}: {
+  items: any[];
+  onChange: (updater: (a: any[]) => any[]) => void;
+  onUpdateField: (i: number, field: string, val: string) => void;
+  onSave: () => void;
+  saving: boolean;
+  error: string;
+}) {
+  const today = todayLocal();
+  return (
+    <div className="mt-4 border-t pt-4" style={{ borderColor: '#e2e4ed' }}>
+      <div className="flex items-center justify-between mb-3">
+        <div>
+          <h4 className="font-bold text-sm flex items-center gap-2" style={{ color: '#192250' }}>
+            <Sparkles size={14} style={{ color: '#EE2770' }} /> Achievements
+          </h4>
+          <p className="text-[11px] text-on-surface-subtle mt-0.5">
+            Add wins as they happen — shipped features, positive client feedback, saved time, learned something new.
+            The reviewer sees this list at appraisal time.
+          </p>
+        </div>
+      </div>
+      {items.length === 0 && (
+        <p className="text-xs text-on-surface-subtle italic mb-2">No achievements added yet.</p>
+      )}
+      <div className="space-y-2">
+        {items.map((a, i) => (
+          <div key={i} className="border rounded-xl p-3 space-y-2" style={{ borderColor: '#e2e4ed' }}>
+            <div className="flex items-center justify-between">
+              <span className="text-[10px] font-bold uppercase tracking-wide" style={{ color: '#EE2770' }}>Win {i + 1}</span>
+              <button onClick={() => onChange(a => a.filter((_, j) => j !== i))} className="p-1 hover:bg-danger-container rounded">
+                <Trash2 size={12} className="text-danger" />
+              </button>
+            </div>
+            <input value={a.title ?? ''}
+              onChange={e => onUpdateField(i, 'title', e.target.value)}
+              placeholder="What did you accomplish? *"
+              className="w-full border rounded-lg px-3 py-2 text-sm focus:outline-none"
+              style={{ borderColor: '#e2e4ed' }} />
+            <textarea value={a.impact ?? ''}
+              onChange={e => onUpdateField(i, 'impact', e.target.value)}
+              rows={2}
+              placeholder="Impact — who it helped, hours saved, revenue moved, feedback received (optional)"
+              className="w-full border rounded-lg px-3 py-2 text-sm resize-none focus:outline-none"
+              style={{ borderColor: '#e2e4ed' }} />
+            <div className="grid grid-cols-2 gap-2">
+              <input type="date" value={a.date ?? ''}
+                onChange={e => onUpdateField(i, 'date', e.target.value)}
+                max={today}
+                className="w-full border rounded-lg px-3 py-2 text-sm focus:outline-none"
+                style={{ borderColor: '#e2e4ed' }} />
+              <input type="url" value={a.link ?? ''}
+                onChange={e => onUpdateField(i, 'link', e.target.value)}
+                placeholder="Link (optional)"
+                className="w-full border rounded-lg px-3 py-2 text-sm focus:outline-none"
+                style={{ borderColor: '#e2e4ed' }} />
+            </div>
+          </div>
+        ))}
+      </div>
+      <div className="flex items-center gap-2 mt-3">
+        <button
+          onClick={() => onChange(a => [...a, { title: '', impact: '', date: todayLocal(), link: '' }])}
+          className="flex-1 py-2 border-2 border-dashed rounded-xl text-xs font-semibold text-on-surface-subtle transition-colors hover:text-accent"
+          style={{ borderColor: '#e2e4ed' }}>
+          + Add achievement
+        </button>
+        <button onClick={onSave} disabled={saving}
+          className="px-3 py-2 border rounded-xl text-xs font-semibold hover:bg-surface-2 disabled:opacity-60 flex items-center gap-1.5"
+          style={{ color: '#192250', borderColor: '#e2e4ed' }}>
+          <Save size={12} /> {saving ? 'Saving…' : 'Save achievements'}
+        </button>
+      </div>
+      {error && (
+        <p className="text-xs text-danger flex items-center gap-1.5 mt-2"><AlertCircle size={12} /> {error}</p>
+      )}
+    </div>
+  );
+}
+
+// Read-only render of achievements for past appraisal rows in the
+// expandable history. Concise — title + optional impact + date + link.
+function AchievementsReadOnly({ items }: { items: any[] }) {
+  if (!items?.length) return null;
+  return (
+    <div className="mt-3 pt-3 border-t" style={{ borderColor: '#e2e4ed' }}>
+      <p className="text-[10px] font-bold uppercase tracking-wide mb-2" style={{ color: '#EE2770' }}>
+        Achievements ({items.length})
+      </p>
+      <ul className="space-y-1.5">
+        {items.map((a, i) => (
+          <li key={i} className="text-xs bg-surface-2/40 rounded-md px-3 py-2">
+            <div className="flex items-baseline justify-between gap-2 flex-wrap">
+              <span className="font-semibold text-on-surface">{a.title || '—'}</span>
+              {a.date && (
+                <span className="text-[10px] text-on-surface-subtle num-mono">
+                  {new Date(String(a.date).slice(0, 10) + 'T12:00:00Z').toLocaleDateString('en-IN', { day: 'numeric', month: 'short' })}
+                </span>
+              )}
+            </div>
+            {a.impact && <p className="text-on-surface-muted mt-0.5 whitespace-pre-wrap">{a.impact}</p>}
+            {a.link && (
+              <a href={a.link} target="_blank" rel="noreferrer" className="text-accent hover:underline text-[10px] mt-1 inline-block">
+                Evidence →
+              </a>
+            )}
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
 }
 function PulseSparkline({ trend }: { trend: Array<{ snapshot_date: string; total_score: number }> }) {
   // sample to 12 points so it stays readable
@@ -655,6 +774,13 @@ export default function MyPortal() {
   // Appraisal goals state
   const [allAppraisals, setAllAppraisals] = useState<any[]>([]);
   const [goalsDraft, setGoalsDraft] = useState<any[]>([{ title: '', description: '', success_criteria: '' }]);
+  // Achievements — parallel list saved on the same row. Employees add
+  // wins as they happen so the year-end review has evidence beyond
+  // goal status. Stays editable after goals are submitted so an
+  // employee can keep appending wins across the cycle.
+  const [achievementsDraft, setAchievementsDraft] = useState<any[]>([]);
+  const [savingAchievements, setSavingAchievements] = useState(false);
+  const [achievementsError, setAchievementsError] = useState('');
   const [savingGoals, setSavingGoals] = useState(false);
   const [submittingGoals, setSubmittingGoals] = useState(false);
   const [goalsError, setGoalsError] = useState('');
@@ -807,6 +933,7 @@ export default function MyPortal() {
         (a: any) => a.month === currentMonth && a.year === currentYear
       );
       setGoalsDraft(currAppraisal?.goals?.length ? currAppraisal.goals : [{ title: '', description: '', success_criteria: '' }]);
+      setAchievementsDraft(Array.isArray(currAppraisal?.achievements) ? currAppraisal.achievements : []);
 
       // Nice-to-have widgets — fire after the main paint so they don't
       // delay the perceived load. Not in the bootstrap because they
@@ -874,13 +1001,17 @@ export default function MyPortal() {
 
   const updateGoal = (i: number, field: string, val: string) =>
     setGoalsDraft(g => g.map((x, j) => j === i ? { ...x, [field]: val } : x));
+  const updateAchievement = (i: number, field: string, val: string) =>
+    setAchievementsDraft(a => a.map((x, j) => j === i ? { ...x, [field]: val } : x));
+
+  const cleanAchievements = () => achievementsDraft.filter(a => (a.title ?? '').trim());
 
   const handleSaveDraft = async () => {
     if (!empDbId || isSubmitted) return;
     setSavingGoals(true);
     setGoalsError('');
     try {
-      const result = await api.saveAppraisalGoals({ employee_id: empDbId, year: currentYear, month: currentMonth, goals: goalsDraft });
+      const result = await api.saveAppraisalGoals({ employee_id: empDbId, year: currentYear, month: currentMonth, goals: goalsDraft, achievements: cleanAchievements() });
       setAllAppraisals(prev => {
         const without = prev.filter(a => !(a.month === currentMonth && a.year === currentYear));
         return [result, ...without];
@@ -898,15 +1029,34 @@ export default function MyPortal() {
     setSubmittingGoals(true);
     setGoalsError('');
     try {
-      const result = await api.submitAppraisalGoals({ employee_id: empDbId, year: currentYear, month: currentMonth, goals: filledGoals });
+      const result = await api.submitAppraisalGoals({ employee_id: empDbId, year: currentYear, month: currentMonth, goals: filledGoals, achievements: cleanAchievements() });
       setAllAppraisals(prev => {
         const without = prev.filter(a => !(a.month === currentMonth && a.year === currentYear));
         return [result, ...without];
       });
       setGoalsDraft(result.goals ?? []);
+      setAchievementsDraft(Array.isArray(result.achievements) ? result.achievements : []);
     } catch (e: any) {
       setGoalsError(e.message ?? 'Submit failed');
     } finally { setSubmittingGoals(false); }
+  };
+
+  // Save achievements alone. Works both before AND after submit —
+  // achievements aren't frozen by the goal submission because the point
+  // is to keep adding wins across the cycle.
+  const handleSaveAchievements = async () => {
+    if (!empDbId) return;
+    setSavingAchievements(true);
+    setAchievementsError('');
+    try {
+      const result = await api.saveAppraisalGoals({ employee_id: empDbId, year: currentYear, month: currentMonth, achievements: cleanAchievements() });
+      setAllAppraisals(prev => {
+        const without = prev.filter(a => !(a.month === currentMonth && a.year === currentYear));
+        return [result, ...without];
+      });
+    } catch (e: any) {
+      setAchievementsError(e.message ?? 'Save failed');
+    } finally { setSavingAchievements(false); }
   };
 
   const handleSaveSelfStatus = async (appraisal: any) => {
@@ -2771,6 +2921,16 @@ export default function MyPortal() {
                       <span>Submitted on {new Date(currentAppraisal.submitted_at).toLocaleDateString('en-IN', { day: 'numeric', month: 'long', year: 'numeric' })}. Update your self-assessment below — admin sets the final status.</span>
                     </div>
                     {renderGoalSelfEditor(currentAppraisal)}
+                    {/* Achievements stay editable after goals are submitted.
+                       Employees keep appending wins as they happen. */}
+                    <AchievementsEditor
+                      items={achievementsDraft}
+                      onChange={setAchievementsDraft}
+                      onUpdateField={updateAchievement}
+                      onSave={handleSaveAchievements}
+                      saving={savingAchievements}
+                      error={achievementsError}
+                    />
                   </div>
                 ) : (
                   <div className="space-y-4">
@@ -2814,6 +2974,18 @@ export default function MyPortal() {
                         onMouseLeave={e => { (e.currentTarget as HTMLElement).style.borderColor = '#e2e4ed'; (e.currentTarget as HTMLElement).style.color = '#9ca3af'; }}
                       >+ Add Another Goal</button>
                     )}
+                    {/* Achievements section — same repeatable pattern as goals,
+                       lives on the same appraisal row. Saved together on
+                       draft/submit; the standalone save button is here so
+                       employees can append wins without touching goals. */}
+                    <AchievementsEditor
+                      items={achievementsDraft}
+                      onChange={setAchievementsDraft}
+                      onUpdateField={updateAchievement}
+                      onSave={handleSaveAchievements}
+                      saving={savingAchievements}
+                      error={achievementsError}
+                    />
                     {goalsError && (
                       <p className="text-xs text-danger flex items-center gap-1.5"><AlertCircle size={13} /> {goalsError}</p>
                     )}
@@ -2870,6 +3042,7 @@ export default function MyPortal() {
                         ? renderGoalSelfEditor(appraisal)
                         : <div className="space-y-3">{(appraisal.goals ?? []).map((g: any, i: number) => <GoalCard key={i} goal={g} index={i} />)}</div>
                       }
+                      <AchievementsReadOnly items={appraisal.achievements ?? []} />
                     </div>
                   </details>
                 ))}

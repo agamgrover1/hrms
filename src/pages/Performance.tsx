@@ -1398,6 +1398,36 @@ export default function Performance() {
                               ))}
                             </div>
                           )}
+                          {/* Achievements — read-only for the reviewer. Employees
+                             append these across the cycle; the reviewer sees them
+                             here at appraisal time as evidence beyond goal status. */}
+                          {Array.isArray(record.achievements) && record.achievements.length > 0 && (
+                            <div className="mt-5 pt-4 border-t border-outline">
+                              <p className="text-xs font-bold uppercase tracking-wider text-accent mb-2">
+                                Achievements ({record.achievements.length})
+                              </p>
+                              <ul className="space-y-2">
+                                {record.achievements.map((a: any, i: number) => (
+                                  <li key={i} className="rounded-lg border border-outline bg-surface-2/40 px-3 py-2 text-sm">
+                                    <div className="flex items-baseline justify-between gap-2 flex-wrap">
+                                      <span className="font-semibold text-on-surface">{a.title || '—'}</span>
+                                      {a.date && (
+                                        <span className="text-[10px] text-on-surface-subtle num-mono">
+                                          {new Date(String(a.date).slice(0, 10) + 'T12:00:00Z').toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' })}
+                                        </span>
+                                      )}
+                                    </div>
+                                    {a.impact && <p className="text-xs text-on-surface-muted mt-0.5 whitespace-pre-wrap">{a.impact}</p>}
+                                    {a.link && (
+                                      <a href={a.link} target="_blank" rel="noreferrer" className="text-[11px] text-accent hover:underline mt-1 inline-block">
+                                        Evidence →
+                                      </a>
+                                    )}
+                                  </li>
+                                ))}
+                              </ul>
+                            </div>
+                          )}
                         </div>
                       )}
                     </div>

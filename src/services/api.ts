@@ -327,11 +327,11 @@ export const api = {
     if (params.year) qs.set('year', String(params.year));
     return request<any[]>(`/performance/appraisal-goals?${qs}`);
   },
-  saveAppraisalGoals: (data: { employee_id: string; year: number; month: number; goals: any[] }) =>
+  saveAppraisalGoals: (data: { employee_id: string; year: number; month: number; goals?: any[]; achievements?: any[] }) =>
     request<any>('/performance/appraisal-goals', { method: 'POST', body: JSON.stringify(data) }),
-  submitAppraisalGoals: (data: { employee_id: string; year: number; month: number; goals: any[] }) =>
+  submitAppraisalGoals: (data: { employee_id: string; year: number; month: number; goals: any[]; achievements?: any[] }) =>
     request<any>('/performance/appraisal-goals/submit', { method: 'POST', body: JSON.stringify(data) }),
-  adminSaveAppraisalGoals: (data: { employee_id: string; year: number; month: number; goals: any[] }) =>
+  adminSaveAppraisalGoals: (data: { employee_id: string; year: number; month: number; goals: any[]; achievements?: any[] }) =>
     request<any>('/performance/appraisal-goals/admin', { method: 'PUT', body: JSON.stringify(data) }),
   selfUpdateGoalStatuses: (data: { employee_id: string; year: number; month: number; employee_statuses: { index: number; employee_status: string }[] }) =>
     request<any>('/performance/appraisal-goals/self-update', { method: 'PATCH', body: JSON.stringify(data) }),
