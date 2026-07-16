@@ -496,7 +496,7 @@ function AddReviewModal({
           </button>
           <button
             onClick={handleSave}
-            disabled={saving || overall == null || isLocked}
+            disabled={saving || overall == null || isLocked || missingNoteKeys.length > 0}
             title={isLocked ? 'HR has locked this review' : overall == null ? 'At least one pillar must be scored' : missingNoteKeys.length ? `Missing notes on ${missingNoteKeys.length} pillar${missingNoteKeys.length === 1 ? '' : 's'}` : ''}
             className="flex-1 py-2.5 bg-accent text-on-accent rounded-xl-2 text-sm font-semibold disabled:opacity-60 disabled:cursor-not-allowed hover:opacity-90 shadow-elev-1 hover:shadow-elev-2 transition-all"
           >

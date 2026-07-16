@@ -7934,6 +7934,28 @@ app.post('/api/performance/monthly', async (req, res) => {
       overall_score, comments, parameter_notes, requester_role,
     } = req.body;
     const paramNotesJson = JSON.stringify(parameter_notes ?? {});
+    // Server-side enforcement of the "note required per rated pillar"
+    // rule. Client already gates the save button, but this backstops
+    // scripted / stale-bundle submits so a review can NEVER land in
+    // the DB without justification for every scored pillar.
+    // N/A pillars (value === null) are excluded — they don't contribute
+    // to overall score, so no note needed.
+    const NOTE_LABELS: Record<string, string> = {
+      productivity: 'Productivity', quality: 'Quality of Work', teamwork: 'Teamwork',
+      attendance_score: 'Attendance', initiative: 'Initiative',
+      client_satisfaction: 'Client Handling', ai_usage: 'AI Usage',
+      communication: 'Communication', ownership: 'Ownership',
+      planning_accuracy: 'Planning Accuracy', learning_growth: 'Learning & Growth',
+    };
+    const notes = (parameter_notes ?? {}) as Record<string, string>;
+    const missingNotes: string[] = [];
+    for (const [key, label] of Object.entries(NOTE_LABELS)) {
+      const scored = (req.body as any)[key] != null;
+      if (scored && !String(notes[key] ?? '').trim()) missingNotes.push(label);
+    }
+    if (missingNotes.length) {
+      return res.status(400).json({ error: `Add a note for every rated pillar. Missing: ${missingNotes.join(', ')}.` });
+    }
     // Columns come from runStartupMigrations at boot; no per-request DDL.
     await runStartupMigrations();
     // Block edits on locked reviews for non-admins
