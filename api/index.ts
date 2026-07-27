@@ -11876,6 +11876,19 @@ app.patch('/api/hour-logs/:id/hold', async (req, res) => {
         reviewed_at=NOW(), updated_at=NOW()
       WHERE id=${req.params.id} RETURNING *`;
     const r = rows[0];
+    // Cascade the hold to child days so day-grain views agree with the
+    // weekly action. Skip approved / rejected — hold only makes sense
+    // for still-open days.
+    await sql`
+      UPDATE hour_log_days SET
+        status='on_hold',
+        reviewed_by_id=${reviewer_id ?? null},
+        reviewed_by_name=${reviewer_name ?? null},
+        reviewed_at=NOW(),
+        rejection_reason=${note.trim()},
+        updated_at=NOW()
+      WHERE hour_log_id=${req.params.id}
+        AND status='pending'`.catch(()=>{});
     // Add the hold note as the first message on the comment thread.
     await sql`INSERT INTO hour_log_comments (id, hour_log_id, author_id, author_name, author_role, body)
               VALUES (${`hlc_${Date.now()}`}, ${r.id}, ${reviewer_id ?? null}, ${reviewer_name ?? null},
@@ -12033,6 +12046,23 @@ app.patch('/api/hour-logs/:id/approve', async (req, res) => {
     if (!rows.length) return res.status(404).json({ error: 'Log not found' });
     const cur = pre[0];
     const r = rows[0];
+    // Cascade to child day rows so the day-grain queue (coordinator /
+    // day-level views) stays consistent. Without this the parent flips
+    // approved but individual days stay pending → surfaces still show
+    // "Pending" for what the reviewer already actioned at the weekly
+    // level. Only touch pending/on_hold days — already-approved stays
+    // as-is; already-rejected stays as-is (the reviewer would use per-day
+    // reject if they meant to override).
+    await sql`
+      UPDATE hour_log_days SET
+        status='approved',
+        reviewed_by_id=${reviewer_id ?? null},
+        reviewed_by_name=${reviewer_name ?? null},
+        reviewed_at=NOW(),
+        rejection_reason=NULL,
+        updated_at=NOW()
+      WHERE hour_log_id=${req.params.id}
+        AND status IN ('pending','on_hold')`.catch(()=>{});
     // Respond NOW. Audit + notification do their own DB writes — none of
     // them block the user's "approve" feedback. The audit insert is
     // wrapped in try/catch inside recordHourLogAudit so a failure there
@@ -12081,6 +12111,20 @@ app.patch('/api/hour-logs/:id/reject', async (req, res) => {
     if (!rows.length) return res.status(404).json({ error: 'Log not found' });
     const cur = pre[0];
     const r = rows[0];
+    // Cascade the rejection to every day row so day-grain views stay
+    // consistent. Skip already-approved days — if the reviewer wants to
+    // yank an approved day back to rejected they'll use the per-day
+    // reject endpoint explicitly.
+    await sql`
+      UPDATE hour_log_days SET
+        status='rejected',
+        reviewed_by_id=${reviewer_id ?? null},
+        reviewed_by_name=${reviewer_name ?? null},
+        reviewed_at=NOW(),
+        rejection_reason=${rejection_reason},
+        updated_at=NOW()
+      WHERE hour_log_id=${req.params.id}
+        AND status IN ('pending','on_hold')`.catch(()=>{});
     res.json(r);
     void (async () => {
       try {
