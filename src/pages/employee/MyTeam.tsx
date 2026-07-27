@@ -586,12 +586,15 @@ export default function MyTeam() {
     const perf = teamPerf[member.id] ?? [];
     const existing = perf.find((r: any) => r.month === month && r.year === year);
     if (existing) {
-      // Prefill sliders from the saved row. null (from the DB or a
-      // deliberate N/A) survives as null so the toggle renders correctly.
+      // Prefill sliders from the saved row. Any null in the DB (never
+      // rated OR added after this row was first saved — Communication,
+      // Ownership, Planning, Learning came in later) defaults to 75 so
+      // its note textarea renders. Reviewer can still N/A a pillar
+      // explicitly if it truly doesn't apply.
       const filled: Record<string, number | null> = {};
       for (const c of SCORE_CATEGORIES) {
         const v = existing[c.key as keyof typeof existing];
-        filled[c.key] = v == null ? null : Number(v);
+        filled[c.key] = v == null ? 75 : Number(v);
       }
       setScores(filled);
       setReviewComment(existing.comments ?? '');
