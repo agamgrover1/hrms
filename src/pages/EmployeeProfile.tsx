@@ -15,6 +15,7 @@ import EmployeeResponsibilitiesPanel from '../components/EmployeeResponsibilitie
 import EmployeeHoursDetailModal from '../components/EmployeeHoursDetailModal';
 import ChecklistPanel from '../components/ChecklistPanel';
 import DocumentsPanel from '../components/hr/DocumentsPanel';
+import KpisPanel from '../components/hr/KpisPanel';
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 function toDateStr(val: any): string {
@@ -156,7 +157,7 @@ function ActionModal({ title, info, type, isIncentive, onClose, onConfirm }: {
 }
 
 // ── Tabs ──────────────────────────────────────────────────────────────────────
-const TABS = ['Overview','Attendance','Leave','Hours','Performance','Incentives','Expenses','Warnings','Responsibilities','Onboarding','Offboarding','Documents'] as const;
+const TABS = ['Overview','Attendance','Leave','Hours','Performance','KPIs','Incentives','Expenses','Warnings','Responsibilities','Onboarding','Offboarding','Documents'] as const;
 type Tab = typeof TABS[number];
 
 // ── Main page ─────────────────────────────────────────────────────────────────
@@ -586,6 +587,10 @@ export default function EmployeeProfile() {
               // viewing a report's profile doesn't need to see FnF status.
               if (t === 'Onboarding' || t === 'Offboarding' || t === 'Documents') {
                 return me?.role === 'admin' || me?.role === 'hr_manager' || me?.role === 'hr_intern';
+              }
+              if (t === 'KPIs') {
+                // KPIs are lead/coord/HR territory. Employees see their own via MyPortal later.
+                return me?.role === 'admin' || me?.role === 'hr_manager' || me?.role === 'hr_intern' || me?.role === 'project_coordinator';
               }
               return true;
             }).map(t => (
@@ -1309,6 +1314,11 @@ export default function EmployeeProfile() {
       {/* ── HR Documents ─────────────────────────────────────────────────── */}
       {tab === 'Documents' && emp && (
         <DocumentsPanel employeeId={emp.id} employeeName={emp.name} />
+      )}
+
+      {/* ── KPIs ─────────────────────────────────────────────────────────── */}
+      {tab === 'KPIs' && emp && (
+        <KpisPanel employeeId={emp.id} employeeName={emp.name} designation={emp.designation} />
       )}
 
       {/* ── Hours & Allocation ───────────────────────────────────────────── */}

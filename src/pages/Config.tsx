@@ -1,13 +1,14 @@
 import { useState, useEffect } from 'react';
-import { Settings, Plus, Trash2, Edit3, Check, X, Clock, Briefcase, Building2, CalendarDays, BookOpen, PartyPopper, ListChecks, UserPlus, FileText } from 'lucide-react';
+import { Settings, Plus, Trash2, Edit3, Check, X, Clock, Briefcase, Building2, CalendarDays, BookOpen, PartyPopper, ListChecks, UserPlus, FileText, Target } from 'lucide-react';
 import { api } from '../services/api';
 import RoleResponsibilitiesTab from '../components/admin/RoleResponsibilitiesTab';
 import HolidaysTab from '../components/admin/HolidaysTab';
 import InternalActivitiesTab from '../components/admin/InternalActivitiesTab';
 import ChecklistTemplatesTab from '../components/admin/ChecklistTemplatesTab';
 import HrDocumentTypesTab from '../components/admin/HrDocumentTypesTab';
+import KpiTemplatesTab from '../components/admin/KpiTemplatesTab';
 
-type Tab = 'departments' | 'designations' | 'shifts' | 'optional_leave' | 'roles' | 'holidays' | 'activities' | 'lifecycle_templates' | 'hr_doc_types';
+type Tab = 'departments' | 'designations' | 'shifts' | 'optional_leave' | 'roles' | 'holidays' | 'activities' | 'lifecycle_templates' | 'hr_doc_types' | 'kpi_templates';
 
 function fmt12(t: string) {
   if (!t) return '';
@@ -164,6 +165,7 @@ export default function Config() {
     { key: 'activities',    label: 'Internal Activities',      icon: ListChecks },
     { key: 'lifecycle_templates', label: 'Lifecycle Templates', icon: UserPlus  },
     { key: 'hr_doc_types',        label: 'HR Doc Types',        icon: FileText  },
+    { key: 'kpi_templates',       label: 'KPI Templates',       icon: Target    },
   ];
 
   return (
@@ -446,6 +448,7 @@ export default function Config() {
       {tab === 'activities' && <InternalActivitiesTab />}
       {tab === 'lifecycle_templates' && <ChecklistTemplatesTab />}
       {tab === 'hr_doc_types' && <HrDocumentTypesTab />}
+      {tab === 'kpi_templates' && <KpiTemplatesTab />}
     </div>
   );
 }

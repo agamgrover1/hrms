@@ -829,7 +829,7 @@ async function runStartupMigrations() {
     // For a *seed* (rows, not columns), we probe with EXISTS-style: an
     // empty result set means "still needs to run", so we don't set the
     // flag and fall through.
-    await sql`SELECT achievements FROM appraisal_goals LIMIT 0`;
+    await sql`SELECT cadence FROM kpi_templates LIMIT 0`;
     _migrated = true;
     return;
   } catch {
@@ -1795,6 +1795,57 @@ async function runStartupMigrations() {
       }
     }
   } catch { /* seed is best-effort */ }
+
+  // ── KPI system (leads / coordinator / HR / admin define, assign, measure) ──
+  // Templates are the catalog (org-wide or role-scoped). Assignments link
+  // an employee to a template with an optional target override. Measurements
+  // are the actual value per period (week or month). Some templates auto-
+  // populate from existing HRMS data via a `source` key; others are manual.
+  await sql`
+    CREATE TABLE IF NOT EXISTS kpi_templates (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      description TEXT,
+      unit TEXT NOT NULL DEFAULT 'count',
+      default_target NUMERIC NOT NULL,
+      weight NUMERIC NOT NULL DEFAULT 1,
+      cadence TEXT NOT NULL DEFAULT 'monthly',
+      source TEXT NOT NULL DEFAULT 'manual',
+      role_key TEXT,
+      higher_is_better BOOLEAN NOT NULL DEFAULT TRUE,
+      active BOOLEAN NOT NULL DEFAULT TRUE,
+      sort_order INTEGER NOT NULL DEFAULT 0,
+      created_at TIMESTAMPTZ DEFAULT NOW(),
+      updated_at TIMESTAMPTZ DEFAULT NOW()
+    )`;
+  await sql`CREATE INDEX IF NOT EXISTS idx_kpi_templates_role ON kpi_templates(role_key, active, sort_order)`.catch(()=>{});
+  await sql`
+    CREATE TABLE IF NOT EXISTS kpi_assignments (
+      id TEXT PRIMARY KEY,
+      employee_id TEXT NOT NULL REFERENCES employees(id) ON DELETE CASCADE,
+      template_id TEXT NOT NULL REFERENCES kpi_templates(id) ON DELETE CASCADE,
+      target_override NUMERIC,
+      active BOOLEAN NOT NULL DEFAULT TRUE,
+      assigned_by_id TEXT,
+      assigned_by_name TEXT,
+      assigned_at TIMESTAMPTZ DEFAULT NOW(),
+      UNIQUE(employee_id, template_id)
+    )`;
+  await sql`CREATE INDEX IF NOT EXISTS idx_kpi_assignments_emp ON kpi_assignments(employee_id, active)`.catch(()=>{});
+  await sql`
+    CREATE TABLE IF NOT EXISTS kpi_measurements (
+      id TEXT PRIMARY KEY,
+      assignment_id TEXT NOT NULL REFERENCES kpi_assignments(id) ON DELETE CASCADE,
+      period_start DATE NOT NULL,
+      actual NUMERIC NOT NULL,
+      notes TEXT,
+      entered_by_id TEXT,
+      entered_by_name TEXT,
+      auto BOOLEAN NOT NULL DEFAULT FALSE,
+      entered_at TIMESTAMPTZ DEFAULT NOW(),
+      UNIQUE(assignment_id, period_start)
+    )`;
+  await sql`CREATE INDEX IF NOT EXISTS idx_kpi_measurements_asg ON kpi_measurements(assignment_id, period_start DESC)`.catch(()=>{});
 
   // ── Internal activities (non-project work) ────────────────────────────
   // Employees, HR, coordinators, and admin all log hours daily. People
@@ -10461,6 +10512,362 @@ app.patch('/api/config/hr-document-types/reorder', async (req, res) => {
     }
     invalidateDocTypeMetaCache();
     res.json({ ok: true, updated: orderedIds.length });
+  } catch (err: any) { res.status(500).json({ error: err.message ?? 'Server error' }); }
+});
+
+// ── KPI system ────────────────────────────────────────────────────────────
+// Templates: catalog (org-wide or role-scoped). Assignments: which
+// employees have which templates. Measurements: actual value per period.
+// Auto-pull sources compute the actual from existing HRMS data.
+
+const KPI_SOURCES = [
+  { key: 'manual',              label: 'Manual entry' },
+  { key: 'attendance_pct',      label: 'Attendance % (auto)' },
+  { key: 'on_time_pct',         label: 'On-time % (auto)' },
+  { key: 'hours_coverage_pct',  label: 'Hours coverage % (auto — logged / allocated)' },
+] as const;
+
+// Anchor a date to the start of its period (week = last Monday, month = 1st).
+function kpiPeriodStart(iso: string, cadence: 'weekly' | 'monthly'): string {
+  const d = new Date(String(iso).slice(0, 10) + 'T12:00:00Z');
+  if (cadence === 'monthly') {
+    return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}-01`;
+  }
+  // Weekly — snap back to Monday of the week (getUTCDay: Sun=0..Sat=6).
+  const dow = d.getUTCDay();
+  const back = dow === 0 ? 6 : dow - 1;
+  d.setUTCDate(d.getUTCDate() - back);
+  return d.toISOString().slice(0, 10);
+}
+function kpiPeriodEnd(startIso: string, cadence: 'weekly' | 'monthly'): string {
+  const d = new Date(startIso + 'T12:00:00Z');
+  if (cadence === 'monthly') {
+    d.setUTCMonth(d.getUTCMonth() + 1);
+    d.setUTCDate(0); // last day of the period's month
+  } else {
+    d.setUTCDate(d.getUTCDate() + 6);
+  }
+  return d.toISOString().slice(0, 10);
+}
+
+// Compute an auto-pulled actual for a source key. Returns null when
+// there's nothing to measure (no working days, no allocations, etc.) so
+// the UI can show "no data yet" instead of a misleading 0.
+async function computeKpiAutoActual(
+  source: string, employeeId: string, cadence: 'weekly' | 'monthly', periodStart: string
+): Promise<number | null> {
+  const periodEnd = kpiPeriodEnd(periodStart, cadence);
+  if (source === 'attendance_pct') {
+    const rows = await sql`
+      SELECT status FROM attendance_records
+      WHERE employee_id=${employeeId}
+        AND date::date BETWEEN ${periodStart}::date AND ${periodEnd}::date` as any[];
+    const workday = rows.filter(r => r.status !== 'weekend' && r.status !== 'holiday');
+    if (!workday.length) return null;
+    const present = workday.filter(r => ['present','late','wfh','wfh_half','half-day','short_leave'].includes(r.status)).length;
+    return Math.round((present / workday.length) * 1000) / 10;
+  }
+  if (source === 'on_time_pct') {
+    const rows = await sql`
+      SELECT status FROM attendance_records
+      WHERE employee_id=${employeeId}
+        AND date::date BETWEEN ${periodStart}::date AND ${periodEnd}::date` as any[];
+    const present = rows.filter(r => ['present','late','wfh','wfh_half'].includes(r.status));
+    if (!present.length) return null;
+    const onTime = present.filter(r => r.status !== 'late').length;
+    return Math.round((onTime / present.length) * 1000) / 10;
+  }
+  if (source === 'hours_coverage_pct') {
+    // Sum allocated (from assignments) + logged (from hour_logs) in period.
+    // We do this at month grain since assignments are per-month; for weekly
+    // KPIs we divide by the number of weekdays in the period as an approximation.
+    const d = new Date(periodStart + 'T12:00:00Z');
+    const month = d.getUTCMonth() + 1;
+    const year = d.getUTCFullYear();
+    if (cadence === 'monthly') {
+      const alloc = (await sql`
+        SELECT COALESCE(SUM(monthly_hours), 0)::numeric AS n
+        FROM project_assignments
+        WHERE employee_id=${employeeId} AND month=${month} AND year=${year}` as any[])[0]?.n ?? 0;
+      const logged = (await sql`
+        SELECT COALESCE(SUM(hours_logged), 0)::numeric AS n
+        FROM hour_logs
+        WHERE employee_id=${employeeId} AND month=${month} AND year=${year}
+          AND status IN ('approved','pending','on_hold')` as any[])[0]?.n ?? 0;
+      if (Number(alloc) <= 0) return null;
+      return Math.round((Number(logged) / Number(alloc)) * 1000) / 10;
+    }
+    // Weekly — use hour_log_days within the period, plan = per-week from assignments.
+    const logged = (await sql`
+      SELECT COALESCE(SUM(hours), 0)::numeric AS n
+      FROM hour_log_days
+      WHERE employee_id=${employeeId}
+        AND log_date::date BETWEEN ${periodStart}::date AND ${periodEnd}::date` as any[])[0]?.n ?? 0;
+    // Approximation: for a full week, plan = 35h (5 × 7). Refine later
+    // with actual weekly allocation columns.
+    return Math.round((Number(logged) / 35) * 1000) / 10;
+  }
+  return null;
+}
+function invalidateKpiCache() {
+  for (const k of Array.from(_memoCache.keys())) {
+    if (k.startsWith('kpi:')) _memoCache.delete(k);
+  }
+}
+
+// ── Templates ────────────────────────────────────────────────────────────
+// GET list — HR + admin manage; anyone with a kpi can list (used by
+// employee's own KPI view too). include_inactive=1 for admin editor.
+app.get('/api/kpis/templates', async (req, res) => {
+  try {
+    await runStartupMigrations();
+    const wantAll = req.query.include_inactive === '1' || req.query.include_inactive === 'true';
+    const rows = wantAll
+      ? await sql`SELECT * FROM kpi_templates ORDER BY sort_order, name`
+      : await sql`SELECT * FROM kpi_templates WHERE active = TRUE ORDER BY sort_order, name`;
+    res.json(rows);
+  } catch (err: any) { res.status(500).json({ error: err.message ?? 'Server error' }); }
+});
+// POST — create (admin + HR only).
+app.post('/api/kpis/templates', async (req, res) => {
+  try {
+    await runStartupMigrations();
+    if (!(await requireFullHR(req, res)).ok) return;
+    const {
+      name, description, unit, default_target, weight, cadence, source,
+      role_key, higher_is_better,
+    } = req.body ?? {};
+    if (!name?.trim()) return res.status(400).json({ error: 'name is required' });
+    if (default_target == null || Number.isNaN(Number(default_target))) return res.status(400).json({ error: 'default_target must be a number' });
+    if (cadence && !['weekly','monthly'].includes(cadence)) return res.status(400).json({ error: 'cadence must be weekly or monthly' });
+    const validSources = KPI_SOURCES.map(s => s.key);
+    if (source && !validSources.includes(source)) return res.status(400).json({ error: `source must be one of: ${validSources.join(', ')}` });
+    const maxRow = (await sql`SELECT COALESCE(MAX(sort_order), -1) AS m FROM kpi_templates` as any[])[0];
+    const nextOrder = Number(maxRow?.m ?? -1) + 1;
+    const id = newId('kpt');
+    const row = (await sql`
+      INSERT INTO kpi_templates (id, name, description, unit, default_target, weight, cadence, source, role_key, higher_is_better, sort_order)
+      VALUES (${id}, ${name.trim()}, ${description?.trim() || null},
+              ${unit || 'count'}, ${Number(default_target)},
+              ${weight != null ? Number(weight) : 1},
+              ${cadence || 'monthly'},
+              ${source || 'manual'},
+              ${role_key?.trim() || null},
+              ${higher_is_better !== false},
+              ${nextOrder})
+      RETURNING *` as any[])[0];
+    invalidateKpiCache();
+    res.status(201).json(row);
+  } catch (err: any) { res.status(500).json({ error: err.message ?? 'Server error' }); }
+});
+// PATCH — edit.
+app.patch('/api/kpis/templates/:id', async (req, res) => {
+  try {
+    await runStartupMigrations();
+    if (!(await requireFullHR(req, res)).ok) return;
+    const existing = (await sql`SELECT * FROM kpi_templates WHERE id=${req.params.id}` as any[])[0];
+    if (!existing) return res.status(404).json({ error: 'Template not found' });
+    const b = req.body ?? {};
+    const name = b.name !== undefined ? String(b.name).trim() : existing.name;
+    const description = b.description !== undefined ? (b.description ? String(b.description).trim() : null) : existing.description;
+    const unit = b.unit !== undefined ? String(b.unit).trim() : existing.unit;
+    const default_target = b.default_target !== undefined ? Number(b.default_target) : Number(existing.default_target);
+    const weight = b.weight !== undefined ? Number(b.weight) : Number(existing.weight);
+    const cadence = b.cadence !== undefined ? String(b.cadence) : existing.cadence;
+    const source = b.source !== undefined ? String(b.source) : existing.source;
+    const role_key = b.role_key !== undefined ? (b.role_key ? String(b.role_key).trim() : null) : existing.role_key;
+    const higher_is_better = b.higher_is_better !== undefined ? !!b.higher_is_better : existing.higher_is_better;
+    const active = b.active !== undefined ? !!b.active : existing.active;
+    const row = (await sql`
+      UPDATE kpi_templates SET
+        name=${name}, description=${description}, unit=${unit},
+        default_target=${default_target}, weight=${weight},
+        cadence=${cadence}, source=${source}, role_key=${role_key},
+        higher_is_better=${higher_is_better}, active=${active},
+        updated_at=NOW()
+      WHERE id=${req.params.id} RETURNING *` as any[])[0];
+    invalidateKpiCache();
+    res.json(row);
+  } catch (err: any) { res.status(500).json({ error: err.message ?? 'Server error' }); }
+});
+// GET auto-source catalog.
+app.get('/api/kpis/sources', async (_req, res) => {
+  res.setHeader('Cache-Control', 'private, max-age=3600');
+  res.json(KPI_SOURCES);
+});
+
+// ── Assignments ─────────────────────────────────────────────────────────
+// List one employee's assignments + latest measurement per KPI.
+app.get('/api/kpis/employee/:employeeId', async (req, res) => {
+  try {
+    await runStartupMigrations();
+    const uid = req.header('x-user-id');
+    if (!uid) return res.status(401).json({ error: 'Sign in required' });
+    // Read scope: admin / HR / hr_intern / project_coordinator can read
+    // any; regular employees can read their own via employee_id_ref match.
+    const u = (await sql`SELECT id, role, employee_id_ref FROM app_users WHERE id=${uid}` as any[])[0];
+    if (!u) return res.status(401).json({ error: 'Unknown user' });
+    const isAdminish = ['admin','hr_manager','hr_intern','project_coordinator'].includes(u.role);
+    if (!isAdminish) {
+      const self = (await sql`SELECT id FROM employees WHERE employee_id=${u.employee_id_ref} OR id=${u.employee_id_ref} LIMIT 1` as any[])[0];
+      if (self?.id !== req.params.employeeId) return res.status(403).json({ error: 'Not permitted' });
+    }
+    const rows = await sql`
+      SELECT a.*,
+             t.name, t.description, t.unit, t.default_target, t.weight,
+             t.cadence, t.source, t.higher_is_better, t.active AS template_active,
+             (SELECT JSON_BUILD_OBJECT(
+                'period_start', m.period_start, 'actual', m.actual,
+                'notes', m.notes, 'entered_by_name', m.entered_by_name,
+                'auto', m.auto, 'entered_at', m.entered_at)
+              FROM kpi_measurements m
+              WHERE m.assignment_id = a.id
+              ORDER BY m.period_start DESC LIMIT 1) AS latest,
+             (SELECT COALESCE(JSON_AGG(JSON_BUILD_OBJECT(
+                'period_start', m2.period_start, 'actual', m2.actual, 'auto', m2.auto
+              ) ORDER BY m2.period_start DESC), '[]'::json)
+              FROM (SELECT period_start, actual, auto FROM kpi_measurements
+                    WHERE assignment_id = a.id
+                    ORDER BY period_start DESC LIMIT 6) m2) AS history
+      FROM kpi_assignments a
+      JOIN kpi_templates t ON t.id = a.template_id
+      WHERE a.employee_id=${req.params.employeeId}
+        AND a.active = TRUE
+        AND t.active = TRUE
+      ORDER BY t.sort_order, t.name`;
+    res.json(rows);
+  } catch (err: any) { res.status(500).json({ error: err.message ?? 'Server error' }); }
+});
+
+// POST — assign a template to an employee.
+app.post('/api/kpis/assignments', async (req, res) => {
+  try {
+    await runStartupMigrations();
+    const gate = await requireFullHR(req, res);
+    if (!gate.ok) return;
+    const { employee_id, template_id, target_override } = req.body ?? {};
+    if (!employee_id || !template_id) return res.status(400).json({ error: 'employee_id + template_id required' });
+    const id = newId('kpa');
+    try {
+      const row = (await sql`
+        INSERT INTO kpi_assignments (id, employee_id, template_id, target_override, assigned_by_id, assigned_by_name)
+        VALUES (${id}, ${employee_id}, ${template_id},
+                ${target_override != null ? Number(target_override) : null},
+                ${gate.user!.id}, ${gate.user!.name})
+        RETURNING *` as any[])[0];
+      invalidateKpiCache();
+      res.status(201).json(row);
+    } catch (e: any) {
+      if (String(e?.message).includes('kpi_assignments_employee_id_template_id_key')) {
+        return res.status(409).json({ error: 'This employee already has this KPI assigned.' });
+      }
+      throw e;
+    }
+  } catch (err: any) { res.status(500).json({ error: err.message ?? 'Server error' }); }
+});
+// PATCH — edit target / toggle active.
+app.patch('/api/kpis/assignments/:id', async (req, res) => {
+  try {
+    await runStartupMigrations();
+    if (!(await requireFullHR(req, res)).ok) return;
+    const existing = (await sql`SELECT * FROM kpi_assignments WHERE id=${req.params.id}` as any[])[0];
+    if (!existing) return res.status(404).json({ error: 'Assignment not found' });
+    const b = req.body ?? {};
+    const target_override = b.target_override !== undefined
+      ? (b.target_override === null ? null : Number(b.target_override))
+      : existing.target_override;
+    const active = b.active !== undefined ? !!b.active : existing.active;
+    const row = (await sql`
+      UPDATE kpi_assignments SET
+        target_override=${target_override},
+        active=${active}
+      WHERE id=${req.params.id} RETURNING *` as any[])[0];
+    invalidateKpiCache();
+    res.json(row);
+  } catch (err: any) { res.status(500).json({ error: err.message ?? 'Server error' }); }
+});
+// DELETE — hard delete (cascades measurements).
+app.delete('/api/kpis/assignments/:id', async (req, res) => {
+  try {
+    await runStartupMigrations();
+    if (!(await requireFullHR(req, res)).ok) return;
+    await sql`DELETE FROM kpi_assignments WHERE id=${req.params.id}`;
+    invalidateKpiCache();
+    res.json({ ok: true });
+  } catch (err: any) { res.status(500).json({ error: err.message ?? 'Server error' }); }
+});
+
+// ── Measurements ────────────────────────────────────────────────────────
+// POST — upsert a measurement for a specific period.
+app.post('/api/kpis/assignments/:id/measure', async (req, res) => {
+  try {
+    await runStartupMigrations();
+    const gate = await requireFullHR(req, res);
+    if (!gate.ok) return;
+    const { period_start, actual, notes } = req.body ?? {};
+    if (!period_start) return res.status(400).json({ error: 'period_start required' });
+    if (actual == null || Number.isNaN(Number(actual))) return res.status(400).json({ error: 'actual must be a number' });
+    // Look up assignment + template for cadence normalisation.
+    const asg = (await sql`
+      SELECT a.*, t.cadence, t.source FROM kpi_assignments a
+      JOIN kpi_templates t ON t.id = a.template_id
+      WHERE a.id=${req.params.id}` as any[])[0];
+    if (!asg) return res.status(404).json({ error: 'Assignment not found' });
+    const cadence = asg.cadence as 'weekly' | 'monthly';
+    const snapped = kpiPeriodStart(period_start, cadence);
+    const id = newId('kpm');
+    const row = (await sql`
+      INSERT INTO kpi_measurements (id, assignment_id, period_start, actual, notes,
+        entered_by_id, entered_by_name, auto)
+      VALUES (${id}, ${req.params.id}, ${snapped}::date, ${Number(actual)},
+              ${notes?.trim() || null},
+              ${gate.user!.id}, ${gate.user!.name}, FALSE)
+      ON CONFLICT (assignment_id, period_start) DO UPDATE SET
+        actual = EXCLUDED.actual,
+        notes = EXCLUDED.notes,
+        entered_by_id = EXCLUDED.entered_by_id,
+        entered_by_name = EXCLUDED.entered_by_name,
+        auto = FALSE,
+        entered_at = NOW()
+      RETURNING *` as any[])[0];
+    invalidateKpiCache();
+    res.json(row);
+  } catch (err: any) { res.status(500).json({ error: err.message ?? 'Server error' }); }
+});
+
+// POST — auto-compute + upsert for the assignment's current period.
+// Called by "Refresh from data" button on the UI for auto-source KPIs.
+app.post('/api/kpis/assignments/:id/auto', async (req, res) => {
+  try {
+    await runStartupMigrations();
+    const gate = await requireFullHR(req, res);
+    if (!gate.ok) return;
+    const asg = (await sql`
+      SELECT a.*, t.cadence, t.source FROM kpi_assignments a
+      JOIN kpi_templates t ON t.id = a.template_id
+      WHERE a.id=${req.params.id}` as any[])[0];
+    if (!asg) return res.status(404).json({ error: 'Assignment not found' });
+    if (asg.source === 'manual') return res.status(400).json({ error: 'This KPI uses manual entry — no auto source configured.' });
+    const cadence = asg.cadence as 'weekly' | 'monthly';
+    const requestedStart = (req.body?.period_start as string) || new Date().toISOString().slice(0, 10);
+    const periodStart = kpiPeriodStart(requestedStart, cadence);
+    const val = await computeKpiAutoActual(asg.source, asg.employee_id, cadence, periodStart);
+    if (val == null) return res.status(400).json({ error: 'No data available to compute this KPI for the selected period.' });
+    const id = newId('kpm');
+    const row = (await sql`
+      INSERT INTO kpi_measurements (id, assignment_id, period_start, actual, notes,
+        entered_by_id, entered_by_name, auto)
+      VALUES (${id}, ${req.params.id}, ${periodStart}::date, ${val}, NULL,
+              ${gate.user!.id}, ${gate.user!.name}, TRUE)
+      ON CONFLICT (assignment_id, period_start) DO UPDATE SET
+        actual = EXCLUDED.actual,
+        auto = TRUE,
+        entered_by_id = EXCLUDED.entered_by_id,
+        entered_by_name = EXCLUDED.entered_by_name,
+        entered_at = NOW()
+      RETURNING *` as any[])[0];
+    invalidateKpiCache();
+    res.json(row);
   } catch (err: any) { res.status(500).json({ error: err.message ?? 'Server error' }); }
 });
 

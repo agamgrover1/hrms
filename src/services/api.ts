@@ -1150,7 +1150,62 @@ export const api = {
     request<HrDocument>(`/hr-documents/${id}`, { method: 'PATCH', body: JSON.stringify(data) }),
   voidHrDocument: (id: string, voided_reason: string) =>
     request<HrDocument>(`/hr-documents/${id}/void`, { method: 'PATCH', body: JSON.stringify({ voided_reason }) }),
+
+  // ── KPIs ─────────────────────────────────────────────────────────────
+  getKpiTemplates: (opts: { include_inactive?: boolean } = {}) =>
+    request<KpiTemplate[]>(`/kpis/templates${opts.include_inactive ? '?include_inactive=1' : ''}`),
+  getKpiSources: () =>
+    request<Array<{ key: string; label: string }>>(`/kpis/sources`),
+  createKpiTemplate: (data: Partial<KpiTemplate> & { name: string; default_target: number }) =>
+    request<KpiTemplate>(`/kpis/templates`, { method: 'POST', body: JSON.stringify(data) }),
+  updateKpiTemplate: (id: string, data: Partial<KpiTemplate>) =>
+    request<KpiTemplate>(`/kpis/templates/${id}`, { method: 'PATCH', body: JSON.stringify(data) }),
+  getEmployeeKpis: (employeeId: string) =>
+    request<KpiRow[]>(`/kpis/employee/${employeeId}`),
+  assignKpi: (data: { employee_id: string; template_id: string; target_override?: number | null }) =>
+    request<any>(`/kpis/assignments`, { method: 'POST', body: JSON.stringify(data) }),
+  updateKpiAssignment: (id: string, data: { target_override?: number | null; active?: boolean }) =>
+    request<any>(`/kpis/assignments/${id}`, { method: 'PATCH', body: JSON.stringify(data) }),
+  deleteKpiAssignment: (id: string) =>
+    request<{ ok: true }>(`/kpis/assignments/${id}`, { method: 'DELETE' }),
+  saveKpiMeasurement: (assignmentId: string, data: { period_start: string; actual: number; notes?: string }) =>
+    request<any>(`/kpis/assignments/${assignmentId}/measure`, { method: 'POST', body: JSON.stringify(data) }),
+  autoComputeKpi: (assignmentId: string, period_start?: string) =>
+    request<any>(`/kpis/assignments/${assignmentId}/auto`, { method: 'POST', body: JSON.stringify({ period_start }) }),
 };
+
+export interface KpiTemplate {
+  id: string;
+  name: string;
+  description: string | null;
+  unit: string;
+  default_target: number;
+  weight: number;
+  cadence: 'weekly' | 'monthly';
+  source: string;
+  role_key: string | null;
+  higher_is_better: boolean;
+  active: boolean;
+  sort_order: number;
+}
+export interface KpiRow {
+  id: string;              // assignment id
+  employee_id: string;
+  template_id: string;
+  target_override: number | null;
+  active: boolean;
+  name: string;
+  description: string | null;
+  unit: string;
+  default_target: number;
+  weight: number;
+  cadence: 'weekly' | 'monthly';
+  source: string;
+  higher_is_better: boolean;
+  template_active: boolean;
+  latest: { period_start: string; actual: number; notes: string | null; entered_by_name: string | null; auto: boolean; entered_at: string } | null;
+  history: Array<{ period_start: string; actual: number; auto: boolean }>;
+}
 
 export interface HrDocument {
   id: string;
