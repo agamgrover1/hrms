@@ -469,11 +469,16 @@ const SCORE_CATEGORIES = [
   { key: 'initiative',          label: 'Initiative' },
   { key: 'client_satisfaction', label: 'Client Satisfaction' },
   { key: 'ai_usage',            label: 'AI Usage' },
+  // Phase-1 additions — kept in sync with Performance.tsx CATEGORIES.
+  { key: 'communication',       label: 'Communication' },
+  { key: 'ownership',           label: 'Ownership' },
+  { key: 'planning_accuracy',   label: 'Planning Accuracy' },
+  { key: 'learning_growth',     label: 'Learning & Growth' },
 ] as const;
 
 const MONTHS_SHORT = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
-const PERF_COLS = ['Prod.', 'Quality', 'Teamwork', 'Attend.', 'Initiative', 'Client Sat.', 'AI Usage'];
-const PERF_KEYS = ['productivity','quality','teamwork','attendance_score','initiative','client_satisfaction','ai_usage'];
+const PERF_COLS = ['Prod.', 'Quality', 'Teamwork', 'Attend.', 'Initiative', 'Client Sat.', 'AI Usage', 'Comms', 'Owner.', 'Plan.', 'Learn.'];
+const PERF_KEYS = ['productivity','quality','teamwork','attendance_score','initiative','client_satisfaction','ai_usage','communication','ownership','planning_accuracy','learning_growth'];
 
 function perfColor(s: number) {
   if (s >= 85) return '#16a34a';
@@ -814,11 +819,15 @@ export default function MyPortal() {
   const [loadingMemberLeaves, setLoadingMemberLeaves] = useState(false);
   const [cancelLeaveTarget, setCancelLeaveTarget] = useState<string | null>(null);
   const [showTeamReview, setShowTeamReview] = useState<any | null>(null); // employee record
-  const [teamReviewScores, setTeamReviewScores] = useState<Record<string, number>>({
-    productivity: 75, quality: 75, teamwork: 75, attendance_score: 75, initiative: 75, client_satisfaction: 75, ai_usage: 75,
-  });
+  const [teamReviewScores, setTeamReviewScores] = useState<Record<string, number>>(
+    Object.fromEntries(SCORE_CATEGORIES.map(c => [c.key, 75])) as Record<string, number>
+  );
+  // Per-pillar notes — backend requires a note on every rated pillar.
+  // Kept flat alongside teamReviewScores so save just spreads both.
+  const [teamReviewNotes, setTeamReviewNotes] = useState<Record<string, string>>({});
   const [teamReviewComment, setTeamReviewComment] = useState('');
   const [savingTeamReview, setSavingTeamReview] = useState(false);
+  const [teamReviewError, setTeamReviewError] = useState('');
 
   const empRef = user?.employee_id_ref;
 
@@ -1235,32 +1244,45 @@ export default function MyPortal() {
 
   const handleSaveTeamReview = async () => {
     if (!showTeamReview || !empDbId) return;
+    // Notes are mandatory on every RATED pillar (server enforces the same).
+    // Block the save with a clear message so the reviewer knows what's
+    // missing instead of getting a bare 400.
+    const missingNotes = SCORE_CATEGORIES
+      .filter(c => teamReviewScores[c.key] != null && !(teamReviewNotes[c.key] ?? '').trim())
+      .map(c => c.label);
+    if (missingNotes.length) {
+      setTeamReviewError(`Add a note for every rated pillar. Missing: ${missingNotes.join(', ')}.`);
+      return;
+    }
+    setTeamReviewError('');
     setSavingTeamReview(true);
     try {
-      const overall = Math.round(Object.values(teamReviewScores).reduce((a, b) => a + b, 0) / SCORE_CATEGORIES.length);
+      const vals = Object.values(teamReviewScores);
+      const overall = Math.round(vals.reduce((a, b) => a + b, 0) / vals.length);
       await api.saveMonthlyPerformance({
         employee_id: showTeamReview.id,
         reviewer_id: empDbId,
         reviewer_name: user?.name,
         month: currentMonth,
         year: currentYear,
-        productivity: teamReviewScores.productivity,
-        quality: teamReviewScores.quality,
-        teamwork: teamReviewScores.teamwork,
-        attendance_score: teamReviewScores.attendance_score,
-        initiative: teamReviewScores.initiative,
-        client_satisfaction: teamReviewScores.client_satisfaction,
-        ai_usage: teamReviewScores.ai_usage,
+        // Iterate SCORE_CATEGORIES so any future additions flow through
+        // without another hardcoded field list needing to be updated.
+        ...Object.fromEntries(SCORE_CATEGORIES.map(c => [c.key, teamReviewScores[c.key]])) as any,
         overall_score: overall,
         comments: teamReviewComment,
+        parameter_notes: teamReviewNotes,
+        requester_role: user?.role,
       });
       api.getMonthlyPerformance(showTeamReview.id, currentYear).then(perf =>
         setTeamPerf(prev => ({ ...prev, [showTeamReview.id]: perf }))
       );
       setShowTeamReview(null);
       setTeamReviewComment('');
-      setTeamReviewScores({ productivity: 75, quality: 75, teamwork: 75, attendance_score: 75, initiative: 75, client_satisfaction: 75 });
-    } catch { /* ignore */ } finally {
+      setTeamReviewNotes({});
+      setTeamReviewScores(Object.fromEntries(SCORE_CATEGORIES.map(c => [c.key, 75])) as Record<string, number>);
+    } catch (e: any) {
+      setTeamReviewError(e?.message ?? 'Save failed');
+    } finally {
       setSavingTeamReview(false);
     }
   };
@@ -3190,8 +3212,10 @@ export default function MyPortal() {
                         <button
                           onClick={() => {
                             setShowTeamReview(member);
-                            setTeamReviewScores({ productivity: 75, quality: 75, teamwork: 75, attendance_score: 75, initiative: 75, client_satisfaction: 75 });
+                            setTeamReviewScores(Object.fromEntries(SCORE_CATEGORIES.map(c => [c.key, 75])) as Record<string, number>);
+                            setTeamReviewNotes({});
                             setTeamReviewComment('');
+                            setTeamReviewError('');
                           }}
                           className="px-3 py-1.5 text-xs font-semibold rounded-lg transition-colors"
                           style={{ background: 'rgba(25,34,80,0.07)', color: '#192250' }}>
@@ -3369,21 +3393,37 @@ export default function MyPortal() {
               </button>
             </div>
             <div className="p-6 space-y-4 max-h-[70vh] overflow-y-auto">
-              {SCORE_CATEGORIES.map(({ key, label }) => (
-                <div key={key}>
-                  <div className="flex justify-between mb-1.5">
-                    <label className="text-xs font-semibold text-on-surface-muted">{label}</label>
-                    <span className="text-xs font-bold" style={{ color: perfColor(teamReviewScores[key]) }}>
-                      {teamReviewScores[key]}
-                    </span>
+              {SCORE_CATEGORIES.map(({ key, label }) => {
+                const noteMissing = !(teamReviewNotes[key] ?? '').trim();
+                return (
+                  <div key={key} className="space-y-1.5">
+                    <div className="flex justify-between">
+                      <label className="text-xs font-semibold text-on-surface-muted">{label}</label>
+                      <span className="text-xs font-bold" style={{ color: perfColor(teamReviewScores[key]) }}>
+                        {teamReviewScores[key]}
+                      </span>
+                    </div>
+                    <input type="range" min={0} max={100}
+                      value={teamReviewScores[key]}
+                      onChange={e => setTeamReviewScores(s => ({ ...s, [key]: Number(e.target.value) }))}
+                      className="score-slider"
+                    />
+                    <textarea
+                      value={teamReviewNotes[key] ?? ''}
+                      onChange={e => setTeamReviewNotes(n => ({ ...n, [key]: e.target.value }))}
+                      rows={1}
+                      placeholder={`Note for ${label} (required)…`}
+                      className={`w-full text-xs rounded-lg px-2.5 py-1.5 resize-none focus:outline-none leading-relaxed text-on-surface-muted border ${
+                        noteMissing
+                          ? 'border-danger/40 focus:border-danger focus:ring-2 focus:ring-danger/20'
+                          : 'border-outline focus:border-outline-strong'
+                      }`}
+                      onFocus={e => { (e.target as HTMLTextAreaElement).rows = 2; }}
+                      onBlur={e => { if (!e.target.value) (e.target as HTMLTextAreaElement).rows = 1; }}
+                    />
                   </div>
-                  <input type="range" min={0} max={100}
-                    value={teamReviewScores[key]}
-                    onChange={e => setTeamReviewScores(s => ({ ...s, [key]: Number(e.target.value) }))}
-                    className="score-slider"
-                  />
-                </div>
-              ))}
+                );
+              })}
               <div>
                 <label className="text-xs font-semibold text-on-surface-muted block mb-1.5">Overall Score</label>
                 <div className="text-2xl font-black" style={{ color: perfColor(Math.round(Object.values(teamReviewScores).reduce((a, b) => a + b, 0) / SCORE_CATEGORIES.length)) }}>
@@ -3396,17 +3436,28 @@ export default function MyPortal() {
                   rows={3} placeholder="Add feedback for this team member..."
                   className="w-full border border-outline rounded-xl px-3 py-2.5 text-sm resize-none focus:outline-none focus:border-outline-strong" />
               </div>
-              <div className="flex gap-3 pt-2">
-                <button onClick={() => setShowTeamReview(null)}
-                  className="flex-1 py-2.5 border border-outline rounded-xl text-sm font-semibold text-on-surface-muted hover:bg-surface-2">
-                  Cancel
-                </button>
-                <button onClick={handleSaveTeamReview} disabled={savingTeamReview}
-                  className="flex-1 py-2.5 text-white rounded-xl text-sm font-semibold disabled:opacity-60"
-                  style={{ background: 'linear-gradient(135deg, #192250 0%, #141c43 100%)' }}>
-                  {savingTeamReview ? 'Saving…' : 'Save Review'}
-                </button>
-              </div>
+              {teamReviewError && (
+                <div className="rounded-lg border border-danger/30 bg-danger-container/40 p-3 text-xs text-danger">
+                  {teamReviewError}
+                </div>
+              )}
+              {(() => {
+                const missing = SCORE_CATEGORIES.filter(c => !(teamReviewNotes[c.key] ?? '').trim()).length;
+                return (
+                  <div className="flex gap-3 pt-2">
+                    <button onClick={() => setShowTeamReview(null)}
+                      className="flex-1 py-2.5 border border-outline rounded-xl text-sm font-semibold text-on-surface-muted hover:bg-surface-2">
+                      Cancel
+                    </button>
+                    <button onClick={handleSaveTeamReview} disabled={savingTeamReview || missing > 0}
+                      title={missing > 0 ? `Missing notes on ${missing} pillar${missing === 1 ? '' : 's'}` : ''}
+                      className="flex-1 py-2.5 text-white rounded-xl text-sm font-semibold disabled:opacity-60 disabled:cursor-not-allowed"
+                      style={{ background: 'linear-gradient(135deg, #192250 0%, #141c43 100%)' }}>
+                      {savingTeamReview ? 'Saving…' : 'Save Review'}
+                    </button>
+                  </div>
+                );
+              })()}
             </div>
           </div>
         </div>

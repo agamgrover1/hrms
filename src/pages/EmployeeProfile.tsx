@@ -71,8 +71,8 @@ const STATUS_LABEL: Record<string,string> = {
   wfh:'WFH', wfh_half:'WFH Half', holiday:'Holiday', weekend:'Weekend',
   short_leave:'Short Leave', unpaid_leave:'Unpaid', 'half-day':'Half Day',
 };
-const PERF_KEYS   = ['productivity','quality','teamwork','attendance_score','initiative','client_satisfaction','ai_usage'];
-const PERF_LABELS = ['Productivity','Quality','Teamwork','Attendance','Initiative','Client Sat.','AI Usage'];
+const PERF_KEYS   = ['productivity','quality','teamwork','attendance_score','initiative','client_satisfaction','ai_usage','communication','ownership','planning_accuracy','learning_growth'];
+const PERF_LABELS = ['Productivity','Quality','Teamwork','Attendance','Initiative','Client Sat.','AI Usage','Comms','Owner.','Plan.','Learn.'];
 
 // ── Mini action modal ─────────────────────────────────────────────────────────
 function ActionModal({ title, info, type, isIncentive, onClose, onConfirm }: {

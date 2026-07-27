@@ -22,6 +22,12 @@ const SCORE_CATEGORIES = [
   { key: 'initiative',          label: 'Initiative' },
   { key: 'client_satisfaction', label: 'Client Handling', hint: 'Messaging · handling tough clients · interaction · retention. Feeds the Client Handling pillar on Pulse.' },
   { key: 'ai_usage',            label: 'AI Usage' },
+  // Phase-1 additions — the four dimensions the original 7 missed.
+  // Kept in sync with the main Performance form's CATEGORIES list.
+  { key: 'communication',       label: 'Communication',     hint: 'Responsiveness to project queries, approval pings, and team messages. Separate from teamwork — this is about reachability and clarity.' },
+  { key: 'ownership',           label: 'Ownership',         hint: 'Drives existing work to closure without nudging. Different from Initiative (starts new things) — this is about following through.' },
+  { key: 'planning_accuracy',   label: 'Planning Accuracy', hint: 'How close were their week-1 estimates to actuals? Tracks self-awareness and ability to scope work.' },
+  { key: 'learning_growth',     label: 'Learning & Growth', hint: 'What did they level up this month? Anchors retention conversations.' },
 ] as const;
 
 // ── helpers ──────────────────────────────────────────────────────────────────
