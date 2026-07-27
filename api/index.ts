@@ -6808,7 +6808,10 @@ app.patch('/api/attendance-notes/reject',  (req, res) => handleAttendanceNoteRev
 // Internal Activities section for no obvious reason.
 async function canViewInternalHoursOf(u: any, actorEmpId: string | null, targetEmpId: string, actorEmpCode: string | null): Promise<boolean> {
   if (!u) return false;
-  if (u.role === 'admin' || u.role === 'hr_manager') return true;
+  // Admin-like roles see everyone's internal hours. project_coordinator
+  // is grouped here because the PC role is org-level ops — they need
+  // full visibility for capacity + billing decisions, same as HR.
+  if (u.role === 'admin' || u.role === 'hr_manager' || u.role === 'project_coordinator') return true;
   if (actorEmpId && actorEmpId === targetEmpId) return true;
   if (!actorEmpId) return false;
   // 1. Reporting chain walk (cap 10 levels). reporting_manager_id can
@@ -6887,17 +6890,27 @@ app.get('/api/internal-hour-logs/for-team', async (req, res) => {
     const { from, to } = req.query as any;
     const fromD = from || new Date(Date.now() - 60 * 86400000).toISOString().slice(0, 10);
     const toD = to || new Date().toISOString().slice(0, 10);
-    // Resolve the reviewer's direct + descendant reports in one recursive
-    // CTE (mirrors the descendants branch of /api/employees). Admin / HR
-    // can view any reviewer; other roles can only view their own team.
+    // Resolve caller's employee id. Admin-like roles (admin / HR / PC)
+    // bypass the reporting-tree filter entirely; other roles can only
+    // see their own descendants.
     const selfRow = (await sql`
       SELECT id FROM employees WHERE employee_id=${u.employee_id_ref} OR id=${u.employee_id_ref} LIMIT 1`)[0] as any;
-    const isAdminish = u.role === 'admin' || u.role === 'hr_manager';
+    const isAdminish = u.role === 'admin' || u.role === 'hr_manager' || u.role === 'project_coordinator';
     if (!isAdminish && selfRow?.id !== reviewerId) {
       return res.status(403).json({ error: 'Not permitted' });
     }
-    const cacheKey = `internalHrsTeam:${reviewerId}:${fromD}:${toD}`;
-    const rows = await memoTtl(cacheKey, 60_000, async () => sql`
+    const cacheKey = `internalHrsTeam:${isAdminish ? 'all' : reviewerId}:${fromD}:${toD}`;
+    // Admin-like: no team CTE, return every employee's rows. Otherwise:
+    // recursive walk from the reviewer down through the reporting chain.
+    const rows = await memoTtl(cacheKey, 60_000, async () => isAdminish
+      ? sql`
+          SELECT l.*, a.name AS activity_name, e.name AS employee_name
+          FROM internal_hour_logs l
+          JOIN employees e ON e.id = l.employee_id
+          LEFT JOIN internal_activities a ON a.id = l.activity_id
+          WHERE l.log_date BETWEEN ${fromD}::date AND ${toD}::date
+          ORDER BY l.log_date DESC`
+      : sql`
       WITH RECURSIVE mgr AS (
         SELECT id, employee_id FROM employees WHERE id=${reviewerId} LIMIT 1
       ),
