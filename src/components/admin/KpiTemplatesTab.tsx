@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
-import { Plus, Trash2, Check, X, Pencil, Eye, EyeOff, Target, Zap } from 'lucide-react';
+import { Plus, Trash2, Check, X, Pencil, Eye, EyeOff, Target, Zap, Users } from 'lucide-react';
 import { api, type KpiTemplate } from '../../services/api';
+import { toast } from '../Toaster';
 
 // Admin editor for KPI templates — the catalog HR builds once, then
 // assigns to team members from EmployeeProfile. Every column here
@@ -45,6 +46,17 @@ export default function KpiTemplatesTab() {
       const updated = await api.updateKpiTemplate(t.id, { active: !t.active });
       setRows(prev => prev.map(x => x.id === t.id ? updated : x));
     } catch (e: any) { setError(e?.message || 'Toggle failed'); }
+    finally { setBusy(false); }
+  };
+
+  const bulkAssign = async (t: KpiTemplate) => {
+    const scope = t.role_key ? `all "${t.role_key}" employees` : 'ALL active employees';
+    if (!confirm(`Assign "${t.name}" to ${scope}? Employees who already have this KPI are skipped.`)) return;
+    setBusy(true); setError('');
+    try {
+      const r = await api.bulkAutoAssignKpi(t.id);
+      toast.success('Bulk-assigned', `${r.assigned} new · ${r.skipped} already had it · ${r.matched} matched.`);
+    } catch (e: any) { setError(e?.message || 'Bulk-assign failed'); }
     finally { setBusy(false); }
   };
 
@@ -128,6 +140,13 @@ export default function KpiTemplatesTab() {
                     <td className="px-3 py-2.5 text-center num-mono text-xs">{Number(t.weight)}</td>
                     <td className="px-3 py-2.5 text-right">
                       <div className="inline-flex items-center gap-1">
+                        {t.active && (
+                          <button onClick={() => bulkAssign(t)} disabled={busy}
+                            title={t.role_key ? `Assign to every "${t.role_key}" employee` : 'Assign to every active employee'}
+                            className="p-1.5 rounded-md text-on-surface-muted hover:text-brand hover:bg-brand/10">
+                            <Users className="w-3.5 h-3.5" />
+                          </button>
+                        )}
                         <button onClick={() => toggleActive(t)}
                           title={t.active ? 'Hide (stops new assignments)' : 'Show'}
                           className={`p-1.5 rounded-md ${t.active ? 'text-on-surface-muted hover:text-warning hover:bg-warning-container/40' : 'text-success hover:bg-success/10'}`}>

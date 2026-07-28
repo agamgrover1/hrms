@@ -42,6 +42,7 @@ function fmtHours(h: number | string | null | undefined): string {
 }
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Cell } from 'recharts';
 import { GoalCard, GOAL_STATUSES, GOAL_STATUS_CONFIG } from '../Performance';
+import KpisPanel from '../../components/hr/KpisPanel';
 import type { GoalStatus } from '../Performance';
 
 class TabErrorBoundary extends Component<{ children: ReactNode }, { error: string | null }> {
@@ -2910,6 +2911,13 @@ export default function MyPortal() {
               </table>
             </div>
           </div>
+
+          {/* ─── KPIs (read-only) ─── */}
+          {empDbId && (
+            <div className="bg-surface rounded-2xl border border-outline shadow-sm p-5">
+              <KpisPanel employeeId={empDbId} employeeName={user?.name} readOnly />
+            </div>
+          )}
 
           {/* ─── Appraisal Goals ─── */}
 

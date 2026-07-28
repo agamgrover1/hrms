@@ -1161,7 +1161,9 @@ export const api = {
   updateKpiTemplate: (id: string, data: Partial<KpiTemplate>) =>
     request<KpiTemplate>(`/kpis/templates/${id}`, { method: 'PATCH', body: JSON.stringify(data) }),
   getEmployeeKpis: (employeeId: string) =>
-    request<KpiRow[]>(`/kpis/employee/${employeeId}`),
+    request<{ rows: KpiRow[]; composite: number | null; measured: number; total: number }>(`/kpis/employee/${employeeId}`),
+  bulkAutoAssignKpi: (templateId: string) =>
+    request<{ assigned: number; skipped: number; matched: number }>(`/kpis/templates/${templateId}/auto-assign`, { method: 'POST', body: '{}' }),
   assignKpi: (data: { employee_id: string; template_id: string; target_override?: number | null }) =>
     request<any>(`/kpis/assignments`, { method: 'POST', body: JSON.stringify(data) }),
   updateKpiAssignment: (id: string, data: { target_override?: number | null; active?: boolean }) =>

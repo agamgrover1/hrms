@@ -10525,6 +10525,8 @@ const KPI_SOURCES = [
   { key: 'attendance_pct',      label: 'Attendance % (auto)' },
   { key: 'on_time_pct',         label: 'On-time % (auto)' },
   { key: 'hours_coverage_pct',  label: 'Hours coverage % (auto — logged / allocated)' },
+  { key: 'goal_completion_pct', label: 'Appraisal goal completion % (auto)' },
+  { key: 'hours_log_days_pct',  label: 'Hours-logging compliance % (auto — days with logs / working days)' },
 ] as const;
 
 // Anchor a date to the start of its period (week = last Monday, month = 1st).
@@ -10607,7 +10609,75 @@ async function computeKpiAutoActual(
     // with actual weekly allocation columns.
     return Math.round((Number(logged) / 35) * 1000) / 10;
   }
+  if (source === 'goal_completion_pct') {
+    // Completion rate on the appraisal-goals for the CYCLE that owns the
+    // period. Goal rows are per (employee, year, month); pick the latest
+    // row for the current or prior period so partial cycles still show
+    // meaningful progress.
+    const d = new Date(periodStart + 'T12:00:00Z');
+    const y = d.getUTCFullYear();
+    const rows = await sql`
+      SELECT goals FROM appraisal_goals
+      WHERE employee_id=${employeeId} AND year <= ${y}
+      ORDER BY year DESC, month DESC LIMIT 1` as any[];
+    const goals = (rows[0]?.goals ?? []) as any[];
+    if (!goals.length) return null;
+    // status column can be either admin_status or the employee's
+    // self_status. Prefer admin_status when present (source of truth).
+    const done = goals.filter(g => (g.admin_status ?? g.employee_status ?? g.status) === 'completed').length;
+    return Math.round((done / goals.length) * 1000) / 10;
+  }
+  if (source === 'hours_log_days_pct') {
+    // What fraction of working days in the period had ANY hours logged?
+    // Signals hygiene / compliance without penalising volume.
+    const attRows = await sql`
+      SELECT date::text AS d, status FROM attendance_records
+      WHERE employee_id=${employeeId}
+        AND date::date BETWEEN ${periodStart}::date AND ${periodEnd}::date` as any[];
+    const workdays = attRows.filter(r => r.status !== 'weekend' && r.status !== 'holiday');
+    if (!workdays.length) return null;
+    const workdayIsos = new Set(workdays.map(r => String(r.d).slice(0, 10)));
+    const dayRows = await sql`
+      SELECT DISTINCT log_date::text AS d FROM hour_log_days
+      WHERE employee_id=${employeeId}
+        AND log_date::date BETWEEN ${periodStart}::date AND ${periodEnd}::date` as any[];
+    const loggedIsos = new Set(dayRows.map(r => String(r.d).slice(0, 10)));
+    const covered = Array.from(workdayIsos).filter(iso => loggedIsos.has(iso)).length;
+    return Math.round((covered / workdayIsos.size) * 1000) / 10;
+  }
   return null;
+}
+
+// Composite score: weighted mean of achievement % across an employee's
+// KPIs, considering only KPIs that have a latest measurement. Cap each
+// KPI's contribution at 150% so a single outlier can't dominate. Returns
+// null when the employee has no measured KPIs (score is meaningless).
+function computeKpiComposite(rows: Array<{
+  target_override: number | null; default_target: number;
+  weight: number; higher_is_better: boolean;
+  latest: { actual: number } | null;
+}>): number | null {
+  let weightedSum = 0;
+  let totalWeight = 0;
+  for (const r of rows) {
+    if (!r.latest) continue;
+    const target = r.target_override != null ? Number(r.target_override) : Number(r.default_target);
+    const actual = Number(r.latest.actual);
+    let pct: number;
+    if (target === 0) {
+      pct = actual === 0 ? 100 : 0;
+    } else if (r.higher_is_better) {
+      pct = (actual / target) * 100;
+    } else {
+      pct = actual === 0 ? 200 : (target / actual) * 100;
+    }
+    pct = Math.min(150, Math.max(0, pct)); // clamp to keep outliers honest
+    const w = Number(r.weight) || 1;
+    weightedSum += pct * w;
+    totalWeight += w;
+  }
+  if (totalWeight === 0) return null;
+  return Math.round(weightedSum / totalWeight);
 }
 function invalidateKpiCache() {
   for (const k of Array.from(_memoCache.keys())) {
@@ -10734,8 +10804,41 @@ app.get('/api/kpis/employee/:employeeId', async (req, res) => {
       WHERE a.employee_id=${req.params.employeeId}
         AND a.active = TRUE
         AND t.active = TRUE
-      ORDER BY t.sort_order, t.name`;
-    res.json(rows);
+      ORDER BY t.sort_order, t.name` as any[];
+    // Composite score is a weighted read across measured KPIs — the
+    // frontend also needs to render one number as the summary.
+    const composite = computeKpiComposite(rows as any);
+    const measured = rows.filter((r: any) => r.latest).length;
+    res.json({ rows, composite, measured, total: rows.length });
+  } catch (err: any) { res.status(500).json({ error: err.message ?? 'Server error' }); }
+});
+
+// POST — bulk auto-assign a template to every employee whose designation
+// matches the template's role_key (case-insensitive; NULL role = all).
+// Skips already-assigned employees. Returns { assigned, skipped }.
+app.post('/api/kpis/templates/:id/auto-assign', async (req, res) => {
+  try {
+    await runStartupMigrations();
+    const gate = await requireFullHR(req, res);
+    if (!gate.ok) return;
+    const tpl = (await sql`SELECT * FROM kpi_templates WHERE id=${req.params.id}` as any[])[0];
+    if (!tpl) return res.status(404).json({ error: 'Template not found' });
+    // Match by designation. Case-insensitive, trimmed. NULL role_key =
+    // apply to every active employee.
+    const matches = tpl.role_key
+      ? await sql`SELECT id FROM employees WHERE status='active' AND LOWER(TRIM(designation)) = LOWER(TRIM(${tpl.role_key}))` as any[]
+      : await sql`SELECT id FROM employees WHERE status='active'` as any[];
+    const existing = await sql`SELECT employee_id FROM kpi_assignments WHERE template_id=${tpl.id}` as any[];
+    const already = new Set(existing.map((r: any) => r.employee_id));
+    const toAssign = matches.filter((e: any) => !already.has(e.id));
+    for (const e of toAssign) {
+      await sql`
+        INSERT INTO kpi_assignments (id, employee_id, template_id, assigned_by_id, assigned_by_name)
+        VALUES (${newId('kpa')}, ${e.id}, ${tpl.id}, ${gate.user!.id}, ${gate.user!.name})
+        ON CONFLICT (employee_id, template_id) DO NOTHING`.catch(()=>{});
+    }
+    invalidateKpiCache();
+    res.json({ assigned: toAssign.length, skipped: already.size, matched: matches.length });
   } catch (err: any) { res.status(500).json({ error: err.message ?? 'Server error' }); }
 });
 

@@ -12,6 +12,10 @@ interface Props {
   employeeId: string;
   employeeName?: string;
   designation?: string | null;
+  // When true, hides every write action (assign / measure / override /
+  // remove / refresh). Used by MyPortal so the employee sees their KPIs
+  // but can't edit them.
+  readOnly?: boolean;
 }
 
 function fmtPeriod(iso: string, cadence: 'weekly' | 'monthly'): string {
@@ -45,11 +49,13 @@ function scoreBg(pct: number): string {
   return 'bg-danger/15 border-danger/30';
 }
 
-export default function KpisPanel({ employeeId, employeeName, designation }: Props) {
+export default function KpisPanel({ employeeId, employeeName, designation, readOnly }: Props) {
   const { user } = useAuth();
-  const canManage = user?.role === 'admin' || user?.role === 'hr_manager' || user?.role === 'project_coordinator';
+  const canManage = !readOnly && (user?.role === 'admin' || user?.role === 'hr_manager' || user?.role === 'project_coordinator');
 
   const [rows, setRows] = useState<KpiRow[]>([]);
+  const [composite, setComposite] = useState<number | null>(null);
+  const [measured, setMeasured] = useState(0);
   const [templates, setTemplates] = useState<KpiTemplate[]>([]);
   const [loading, setLoading] = useState(true);
   const [showAssign, setShowAssign] = useState(false);
@@ -59,8 +65,12 @@ export default function KpisPanel({ employeeId, employeeName, designation }: Pro
   const load = () => {
     setLoading(true);
     api.getEmployeeKpis(employeeId)
-      .then(r => setRows(Array.isArray(r) ? r : []))
-      .catch(() => setRows([]))
+      .then(r => {
+        setRows(Array.isArray(r?.rows) ? r.rows : []);
+        setComposite(r?.composite ?? null);
+        setMeasured(r?.measured ?? 0);
+      })
+      .catch(() => { setRows([]); setComposite(null); setMeasured(0); })
       .finally(() => setLoading(false));
   };
   useEffect(load, [employeeId]);
@@ -102,12 +112,21 @@ export default function KpisPanel({ employeeId, employeeName, designation }: Pro
             Auto-source KPIs recompute from HRMS data; manual KPIs get entered each period.
           </p>
         </div>
-        {canManage && (
-          <button onClick={() => setShowAssign(true)}
-            className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg bg-accent text-on-accent text-sm font-semibold hover:opacity-90">
-            <Plus className="w-4 h-4" /> Assign KPI
-          </button>
-        )}
+        <div className="flex items-center gap-3">
+          {composite != null && (
+            <div className={`px-3 py-2 rounded-lg border ${scoreBg(composite)} flex items-baseline gap-2`}>
+              <span className="text-[10px] font-bold uppercase tracking-wider text-on-surface-muted">Composite</span>
+              <span className={`num-mono text-xl font-bold ${scoreColor(composite)}`}>{composite}</span>
+              <span className="text-xs text-on-surface-subtle">/ 150 · {measured}/{rows.length} measured</span>
+            </div>
+          )}
+          {canManage && (
+            <button onClick={() => setShowAssign(true)}
+              className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg bg-accent text-on-accent text-sm font-semibold hover:opacity-90">
+              <Plus className="w-4 h-4" /> Assign KPI
+            </button>
+          )}
+        </div>
       </div>
 
       {loading ? (
