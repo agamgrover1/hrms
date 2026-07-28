@@ -111,7 +111,10 @@ function DayApprovalView({ reviewerEmpId, isAdmin, user }: {
   const [scope, setScope] = useState<'mine' | 'all'>(isAdmin ? 'all' : 'mine');
   const [rejectTarget, setRejectTarget] = useState<DayRow | null>(null);
   const [holdTarget, setHoldTarget] = useState<DayRow | null>(null);
-  const [discussLog, setDiscussLog] = useState<{ hourLogId: string; subtitle: string } | null>(null);
+  // dayId scopes the thread to a specific day inside a week — set from the
+  // per-day chat chip so the reviewer isn't reading a mixed weekly log
+  // when they're really talking about one day's entry.
+  const [discussLog, setDiscussLog] = useState<{ hourLogId: string; subtitle: string; dayId?: string | null } | null>(null);
 
   const load = useCallback((opts?: { silent?: boolean }) => {
     if (!opts?.silent) setLoading(true);
@@ -177,35 +180,60 @@ function DayApprovalView({ reviewerEmpId, isAdmin, user }: {
     });
   }, [rows]);
 
-  // Actions. Optimistic — flip local status, roll back on failure.
+  // Actions. Optimistic — flip local status + decrement the KPI counts
+  // locally, DON'T refetch. Refetching caused the whole list to re-render
+  // and dropped the just-actioned row (filtered out server-side when the
+  // filter is 'pending'), which scrolled the reviewer back to the top of
+  // the page every single click. Live-refresh syncs server truth on tab
+  // focus / 60s throttle — no need to hammer after each action.
+  const bumpCounts = (from: DayRow['status'], to: DayRow['status']) => {
+    setCounts(c => ({
+      ...c,
+      [from]: Math.max(0, (c as any)[from] - 1),
+      [to]: (c as any)[to] + 1,
+    }));
+  };
   const approveDay = async (d: DayRow) => {
+    const from = d.status;
     setRows(rs => rs.map(r => r.id === d.id ? { ...r, status: 'approved', reviewed_by_name: user?.name ?? r.reviewed_by_name, reviewed_at: new Date().toISOString() } : r));
+    bumpCounts(from, 'approved');
     toast.success('Approved', `${d.employee_name} · ${Number(d.hours)}h · ${fmtDayLabel(d.log_date)}.`);
     try {
       await api.approveHourLogDay(d.id, { reviewer_id: reviewerEmpId ?? user?.id, reviewer_name: user?.name });
-      silentLoad();
     } catch (e: any) {
+      // Revert on error so the queue reflects server truth again.
+      setRows(rs => rs.map(r => r.id === d.id ? d : r));
+      bumpCounts('approved', from);
       toast.error('Approve failed', e?.message);
-      silentLoad();
     }
   };
   const rejectDay = async (d: DayRow, reason: string) => {
+    const from = d.status;
     setRows(rs => rs.map(r => r.id === d.id ? { ...r, status: 'rejected', rejection_reason: reason, reviewed_by_name: user?.name ?? r.reviewed_by_name, reviewed_at: new Date().toISOString() } : r));
+    bumpCounts(from, 'rejected');
     setRejectTarget(null);
     toast.success('Rejected', `${d.employee_name} has been notified.`);
     try {
       await api.rejectHourLogDay(d.id, { reviewer_id: reviewerEmpId ?? user?.id, reviewer_name: user?.name, rejection_reason: reason });
-      silentLoad();
-    } catch (e: any) { toast.error('Reject failed', e?.message); silentLoad(); }
+    } catch (e: any) {
+      setRows(rs => rs.map(r => r.id === d.id ? d : r));
+      bumpCounts('rejected', from);
+      toast.error('Reject failed', e?.message);
+    }
   };
   const holdDay = async (d: DayRow, note: string) => {
+    const from = d.status;
     setRows(rs => rs.map(r => r.id === d.id ? { ...r, status: 'on_hold', rejection_reason: note, reviewed_by_name: user?.name ?? r.reviewed_by_name, reviewed_at: new Date().toISOString() } : r));
+    bumpCounts(from, 'on_hold');
     setHoldTarget(null);
     toast.success('On hold', `${d.employee_name} can reply on the thread.`);
     try {
       await api.holdHourLogDay(d.id, { reviewer_id: reviewerEmpId ?? user?.id, reviewer_name: user?.name, rejection_reason: note });
-      silentLoad();
-    } catch (e: any) { toast.error('Hold failed', e?.message); silentLoad(); }
+    } catch (e: any) {
+      setRows(rs => rs.map(r => r.id === d.id ? d : r));
+      bumpCounts('on_hold', from);
+      toast.error('Hold failed', e?.message);
+    }
   };
 
   return (
@@ -265,6 +293,11 @@ function DayApprovalView({ reviewerEmpId, isAdmin, user }: {
                 hourLogId: g.hour_log_id,
                 subtitle: `${g.employee_name} · ${g.project_name} · W${g.week_num}`,
               })}
+              onDiscussDay={(d) => setDiscussLog({
+                hourLogId: g.hour_log_id,
+                dayId: d.id,
+                subtitle: `${g.employee_name} · ${g.project_name} · ${fmtDayLabel(d.log_date)} · ${Number(d.hours)}h`,
+              })}
             />
           ))}
         </div>
@@ -295,6 +328,7 @@ function DayApprovalView({ reviewerEmpId, isAdmin, user }: {
       {discussLog && (
         <HourLogCommentsModal
           logId={discussLog.hourLogId}
+          dayId={discussLog.dayId ?? null}
           subtitle={discussLog.subtitle}
           currentUser={{ id: reviewerEmpId ?? user?.id ?? '', name: user?.name ?? '', role: user?.role ?? '' }}
           onClose={() => setDiscussLog(null)}
@@ -317,7 +351,7 @@ function KpiCard({ label, value, tone, bg }: { label: string; value: number; ton
   );
 }
 
-function DayGroupCard({ group, onApprove, onReject, onHold, onDiscuss }: {
+function DayGroupCard({ group, onApprove, onReject, onHold, onDiscuss, onDiscussDay }: {
   group: {
     employee_id: string; employee_name: string;
     project_id: string; project_name: string; project_client_name: string | null;
@@ -330,6 +364,7 @@ function DayGroupCard({ group, onApprove, onReject, onHold, onDiscuss }: {
   onReject: (d: DayRow) => void;
   onHold: (d: DayRow) => void;
   onDiscuss: () => void;
+  onDiscussDay: (d: DayRow) => void;
 }) {
   const totalHours = group.rows.reduce((s, r) => s + Number(r.hours), 0);
   const approvedHours = group.rows.filter(r => r.status === 'approved').reduce((s, r) => s + Number(r.hours), 0);
@@ -361,17 +396,18 @@ function DayGroupCard({ group, onApprove, onReject, onHold, onDiscuss }: {
         </button>
       </div>
       <ul className="divide-y divide-outline">
-        {group.rows.map(d => <DayRowItem key={d.id} d={d} onApprove={onApprove} onReject={onReject} onHold={onHold} />)}
+        {group.rows.map(d => <DayRowItem key={d.id} d={d} onApprove={onApprove} onReject={onReject} onHold={onHold} onDiscussDay={onDiscussDay} />)}
       </ul>
     </div>
   );
 }
 
-function DayRowItem({ d, onApprove, onReject, onHold }: {
+function DayRowItem({ d, onApprove, onReject, onHold, onDiscussDay }: {
   d: DayRow;
   onApprove: (d: DayRow) => void;
   onReject: (d: DayRow) => void;
   onHold: (d: DayRow) => void;
+  onDiscussDay: (d: DayRow) => void;
 }) {
   const actionable = d.status === 'pending' || d.status === 'on_hold';
   return (
@@ -402,27 +438,36 @@ function DayRowItem({ d, onApprove, onReject, onHold }: {
           <p className="text-xs text-accent mt-1.5 flex items-center gap-1"><PauseCircle size={11} /> {d.rejection_reason}</p>
         )}
       </div>
-      {actionable && (
-        <div className="shrink-0 flex items-center gap-1 flex-wrap justify-end">
-          <button onClick={() => onApprove(d)}
-            className="px-2.5 py-1.5 rounded-md text-xs font-semibold text-white bg-success hover:bg-success/90 transition-colors"
-            title="Approve this day">
-            <Check size={12} className="inline mr-1" />Approve
-          </button>
-          {d.status === 'pending' && (
-            <button onClick={() => onHold(d)}
-              className="px-2.5 py-1.5 rounded-md text-xs font-semibold text-accent border border-accent/40 hover:bg-accent/10 transition-colors"
-              title="Ask for clarification on this day">
-              <PauseCircle size={12} className="inline mr-1" />Hold
+      <div className="shrink-0 flex items-center gap-1 flex-wrap justify-end">
+        {/* Per-day thread. Always visible so reviewers can drop context on
+            an approved day too (rare, but useful for retro comments). */}
+        <button onClick={() => onDiscussDay(d)}
+          className="px-2 py-1.5 rounded-md text-xs font-semibold text-on-surface-muted border border-outline hover:bg-surface-2 transition-colors"
+          title="Discussion scoped to this day only">
+          <MessageSquare size={11} className="inline mr-1" />Chat
+        </button>
+        {actionable && (
+          <>
+            <button onClick={() => onApprove(d)}
+              className="px-2.5 py-1.5 rounded-md text-xs font-semibold text-white bg-success hover:bg-success/90 transition-colors"
+              title="Approve this day">
+              <Check size={12} className="inline mr-1" />Approve
             </button>
-          )}
-          <button onClick={() => onReject(d)}
-            className="px-2.5 py-1.5 rounded-md text-xs font-semibold text-danger border border-danger/30 hover:bg-danger-container transition-colors"
-            title="Reject this day">
-            <XCircle size={12} className="inline mr-1" />Reject
-          </button>
-        </div>
-      )}
+            {d.status === 'pending' && (
+              <button onClick={() => onHold(d)}
+                className="px-2.5 py-1.5 rounded-md text-xs font-semibold text-accent border border-accent/40 hover:bg-accent/10 transition-colors"
+                title="Ask for clarification on this day">
+                <PauseCircle size={12} className="inline mr-1" />Hold
+              </button>
+            )}
+            <button onClick={() => onReject(d)}
+              className="px-2.5 py-1.5 rounded-md text-xs font-semibold text-danger border border-danger/30 hover:bg-danger-container transition-colors"
+              title="Reject this day">
+              <XCircle size={12} className="inline mr-1" />Reject
+            </button>
+          </>
+        )}
+      </div>
     </li>
   );
 }

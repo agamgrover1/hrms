@@ -3824,8 +3824,10 @@ function MyHoursTab({ employeeId, employeeName }: { employeeId: string; employee
   const [logging, setLogging] = useState<{ assignment: MHAssignment; weekNum: number; existing?: MHLog } | null>(null);
   // Discussion thread for a specific week log. Opened from the WeekCell's
   // 💬 chip OR auto-opened when the bell notification deep-links here
-  // with `?logId=…&discuss=1` in the URL.
-  const [discussing, setDiscussing] = useState<{ log: MHLog; assignmentName: string } | null>(null);
+  // with `?logId=…&discuss=1` in the URL. `dayId` scopes the thread to a
+  // single day inside that week when the notification (or the reply button
+  // on a held day) supplies it.
+  const [discussing, setDiscussing] = useState<{ log: MHLog; assignmentName: string; dayId?: string | null; dayLabel?: string } | null>(null);
 
   const load = () => {
     setLoading(true);
@@ -3848,11 +3850,13 @@ function MyHoursTab({ employeeId, employeeName }: { employeeId: string; employee
     const log = logs.find(l => l.id === logId);
     if (!log) return;
     const assn = assignments.find(a => a.project_id === log.project_id);
-    setDiscussing({ log, assignmentName: assn?.project_name ?? 'Project' });
+    const dayId = params.get('dayId');
+    setDiscussing({ log, assignmentName: assn?.project_name ?? 'Project', dayId });
     // Clean the URL so refreshing doesn't re-open the modal on top of
     // itself, and so the m/y context isn't sticky on subsequent reloads.
     const u = new URL(window.location.href);
     u.searchParams.delete('logId'); u.searchParams.delete('discuss');
+    u.searchParams.delete('dayId');
     u.searchParams.delete('m'); u.searchParams.delete('y');
     window.history.replaceState({}, '', u.toString());
   }, [logs, assignments]);
@@ -3991,7 +3995,12 @@ function MyHoursTab({ employeeId, employeeName }: { employeeId: string; employee
       {discussing && (
         <HourLogCommentsModal
           logId={discussing.log.id}
-          subtitle={`${employeeName} · ${discussing.assignmentName} · W${discussing.log.week_num} · ${discussing.log.hours_logged}h`}
+          dayId={discussing.dayId ?? null}
+          subtitle={
+            discussing.dayLabel
+              ? `${employeeName} · ${discussing.assignmentName} · ${discussing.dayLabel}`
+              : `${employeeName} · ${discussing.assignmentName} · W${discussing.log.week_num} · ${discussing.log.hours_logged}h`
+          }
           currentUser={{ id: user?.id ?? '', name: user?.name ?? '', role: user?.role ?? '' }}
           onClose={() => setDiscussing(null)}
           onAfterPost={load}
@@ -4118,6 +4127,10 @@ function HourLogModal({
   const [saving, setSaving] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [error, setError] = useState('');
+  // Day-scoped reply thread. Opened by the "Reply" button on a held /
+  // rejected day. Stacked on top of this modal so the employee doesn't
+  // lose their spot in the week.
+  const [replyingDay, setReplyingDay] = useState<{ dayId: string; label: string } | null>(null);
   // Upwork billing toggle. Default OFF — a week's hours do NOT hit the
   // Upwork billing planner unless the employee opts in.
   // Prefill: toggle ON iff a positive billable value is saved. The input
@@ -4373,13 +4386,30 @@ function HourLogModal({
                     </span>
                   )}
                 </div>
-                {/* Reviewer's reason for reject / hold. Editing the note or
-                   hours will re-set the day to pending on save. */}
+                {/* Reviewer's reason for reject / hold + a Reply button so
+                   the employee can respond in-thread instead of only
+                   editing the entry. Before this button the only response
+                   channel was "edit the day and re-save" — which resets it
+                   to pending and drops the clarification the reviewer
+                   asked for. Now they can answer the query directly, and
+                   the reviewer sees it on their approval queue. */}
                 {d.existing && (d.status === 'rejected' || d.status === 'on_hold') && d.rejection_reason && (
-                  <p className={`mt-1.5 ml-14 text-[11px] italic ${d.status === 'rejected' ? 'text-danger' : 'text-accent'}`}>
-                    "{d.rejection_reason}"
-                    {d.reviewed_by_name && <span className="ml-1 text-on-surface-subtle not-italic">— {d.reviewed_by_name}</span>}
-                  </p>
+                  <div className="mt-1.5 ml-14 flex items-start justify-between gap-3">
+                    <p className={`text-[11px] italic flex-1 ${d.status === 'rejected' ? 'text-danger' : 'text-accent'}`}>
+                      "{d.rejection_reason}"
+                      {d.reviewed_by_name && <span className="ml-1 text-on-surface-subtle not-italic">— {d.reviewed_by_name}</span>}
+                    </p>
+                    {d.id && existing && (
+                      <button type="button"
+                        onClick={() => setReplyingDay({
+                          dayId: d.id!,
+                          label: new Date(iso + 'T12:00:00Z').toLocaleDateString('en-IN', { weekday: 'short', day: 'numeric', month: 'short' }),
+                        })}
+                        className="shrink-0 inline-flex items-center gap-1 text-[10px] font-semibold px-2 py-0.5 rounded-md border border-accent/30 bg-accent/10 text-accent hover:bg-accent/20 transition-colors">
+                        Reply
+                      </button>
+                    )}
+                  </div>
                 )}
               </div>
             );
@@ -4472,6 +4502,15 @@ function HourLogModal({
           </div>
         </div>
       </div>
+      {replyingDay && existing && (
+        <HourLogCommentsModal
+          logId={existing.id}
+          dayId={replyingDay.dayId}
+          subtitle={`${employeeName} · ${assignment.project_name} · ${replyingDay.label}`}
+          currentUser={{ id: user?.id ?? '', name: user?.name ?? '', role: user?.role ?? 'employee' }}
+          onClose={() => setReplyingDay(null)}
+        />
+      )}
     </div>
   );
 }

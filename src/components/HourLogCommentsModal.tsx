@@ -22,6 +22,7 @@ import { toast } from './Toaster';
 
 interface HourLogComment {
   id: string;
+  hour_log_day_id?: string | null;
   author_id: string | null;
   author_name: string | null;
   author_role: string | null;
@@ -88,9 +89,16 @@ function renderBody(body: string, currentUserId: string, onAccentBubble: boolean
 }
 
 export default function HourLogCommentsModal({
-  logId, subtitle, currentUser, onClose, onAfterPost,
+  logId, dayId, subtitle, currentUser, onClose, onAfterPost,
 }: {
   logId: string;
+  /**
+   * If set, the thread is scoped to a specific day inside the weekly log.
+   * The server still returns legacy weekly-scope rows (day_id NULL) alongside
+   * so historical context isn't hidden, but every new post is tagged with
+   * this dayId and pings the right side. Undefined = the full weekly view.
+   */
+  dayId?: string | null;
   /** Free-text header line shown under "Discussion" — e.g. "Acme · W2 · 12h" */
   subtitle: string;
   currentUser: { id: string; name: string; role: string };
@@ -113,11 +121,11 @@ export default function HourLogCommentsModal({
 
   const refresh = useCallback(() => {
     setLoading(true);
-    api.getHourLogComments(logId)
+    api.getHourLogComments(logId, dayId ?? undefined)
       .then(setComments)
       .catch(() => {})
       .finally(() => setLoading(false));
-  }, [logId]);
+  }, [logId, dayId]);
   useEffect(refresh, [refresh]);
 
   // Employee directory — used by the @-mention picker. Loaded once.
@@ -201,6 +209,7 @@ export default function HourLogCommentsModal({
         author_name: currentUser.name,
         author_role: currentUser.role,
         body: draft.trim(),
+        day_id: dayId ?? undefined,
       }) as any;
       const mentioned = Array.from(draft.matchAll(MENTION_TOKEN_RE))
         .map(m => m[1])

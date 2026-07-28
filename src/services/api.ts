@@ -670,9 +670,10 @@ export const api = {
     if (params?.year) qs.set('year', String(params.year));
     return request<{ pending: number; on_hold: number; approved: number; rejected: number }>(`/hour-log-days/counts?${qs}`);
   },
-  getHourLogComments: (id: string) =>
-    request<Array<{ id: string; author_id: string | null; author_name: string | null; author_role: string | null; body: string; created_at: string }>>(`/hour-logs/${id}/comments`),
-  addHourLogComment: (id: string, data: { author_id?: string; author_name?: string; author_role?: string; body: string }) =>
+  getHourLogComments: (id: string, dayId?: string) =>
+    request<Array<{ id: string; hour_log_day_id?: string | null; author_id: string | null; author_name: string | null; author_role: string | null; body: string; created_at: string }>>(
+      `/hour-logs/${id}/comments${dayId ? `?day_id=${encodeURIComponent(dayId)}` : ''}`),
+  addHourLogComment: (id: string, data: { author_id?: string; author_name?: string; author_role?: string; body: string; day_id?: string }) =>
     request<any>(`/hour-logs/${id}/comments`, { method: 'POST', body: JSON.stringify(data) }),
 
   // One-shot MyPortal bundle. Collapses the 8-fetch Promise.all on

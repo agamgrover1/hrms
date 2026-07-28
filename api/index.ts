@@ -829,7 +829,7 @@ async function runStartupMigrations() {
     // For a *seed* (rows, not columns), we probe with EXISTS-style: an
     // empty result set means "still needs to run", so we don't set the
     // flag and fall through.
-    await sql`SELECT cadence FROM kpi_templates LIMIT 0`;
+    await sql`SELECT hour_log_day_id FROM hour_log_comments LIMIT 0`;
     _migrated = true;
     return;
   } catch {
@@ -1265,6 +1265,13 @@ async function runStartupMigrations() {
       created_at TIMESTAMPTZ DEFAULT NOW()
     )`;
   await sql`CREATE INDEX IF NOT EXISTS idx_hl_comments_log ON hour_log_comments(hour_log_id, created_at)`.catch(()=>{});
+  // Per-day scoping — comments used to be weekly-only which mixed
+  // clarifications across every day of the week into one thread. When
+  // set, this column ties a comment to a specific hour_log_days row so
+  // the UI can filter the thread to that day. NULL = the legacy
+  // "weekly" scope.
+  await sql`ALTER TABLE hour_log_comments ADD COLUMN IF NOT EXISTS hour_log_day_id TEXT`.catch(()=>{});
+  await sql`CREATE INDEX IF NOT EXISTS idx_hl_comments_day ON hour_log_comments(hour_log_day_id, created_at) WHERE hour_log_day_id IS NOT NULL`.catch(()=>{});
 
   await sql`
     CREATE TABLE IF NOT EXISTS hour_logs (
@@ -12212,6 +12219,16 @@ app.patch('/api/hour-log-days/:id/hold', async (req, res) => {
       RETURNING *` as any[];
     if (!rows.length) return res.status(404).json({ error: 'Day entry not found' });
     const r = rows[0];
+    // Seed a comment scoped to THIS day so the executive has a thread to
+    // reply on. The weekly hold path already does this at week granularity;
+    // without a day-scoped comment here, the executive's Reply button on
+    // MyPortal would open an empty thread and the reviewer's note (stored
+    // as rejection_reason on the day row) would be invisible to the
+    // conversation.
+    await sql`
+      INSERT INTO hour_log_comments (id, hour_log_id, hour_log_day_id, author_id, author_name, author_role, body)
+      VALUES (${`hlc_${Date.now()}`}, ${r.hour_log_id}, ${r.id}, ${reviewer_id ?? null}, ${reviewer_name ?? null},
+              'reviewer', ${String(rejection_reason).trim()})`.catch(() => {});
     res.json(r);
     void (async () => {
       try {
@@ -12219,8 +12236,12 @@ app.patch('/api/hour-log-days/:id/hold', async (req, res) => {
         const proj = (await sql`SELECT name FROM projects WHERE id=${r.project_id}` as any[])[0];
         const dt = new Date(String(r.log_date).slice(0, 10) + 'T12:00:00Z')
           .toLocaleDateString('en-IN', { weekday: 'short', day: 'numeric', month: 'short' });
+        // Deep-link the employee straight into the day-scoped discussion
+        // modal on their MyPortal so they can reply without hunting for
+        // the right log.
         await notifyEmployeeUser(r.employee_id, 'hours_on_hold', 'Hours on hold',
-          `${reviewer_name ?? 'Reviewer'} asked for clarification on your ${Number(r.hours)}h · ${dt} log for ${proj?.name ?? 'a project'}: ${String(rejection_reason).slice(0, 140)}`);
+          `${reviewer_name ?? 'Reviewer'} asked for clarification on your ${Number(r.hours)}h · ${dt} log for ${proj?.name ?? 'a project'}: ${String(rejection_reason).slice(0, 140)}`,
+          `/my?tab=my-hours&logId=${r.hour_log_id}&discuss=1&dayId=${r.id}&m=${r.month}&y=${r.year}`);
       } catch { /* non-fatal */ }
     })();
   } catch (err: any) { res.status(500).json({ error: err.message || 'Server error' }); }
@@ -12431,14 +12452,23 @@ app.patch('/api/hour-logs/:id/hold', async (req, res) => {
 });
 
 // GET /api/hour-logs/:id/comments — list comments in chronological order.
-// Returned shape mirrors what the UI renders directly so no client-side
-// reshaping is needed.
+// Optional ?day_id=<hour_log_day_id> filters to just that day's thread
+// (plus legacy weekly-scope rows so newer clients still see historical
+// context on that day's card). Without the filter, returns the full
+// weekly thread including every day-scoped message.
 app.get('/api/hour-logs/:id/comments', async (req, res) => {
   try {
-    const rows = await sql`SELECT id, author_id, author_name, author_role, body, created_at
-                           FROM hour_log_comments
-                           WHERE hour_log_id=${req.params.id}
-                           ORDER BY created_at ASC`;
+    const dayId = typeof req.query.day_id === 'string' && req.query.day_id ? req.query.day_id : null;
+    const rows = dayId
+      ? await sql`SELECT id, hour_log_day_id, author_id, author_name, author_role, body, created_at
+                  FROM hour_log_comments
+                  WHERE hour_log_id=${req.params.id}
+                    AND (hour_log_day_id=${dayId} OR hour_log_day_id IS NULL)
+                  ORDER BY created_at ASC`
+      : await sql`SELECT id, hour_log_day_id, author_id, author_name, author_role, body, created_at
+                  FROM hour_log_comments
+                  WHERE hour_log_id=${req.params.id}
+                  ORDER BY created_at ASC`;
     res.json(rows);
   } catch (err: any) { res.status(500).json({ error: err.message || 'Server error' }); }
 });
@@ -12450,8 +12480,9 @@ app.get('/api/hour-logs/:id/comments', async (req, res) => {
 // requiring polling.
 app.post('/api/hour-logs/:id/comments', async (req, res) => {
   try {
-    const { author_id, author_name, author_role, body } = req.body ?? {};
+    const { author_id, author_name, author_role, body, day_id } = req.body ?? {};
     if (!body?.trim()) return res.status(400).json({ error: 'Body is required' });
+    const dayId: string | null = typeof day_id === 'string' && day_id ? day_id : null;
     // Fetch id + month + year too so the deep-link in the notification
     // resolves correctly. Without these, /my?tab=my-hours&logId=…&m=…&y=…
     // was being built with all three slots as `undefined`, and the
@@ -12461,8 +12492,8 @@ app.post('/api/hour-logs/:id/comments', async (req, res) => {
     if (!log) return res.status(404).json({ error: 'Log not found' });
     const id = `hlc_${Date.now()}`;
     const row = (await sql`
-      INSERT INTO hour_log_comments (id, hour_log_id, author_id, author_name, author_role, body)
-      VALUES (${id}, ${req.params.id}, ${author_id ?? null}, ${author_name ?? null}, ${author_role ?? null}, ${body.trim()})
+      INSERT INTO hour_log_comments (id, hour_log_id, hour_log_day_id, author_id, author_name, author_role, body)
+      VALUES (${id}, ${req.params.id}, ${dayId}, ${author_id ?? null}, ${author_name ?? null}, ${author_role ?? null}, ${body.trim()})
       RETURNING *`)[0];
     try {
       const proj = await sql`SELECT name FROM projects WHERE id=${log.project_id}`;
@@ -12474,8 +12505,9 @@ app.post('/api/hour-logs/:id/comments', async (req, res) => {
       // m/y carry the log's period so the employee's My Hours picker
       // switches to that month before searching — otherwise comments on
       // a past month's log opened an empty page with no modal.
-      const reviewerLink = `/hours/approvals?logId=${log.id}&discuss=1&m=${log.month}&y=${log.year}`;
-      const employeeLink = `/my?tab=my-hours&logId=${log.id}&discuss=1&m=${log.month}&y=${log.year}`;
+      const dayQs = dayId ? `&dayId=${dayId}` : '';
+      const reviewerLink = `/hours/approvals?logId=${log.id}&discuss=1&m=${log.month}&y=${log.year}${dayQs}`;
+      const employeeLink = `/my?tab=my-hours&logId=${log.id}&discuss=1&m=${log.month}&y=${log.year}${dayQs}`;
 
       // ── @mentions ─────────────────────────────────────────────────────────
       // Mentions are stored inline as `@[Display Name](emp_<id>)` — the
