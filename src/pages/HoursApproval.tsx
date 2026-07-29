@@ -567,7 +567,7 @@ export default function HoursApproval() {
       </div>
 
       {topTab === 'internal' && canSeeInternal ? (
-        <InternalLogReviewView reviewerEmpId={reviewerEmpId} />
+        <InternalLogReviewView reviewerEmpId={reviewerEmpId} isAdmin={isAdmin} />
       ) : topTab === 'allocations' ? (
         <AllocationRequestsView canApprove={canApproveAlloc} currentUserId={user?.id ?? ''} />
       ) : (
@@ -987,18 +987,19 @@ function RejectModal({ log, onClose, onConfirm }: { log: HourLog; onClose: () =>
 // ── Internal-activity log review queue ────────────────────────────────────
 // Surfaces every PENDING internal-hour-log entry visible to the current
 // reviewer (their team members plus anyone whose internal logs they can
-// already see — chain managers, admin/HR, project reviewers/leads).
-function InternalLogReviewView({ reviewerEmpId }: { reviewerEmpId: string | null }) {
+// already see — chain managers, admin, project coordinators, reviewers/leads).
+// Mirrors the DayApprovalView layout so managers get the same at-a-glance
+// KPI row + filter + scope toggle they already know from project hours.
+function InternalLogReviewView({ reviewerEmpId, isAdmin }: { reviewerEmpId: string | null; isAdmin: boolean }) {
   const [logs, setLogs] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [statusFilter, setStatusFilter] = useState<'pending' | 'approved' | 'rejected' | 'all'>('pending');
-  // Team roster kept only for header context; the queue itself uses the
-  // /for-team batch endpoint so we no longer fan-out N HTTP calls.
-  const [members, setMembers] = useState<any[]>([]);
-  useEffect(() => {
-    if (!reviewerEmpId) return;
-    api.getTeamMembers(reviewerEmpId, true).then(setMembers).catch(() => setMembers([]));
-  }, [reviewerEmpId]);
+  const [scope, setScope] = useState<'mine' | 'all'>(isAdmin ? 'all' : 'mine');
+  // Inline reject prompt (like the project queue's DayReasonModal) instead
+  // of window.prompt — that browser dialog was easy to dismiss accidentally
+  // and gave no room for a proper explanation.
+  const [rejectTarget, setRejectTarget] = useState<any | null>(null);
+
   const load = useCallback(async () => {
     if (!reviewerEmpId) { setLogs([]); setLoading(false); return; }
     setLoading(true);
@@ -1006,11 +1007,17 @@ function InternalLogReviewView({ reviewerEmpId }: { reviewerEmpId: string | null
       // 60-day window covers the typical "log last month's hours" pattern.
       const from = new Date(Date.now() - 60 * 86400000).toISOString().slice(0, 10);
       const to = new Date().toISOString().slice(0, 10);
+      // Admin scope 'all' — pass their own emp id anyway; the server
+      // ignores it for admin-like roles and returns every employee's rows.
       const rows = await api.getInternalHourLogsForTeam(reviewerEmpId, from, to).catch(() => [] as any[]);
       setLogs(rows.slice().sort((a: any, b: any) => String(b.log_date).localeCompare(String(a.log_date))));
     } finally { setLoading(false); }
   }, [reviewerEmpId]);
   useEffect(() => { load(); }, [load]);
+
+  // Keep the queue fresh on focus / interval without hammering the server —
+  // same throttle the project queue uses (60s min gap).
+  useLiveRefresh(load, { throttleMs: 60_000 });
 
   const filtered = useMemo(() =>
     statusFilter === 'all' ? logs : logs.filter(l => l.status === statusFilter)
@@ -1022,14 +1029,29 @@ function InternalLogReviewView({ reviewerEmpId }: { reviewerEmpId: string | null
   }, [logs]);
 
   const approve = async (l: any) => {
-    try { await api.approveInternalHourLog(l.id); load(); }
-    catch (e: any) { toast.error('Approve failed', e.message); }
+    // Optimistic — flip locally, revert on failure. Matches the project
+    // queue's non-refetching pattern so the list doesn't rebuild + scroll.
+    const prev = { status: l.status };
+    setLogs(rs => rs.map(r => r.id === l.id ? { ...r, status: 'approved' } : r));
+    try {
+      await api.approveInternalHourLog(l.id);
+      toast.success('Approved', `${l.employee_name} · ${Number(l.hours)}h · ${l.activity_name}`);
+    } catch (e: any) {
+      setLogs(rs => rs.map(r => r.id === l.id ? { ...r, ...prev } : r));
+      toast.error('Approve failed', e.message);
+    }
   };
-  const reject = async (l: any) => {
-    const reason = window.prompt('Reason for rejecting this log (employee will see it):');
-    if (!reason?.trim()) return;
-    try { await api.rejectInternalHourLog(l.id, reason.trim()); load(); }
-    catch (e: any) { toast.error('Reject failed', e.message); }
+  const confirmReject = async (l: any, reason: string) => {
+    const prev = { status: l.status };
+    setLogs(rs => rs.map(r => r.id === l.id ? { ...r, status: 'rejected', rejection_reason: reason } : r));
+    setRejectTarget(null);
+    try {
+      await api.rejectInternalHourLog(l.id, reason);
+      toast.success('Rejected', `${l.employee_name} has been notified.`);
+    } catch (e: any) {
+      setLogs(rs => rs.map(r => r.id === l.id ? { ...r, ...prev } : r));
+      toast.error('Reject failed', e.message);
+    }
   };
 
   if (!reviewerEmpId) {
@@ -1040,17 +1062,44 @@ function InternalLogReviewView({ reviewerEmpId }: { reviewerEmpId: string | null
     );
   }
   return (
-    <div className="space-y-4">
-      <div className="flex items-center gap-1 bg-surface rounded-lg border border-outline p-1 w-fit">
-        {(['pending','approved','rejected','all'] as const).map(s => (
-          <button key={s} onClick={() => setStatusFilter(s)}
-            className={`px-3 py-1.5 rounded-md text-xs font-semibold capitalize ${
-              statusFilter === s ? 'bg-accent text-on-accent' : 'text-on-surface-muted hover:text-on-surface'
-            }`}>
-            {s}{s !== 'all' && counts[s] > 0 && <span className="num-mono opacity-75 ml-1">({counts[s]})</span>}
-          </button>
-        ))}
+    <div className="space-y-5">
+      {/* KPI cards — same visual weight as the project queue so a manager
+          who oversees both flows scans them the same way. */}
+      <div className="grid grid-cols-3 sm:grid-cols-3 gap-4">
+        <KpiCard label="Pending"  value={counts.pending}  tone="text-warning" bg="bg-warning-container" />
+        <KpiCard label="Approved" value={counts.approved} tone="text-success" bg="bg-success-container" />
+        <KpiCard label="Rejected" value={counts.rejected} tone="text-danger"  bg="bg-danger-container" />
       </div>
+
+      {/* Filters + scope toggle */}
+      <div className="flex flex-wrap items-center gap-3">
+        <div className="inline-flex items-center gap-1.5 bg-surface rounded-lg border border-outline p-1">
+          {(['pending','approved','rejected','all'] as const).map(s => (
+            <button key={s} onClick={() => setStatusFilter(s)}
+              className={`px-3 py-1.5 rounded-md text-xs font-semibold capitalize ${
+                statusFilter === s ? 'bg-accent text-on-accent' : 'text-on-surface-muted hover:text-on-surface'
+              }`}>
+              {s}{s !== 'all' && counts[s] > 0 && <span className="num-mono opacity-75 ml-1">({counts[s]})</span>}
+            </button>
+          ))}
+        </div>
+        {isAdmin && (
+          <div className="inline-flex items-center gap-1.5 bg-surface rounded-lg border border-outline p-1">
+            <button onClick={() => setScope('mine')}
+              className={`px-3 py-1.5 rounded-md text-xs font-semibold ${scope === 'mine' ? 'bg-accent text-on-accent' : 'text-on-surface-muted hover:text-on-surface'}`}>
+              <Filter size={11} className="inline mr-1" />My team
+            </button>
+            <button onClick={() => setScope('all')}
+              className={`px-3 py-1.5 rounded-md text-xs font-semibold ${scope === 'all' ? 'bg-accent text-on-accent' : 'text-on-surface-muted hover:text-on-surface'}`}>
+              Everyone
+            </button>
+          </div>
+        )}
+        <span className="text-xs text-on-surface-subtle ml-auto">
+          Reporting managers review their team's non-project time — training, recruiting, ops, doc work.
+        </span>
+      </div>
+
       <div className="rounded-xl-2 border border-outline bg-surface overflow-hidden">
         {loading ? (
           <div className="p-12 text-center text-sm text-on-surface-muted">Loading…</div>
@@ -1091,7 +1140,7 @@ function InternalLogReviewView({ reviewerEmpId }: { reviewerEmpId: string | null
                           className="text-[10px] font-bold px-2.5 py-1.5 rounded bg-success text-on-accent hover:opacity-90 inline-flex items-center gap-1">
                           <CheckCircle size={11} /> Approve
                         </button>
-                        <button onClick={() => reject(l)}
+                        <button onClick={() => setRejectTarget(l)}
                           className="text-[10px] font-bold px-2.5 py-1.5 rounded text-danger border border-danger/30 hover:bg-danger-container inline-flex items-center gap-1">
                           <XCircle size={11} /> Reject
                         </button>
@@ -1104,6 +1153,18 @@ function InternalLogReviewView({ reviewerEmpId }: { reviewerEmpId: string | null
           </div>
         )}
       </div>
+
+      {rejectTarget && (
+        <DayReasonModal
+          title="Reject internal-hours log"
+          confirmLabel="Confirm Reject"
+          tone="danger"
+          subtitle={`Rejecting ${Number(rejectTarget.hours)}h of ${rejectTarget.activity_name} from ${rejectTarget.employee_name} on ${new Date(rejectTarget.log_date).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' })}.`}
+          placeholder="Explain what's wrong so the employee can fix + resubmit."
+          onClose={() => setRejectTarget(null)}
+          onConfirm={r => confirmReject(rejectTarget, r)}
+        />
+      )}
     </div>
   );
 }

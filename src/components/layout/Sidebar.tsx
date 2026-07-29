@@ -284,7 +284,12 @@ export default function Sidebar({ mobileOpen = false, onMobileClose }: { mobileO
       // Managers (anyone with reports) can check who in their team hasn't logged today.
       ...(isManager ? [{ to: '/hours/compliance', icon: AlertTriangle, label: 'Team compliance' } as NavItem] : []),
       ...(isManager ? [{ to: '/hours/utilization', icon: Activity, label: 'Team utilization' } as NavItem] : []),
-      ...(isEmployee && isProjectReviewer ? [{ to: '/hours/approvals', icon: ClipboardCheck, label: 'Approvals', end: true } as NavItem] : []),
+      // Approvals surface covers BOTH project-hour reviews (project reviewers)
+      // AND internal-activity reviews (reporting managers via the chain
+      // walk). Any employee with direct reports OR a project-reviewer / lead
+      // slot sees it — a manager who's not a project reviewer still needs
+      // to approve their team's internal-activity hours.
+      ...(isEmployee && (isProjectReviewer || isManager) ? [{ to: '/hours/approvals', icon: ClipboardCheck, label: 'Approvals', end: true } as NavItem] : []),
     ],
   } : null;
   if (personalGroup) groups.push(personalGroup);
