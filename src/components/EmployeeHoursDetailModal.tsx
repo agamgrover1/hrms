@@ -1,10 +1,11 @@
 import { useEffect, useState } from 'react';
-import { X, AlertTriangle, CheckCircle, XCircle, Clock as ClockIcon, Pencil, Save, History, ChevronDown, Trash2, SlidersHorizontal } from 'lucide-react';
+import { X, AlertTriangle, CheckCircle, XCircle, Clock as ClockIcon, Pencil, Save, History, ChevronDown, Trash2, SlidersHorizontal, PauseCircle, MessageSquare } from 'lucide-react';
 import { api } from '../services/api';
 import { useAuth } from '../context/AuthContext';
 import { toast } from './Toaster';
 import { formatWeekDays, isCurrentWeekOfMonth, isEmptyWeek } from '../utils/weekRange';
 import { ProjectDailyActivityModal } from '../pages/Projects';
+import HourLogCommentsModal from './HourLogCommentsModal';
 
 interface Props {
   employeeId: string;
@@ -39,10 +40,19 @@ interface LogRow {
 interface DayRow {
   id: string;
   assignment_id: string;
+  hour_log_id: string | null;
   log_date: string;
   week_num: number;
   hours: number;
   notes: string | null;
+  // Per-day review state — the day queue actions these individually so
+  // the same week can hold a mix of approved / rejected / on-hold / pending
+  // days. UI below surfaces each one instead of collapsing to the weekly
+  // rollup (which reads as "the whole week is rejected" and is confusing
+  // when only one day was bad).
+  status?: 'pending' | 'approved' | 'rejected' | 'on_hold';
+  rejection_reason?: string | null;
+  reviewed_by_name?: string | null;
 }
 
 interface AssignmentRow {
@@ -105,6 +115,10 @@ export default function EmployeeHoursDetailModal({ employeeId, employeeName, mon
   const [reviewingId, setReviewingId] = useState<string | null>(null);
   const [rejectingId, setRejectingId] = useState<string | null>(null);
   const [rejectReason, setRejectReason] = useState('');
+  // Per-day discussion thread. Opened from the Chat chip on a specific
+  // day row so reviewer / employee can talk about that one day instead
+  // of a weekly mixed thread.
+  const [discussingDay, setDiscussingDay] = useState<{ dayId: string; hourLogId: string; subtitle: string } | null>(null);
 
   const reload = () => {
     setLoading(true);
@@ -560,7 +574,27 @@ export default function EmployeeHoursDetailModal({ employeeId, employeeName, mon
                                     </p>
                                   )}
                                 </div>
-                                <StatusPill status={log.status} />
+                                {(() => {
+                                  // Weekly rollup lies when children are mixed
+                                  // (any rejected day flips the whole week to
+                                  // "rejected"). Compute per-day counts and
+                                  // show a "Mixed · N reject / M appr" pill
+                                  // when the days disagree, so the reviewer
+                                  // isn't misled into thinking the whole week
+                                  // is bad.
+                                  const childDays = days.filter(d => d.assignment_id === log.assignment_id && d.week_num === log.week_num);
+                                  if (childDays.length === 0) return <StatusPill status={log.status} />;
+                                  const counts: Record<string, number> = {};
+                                  for (const d of childDays) counts[d.status ?? 'pending'] = (counts[d.status ?? 'pending'] ?? 0) + 1;
+                                  const kinds = Object.keys(counts);
+                                  if (kinds.length === 1) return <StatusPill status={kinds[0]} />;
+                                  const parts: string[] = [];
+                                  if (counts.approved) parts.push(`${counts.approved} appr`);
+                                  if (counts.rejected) parts.push(`${counts.rejected} rej`);
+                                  if (counts.on_hold)  parts.push(`${counts.on_hold} hold`);
+                                  if (counts.pending)  parts.push(`${counts.pending} pend`);
+                                  return <StatusPill status="mixed" label={`Mixed · ${parts.join(' · ')}`} />;
+                                })()}
                                 {/* Approve / Reject shortcuts — only for
                                     pending rows. Same permission surface
                                     as edit; the backend accepts anyone
@@ -690,14 +724,46 @@ export default function EmployeeHoursDetailModal({ employeeId, employeeName, mon
                                       const iso = String(d.log_date).slice(0, 10);
                                       const dt = new Date(iso + 'T12:00:00Z');
                                       const dayName = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'][dt.getUTCDay()];
+                                      const dayHourLogId = d.hour_log_id ?? log.id;
+                                      const dayStatus = d.status ?? 'pending';
+                                      const showReason = (dayStatus === 'rejected' || dayStatus === 'on_hold') && d.rejection_reason;
                                       return (
-                                        <li key={d.id} className="px-3 py-1.5 flex items-start gap-3 text-xs">
-                                          <div className="w-16 flex-shrink-0">
-                                            <p className="text-[10px] uppercase font-bold text-on-surface-subtle">{dayName}</p>
-                                            <p className="num-mono font-semibold text-on-surface leading-tight">{dt.getUTCDate()}</p>
+                                        <li key={d.id} className="px-3 py-1.5 text-xs">
+                                          <div className="flex items-start gap-3">
+                                            <div className="w-16 flex-shrink-0">
+                                              <p className="text-[10px] uppercase font-bold text-on-surface-subtle">{dayName}</p>
+                                              <p className="num-mono font-semibold text-on-surface leading-tight">{dt.getUTCDate()}</p>
+                                            </div>
+                                            <p className="num-mono font-bold text-on-surface w-12 flex-shrink-0">{Number(d.hours)}<span className="text-on-surface-muted font-normal text-[10px]">h</span></p>
+                                            <p className="flex-1 min-w-0 text-on-surface-muted break-words whitespace-pre-wrap leading-snug">{d.notes || <span className="text-on-surface-subtle italic">No note</span>}</p>
+                                            <div className="flex items-center gap-1.5 flex-shrink-0">
+                                              {/* Per-day status pill. Only rendered
+                                                  when the reviewer has actually
+                                                  actioned the day — a pending row
+                                                  gets no pill to avoid noise. */}
+                                              {dayStatus !== 'pending' && <StatusPill status={dayStatus} />}
+                                              {/* Day-scoped discussion. Opens the
+                                                  comment thread filtered to just
+                                                  this day (see hour_log_day_id on
+                                                  the comment). */}
+                                              <button
+                                                onClick={() => setDiscussingDay({
+                                                  dayId: d.id,
+                                                  hourLogId: dayHourLogId,
+                                                  subtitle: `${employeeName} · ${log.project_name ?? 'Project'} · ${dayName} ${dt.getUTCDate()} · ${Number(d.hours)}h`,
+                                                })}
+                                                title="Discussion for this day"
+                                                className="p-1 rounded-md text-on-surface-muted hover:text-accent hover:bg-accent/10 transition-colors">
+                                                <MessageSquare size={12} />
+                                              </button>
+                                            </div>
                                           </div>
-                                          <p className="num-mono font-bold text-on-surface w-12 flex-shrink-0">{Number(d.hours)}<span className="text-on-surface-muted font-normal text-[10px]">h</span></p>
-                                          <p className="flex-1 min-w-0 text-on-surface-muted break-words whitespace-pre-wrap leading-snug">{d.notes || <span className="text-on-surface-subtle italic">No note</span>}</p>
+                                          {showReason && (
+                                            <p className={`mt-1 ml-[76px] italic text-[11px] ${dayStatus === 'rejected' ? 'text-danger' : 'text-accent'}`}>
+                                              "{d.rejection_reason}"
+                                              {d.reviewed_by_name && <span className="ml-1 text-on-surface-subtle not-italic">— {d.reviewed_by_name}</span>}
+                                            </p>
+                                          )}
                                         </li>
                                       );
                                     })}
@@ -846,6 +912,16 @@ export default function EmployeeHoursDetailModal({ employeeId, employeeName, mon
           onClose={() => setOpenProject(null)}
           initialMonth={month}
           initialYear={year}
+        />
+      )}
+      {discussingDay && (
+        <HourLogCommentsModal
+          logId={discussingDay.hourLogId}
+          dayId={discussingDay.dayId}
+          subtitle={discussingDay.subtitle}
+          currentUser={{ id: user?.id ?? '', name: user?.name ?? '', role: user?.role ?? '' }}
+          onClose={() => setDiscussingDay(null)}
+          onAfterPost={reload}
         />
       )}
     </div>
@@ -1004,12 +1080,16 @@ function EditAllocationModal({ assignment: a, employeeName, month, year, onClose
   );
 }
 
-function StatusPill({ status }: { status: string }) {
+function StatusPill({ status, label }: { status: string; label?: string }) {
   const cfg = status === 'approved'
-    ? { label: 'Approved', cls: 'bg-success-container text-success', Icon: CheckCircle }
+    ? { label: label ?? 'Approved', cls: 'bg-success-container text-success', Icon: CheckCircle }
     : status === 'rejected'
-    ? { label: 'Rejected', cls: 'bg-danger-container text-danger', Icon: XCircle }
-    : { label: 'Pending', cls: 'bg-warning-container text-warning', Icon: AlertTriangle };
+    ? { label: label ?? 'Rejected', cls: 'bg-danger-container text-danger', Icon: XCircle }
+    : status === 'on_hold'
+    ? { label: label ?? 'On hold', cls: 'bg-accent/15 text-accent', Icon: PauseCircle }
+    : status === 'mixed'
+    ? { label: label ?? 'Mixed', cls: 'bg-warning-container text-warning', Icon: SlidersHorizontal }
+    : { label: label ?? 'Pending', cls: 'bg-warning-container text-warning', Icon: AlertTriangle };
   const Icon = cfg.Icon;
   return (
     <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-semibold ${cfg.cls}`}>

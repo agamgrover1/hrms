@@ -612,6 +612,9 @@ export const api = {
       year: number;
       hours: number;
       notes: string | null;
+      status?: 'pending' | 'approved' | 'rejected' | 'on_hold';
+      rejection_reason?: string | null;
+      reviewed_by_name?: string | null;
       project_name?: string;
       project_client_name?: string | null;
     }>>(`/hour-log-days?${qs}`);
