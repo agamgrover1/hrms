@@ -7009,20 +7009,28 @@ app.get('/api/internal-hour-logs/for-team', async (req, res) => {
     const { from, to } = req.query as any;
     const fromD = from || new Date(Date.now() - 60 * 86400000).toISOString().slice(0, 10);
     const toD = to || new Date().toISOString().slice(0, 10);
+    // scope: 'mine' → force the reporting-chain walk from reviewer_id even
+    //   for admins (so the My-team / Everyone toggle on the UI actually
+    //   filters). Default 'all' preserves the historic behaviour: admin/PC
+    //   see every employee's rows, everyone else is scoped to their tree.
+    const scope = (req.query.scope as string) === 'mine' ? 'mine' : 'all';
     // Resolve caller's employee id. Admin + PC bypass the reporting-tree
-    // filter entirely; HR is intentionally excluded (they don't review
-    // internal-activity time). Other roles can only see their own
-    // descendants.
+    // filter entirely when scope='all'; HR is intentionally excluded (they
+    // don't review internal-activity time). Other roles can only see their
+    // own descendants regardless of scope.
     const selfRow = (await sql`
       SELECT id FROM employees WHERE employee_id=${u.employee_id_ref} OR id=${u.employee_id_ref} LIMIT 1`)[0] as any;
     const isAdminish = u.role === 'admin' || u.role === 'project_coordinator';
     if (!isAdminish && selfRow?.id !== reviewerId) {
       return res.status(403).json({ error: 'Not permitted' });
     }
-    const cacheKey = `internalHrsTeam:${isAdminish ? 'all' : reviewerId}:${fromD}:${toD}`;
-    // Admin-like: no team CTE, return every employee's rows. Otherwise:
-    // recursive walk from the reviewer down through the reporting chain.
-    const rows = await memoTtl(cacheKey, 60_000, async () => isAdminish
+    // Only admin-like callers can invoke the "everyone" branch — regular
+    // managers stay scoped to their tree even if they pass scope=all.
+    const returnAll = isAdminish && scope === 'all';
+    const cacheKey = `internalHrsTeam:${returnAll ? 'all' : reviewerId}:${fromD}:${toD}`;
+    // Admin-like + scope=all: no team CTE, return every employee's rows.
+    // Otherwise: recursive walk from the reviewer down through the chain.
+    const rows = await memoTtl(cacheKey, 60_000, async () => returnAll
       ? sql`
           SELECT l.*, a.name AS activity_name, e.name AS employee_name
           FROM internal_hour_logs l

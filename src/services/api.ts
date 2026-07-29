@@ -963,10 +963,13 @@ export const api = {
   // Batch variant for reviewers — one HTTP + one JOIN across the whole
   // reviewer's reporting tree, instead of N HTTPs / N SQL. Rows include
   // employee_name so the caller can group inline.
-  getInternalHourLogsForTeam: (reviewer_id: string, from?: string, to?: string) => {
+  getInternalHourLogsForTeam: (reviewer_id: string, from?: string, to?: string, scope?: 'mine' | 'all') => {
     const qs = new URLSearchParams({ reviewer_id });
     if (from) qs.set('from', from);
     if (to) qs.set('to', to);
+    // scope 'mine' forces the reporting-chain walk even for admins so the
+    // My-team / Everyone toggle on /hours/approvals actually filters.
+    if (scope) qs.set('scope', scope);
     return request<Array<{
       id: string; employee_id: string; employee_name: string; activity_id: string; activity_name: string;
       log_date: string; hours: number; notes: string | null;

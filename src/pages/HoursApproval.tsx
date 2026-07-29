@@ -1007,12 +1007,14 @@ function InternalLogReviewView({ reviewerEmpId, isAdmin }: { reviewerEmpId: stri
       // 60-day window covers the typical "log last month's hours" pattern.
       const from = new Date(Date.now() - 60 * 86400000).toISOString().slice(0, 10);
       const to = new Date().toISOString().slice(0, 10);
-      // Admin scope 'all' — pass their own emp id anyway; the server
-      // ignores it for admin-like roles and returns every employee's rows.
-      const rows = await api.getInternalHourLogsForTeam(reviewerEmpId, from, to).catch(() => [] as any[]);
+      // scope='mine' forces the server to walk the reporting chain from
+      // reviewerEmpId even for admins; scope='all' preserves the historic
+      // "admin sees everyone" behaviour. Non-admin callers ignore the
+      // param — they're always locked to their tree.
+      const rows = await api.getInternalHourLogsForTeam(reviewerEmpId, from, to, scope).catch(() => [] as any[]);
       setLogs(rows.slice().sort((a: any, b: any) => String(b.log_date).localeCompare(String(a.log_date))));
     } finally { setLoading(false); }
-  }, [reviewerEmpId]);
+  }, [reviewerEmpId, scope]);
   useEffect(() => { load(); }, [load]);
 
   // Keep the queue fresh on focus / interval without hammering the server —
