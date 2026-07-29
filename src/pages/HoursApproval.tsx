@@ -515,13 +515,21 @@ export default function HoursApproval() {
   const { user } = useAuth();
   const role = user?.role ?? 'employee';
   const isAdmin = role === 'admin' || role === 'hr_manager' || role === 'project_coordinator';
+  // Internal-activities review is scoped to the reporting chain + PC +
+  // admin. HR is intentionally out: they don't approve training /
+  // recruiting / ops time, and surfacing the queue for a role that
+  // can't act on it just clutters the UI (and the endpoint now 403s
+  // for them anyway).
+  const canSeeInternal = role !== 'hr_manager' && role !== 'hr_intern';
 
   // Map app_user → their employee.id (for project_reporting_id matching)
   const [reviewerEmpId, setReviewerEmpId] = useState<string | null>(null);
   // Top-level tab. Deep-link `?queue=internal` lands on the internal-log
   // review sub-view; `?queue=allocations` on the allocation-change queue.
+  // HR gets bounced off `internal` since the tab isn't rendered for them.
   const [topTab, setTopTab] = useState<'logs' | 'allocations' | 'internal'>(() => {
     const q = new URLSearchParams(window.location.search).get('queue');
+    if (q === 'internal' && !canSeeInternal) return 'logs';
     return q === 'allocations' ? 'allocations' : q === 'internal' ? 'internal' : 'logs';
   });
   const canApproveAlloc = role === 'admin' || role === 'project_coordinator';
@@ -550,13 +558,15 @@ export default function HoursApproval() {
           className={`px-3 py-1.5 rounded-md text-xs font-semibold ${topTab === 'allocations' ? 'bg-accent text-on-accent' : 'text-on-surface-muted hover:text-on-surface'}`}>
           Allocation requests
         </button>
-        <button onClick={() => setTopTab('internal')}
-          className={`px-3 py-1.5 rounded-md text-xs font-semibold ${topTab === 'internal' ? 'bg-accent text-on-accent' : 'text-on-surface-muted hover:text-on-surface'}`}>
-          Internal activities
-        </button>
+        {canSeeInternal && (
+          <button onClick={() => setTopTab('internal')}
+            className={`px-3 py-1.5 rounded-md text-xs font-semibold ${topTab === 'internal' ? 'bg-accent text-on-accent' : 'text-on-surface-muted hover:text-on-surface'}`}>
+            Internal activities
+          </button>
+        )}
       </div>
 
-      {topTab === 'internal' ? (
+      {topTab === 'internal' && canSeeInternal ? (
         <InternalLogReviewView reviewerEmpId={reviewerEmpId} />
       ) : topTab === 'allocations' ? (
         <AllocationRequestsView canApprove={canApproveAlloc} currentUserId={user?.id ?? ''} />

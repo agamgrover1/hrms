@@ -112,10 +112,13 @@ export default function EmployeeHoursDetailModal({ employeeId, employeeName, mon
       api.getHourLogs({ employee_id: employeeId, month, year }).then(d => setLogs(d as LogRow[])).catch(() => {}),
       api.getHourLogDays({ employee_id: employeeId, month, year }).then(d => setDays(d as DayRow[])).catch(() => setDays([])),
       api.getProjectAssignments({ employee_id: employeeId, month, year }).then(d => setAssignments(d as AssignmentRow[])).catch(() => setAssignments([])),
-      // Same window as project hours — month boundaries. The backend
-      // returns empty for users without permission, so we can fire it
-      // unconditionally and not worry about a 403 banner.
+      // Same window as project hours — month boundaries. Skipped for HR
+      // (they don't see the internal section and the endpoint 403s them).
       (() => {
+        if (user?.role === 'hr_manager' || user?.role === 'hr_intern') {
+          setInternalLogs([]);
+          return Promise.resolve();
+        }
         const from = `${year}-${String(month).padStart(2, '0')}-01`;
         const lastDay = new Date(year, month, 0).getDate();
         const to = `${year}-${String(month).padStart(2, '0')}-${String(lastDay).padStart(2, '0')}`;
@@ -801,17 +804,20 @@ export default function EmployeeHoursDetailModal({ employeeId, employeeName, mon
               )}
 
               {/* ── Internal activities for the month ─────────────────────────
-                  Surface internal hour logs alongside project hours so
-                  managers / HR / admin viewing this drill-in see the full
-                  picture of someone's time — especially valuable for people
-                  with little or no project allocation (HR, recruiters,
-                  ops) who otherwise look "idle" here. */}
-              <InternalLogsSection
-                logs={internalLogs}
-                month={month}
-                year={year}
-                employeeName={employeeName}
-              />
+                  Surface internal hour logs alongside project hours so the
+                  reporting chain / admin / PC viewing this drill-in see the
+                  full picture of someone's time — especially valuable for
+                  people with little or no project allocation (recruiters,
+                  ops) who otherwise look "idle" here. Hidden from HR since
+                  they don't own or review internal-activity time. */}
+              {user?.role !== 'hr_manager' && user?.role !== 'hr_intern' && (
+                <InternalLogsSection
+                  logs={internalLogs}
+                  month={month}
+                  year={year}
+                  employeeName={employeeName}
+                />
+              )}
             </div>
           )}
         </div>

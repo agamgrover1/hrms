@@ -1394,6 +1394,12 @@ export default function EmployeeProfile() {
 // can answer "what's this person actually doing this month" without
 // navigating off the profile.
 function HoursTabPanel({ employeeId, employeeName }: { employeeId: string; employeeName: string }) {
+  const { user: viewer } = useAuth();
+  // HR is intentionally kept out of the internal-activities view — they
+  // don't review that time, and surfacing it on every profile mixes
+  // people-ops data with an operations workflow they can't act on. The
+  // Internal tile + panel below both check this flag.
+  const canSeeInternal = viewer?.role !== 'hr_manager' && viewer?.role !== 'hr_intern';
   const now = new Date();
   const [month, setMonth] = useState(now.getMonth() + 1);
   const [year, setYear] = useState(now.getFullYear());
@@ -1412,14 +1418,18 @@ function HoursTabPanel({ employeeId, employeeName }: { employeeId: string; emplo
     Promise.all([
       api.getProjectAssignments({ employee_id: employeeId, month, year }).catch(() => []),
       api.getHourLogs({ employee_id: employeeId, month, year }).catch(() => []),
-      api.getInternalHourLogs({ employee_id: employeeId, from, to }).catch(() => []),
+      // Skip the internal-hours fetch entirely for HR — the endpoint 403s
+      // for them now, and firing it just to swallow the error is noisy.
+      canSeeInternal
+        ? api.getInternalHourLogs({ employee_id: employeeId, from, to }).catch(() => [])
+        : Promise.resolve([]),
     ]).then(([a, l, il]) => {
       setAssignments(a ?? []);
       setLogs(l ?? []);
       setInternalLogs(il ?? []);
     }).catch(() => setError('Failed to load hours data.'))
       .finally(() => setLoading(false));
-  }, [employeeId, month, year]);
+  }, [employeeId, month, year, canSeeInternal]);
 
   const totalAllocated = assignments.reduce((s, a) => s + Number(a.monthly_hours || 0), 0);
   const approvedHours = logs.filter(l => l.status === 'approved').reduce((s, l) => s + Number(l.hours_logged || 0), 0);
@@ -1456,13 +1466,17 @@ function HoursTabPanel({ employeeId, employeeName }: { employeeId: string; emplo
         <div className="bg-surface rounded-2xl border border-outline shadow-elev-1 p-12 text-center text-sm text-on-surface-subtle">Loading…</div>
       ) : (
         <>
-          {/* KPI strip */}
-          <div className="grid grid-cols-2 sm:grid-cols-5 gap-3">
+          {/* KPI strip — Internal tile hidden for HR (they don't review
+              internal time and it would just noise the row). Grid falls
+              back to 4 columns automatically. */}
+          <div className={`grid grid-cols-2 ${canSeeInternal ? 'sm:grid-cols-5' : 'sm:grid-cols-4'} gap-3`}>
             <KpiTile label="Allocated" value={`${totalAllocated}h`} sub={`${assignments.length} project${assignments.length === 1 ? '' : 's'}`} tone="text-on-surface" />
             <KpiTile label="Approved" value={`${approvedHours}h`} sub="of logged hours" tone="text-success" />
             <KpiTile label="Pending" value={`${pendingHours}h`} sub="awaiting review" tone={pendingHours > 0 ? 'text-warning' : 'text-on-surface-subtle'} />
             <KpiTile label="Rejected / Hold" value={`${rejectedHours + onHoldHours}h`} sub={`${rejectedHours}h + ${onHoldHours}h`} tone={(rejectedHours + onHoldHours) > 0 ? 'text-danger' : 'text-on-surface-subtle'} />
-            <KpiTile label="Internal" value={`${internalTotal}h`} sub={`${internalLogs.length} entr${internalLogs.length === 1 ? 'y' : 'ies'}`} tone="text-accent" />
+            {canSeeInternal && (
+              <KpiTile label="Internal" value={`${internalTotal}h`} sub={`${internalLogs.length} entr${internalLogs.length === 1 ? 'y' : 'ies'}`} tone="text-accent" />
+            )}
           </div>
 
           {/* Project allocations table */}
@@ -1562,7 +1576,10 @@ function HoursTabPanel({ employeeId, employeeName }: { employeeId: string; emplo
             )}
           </div>
 
-          {/* Internal activities — same pattern as the modal, just inline */}
+          {/* Internal activities — hidden for HR, they don't own or review
+              this workflow. Panel wrapped in the same visibility gate as
+              the KPI tile above. */}
+          {canSeeInternal && (
           <div className="bg-surface rounded-2xl border border-outline shadow-elev-1 overflow-hidden">
             <div className="px-5 py-3 border-b border-outline flex items-center justify-between">
               <div>
@@ -1614,6 +1631,7 @@ function HoursTabPanel({ employeeId, employeeName }: { employeeId: string; emplo
               </div>
             )}
           </div>
+          )}
         </>
       )}
 

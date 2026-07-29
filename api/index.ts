@@ -6866,10 +6866,13 @@ app.patch('/api/attendance-notes/reject',  (req, res) => handleAttendanceNoteRev
 // Internal Activities section for no obvious reason.
 async function canViewInternalHoursOf(u: any, actorEmpId: string | null, targetEmpId: string, actorEmpCode: string | null): Promise<boolean> {
   if (!u) return false;
-  // Admin-like roles see everyone's internal hours. project_coordinator
-  // is grouped here because the PC role is org-level ops — they need
-  // full visibility for capacity + billing decisions, same as HR.
-  if (u.role === 'admin' || u.role === 'hr_manager' || u.role === 'project_coordinator') return true;
+  // Admin and project_coordinator see everyone's internal hours (PC needs
+  // it for capacity + billing decisions). HR is deliberately NOT in this
+  // whitelist — internal-activity time (training, recruiting, ops) is
+  // reviewed by the reporting chain / project coordinators, not HR.
+  // HR can still see their OWN entries via the actorEmpId === targetEmpId
+  // branch below.
+  if (u.role === 'admin' || u.role === 'project_coordinator') return true;
   if (actorEmpId && actorEmpId === targetEmpId) return true;
   if (!actorEmpId) return false;
   // 1. Reporting chain walk (cap 10 levels). reporting_manager_id can
@@ -6948,12 +6951,13 @@ app.get('/api/internal-hour-logs/for-team', async (req, res) => {
     const { from, to } = req.query as any;
     const fromD = from || new Date(Date.now() - 60 * 86400000).toISOString().slice(0, 10);
     const toD = to || new Date().toISOString().slice(0, 10);
-    // Resolve caller's employee id. Admin-like roles (admin / HR / PC)
-    // bypass the reporting-tree filter entirely; other roles can only
-    // see their own descendants.
+    // Resolve caller's employee id. Admin + PC bypass the reporting-tree
+    // filter entirely; HR is intentionally excluded (they don't review
+    // internal-activity time). Other roles can only see their own
+    // descendants.
     const selfRow = (await sql`
       SELECT id FROM employees WHERE employee_id=${u.employee_id_ref} OR id=${u.employee_id_ref} LIMIT 1`)[0] as any;
-    const isAdminish = u.role === 'admin' || u.role === 'hr_manager' || u.role === 'project_coordinator';
+    const isAdminish = u.role === 'admin' || u.role === 'project_coordinator';
     if (!isAdminish && selfRow?.id !== reviewerId) {
       return res.status(403).json({ error: 'Not permitted' });
     }
@@ -7068,7 +7072,7 @@ async function handleInternalLogReview(action: 'approve' | 'reject', req: any, r
       WHERE employee_id = ${u.employee_id_ref} OR id = ${u.employee_id_ref}
       LIMIT 1`)[0] as any;
     const selfId = self?.id ?? null;
-    if (selfId && selfId === row.employee_id && u.role !== 'admin' && u.role !== 'hr_manager') {
+    if (selfId && selfId === row.employee_id && u.role !== 'admin') {
       return res.status(403).json({ error: "You can't approve your own internal hour log." });
     }
     const allowed = await canViewInternalHoursOf(u, selfId, row.employee_id, null);
@@ -7116,7 +7120,10 @@ app.delete('/api/internal-hour-logs/:id', async (req, res) => {
     if (!uid) return res.status(401).json({ error: 'Sign in required' });
     const u = (await sql`SELECT id, role, employee_id_ref FROM app_users WHERE id=${uid}`)[0] as any;
     if (!u) return res.status(401).json({ error: 'Unknown user' });
-    const isAdminish = u.role === 'admin' || u.role === 'hr_manager';
+    // Only admin can delete someone else's internal-hours row. HR is
+    // out of the internal-activities workflow entirely; PC can review
+    // but not destructively delete other people's logs.
+    const isAdminish = u.role === 'admin';
     const row = (await sql`SELECT employee_id FROM internal_hour_logs WHERE id=${req.params.id}`)[0] as any;
     if (!row) return res.status(404).json({ error: 'Log not found' });
     // After the schema backfill, internal_hour_logs.employee_id holds
