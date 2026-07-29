@@ -9830,16 +9830,20 @@ app.post('/api/repair-tickets', async (req, res) => {
     if (quoted_cost != null && quoted_cost !== '' && Number(quoted_cost) < 0) {
       return res.status(400).json({ error: 'Cost cannot be negative' });
     }
-    // Prevent multiple open tickets for the same asset — keeps asset.status
-    // consistent. Historic entries (status='paid' or status='cancelled')
-    // skip this check so admin can log past repairs even while a new one is
-    // open.
+    // Prevent multiple in-flight repairs on the same asset. "In flight"
+    // means the physical repair loop isn't finished yet — reported /
+    // picked_up / returned. Once the fix is verified (`repair_done`) or
+    // waiting on money (`awaiting_approval`, `paid`), a fresh issue on
+    // the same device should be allowed: the employee shouldn't have to
+    // wait for finance to settle the vendor before flagging a new fault.
+    // Historic entries logged with status='paid' or 'cancelled' skip
+    // this check outright — admin can back-fill past repairs anytime.
     const incomingStatus = (status as string) || 'reported';
     const isHistoric = incomingStatus === 'paid' || incomingStatus === 'cancelled';
     if (asset_id && !isHistoric) {
-      const openRows = await sql`SELECT id FROM repair_tickets WHERE asset_id=${asset_id} AND status NOT IN ('paid','cancelled')`;
+      const openRows = await sql`SELECT id FROM repair_tickets WHERE asset_id=${asset_id} AND status IN ('reported','picked_up','returned')`;
       if ((openRows as any[]).length > 0) {
-        return res.status(409).json({ error: 'This asset already has an open repair ticket. Close or cancel the existing one first.' });
+        return res.status(409).json({ error: 'This asset already has a repair in progress. Close, cancel, or mark it repair-done first.' });
       }
     }
     const id = `rep_${Date.now()}`;

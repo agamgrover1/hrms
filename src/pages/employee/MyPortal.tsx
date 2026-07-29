@@ -2428,11 +2428,16 @@ export default function MyPortal() {
           cancelled:         { label: 'Cancelled',         bg: '#f3f4f6', color: '#6b7280' },
         };
         // Open-ticket lookup so the "Report issue" button knows when the
-        // asset already has a repair in flight (one-open-ticket-per-asset
-        // server constraint).
+        // asset already has a repair still in flight. Mirrors the server
+        // rule: only reported / picked_up / returned actually block. Once
+        // the fix is verified (repair_done) or the ticket is waiting on
+        // payment, a new fault on the same device is allowed — the
+        // employee shouldn't be blocked from reporting a fresh issue
+        // just because finance hasn't settled the previous vendor bill.
+        const OPEN_REPAIR_STATUSES = new Set(['reported', 'picked_up', 'returned']);
         const openByAsset = new Map<string, any>();
         for (const t of myRepairTickets) {
-          if (t.asset_id && !['paid', 'cancelled'].includes(t.status)) openByAsset.set(t.asset_id, t);
+          if (t.asset_id && OPEN_REPAIR_STATUSES.has(t.status)) openByAsset.set(t.asset_id, t);
         }
 
         const openRepairModal = (asset: any) => {
