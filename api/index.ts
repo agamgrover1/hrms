@@ -180,6 +180,40 @@ async function recordAssetActivity(p: {
   } catch { /* non-fatal */ }
 }
 
+// Project write-side audit trail. Feeds the "Project History" modal on
+// /projects so admin can see who added / edited / archived / restored a
+// project and when — coordinators onboard clients regularly and without
+// this table those changes only surfaced when the header counts moved.
+async function recordProjectActivity(p: {
+  project_id?: string | null;
+  project_name?: string | null;
+  client_name?: string | null;
+  action: 'created' | 'edited' | 'archived' | 'restored' | 'status_changed' | 'flagged' | 'unflagged';
+  actor_id?: string | null;
+  actor_name?: string | null;
+  actor_role?: string | null;
+  before_status?: string | null;
+  after_status?: string | null;
+  /** Space-separated list of changed field names — e.g. "name project_reporting_id total_hours_cap" */
+  changes?: string | null;
+  reason?: string | null;
+}) {
+  try {
+    await sql`
+      INSERT INTO project_activity (
+        id, project_id, project_name, client_name, action,
+        actor_id, actor_name, actor_role,
+        before_status, after_status, changes, reason
+      ) VALUES (
+        ${'pa_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8)},
+        ${p.project_id ?? null}, ${p.project_name ?? null}, ${p.client_name ?? null}, ${p.action},
+        ${p.actor_id ?? null}, ${p.actor_name ?? null}, ${p.actor_role ?? null},
+        ${p.before_status ?? null}, ${p.after_status ?? null},
+        ${p.changes ?? null}, ${p.reason ?? null}
+      )`;
+  } catch { /* non-fatal — never block the primary write */ }
+}
+
 // Capture every change to an hour_log so partial / unilateral admin edits are visible
 async function recordHourLogAudit(p: {
   hour_log_id: string;
@@ -829,7 +863,7 @@ async function runStartupMigrations() {
     // For a *seed* (rows, not columns), we probe with EXISTS-style: an
     // empty result set means "still needs to run", so we don't set the
     // flag and fall through.
-    await sql`SELECT hour_log_day_id FROM hour_log_comments LIMIT 0`;
+    await sql`SELECT id FROM project_activity LIMIT 0`;
     _migrated = true;
     return;
   } catch {
@@ -1272,6 +1306,30 @@ async function runStartupMigrations() {
   // "weekly" scope.
   await sql`ALTER TABLE hour_log_comments ADD COLUMN IF NOT EXISTS hour_log_day_id TEXT`.catch(()=>{});
   await sql`CREATE INDEX IF NOT EXISTS idx_hl_comments_day ON hour_log_comments(hour_log_day_id, created_at) WHERE hour_log_day_id IS NOT NULL`.catch(()=>{});
+
+  // Project activity log — admin needs visibility on who added / edited /
+  // archived which project and when. Coordinators regularly onboard and
+  // offboard clients; without this table those changes were invisible
+  // until someone noticed the counts in the header had shifted.
+  await sql`
+    CREATE TABLE IF NOT EXISTS project_activity (
+      id TEXT PRIMARY KEY,
+      project_id TEXT,
+      project_name TEXT,
+      client_name TEXT,
+      action TEXT NOT NULL,
+      actor_id TEXT,
+      actor_name TEXT,
+      actor_role TEXT,
+      before_status TEXT,
+      after_status TEXT,
+      changes TEXT,
+      reason TEXT,
+      created_at TIMESTAMPTZ DEFAULT NOW()
+    )`;
+  await sql`CREATE INDEX IF NOT EXISTS idx_project_activity_time ON project_activity(created_at DESC)`.catch(()=>{});
+  await sql`CREATE INDEX IF NOT EXISTS idx_project_activity_project ON project_activity(project_id, created_at DESC)`.catch(()=>{});
+  await sql`CREATE INDEX IF NOT EXISTS idx_project_activity_action ON project_activity(action, created_at DESC)`.catch(()=>{});
 
   await sql`
     CREATE TABLE IF NOT EXISTS hour_logs (
@@ -11356,6 +11414,13 @@ app.post('/api/projects', async (req, res) => {
         ${status ?? 'active'}, ${flag ?? null}, ${flag_reason ?? null}, ${notes ?? null}, ${created_by ?? null},
         ${capVal}, ${billing_source ?? 'direct'})
       RETURNING *`;
+    const actor = await resolveActor(req);
+    recordProjectActivity({
+      project_id: id, project_name: name, client_name: client_name ?? null,
+      action: 'created',
+      actor_id: actor.id, actor_name: actor.name ?? created_by ?? null, actor_role: actor.role,
+      after_status: status ?? 'active',
+    });
     res.status(201).json(rows[0]);
   } catch (err: any) { res.status(500).json({ error: err.message || 'Server error' }); }
 });
@@ -11370,8 +11435,10 @@ app.put('/api/projects/:id', async (req, res) => {
       status, flag, flag_reason, notes, total_hours_cap, billing_source,
     } = req.body;
     // Detect status flipping to 'archived' so we can clean up future-month
-    // assignments (planning should stop from that day onward).
-    const wasActive = (await sql`SELECT status FROM projects WHERE id=${req.params.id}` as any[])[0]?.status;
+    // assignments (planning should stop from that day onward). Full pre-row
+    // is grabbed so the audit trail can diff which fields changed.
+    const preRow = (await sql`SELECT * FROM projects WHERE id=${req.params.id}` as any[])[0];
+    const wasActive = preRow?.status;
     const isArchiving = status === 'archived' && wasActive !== 'archived';
     // Only update cap if explicitly provided in the body — callers that omit it
     // keep the existing value.
@@ -11407,6 +11474,49 @@ app.put('/api/projects/:id', async (req, res) => {
     if (isArchiving) {
       await dismissFutureAssignments(req.params.id);
     }
+    // Audit trail. Diff the fields the endpoint actually accepts against
+    // the pre-row so the "changes" column reads like a real change list
+    // ("name status total_hours_cap") instead of every column.
+    try {
+      const after = rows[0];
+      const trackFields: Array<[string, any, any]> = [
+        ['name', preRow?.name, after.name],
+        ['client_name', preRow?.client_name, after.client_name],
+        ['project_type', preRow?.project_type, after.project_type],
+        ['dashboard_url', preRow?.dashboard_url, after.dashboard_url],
+        ['project_reporting_id', preRow?.project_reporting_id, after.project_reporting_id],
+        ['project_lead_id', preRow?.project_lead_id, after.project_lead_id],
+        ['status', preRow?.status, after.status],
+        ['flag', preRow?.flag, after.flag],
+        ['notes', preRow?.notes, after.notes],
+        ['total_hours_cap', preRow?.total_hours_cap == null ? null : Number(preRow.total_hours_cap),
+                            after.total_hours_cap == null ? null : Number(after.total_hours_cap)],
+        ['billing_source', preRow?.billing_source, after.billing_source],
+      ];
+      const changed = trackFields.filter(([, a, b]) => (a ?? null) !== (b ?? null)).map(([k]) => k);
+      if (changed.length) {
+        const statusChanged = changed.includes('status');
+        // Prefer a specific action when status was the only meaningful move.
+        let action: any = 'edited';
+        if (statusChanged) {
+          if (after.status === 'archived') action = 'archived';
+          else if (preRow?.status === 'archived' && after.status !== 'archived') action = 'restored';
+          else action = 'status_changed';
+        } else if (changed.length === 1 && changed[0] === 'flag') {
+          action = after.flag ? 'flagged' : 'unflagged';
+        }
+        const actor = await resolveActor(req);
+        recordProjectActivity({
+          project_id: after.id, project_name: after.name, client_name: after.client_name,
+          action,
+          actor_id: actor.id, actor_name: actor.name, actor_role: actor.role,
+          before_status: statusChanged ? preRow?.status ?? null : null,
+          after_status:  statusChanged ? after.status ?? null : null,
+          changes: changed.join(' '),
+          reason: action === 'flagged' ? after.flag_reason ?? null : null,
+        });
+      }
+    } catch { /* non-fatal */ }
     res.json(rows[0]);
   } catch (err: any) { res.status(500).json({ error: err.message || 'Server error' }); }
 });
@@ -11428,11 +11538,61 @@ async function dismissFutureAssignments(projectId: string) {
 app.delete('/api/projects/:id', async (req, res) => {
   try {
     invalidateProjectsCache();
-    // Soft delete: mark archived; preserves history of hour logs
+    // Soft delete: mark archived; preserves history of hour logs. Grab the
+    // pre-row so the audit entry can name the project + carry the prior
+    // status (skipping the write when it was already archived — that would
+    // have created a noise entry for a no-op).
+    const preRow = (await sql`SELECT id, name, client_name, status FROM projects WHERE id=${req.params.id}` as any[])[0];
+    if (!preRow) return res.status(404).json({ error: 'Project not found' });
     const rows = await sql`UPDATE projects SET status='archived' WHERE id=${req.params.id} RETURNING id, status`;
-    if (!rows.length) return res.status(404).json({ error: 'Project not found' });
     await dismissFutureAssignments(req.params.id);
+    if (preRow.status !== 'archived') {
+      const actor = await resolveActor(req);
+      recordProjectActivity({
+        project_id: preRow.id, project_name: preRow.name, client_name: preRow.client_name,
+        action: 'archived',
+        actor_id: actor.id, actor_name: actor.name, actor_role: actor.role,
+        before_status: preRow.status, after_status: 'archived',
+        reason: 'deleted from Projects list',
+      });
+    }
     res.json(rows[0]);
+  } catch (err: any) { res.status(500).json({ error: err.message || 'Server error' }); }
+});
+
+// GET /api/project-activity — audit trail for the Projects page. Admin-only
+// by convention (frontend gates the button); the endpoint itself just
+// checks the caller is signed in. Filters: from/to (ISO date, inclusive),
+// month/year, action, project_id, actor_id, limit (default 200, max 500).
+app.get('/api/project-activity', async (req, res) => {
+  try {
+    await runStartupMigrations();
+    const uid = req.header('x-user-id');
+    if (!uid) return res.status(401).json({ error: 'Sign in required' });
+    const from = (req.query.from as string) || null;
+    const to = (req.query.to as string) || null;
+    const month = req.query.month ? Number(req.query.month) : null;
+    const year = req.query.year ? Number(req.query.year) : null;
+    const action = (req.query.action as string) || null;
+    const projectId = (req.query.project_id as string) || null;
+    const actorId = (req.query.actor_id as string) || null;
+    const rawLimit = req.query.limit ? Number(req.query.limit) : 200;
+    const limit = Math.min(500, Math.max(1, Number.isFinite(rawLimit) ? rawLimit : 200));
+    const rows = await sql`
+      SELECT id, project_id, project_name, client_name, action,
+             actor_id, actor_name, actor_role,
+             before_status, after_status, changes, reason, created_at
+      FROM project_activity
+      WHERE (${from}::date IS NULL OR created_at::date >= ${from}::date)
+        AND (${to}::date   IS NULL OR created_at::date <= ${to}::date)
+        AND (${month}::int IS NULL OR EXTRACT(MONTH FROM created_at)::int = ${month})
+        AND (${year}::int  IS NULL OR EXTRACT(YEAR  FROM created_at)::int = ${year})
+        AND (${action}::text     IS NULL OR action     = ${action})
+        AND (${projectId}::text  IS NULL OR project_id = ${projectId})
+        AND (${actorId}::text    IS NULL OR actor_id   = ${actorId})
+      ORDER BY created_at DESC
+      LIMIT ${limit}`;
+    res.json(rows);
   } catch (err: any) { res.status(500).json({ error: err.message || 'Server error' }); }
 });
 

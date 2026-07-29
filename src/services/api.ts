@@ -520,6 +520,28 @@ export const api = {
   createProject: (data: any) => request<any>('/projects', { method: 'POST', body: JSON.stringify(data) }),
   updateProject: (id: string, data: any) => request<any>(`/projects/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
   deleteProject: (id: string) => request<any>(`/projects/${id}`, { method: 'DELETE' }),
+  getProjectActivity: (params: {
+    from?: string; to?: string; month?: number; year?: number;
+    action?: string; project_id?: string; actor_id?: string; limit?: number;
+  } = {}) => {
+    const qs = new URLSearchParams();
+    for (const [k, v] of Object.entries(params)) if (v !== undefined && v !== null && v !== '') qs.set(k, String(v));
+    return request<Array<{
+      id: string;
+      project_id: string | null;
+      project_name: string | null;
+      client_name: string | null;
+      action: string;
+      actor_id: string | null;
+      actor_name: string | null;
+      actor_role: string | null;
+      before_status: string | null;
+      after_status: string | null;
+      changes: string | null;
+      reason: string | null;
+      created_at: string;
+    }>>(`/project-activity?${qs}`);
+  },
 
   getProjectAssignments: (params?: { month?: number; year?: number; employee_id?: string; project_id?: string }) => {
     const qs = new URLSearchParams();

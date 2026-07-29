@@ -1,8 +1,9 @@
 import { useState, useEffect, useMemo } from 'react';
-import { Plus, Pencil, Trash2, X, Search, Briefcase, ExternalLink, Flag, AlertTriangle, IndianRupee, CalendarDays, Download, Upload } from 'lucide-react';
+import { Plus, Pencil, Trash2, X, Search, Briefcase, ExternalLink, Flag, AlertTriangle, IndianRupee, CalendarDays, Download, Upload, History } from 'lucide-react';
 import { api } from '../services/api';
 import { useAuth } from '../context/AuthContext';
 import { financeApi, type FinProjectExpense } from '../services/financeApi';
+import ProjectActivityLogModal from '../components/ProjectActivityLogModal';
 
 interface Project {
   id: string;
@@ -68,6 +69,11 @@ export default function Projects() {
   const [projects, setProjects] = useState<Project[]>([]);
   const [employees, setEmployees] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
+  // Admin-only audit trail. Answers "who created / archived which project
+  // this month" — coordinators regularly onboard clients and there was no
+  // way for admin to catch a bad addition or an accidental archive.
+  const isAdmin = role === 'admin';
+  const [showHistory, setShowHistory] = useState(false);
   // Bulk expense import busy flag — prevents double-clicks while the
   // CSV upload is in flight.
   const [bulkBusy, setBulkBusy] = useState(false);
@@ -272,6 +278,13 @@ export default function Projects() {
               <span className="num-mono text-[10px] font-bold px-1.5 py-0.5 rounded-full bg-accent text-on-accent">{activeFilterCount}</span>
             )}
           </button>
+          {isAdmin && (
+            <button onClick={() => setShowHistory(true)}
+              title="See every project created / edited / archived — with actor + timestamp"
+              className="inline-flex items-center gap-1.5 px-3 py-2.5 rounded-lg text-sm font-medium border border-outline bg-surface text-on-surface-muted hover:bg-surface-2 transition-colors">
+              <History size={14} /> History
+            </button>
+          )}
           {canEdit && (
             <>
               {/* Bulk expense flow: pick month/year → download template
@@ -519,6 +532,8 @@ export default function Projects() {
           initialYear={bulkYear}
         />
       )}
+
+      {showHistory && <ProjectActivityLogModal onClose={() => setShowHistory(false)} />}
     </div>
   );
 }
