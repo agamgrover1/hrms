@@ -278,6 +278,24 @@ async function notifyManagerOfEmployee(employeeDbId: string, type: string, title
   } catch { /* non-fatal */ }
 }
 
+// Variant for internal-activity time. HR is deliberately excluded — they
+// were removed from the internal-hours workflow (see canViewInternalHoursOf),
+// so pinging them for a log they can't view or approve was just noise in
+// their bell. Fallback goes to admin + PC only, who ARE authorised to
+// action these when no reporting manager is set.
+async function notifyInternalHoursReviewerOf(employeeDbId: string, type: string, title: string, body?: string) {
+  try {
+    const empRows = await sql`SELECT reporting_manager_id FROM employees WHERE id = ${employeeDbId}`;
+    const managerId = (empRows as any[])[0]?.reporting_manager_id;
+    if (managerId) {
+      await notifyEmployeeUser(managerId, type, title, body);
+      return;
+    }
+    const users = await sql`SELECT id FROM app_users WHERE role IN ('admin', 'project_coordinator') AND active = TRUE`;
+    await Promise.all((users as any[]).map((u: any) => notifyUser(u.id, type, title, body)));
+  } catch { /* non-fatal */ }
+}
+
 // ── Admin guard for the Finance module ──────────────────────────────────
 // The app's session lives client-side, so the finance API client sends the
 // signed-in user's id in the `x-user-id` header. We verify here that the
@@ -7107,7 +7125,7 @@ app.post('/api/internal-hour-logs', async (req, res) => {
       const actName = (await sql`SELECT name FROM internal_activities WHERE id=${activity_id}`)[0] as any;
       const empName = (await sql`SELECT name FROM employees WHERE id=${empDbId}`)[0] as any;
       const datePretty = new Date(log_date).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' });
-      notifyManagerOfEmployee(empDbId, 'internal_logged',
+      notifyInternalHoursReviewerOf(empDbId, 'internal_logged',
         `Internal hours awaiting review`,
         `${empName?.name ?? 'An employee'} logged ${h}h on ${actName?.name ?? 'an activity'} (${datePretty}). Open Approvals to review.`
       ).catch(()=>{});
