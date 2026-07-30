@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { FileText, Search, ExternalLink, ShieldAlert, X, Filter, Plus, UserPlus } from 'lucide-react';
+import { FileText, Search, ExternalLink, ShieldAlert, X, Filter, Plus, UserPlus, Link2 } from 'lucide-react';
 import { api, type HrDocument } from '../services/api';
 import { useAuth } from '../context/AuthContext';
 import IssueDocumentModal, { type EmployeeOption } from '../components/hr/IssueDocumentModal';
@@ -73,6 +73,26 @@ export default function HRDocumentsRegister() {
 
   const clearFilters = () => {
     setFilterType(''); setFilterFrom(''); setFilterTo(''); setQuery('');
+  };
+
+  // Same edit-link flow the per-employee panel exposes. Common trigger:
+  // HR issued the letter, generated the PDF, uploaded to Drive, now
+  // wants to attach the URL from the register without navigating into
+  // the employee profile.
+  const editLink = async (doc: HrDocument) => {
+    const current = doc.external_ref ?? '';
+    const next = window.prompt(
+      `Paste the Drive / SharePoint link for ${doc.doc_number}. Leave blank to clear.`,
+      current,
+    );
+    if (next === null) return;
+    const trimmed = next.trim();
+    if (trimmed === current) return;
+    try {
+      const updated = await api.updateHrDocument(doc.id, { external_ref: trimmed || null });
+      setDocs(prev => prev.map(d => d.id === doc.id ? updated : d));
+      toast.success(trimmed ? 'Link updated' : 'Link removed', `${doc.doc_number}`);
+    } catch (e: any) { toast.error('Update failed', e?.message); }
   };
   const filtersActive = filterType || filterFrom || filterTo || query;
 
@@ -226,14 +246,23 @@ export default function HRDocumentsRegister() {
                         {doc.subject ?? '—'}
                       </td>
                       <td className="px-4 py-2.5 text-right">
-                        {doc.external_ref ? (
-                          <a href={doc.external_ref} target="_blank" rel="noreferrer"
-                            className="inline-flex items-center gap-1 text-xs text-accent hover:underline">
-                            <ExternalLink className="w-3.5 h-3.5" /> Open
-                          </a>
-                        ) : (
-                          <span className="text-xs text-on-surface-subtle">—</span>
-                        )}
+                        <div className="inline-flex items-center gap-2 justify-end">
+                          {doc.external_ref ? (
+                            <a href={doc.external_ref} target="_blank" rel="noreferrer"
+                              className="inline-flex items-center gap-1 text-xs text-accent hover:underline">
+                              <ExternalLink className="w-3.5 h-3.5" /> Open
+                            </a>
+                          ) : (
+                            <span className="text-xs text-on-surface-subtle">—</span>
+                          )}
+                          {canIssue && !doc.voided && (
+                            <button onClick={() => editLink(doc)}
+                              title={doc.external_ref ? 'Change the document link' : 'Attach a document link'}
+                              className="text-on-surface-muted hover:text-accent p-1 rounded hover:bg-accent/10">
+                              <Link2 className="w-3.5 h-3.5" />
+                            </button>
+                          )}
+                        </div>
                       </td>
                     </tr>
                   );

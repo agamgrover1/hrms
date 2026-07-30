@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { FileText, Plus, ExternalLink, XCircle, ShieldAlert } from 'lucide-react';
+import { FileText, Plus, ExternalLink, XCircle, ShieldAlert, Link2 } from 'lucide-react';
 import { api, type HrDocument } from '../../services/api';
 import { useAuth } from '../../context/AuthContext';
 import { toast } from '../Toaster';
@@ -58,6 +58,28 @@ export default function DocumentsPanel({ employeeId, employeeName }: Props) {
       setDocs(prev => prev.map(d => d.id === doc.id ? updated : d));
       toast.success('Document voided', `${doc.doc_number} is now marked void. The number stays reserved.`);
     } catch (e: any) { toast.error('Void failed', e?.message); }
+  };
+
+  // Edit the Drive / SharePoint URL on an already-issued document.
+  // Common flow: HR issues the doc + gets its number, generates the PDF,
+  // uploads it to Drive, then comes back to paste the link. Passing an
+  // empty string clears it (backend treats "" → null).
+  const editLink = async (doc: HrDocument) => {
+    const current = doc.external_ref ?? '';
+    const next = window.prompt(
+      `Paste the Drive / SharePoint link for ${doc.doc_number}. Leave blank to clear.`,
+      current,
+    );
+    // window.prompt returns null on cancel — leave it alone. Empty string
+    // means "clear the link" and we send that through.
+    if (next === null) return;
+    const trimmed = next.trim();
+    if (trimmed === current) return;
+    try {
+      const updated = await api.updateHrDocument(doc.id, { external_ref: trimmed || null });
+      setDocs(prev => prev.map(d => d.id === doc.id ? updated : d));
+      toast.success(trimmed ? 'Link updated' : 'Link removed', `${doc.doc_number}`);
+    } catch (e: any) { toast.error('Update failed', e?.message); }
   };
 
   return (
@@ -136,6 +158,13 @@ export default function DocumentsPanel({ employeeId, employeeName }: Props) {
                         className="inline-flex items-center gap-1 text-xs text-accent hover:underline">
                         <ExternalLink className="w-3.5 h-3.5" /> PDF
                       </a>
+                    )}
+                    {canIssue && !doc.voided && (
+                      <button onClick={() => editLink(doc)}
+                        title={doc.external_ref ? 'Change the document link' : 'Attach a document link'}
+                        className="text-on-surface-muted hover:text-accent p-1.5 rounded-md hover:bg-accent/10">
+                        <Link2 className="w-4 h-4" />
+                      </button>
                     )}
                     {canIssue && !doc.voided && (
                       <button onClick={() => voidDoc(doc)}
