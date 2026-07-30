@@ -285,8 +285,15 @@ export const api = {
   saveMonthlyPerformance: (data: {
     employee_id: string; reviewer_id?: string; reviewer_name?: string;
     month: number; year: number;
-    productivity: number; quality: number; teamwork: number; attendance_score: number; initiative: number; client_satisfaction: number; ai_usage: number;
-    communication?: number; ownership?: number; planning_accuracy?: number; learning_growth?: number;
+    // null on any pillar means "N/A this month" — backend stores as NULL
+    // and skips it in the composite. The type was `number` (required)
+    // which forced the caller to lie via `as any`; nulls actually
+    // reach the wire and are the intended contract.
+    productivity: number | null; quality: number | null; teamwork: number | null;
+    attendance_score: number | null; initiative: number | null;
+    client_satisfaction: number | null; ai_usage: number | null;
+    communication?: number | null; ownership?: number | null;
+    planning_accuracy?: number | null; learning_growth?: number | null;
     overall_score: number; comments?: string; parameter_notes?: Record<string, string>;
     requester_role?: string;
   }) => request<any>('/performance/monthly', { method: 'POST', body: JSON.stringify(data) }),
@@ -728,6 +735,10 @@ export const api = {
         client_name: string | null;
         billing_account_id: string | null;
         billing_account_name: string | null;
+        // Coord's freeform tag used by the "group by profile" toggle on
+        // /hours-allocations. The backend serialises it at line 13592.
+        // Missing here previously — TS complained on setRows(d.rows).
+        billing_profile: string | null;
         weeks: Array<{
           week_num: number;
           target_hours: number;

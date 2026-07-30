@@ -424,16 +424,19 @@ function AddReviewModal({
               <div className="grid grid-cols-2 gap-2 text-[11px]">
                 {CATEGORIES.map(({ key, label }) => {
                   const self = Number(existing.self_scores?.[key] ?? 75);
+                  // mine can be null when the reviewer marks the pillar N/A.
+                  // `null - number` used to silently NaN into the delta chip
+                  // and render as "NaN" — hide the arrow entirely instead.
                   const mine = scores[key];
-                  const delta = mine - self;
+                  const delta = mine == null ? null : mine - self;
                   return (
                     <div key={key} className="flex items-center justify-between bg-surface rounded px-2 py-1">
                       <span className="text-on-surface-muted truncate">{label}</span>
                       <span className="num-mono font-semibold">
                         <span className="text-on-surface-subtle">{self}</span>
                         <span className="text-on-surface-subtle mx-1">→</span>
-                        <span className="text-on-surface">{mine}</span>
-                        {delta !== 0 && (
+                        <span className="text-on-surface">{mine ?? 'N/A'}</span>
+                        {delta !== null && delta !== 0 && (
                           <span className={`ml-1 text-[10px] ${delta > 0 ? 'text-success' : 'text-danger'}`}>
                             {delta > 0 ? '+' : ''}{delta}
                           </span>

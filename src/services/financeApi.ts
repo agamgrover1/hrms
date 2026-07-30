@@ -62,6 +62,13 @@ export interface FinProjectRow {
   overheadPool: number;
   netProfit: number; netMargin: number; effectiveCostPerHour: number; revenuePerHour: number;
   team: { id: string; name: string; designation: string | null; hours: number; rate: number; cost: number }[];
+  // Upwork billing side-channel — only present when the project's billing
+  // is routed through Upwork rather than direct invoicing. The dashboard
+  // reads these to render "Awaiting approval" / "Cleared" pills. Optional
+  // because direct-billed projects legitimately have neither.
+  billing_source?: 'upwork' | 'direct' | null;
+  billing_status?: 'pending' | 'cleared_pending' | 'cleared' | null;
+  billing_received_inr?: number | null;
 }
 
 export interface FinInvoice {

@@ -164,11 +164,16 @@ export default function UserManagement() {
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
   // Permissions editor — target user id whose grid is being edited.
   const [permsTargetId, setPermsTargetId] = useState<string | null>(null);
-  const [toast, setToast] = useState('');
+  // Local banner text — shown in the corner via {banner && ...} below.
+  // NOT to be confused with the imported `toast` from ../components/Toaster,
+  // which is the toast helper used for 2FA reset / permissions save. A prior
+  // local state named `toast` was shadowing the import and turned the two
+  // calls at ~L358 into runtime TypeErrors (toast.success is not a function).
+  const [banner, setBanner] = useState('');
 
   const showToast = (msg: string) => {
-    setToast(msg);
-    setTimeout(() => setToast(''), 3000);
+    setBanner(msg);
+    setTimeout(() => setBanner(''), 3000);
   };
 
   const filtered = users.filter(u => {
@@ -227,9 +232,9 @@ export default function UserManagement() {
   return (
     <div className="space-y-5">
       {/* Toast */}
-      {toast && (
+      {banner && (
         <div className="fixed top-5 right-5 z-50 bg-surface-3 text-on-surface text-sm px-4 py-2.5 rounded-xl-2 shadow-elev-3 border border-outline animate-fade-in">
-          ✓ {toast}
+          ✓ {banner}
         </div>
       )}
 

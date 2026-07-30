@@ -891,7 +891,7 @@ export default function MyTeam() {
                   <ResponsiveContainer width="100%" height={200}>
                     <PieChart>
                       <Pie data={leaveDonutData} cx="50%" cy="50%" innerRadius={52} outerRadius={78}
-                        paddingAngle={3} dataKey="value" label={({ name, percent }) => `${name} ${(percent*100).toFixed(0)}%`}
+                        paddingAngle={3} dataKey="value" label={({ name, percent }) => `${name} ${(((percent ?? 0) as number)*100).toFixed(0)}%`}
                         labelLine={false} fontSize={10}>
                         {leaveDonutData.map((_, i) => (
                           <Cell key={i} fill={BRAND_COLORS[i % BRAND_COLORS.length]} />
