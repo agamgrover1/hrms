@@ -15,6 +15,7 @@ import EmployeeResponsibilitiesPanel from '../components/EmployeeResponsibilitie
 import EmployeeHoursDetailModal from '../components/EmployeeHoursDetailModal';
 import ChecklistPanel from '../components/ChecklistPanel';
 import DocumentsPanel from '../components/hr/DocumentsPanel';
+import SalaryPanel from '../components/hr/SalaryPanel';
 import KpisPanel from '../components/hr/KpisPanel';
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -157,7 +158,7 @@ function ActionModal({ title, info, type, isIncentive, onClose, onConfirm }: {
 }
 
 // ── Tabs ──────────────────────────────────────────────────────────────────────
-const TABS = ['Overview','Attendance','Leave','Hours','Performance','KPIs','Incentives','Expenses','Warnings','Responsibilities','Onboarding','Offboarding','Documents'] as const;
+const TABS = ['Overview','Attendance','Leave','Hours','Performance','KPIs','Incentives','Expenses','Salary','Warnings','Responsibilities','Onboarding','Offboarding','Documents'] as const;
 type Tab = typeof TABS[number];
 
 // ── Main page ─────────────────────────────────────────────────────────────────
@@ -1314,6 +1315,11 @@ export default function EmployeeProfile() {
       {/* ── HR Documents ─────────────────────────────────────────────────── */}
       {tab === 'Documents' && emp && (
         <DocumentsPanel employeeId={emp.id} employeeName={emp.name} />
+      )}
+
+      {/* ── Salary structure (Phase 1 of payroll) ────────────────────────── */}
+      {tab === 'Salary' && emp && (
+        <SalaryPanel employeeId={emp.id} employeeName={emp.name} />
       )}
 
       {/* ── KPIs ─────────────────────────────────────────────────────────── */}

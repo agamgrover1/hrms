@@ -253,6 +253,41 @@ export const api = {
   },
   getEmployeePayroll: (employee_id: string) => request<any[]>(`/payroll/${employee_id}`),
 
+  // Payroll · Phase 1 config + salary structures. The legacy
+  // getPayroll/getEmployeePayroll above still read the flat
+  // payroll_records table for old data; these hit the new tables.
+  getPayrollConfig: () =>
+    request<{
+      id: string;
+      basic_pct: number; hra_pct: number; special_allowance_pct: number; employer_pf_pct: number;
+      working_days_convention: 'fixed_30' | 'actual_month';
+      updated_by: string | null; updated_at: string | null;
+    }>('/payroll/config'),
+  updatePayrollConfig: (data: {
+    basic_pct: number; hra_pct: number; special_allowance_pct: number; employer_pf_pct: number;
+    working_days_convention: 'fixed_30' | 'actual_month';
+  }) => request<{ ok: true }>('/payroll/config', { method: 'PUT', body: JSON.stringify(data) }),
+
+  getSalaryStructures: (employee_id: string) =>
+    request<Array<{
+      id: string; employee_id: string; effective_from: string;
+      ctc_annual: number; basic: number; hra: number; special_allowance: number; employer_pf: number;
+      other_components: Array<{ label: string; amount: number }>;
+      notes: string | null; created_by: string | null; created_at: string; updated_at: string;
+    }>>(`/payroll/structures?employee_id=${employee_id}`),
+  createSalaryStructure: (data: {
+    employee_id: string; effective_from: string; ctc_annual: number;
+    basic: number; hra: number; special_allowance: number; employer_pf: number;
+    other_components?: Array<{ label: string; amount: number }>; notes?: string;
+  }) => request<any>('/payroll/structures', { method: 'POST', body: JSON.stringify(data) }),
+  updateSalaryStructure: (id: string, data: {
+    effective_from: string; ctc_annual: number;
+    basic: number; hra: number; special_allowance: number; employer_pf: number;
+    other_components?: Array<{ label: string; amount: number }>; notes?: string;
+  }) => request<any>(`/payroll/structures/${id}`, { method: 'PATCH', body: JSON.stringify(data) }),
+  deleteSalaryStructure: (id: string) =>
+    request<{ ok: true }>(`/payroll/structures/${id}`, { method: 'DELETE' }),
+
   // Performance (legacy goals/reviews)
   getGoals: (employee_id?: string) => {
     const qs = employee_id ? `?employee_id=${employee_id}` : '';

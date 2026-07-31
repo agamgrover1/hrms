@@ -1,7 +1,8 @@
 import { useState, useEffect } from 'react';
-import { Download, Search, TrendingUp, DollarSign } from 'lucide-react';
+import { Download, Search, TrendingUp, DollarSign, Settings, ChevronDown, ChevronRight, Loader2 } from 'lucide-react';
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
 import { api } from '../services/api';
+import { useAuth } from '../context/AuthContext';
 
 const monthlyTrend = [
   { month: 'Oct', total: 11.8 }, { month: 'Nov', total: 12.0 }, { month: 'Dec', total: 12.2 },
@@ -112,6 +113,10 @@ export default function Payroll() {
 
   return (
     <div className="space-y-6">
+      {/* Payroll Phase 1: org config for salary structure auto-split.
+          Collapsed by default — HR opens it once when setting up. */}
+      <PayrollConfigPanel />
+
       {/* Summary — bento KPI tiles */}
       <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
         {/* Hero tile: Total Net Payroll */}
@@ -234,5 +239,152 @@ export default function Payroll() {
 
       {selectedSlip && <SlipModal record={selectedSlip} onClose={() => setSelectedSlip(null)} />}
     </div>
+  );
+}
+
+// Payroll Phase 1 — org-wide config for the salary-structure auto-split.
+// Admin-only edit (server-side gate is requireAdmin on PUT), HR can view.
+// Collapsed by default so it doesn't push the reporting cards down; opens
+// when HR needs to change the percentages a new employee should be
+// pre-filled with.
+function PayrollConfigPanel() {
+  const { user } = useAuth();
+  const isAdmin = user?.role === 'admin';
+  const [open, setOpen] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [cfg, setCfg] = useState<{
+    basic_pct: number; hra_pct: number; special_allowance_pct: number; employer_pf_pct: number;
+    working_days_convention: 'fixed_30' | 'actual_month';
+  } | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState('');
+
+  useEffect(() => {
+    // Only load when the panel is expanded — a collapsed strip has no
+    // reason to hit the endpoint on every page mount.
+    if (!open || cfg) return;
+    setLoading(true);
+    api.getPayrollConfig()
+      .then(c => setCfg({
+        basic_pct: Number(c.basic_pct),
+        hra_pct: Number(c.hra_pct),
+        special_allowance_pct: Number(c.special_allowance_pct),
+        employer_pf_pct: Number(c.employer_pf_pct),
+        working_days_convention: c.working_days_convention,
+      }))
+      .catch(() => setMsg('Failed to load config'))
+      .finally(() => setLoading(false));
+  }, [open, cfg]);
+
+  const grossSum = cfg ? cfg.basic_pct + cfg.hra_pct + cfg.special_allowance_pct : 0;
+  const sumOk = Math.abs(grossSum - 100) <= 0.5;
+
+  const save = async () => {
+    if (!cfg) return;
+    if (!sumOk) { setMsg(`Basic + HRA + Special must sum to 100% (currently ${grossSum}%).`); return; }
+    setBusy(true); setMsg('');
+    try {
+      await api.updatePayrollConfig(cfg);
+      setMsg('Saved.');
+      setTimeout(() => setMsg(''), 2500);
+    } catch (e: any) { setMsg(e?.message ?? 'Save failed'); }
+    finally { setBusy(false); }
+  };
+
+  return (
+    <div className="bg-surface rounded-xl-2 border border-outline shadow-elev-1 overflow-hidden">
+      <button onClick={() => setOpen(o => !o)}
+        className="w-full px-5 py-3 flex items-center justify-between hover:bg-surface-2/40 transition-colors">
+        <span className="inline-flex items-center gap-2 text-sm font-semibold text-on-surface">
+          <Settings size={14} className="text-accent" /> Payroll settings
+        </span>
+        <span className="inline-flex items-center gap-2 text-[11px] text-on-surface-muted">
+          Default salary split · working days convention
+          {open ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+        </span>
+      </button>
+      {open && (
+        <div className="px-5 pb-5 pt-2 border-t border-outline bg-surface-2/30">
+          {loading ? (
+            <p className="text-sm text-on-surface-subtle py-4">Loading…</p>
+          ) : !cfg ? (
+            <p className="text-sm text-danger">Failed to load payroll config.</p>
+          ) : (
+            <>
+              <p className="text-[11px] text-on-surface-muted mb-3">
+                These percentages pre-fill a new salary structure when HR enters a CTC on an employee.
+                Individual employees can still be edited component-by-component after — this only sets the starting point.
+              </p>
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                <PctField label="Basic %" value={cfg.basic_pct}
+                  disabled={!isAdmin}
+                  onChange={v => setCfg(c => c && ({ ...c, basic_pct: v }))} />
+                <PctField label="HRA %" value={cfg.hra_pct}
+                  disabled={!isAdmin}
+                  onChange={v => setCfg(c => c && ({ ...c, hra_pct: v }))} />
+                <PctField label="Special Allowance %" value={cfg.special_allowance_pct}
+                  disabled={!isAdmin}
+                  onChange={v => setCfg(c => c && ({ ...c, special_allowance_pct: v }))} />
+                <PctField label="Employer PF %" value={cfg.employer_pf_pct}
+                  disabled={!isAdmin}
+                  onChange={v => setCfg(c => c && ({ ...c, employer_pf_pct: v }))} />
+              </div>
+              <p className={`text-[11px] mt-2 ${sumOk ? 'text-on-surface-subtle' : 'text-danger'}`}>
+                Basic + HRA + Special = <span className="num-mono font-semibold">{grossSum}%</span>
+                {sumOk ? ' · sums correctly.' : ' · must total 100%. Employer PF sits on top and doesn\'t count here.'}
+              </p>
+              <div className="mt-4">
+                <label className="block">
+                  <span className="block text-[10px] font-bold uppercase tracking-[0.14em] text-on-surface-subtle mb-1">
+                    Working-days convention (Phase 2)
+                  </span>
+                  <select value={cfg.working_days_convention}
+                    disabled={!isAdmin}
+                    onChange={e => setCfg(c => c && ({ ...c, working_days_convention: e.target.value as any }))}
+                    className="bg-surface border border-outline rounded-lg px-3 py-1.5 text-sm text-on-surface disabled:opacity-60">
+                    <option value="fixed_30">Fixed 30 days (per-day = monthly/30)</option>
+                    <option value="actual_month">Actual month days (per-day = monthly/actual days)</option>
+                  </select>
+                  <span className="block text-[11px] text-on-surface-muted mt-1">
+                    Decides how LOP deductions are computed when Phase 2's payslip run reads unpaid-leave days.
+                  </span>
+                </label>
+              </div>
+              {msg && (
+                <p className={`text-xs mt-3 ${msg === 'Saved.' ? 'text-success' : 'text-danger'}`}>{msg}</p>
+              )}
+              {isAdmin && (
+                <div className="mt-4 flex justify-end">
+                  <button onClick={save} disabled={busy || !sumOk}
+                    className="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg text-sm font-semibold bg-accent text-on-accent hover:opacity-90 disabled:opacity-50">
+                    {busy && <Loader2 size={13} className="animate-spin" />}
+                    Save settings
+                  </button>
+                </div>
+              )}
+              {!isAdmin && (
+                <p className="text-[11px] text-on-surface-muted mt-3 italic">
+                  You can view these settings. Admin edits.
+                </p>
+              )}
+            </>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function PctField({ label, value, onChange, disabled }: { label: string; value: number; onChange: (v: number) => void; disabled?: boolean }) {
+  return (
+    <label className="block">
+      <span className="block text-[10px] font-bold uppercase tracking-[0.14em] text-on-surface-subtle mb-1">{label}</span>
+      <div className="relative">
+        <input type="number" step="0.5" min="0" max="100" value={value} disabled={disabled}
+          onChange={e => onChange(Number(e.target.value))}
+          className="w-full num-mono pr-6 pl-3 py-1.5 rounded-lg bg-surface border border-outline text-sm text-on-surface focus:outline-none focus:ring-2 focus:ring-accent/30 disabled:opacity-60" />
+        <span className="absolute right-2 top-1/2 -translate-y-1/2 text-[11px] text-on-surface-subtle">%</span>
+      </div>
+    </label>
   );
 }

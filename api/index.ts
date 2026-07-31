@@ -881,7 +881,7 @@ async function runStartupMigrations() {
     // For a *seed* (rows, not columns), we probe with EXISTS-style: an
     // empty result set means "still needs to run", so we don't set the
     // flag and fall through.
-    await sql`SELECT id FROM project_activity LIMIT 0`;
+    await sql`SELECT id FROM salary_structures LIMIT 0`;
     _migrated = true;
     return;
   } catch {
@@ -1348,6 +1348,55 @@ async function runStartupMigrations() {
   await sql`CREATE INDEX IF NOT EXISTS idx_project_activity_time ON project_activity(created_at DESC)`.catch(()=>{});
   await sql`CREATE INDEX IF NOT EXISTS idx_project_activity_project ON project_activity(project_id, created_at DESC)`.catch(()=>{});
   await sql`CREATE INDEX IF NOT EXISTS idx_project_activity_action ON project_activity(action, created_at DESC)`.catch(()=>{});
+
+  // ── Payroll: salary structures ───────────────────────────────────────
+  // Effective-dated CTC + component breakdown per employee. A raise
+  // NEVER updates a row — it inserts a new one with a later
+  // effective_from, so a payslip run in October for July still resolves
+  // the July CTC via `latest row where effective_from <= run_end_date`.
+  // Legacy `payroll_records` (the flat monthly cache) stays for
+  // read-only display of pre-Phase-1 rows; new writes land here and,
+  // in Phase 2, in the `payslips` table.
+  await sql`
+    CREATE TABLE IF NOT EXISTS salary_structures (
+      id TEXT PRIMARY KEY,
+      employee_id TEXT NOT NULL,
+      effective_from DATE NOT NULL,
+      ctc_annual NUMERIC NOT NULL DEFAULT 0,
+      basic NUMERIC NOT NULL DEFAULT 0,
+      hra NUMERIC NOT NULL DEFAULT 0,
+      special_allowance NUMERIC NOT NULL DEFAULT 0,
+      employer_pf NUMERIC NOT NULL DEFAULT 0,
+      other_components JSONB NOT NULL DEFAULT '[]'::jsonb,
+      notes TEXT,
+      created_by TEXT,
+      created_at TIMESTAMPTZ DEFAULT NOW(),
+      updated_at TIMESTAMPTZ DEFAULT NOW(),
+      UNIQUE (employee_id, effective_from)
+    )`;
+  await sql`CREATE INDEX IF NOT EXISTS idx_salary_structures_emp_date ON salary_structures(employee_id, effective_from DESC)`.catch(()=>{});
+
+  // ── Payroll: org-wide config ─────────────────────────────────────────
+  // Single-row table (id='default'). Auto-split percentages drive the
+  // "type CTC → prefill components" flow on the Salary tab. Working-day
+  // convention decides whether LOP deduction divides by 30 (fixed) or
+  // the actual working days of the month — surfaces in Phase 2's LOP
+  // calculator.
+  await sql`
+    CREATE TABLE IF NOT EXISTS payroll_config (
+      id TEXT PRIMARY KEY,
+      basic_pct NUMERIC NOT NULL DEFAULT 50,
+      hra_pct NUMERIC NOT NULL DEFAULT 20,
+      special_allowance_pct NUMERIC NOT NULL DEFAULT 25,
+      employer_pf_pct NUMERIC NOT NULL DEFAULT 5,
+      working_days_convention TEXT NOT NULL DEFAULT 'fixed_30',
+      updated_by TEXT,
+      updated_at TIMESTAMPTZ DEFAULT NOW()
+    )`;
+  await sql`
+    INSERT INTO payroll_config (id, basic_pct, hra_pct, special_allowance_pct, employer_pf_pct, working_days_convention)
+    VALUES ('default', 50, 20, 25, 5, 'fixed_30')
+    ON CONFLICT (id) DO NOTHING`;
 
   await sql`
     CREATE TABLE IF NOT EXISTS hour_logs (
@@ -8005,6 +8054,162 @@ app.get('/api/payroll/:employee_id', async (req, res) => {
     }
     res.json(await sql`SELECT * FROM payroll_records WHERE employee_id=${req.params.employee_id} ORDER BY year DESC, month DESC`);
   } catch (err) { res.status(500).json({ error: 'Server error' }); }
+});
+
+// ── Payroll · Config (Phase 1) ───────────────────────────────────────────
+// Single-row table (id='default') — the shape of "default salary split".
+// UI reads once on load, writes fire in the config panel on /payroll.
+// Admin-only edit because a wrong split silently biases every future
+// salary structure typed in.
+
+app.get('/api/payroll/config', async (req, res) => {
+  try {
+    if (!(await requireFullHR(req, res)).ok) return;
+    await runStartupMigrations();
+    const rows = await sql`SELECT * FROM payroll_config WHERE id='default'` as any[];
+    // Row is seeded on migration; if it somehow isn't, hand back
+    // hardcoded defaults so the UI doesn't render an empty form.
+    res.json(rows[0] ?? {
+      id: 'default', basic_pct: 50, hra_pct: 20, special_allowance_pct: 25,
+      employer_pf_pct: 5, working_days_convention: 'fixed_30',
+    });
+  } catch (err: any) { res.status(500).json({ error: err.message ?? 'Server error' }); }
+});
+
+app.put('/api/payroll/config', async (req, res) => {
+  try {
+    const gate = await requireAdmin(req, res);
+    if (!gate) return;
+    const { basic_pct, hra_pct, special_allowance_pct, employer_pf_pct, working_days_convention } = req.body ?? {};
+    // Percentages should sum to 100 for the gross split (basic + hra +
+    // special). Employer PF is on top of gross and doesn't need to fit
+    // in. Reject a sum that's off by more than a rounding error so a
+    // typo doesn't quietly under-allocate.
+    const grossSum = Number(basic_pct ?? 0) + Number(hra_pct ?? 0) + Number(special_allowance_pct ?? 0);
+    if (Math.abs(grossSum - 100) > 0.5) {
+      return res.status(400).json({ error: `Basic + HRA + Special Allowance must sum to 100% (got ${grossSum}%).` });
+    }
+    if (!['fixed_30', 'actual_month'].includes(String(working_days_convention))) {
+      return res.status(400).json({ error: 'working_days_convention must be fixed_30 or actual_month' });
+    }
+    const actorId = req.header('x-user-id') || null;
+    await sql`
+      UPDATE payroll_config SET
+        basic_pct=${Number(basic_pct)},
+        hra_pct=${Number(hra_pct)},
+        special_allowance_pct=${Number(special_allowance_pct)},
+        employer_pf_pct=${Number(employer_pf_pct ?? 0)},
+        working_days_convention=${working_days_convention},
+        updated_by=${actorId}, updated_at=NOW()
+      WHERE id='default'`;
+    res.json({ ok: true });
+  } catch (err: any) { res.status(500).json({ error: err.message ?? 'Server error' }); }
+});
+
+// ── Payroll · Salary structures (Phase 1) ────────────────────────────────
+// Effective-dated history per employee. The Employee > Salary tab renders
+// this as: current structure (latest row) + history list + edit form.
+// All routes are HR-gated because salary is sensitive.
+
+app.get('/api/payroll/structures', async (req, res) => {
+  try {
+    if (!(await requireFullHR(req, res)).ok) return;
+    await runStartupMigrations();
+    const { employee_id } = req.query as any;
+    if (!employee_id) return res.status(400).json({ error: 'employee_id is required' });
+    const rows = await sql`
+      SELECT id, employee_id, effective_from, ctc_annual,
+             basic, hra, special_allowance, employer_pf, other_components,
+             notes, created_by, created_at, updated_at
+      FROM salary_structures
+      WHERE employee_id=${employee_id}
+      ORDER BY effective_from DESC, created_at DESC`;
+    res.json(rows);
+  } catch (err: any) { res.status(500).json({ error: err.message ?? 'Server error' }); }
+});
+
+app.post('/api/payroll/structures', async (req, res) => {
+  try {
+    const gate = await requireFullHR(req, res);
+    if (!gate.ok) return;
+    const {
+      employee_id, effective_from, ctc_annual,
+      basic, hra, special_allowance, employer_pf,
+      other_components, notes,
+    } = req.body ?? {};
+    if (!employee_id) return res.status(400).json({ error: 'employee_id is required' });
+    if (!effective_from) return res.status(400).json({ error: 'effective_from is required' });
+    const ctc = Number(ctc_annual ?? 0);
+    if (!Number.isFinite(ctc) || ctc < 0) return res.status(400).json({ error: 'ctc_annual must be a non-negative number' });
+    // Verify the employee exists (avoids a silent orphan row if the
+    // client sends a stale id).
+    const emp = (await sql`SELECT id FROM employees WHERE id=${employee_id} LIMIT 1` as any[])[0];
+    if (!emp) return res.status(404).json({ error: 'Employee not found' });
+    const id = `sal_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
+    try {
+      const rows = await sql`
+        INSERT INTO salary_structures (
+          id, employee_id, effective_from, ctc_annual,
+          basic, hra, special_allowance, employer_pf,
+          other_components, notes, created_by
+        )
+        VALUES (
+          ${id}, ${employee_id}, ${effective_from}, ${ctc},
+          ${Number(basic ?? 0)}, ${Number(hra ?? 0)}, ${Number(special_allowance ?? 0)}, ${Number(employer_pf ?? 0)},
+          ${JSON.stringify(other_components ?? [])}, ${notes ?? null}, ${gate.user?.name ?? null}
+        )
+        RETURNING *`;
+      res.status(201).json((rows as any[])[0]);
+    } catch (e: any) {
+      if (String(e.message).includes('duplicate key')) {
+        return res.status(409).json({ error: 'A salary structure already exists for that employee on that effective-from date. Edit that row instead of creating a duplicate.' });
+      }
+      throw e;
+    }
+  } catch (err: any) { res.status(500).json({ error: err.message ?? 'Server error' }); }
+});
+
+app.patch('/api/payroll/structures/:id', async (req, res) => {
+  try {
+    const gate = await requireFullHR(req, res);
+    if (!gate.ok) return;
+    const {
+      effective_from, ctc_annual,
+      basic, hra, special_allowance, employer_pf,
+      other_components, notes,
+    } = req.body ?? {};
+    // Full-column update — every field is required from the client so
+    // there's no ambiguity about "did they mean to zero this out or
+    // leave it alone." Simpler than a per-field COALESCE.
+    const rows = await sql`
+      UPDATE salary_structures SET
+        effective_from=${effective_from},
+        ctc_annual=${Number(ctc_annual ?? 0)},
+        basic=${Number(basic ?? 0)},
+        hra=${Number(hra ?? 0)},
+        special_allowance=${Number(special_allowance ?? 0)},
+        employer_pf=${Number(employer_pf ?? 0)},
+        other_components=${JSON.stringify(other_components ?? [])},
+        notes=${notes ?? null},
+        updated_at=NOW()
+      WHERE id=${req.params.id}
+      RETURNING *`;
+    if (!(rows as any[]).length) return res.status(404).json({ error: 'Salary structure not found' });
+    res.json((rows as any[])[0]);
+  } catch (err: any) { res.status(500).json({ error: err.message ?? 'Server error' }); }
+});
+
+app.delete('/api/payroll/structures/:id', async (req, res) => {
+  try {
+    // Delete is a corrections-only action (typo'd effective_from,
+    // duplicate entry). Once Phase 2 links payslips to a structure,
+    // this endpoint gains a "referenced by a finalized payslip?" check
+    // and refuses in that case. For now it's a straight delete.
+    if (!(await requireAdmin(req, res))) return;
+    const rows = await sql`DELETE FROM salary_structures WHERE id=${req.params.id} RETURNING id`;
+    if (!(rows as any[]).length) return res.status(404).json({ error: 'Not found' });
+    res.json({ ok: true });
+  } catch (err: any) { res.status(500).json({ error: err.message ?? 'Server error' }); }
 });
 
 // ── Performance ───────────────────────────────────────────────────────────
