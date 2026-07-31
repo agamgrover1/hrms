@@ -176,7 +176,7 @@ function NewRunModal({ onClose, onCreated }: { onClose: () => void; onCreated: (
       const r = await api.createPayrollRun(month, year);
       toast.success('Run created',
         r.missing_structure > 0
-          ? `${r.snapped} payslips created. ${r.missing_structure} employees have no salary structure — those rows are zero, fix under Employees → Salary.`
+          ? `${r.snapped} payslips created. ${r.missing_structure} have no salary on record — set it under Employees, then delete + recreate this run.`
           : `${r.snapped} payslips created.`);
       onCreated(r.run_id);
     } catch (e: any) { setError(e?.message ?? 'Failed'); }
@@ -269,7 +269,11 @@ function RunDetail({ runId, onBack }: { runId: string; onBack: () => void }) {
   }
   const { run, payslips } = data;
   const totalNet = payslips.reduce((s, p) => s + Number(p.net_pay), 0);
-  const anyMissing = payslips.some(p => !p.structure_id);
+  // A payslip is "truly missing" only if it has no monthly_gross at all —
+  // i.e. neither a dated structure NOR an employees.salary fell into
+  // place. A payslip with structure_id=null but monthly_gross>0 came
+  // from the employees-table fallback and is fine.
+  const anyMissing = payslips.some(p => Number(p.monthly_gross) === 0);
   const canEdit = run.status === 'draft';
 
   return (
@@ -333,8 +337,8 @@ function RunDetail({ runId, onBack }: { runId: string; onBack: () => void }) {
         <div className="rounded-lg border border-warning/40 bg-warning-container/50 px-4 py-3 flex items-start gap-2 text-[13px] text-warning">
           <AlertTriangle size={14} className="mt-0.5 shrink-0" />
           <span>
-            One or more employees had no salary structure set — their payslips are zero.
-            Fix under <b>Employees → Salary</b>, then delete this run and re-create it (draft only).
+            One or more employees have no salary on record — their payslips are zero.
+            Set a salary on their <b>Employee</b> page, then delete this run and re-create it (draft only).
           </span>
         </div>
       )}

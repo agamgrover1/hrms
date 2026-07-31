@@ -46,7 +46,10 @@ function fmtDate(iso: string | null | undefined): string {
     .toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' });
 }
 
-export default function SalaryPanel({ employeeId, employeeName }: { employeeId: string; employeeName?: string }) {
+export default function SalaryPanel({ employeeId, employeeName, employeeMonthlySalary = 0, employeeCtc = 0 }: {
+  employeeId: string; employeeName?: string;
+  employeeMonthlySalary?: number; employeeCtc?: number;
+}) {
   const { user } = useAuth();
   const canEdit = user?.role === 'admin' || user?.role === 'hr_manager';
   const canDelete = user?.role === 'admin';
@@ -96,66 +99,92 @@ export default function SalaryPanel({ employeeId, employeeName }: { employeeId: 
       <div className="flex items-center justify-between flex-wrap gap-3">
         <div>
           <h3 className="font-display text-lg font-bold text-on-surface flex items-center gap-2">
-            <IndianRupee className="w-5 h-5 text-accent" /> Salary structure
+            <IndianRupee className="w-5 h-5 text-accent" /> Salary
           </h3>
           <p className="text-xs text-on-surface-muted mt-0.5">
-            Effective-dated CTC + component breakdown for {employeeName ?? 'this employee'}.
-            A raise adds a new row rather than editing the old — so historical payslips stay accurate.
+            {employeeName ?? 'This employee'}'s pay. Payslip runs read the current monthly directly from the Employee record —
+            only add a dated row below if you want to log a raise / adjustment for audit history.
           </p>
         </div>
         {canEdit && (
           <button onClick={() => setCreating(true)}
-            className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg bg-accent text-on-accent text-sm font-semibold hover:opacity-90">
-            <Plus className="w-4 h-4" /> {rows.length === 0 ? 'Set salary' : 'New structure (raise / adjustment)'}
+            className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg text-accent border border-accent/40 hover:bg-accent/10 text-sm font-semibold">
+            <Plus className="w-4 h-4" /> Log a dated adjustment
           </button>
         )}
+      </div>
+
+      {/* Current salary (source of truth) — pulled from the Employee record,
+          not the salary_structures table. This is what the payroll run
+          uses when no dated structure exists. */}
+      <div className="rounded-xl-2 border border-outline bg-surface p-5 shadow-elev-1">
+        <div className="flex items-start justify-between flex-wrap gap-3">
+          <div>
+            <p className="text-[10px] font-bold uppercase tracking-wider text-on-surface-subtle">Current salary</p>
+            <p className="num-mono text-3xl font-bold text-on-surface mt-1">
+              {fmtINR(employeeMonthlySalary)}
+              <span className="text-on-surface-subtle font-normal text-sm ml-2">/ month</span>
+            </p>
+            {employeeCtc > 0 && (
+              <p className="text-xs text-on-surface-muted mt-0.5">
+                CTC <span className="num-mono font-semibold text-on-surface">{fmtINR(employeeCtc)}</span> / year
+              </p>
+            )}
+            {employeeMonthlySalary === 0 && (
+              <p className="text-[11px] text-warning mt-1 flex items-center gap-1">
+                <Info size={11} /> No salary set. Edit the employee to add one — payslips will otherwise be zero.
+              </p>
+            )}
+          </div>
+          <p className="text-[11px] text-on-surface-subtle max-w-xs">
+            Set / edit on the <span className="font-semibold text-on-surface">Overview</span> tab (Employee → Edit).
+            This is what monthly payroll uses.
+          </p>
+        </div>
       </div>
 
       {loading ? (
         <div className="h-40 rounded-xl-2 bg-surface-2 animate-pulse" />
       ) : rows.length === 0 ? (
-        <div className="rounded-xl-2 border border-outline bg-surface p-8 text-center">
-          <IndianRupee className="w-8 h-8 mx-auto text-on-surface-subtle mb-2" />
-          <p className="text-sm text-on-surface-muted">No salary structure recorded yet.</p>
-          {canEdit && (
-            <p className="text-xs text-on-surface-subtle mt-1">
-              Click "Set salary" to enter the current CTC and component split.
-            </p>
-          )}
+        <div className="rounded-xl-2 border border-dashed border-outline bg-surface-2/30 p-6 text-center">
+          <p className="text-sm text-on-surface-muted">No dated adjustments logged.</p>
+          <p className="text-xs text-on-surface-subtle mt-1">
+            Optional — payroll works without this. Use it if you want a raise to take effect from a specific date and be visible on historical payslips.
+          </p>
         </div>
       ) : (
         <>
-          {current && (
-            <CurrentStructureCard
-              s={current}
-              mode={salaryMode}
-              canEdit={canEdit}
-              canDelete={canDelete}
-              onEdit={() => setEditing(current)}
-              onDelete={() => remove(current)}
-            />
-          )}
-
-          {historyRows.length > 0 && (
-            <div className="rounded-xl-2 border border-outline bg-surface overflow-hidden">
-              <div className="px-4 py-2.5 border-b border-outline bg-surface-2 flex items-center gap-2">
-                <History size={13} className="text-on-surface-muted" />
-                <p className="text-[10px] font-bold uppercase tracking-wider text-on-surface-subtle">
-                  History · {historyRows.length} previous structure{historyRows.length === 1 ? '' : 's'}
-                </p>
-              </div>
-              <ul className="divide-y divide-outline">
-                {historyRows.map(s => (
-                  <li key={s.id} className="px-4 py-3 flex items-center gap-4 hover:bg-surface-2/40">
+          {/* All rows shown chronologically. The one currently in effect
+              (latest with effective_from <= today) gets an "Overriding
+              now" pill so HR knows what payroll will pick up. */}
+          <div className="rounded-xl-2 border border-outline bg-surface overflow-hidden">
+            <div className="px-4 py-2.5 border-b border-outline bg-surface-2 flex items-center gap-2">
+              <History size={13} className="text-on-surface-muted" />
+              <p className="text-[10px] font-bold uppercase tracking-wider text-on-surface-subtle">
+                Dated adjustments · {rows.length}
+              </p>
+            </div>
+            <ul className="divide-y divide-outline">
+              {rows.map(s => {
+                const isActive = current?.id === s.id;
+                return (
+                  <li key={s.id} className={`px-4 py-3 flex items-center gap-4 ${isActive ? 'bg-accent/5' : 'hover:bg-surface-2/40'}`}>
                     <div className="w-32 shrink-0">
                       <p className="text-[10px] uppercase font-bold text-on-surface-subtle">Effective from</p>
                       <p className="text-sm font-semibold text-on-surface">{fmtDate(s.effective_from)}</p>
                     </div>
-                    <div className="flex-1 min-w-0 flex items-baseline gap-4 flex-wrap text-sm">
+                    <div className="flex-1 min-w-0 flex items-baseline gap-3 flex-wrap text-sm">
                       <span className="num-mono font-bold text-on-surface">{fmtINR(s.ctc_annual)}<span className="text-on-surface-subtle font-normal text-[11px]"> / year</span></span>
-                      <span className="text-[11px] text-on-surface-muted">
-                        Basic {fmtINR(s.basic)} · HRA {fmtINR(s.hra)} · SA {fmtINR(s.special_allowance)}
-                      </span>
+                      {salaryMode === 'structured' && (
+                        <span className="text-[11px] text-on-surface-muted">
+                          Basic {fmtINR(s.basic)} · HRA {fmtINR(s.hra)} · SA {fmtINR(s.special_allowance)}
+                        </span>
+                      )}
+                      {isActive && (
+                        <span className="inline-flex items-center gap-1 text-[10px] font-bold uppercase px-2 py-0.5 rounded-full bg-accent/15 text-accent">
+                          <TrendingUp size={10} /> Overriding now
+                        </span>
+                      )}
                     </div>
                     {canEdit && (
                       <div className="shrink-0 flex items-center gap-1">
@@ -172,10 +201,13 @@ export default function SalaryPanel({ employeeId, employeeName }: { employeeId: 
                       </div>
                     )}
                   </li>
-                ))}
-              </ul>
+                );
+              })}
+            </ul>
+            <div className="px-4 py-2 border-t border-outline bg-surface-2/50 text-[11px] text-on-surface-muted">
+              A dated adjustment overrides the Employee record's salary for any payroll run whose month-end is on or after its effective-from date.
             </div>
-          )}
+          </div>
         </>
       )}
 

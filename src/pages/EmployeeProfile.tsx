@@ -1319,7 +1319,9 @@ export default function EmployeeProfile() {
 
       {/* ── Salary structure (Phase 1 of payroll) ────────────────────────── */}
       {tab === 'Salary' && emp && (
-        <SalaryPanel employeeId={emp.id} employeeName={emp.name} />
+        <SalaryPanel employeeId={emp.id} employeeName={emp.name}
+          employeeMonthlySalary={Number(emp.salary || 0)}
+          employeeCtc={Number(emp.ctc || 0)} />
       )}
 
       {/* ── KPIs ─────────────────────────────────────────────────────────── */}

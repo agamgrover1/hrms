@@ -8468,8 +8468,15 @@ app.post('/api/payroll/runs', async (req, res) => {
     // Snapshot only active employees. Someone on 'inactive' /
     // 'offboarded' shouldn't be in this month's run (HR can add them
     // back via a special-case create-payslip if needed).
+    // We pull `salary` (monthly gross) and `ctc` (annual) alongside so
+    // the snapshot loop below can fall back to the primary employee
+    // record when no dated salary_structures row exists — HR already
+    // enters the monthly amount when they create the employee, so
+    // asking them to re-enter it under a "Salary structure" tab was
+    // pointless. Structures are still consulted first (for orgs that
+    // date-log raises), then the employee record, then zero.
     const emps = await sql`
-      SELECT id, name, employee_id AS emp_code, designation
+      SELECT id, name, employee_id AS emp_code, designation, salary, ctc
       FROM employees WHERE active = TRUE` as any[];
 
     const runId = `pr_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
@@ -8477,31 +8484,52 @@ app.post('/api/payroll/runs', async (req, res) => {
       INSERT INTO payroll_runs (id, month, year, status, created_by)
       VALUES (${runId}, ${m}, ${y}, 'draft', ${gate.user?.name ?? null})`;
 
-    // Snapshot loop. If an employee has no salary structure at all,
-    // insert a zero payslip with a note so HR can either add a
-    // structure and re-snapshot or delete the row.
+    // Snapshot loop with a three-tier fallback:
+    //   1. Latest salary_structures row where effective_from <= end_of_month
+    //   2. employees.salary / employees.ctc (the primary source most orgs use)
+    //   3. All zeros with a note (truly missing — HR needs to fill something)
     let snapped = 0, missing = 0;
     for (const e of emps) {
       const s = await resolveSalaryStructureAt(e.id, lastDay);
       const lopDays = await computeLopDays(e.id, m, y);
-      const structureFields = s ? {
-        structure_id: s.id,
-        ctc_annual: Number(s.ctc_annual),
-        basic: Number(s.basic),
-        hra: Number(s.hra),
-        special_allowance: Number(s.special_allowance),
-        employer_pf: Number(s.employer_pf),
-        other_components: s.other_components ?? [],
-      } : {
-        structure_id: null, ctc_annual: 0, basic: 0, hra: 0,
-        special_allowance: 0, employer_pf: 0, other_components: [],
-      };
+      const empSalary = Number(e.salary || 0);
+      const empCtc = Number(e.ctc || 0);
+      let structureFields;
+      let noteOnMissing: string | null = null;
+      if (s) {
+        structureFields = {
+          structure_id: s.id,
+          ctc_annual: Number(s.ctc_annual),
+          basic: Number(s.basic),
+          hra: Number(s.hra),
+          special_allowance: Number(s.special_allowance),
+          employer_pf: Number(s.employer_pf),
+          other_components: s.other_components ?? [],
+        };
+      } else if (empSalary > 0) {
+        // Read the whole monthly amount into `basic` (flat-mode convention).
+        // A structured-mode org can add a real salary_structures row later
+        // if they want the split; until then the payslip lists everything
+        // under Basic which is still correct arithmetic.
+        structureFields = {
+          structure_id: null,
+          ctc_annual: empCtc > 0 ? empCtc : empSalary * 12,
+          basic: empSalary,
+          hra: 0, special_allowance: 0, employer_pf: 0,
+          other_components: [],
+        };
+      } else {
+        structureFields = {
+          structure_id: null, ctc_annual: 0, basic: 0, hra: 0,
+          special_allowance: 0, employer_pf: 0, other_components: [],
+        };
+        noteOnMissing = 'No salary on record. Set it under Employees, then delete this payslip and re-create it.';
+      }
       const derived = recomputePayslip(cfg, {
         ...structureFields,
         additions: [], deductions: [],
         lop_days: lopDays, month: m, year: y,
       });
-      const noteOnMissing = s ? null : 'No salary structure was set for this employee. Add one and delete this payslip to re-snapshot.';
       await sql`
         INSERT INTO payslips (
           id, payroll_run_id, employee_id, employee_name, employee_code, designation,
@@ -8520,7 +8548,9 @@ app.post('/api/payroll/runs', async (req, res) => {
           '[]'::jsonb, '[]'::jsonb, ${noteOnMissing}
         )`;
       snapped += 1;
-      if (!s) missing += 1;
+      // Only true zeros count as "missing" now — falling back to
+      // employees.salary is a normal success case.
+      if (noteOnMissing) missing += 1;
     }
     res.status(201).json({ run_id: runId, snapped, missing_structure: missing });
   } catch (err: any) { res.status(500).json({ error: err.message ?? 'Server error' }); }
