@@ -55,6 +55,13 @@ export default function SalaryPanel({ employeeId, employeeName }: { employeeId: 
   const [loading, setLoading] = useState(true);
   const [editing, setEditing] = useState<Structure | null>(null);
   const [creating, setCreating] = useState(false);
+  // Org-wide salary mode drives what UI to render: 'flat' collapses the
+  // whole thing to a single Monthly Salary field; 'structured' keeps
+  // the 4-component breakdown.
+  const [salaryMode, setSalaryMode] = useState<'flat' | 'structured'>('flat');
+  useEffect(() => {
+    api.getPayrollConfig().then(c => setSalaryMode(c.salary_mode ?? 'flat')).catch(() => {});
+  }, []);
 
   const load = useCallback(() => {
     setLoading(true);
@@ -121,6 +128,7 @@ export default function SalaryPanel({ employeeId, employeeName }: { employeeId: 
           {current && (
             <CurrentStructureCard
               s={current}
+              mode={salaryMode}
               canEdit={canEdit}
               canDelete={canDelete}
               onEdit={() => setEditing(current)}
@@ -176,6 +184,7 @@ export default function SalaryPanel({ employeeId, employeeName }: { employeeId: 
           employeeId={employeeId}
           employeeName={employeeName}
           existing={editing}
+          mode={salaryMode}
           onClose={() => { setEditing(null); setCreating(false); }}
           onSaved={() => { setEditing(null); setCreating(false); load(); }}
         />
@@ -184,14 +193,15 @@ export default function SalaryPanel({ employeeId, employeeName }: { employeeId: 
   );
 }
 
-function CurrentStructureCard({ s, canEdit, canDelete, onEdit, onDelete }: {
-  s: Structure; canEdit: boolean; canDelete: boolean; onEdit: () => void; onDelete: () => void;
+function CurrentStructureCard({ s, mode, canEdit, canDelete, onEdit, onDelete }: {
+  s: Structure; mode: 'flat' | 'structured'; canEdit: boolean; canDelete: boolean; onEdit: () => void; onDelete: () => void;
 }) {
   const monthlyGross = Number(s.basic) + Number(s.hra) + Number(s.special_allowance);
   const others = (s.other_components ?? []).reduce((sum, c) => sum + Number(c.amount ?? 0), 0);
   const monthlyTotal = monthlyGross + others;
   const yearlyDerived = monthlyTotal * 12 + Number(s.employer_pf) * 12;
   const drift = Math.abs(yearlyDerived - Number(s.ctc_annual));
+  const isFlat = mode === 'flat';
 
   return (
     <div className="rounded-xl-2 border border-accent/40 bg-accent/5 p-5 shadow-elev-1">
@@ -205,8 +215,10 @@ function CurrentStructureCard({ s, canEdit, canDelete, onEdit, onDelete }: {
             <span className="text-on-surface-subtle font-normal text-sm ml-2">CTC / year</span>
           </p>
           <p className="text-xs text-on-surface-muted mt-0.5">
-            Monthly gross <span className="num-mono font-semibold text-on-surface">{fmtINR(monthlyTotal)}</span>
-            {' + '}Employer PF <span className="num-mono font-semibold text-on-surface">{fmtINR(s.employer_pf)}</span> / month
+            {isFlat
+              ? <>Monthly salary <span className="num-mono font-semibold text-on-surface">{fmtINR(monthlyTotal)}</span></>
+              : <>Monthly gross <span className="num-mono font-semibold text-on-surface">{fmtINR(monthlyTotal)}</span>{' + '}Employer PF <span className="num-mono font-semibold text-on-surface">{fmtINR(s.employer_pf)}</span> / month</>
+            }
           </p>
         </div>
         {canEdit && (
@@ -225,12 +237,16 @@ function CurrentStructureCard({ s, canEdit, canDelete, onEdit, onDelete }: {
         )}
       </div>
 
-      <div className="mt-4 grid grid-cols-2 sm:grid-cols-4 gap-3">
-        <ComponentTile label="Basic" monthly={Number(s.basic)} />
-        <ComponentTile label="HRA" monthly={Number(s.hra)} />
-        <ComponentTile label="Special Allowance" monthly={Number(s.special_allowance)} />
-        <ComponentTile label="Employer PF" monthly={Number(s.employer_pf)} />
-      </div>
+      {/* Component tiles only shown in structured mode — in flat mode
+          the "big number" at the top already tells the whole story. */}
+      {!isFlat && (
+        <div className="mt-4 grid grid-cols-2 sm:grid-cols-4 gap-3">
+          <ComponentTile label="Basic" monthly={Number(s.basic)} />
+          <ComponentTile label="HRA" monthly={Number(s.hra)} />
+          <ComponentTile label="Special Allowance" monthly={Number(s.special_allowance)} />
+          <ComponentTile label="Employer PF" monthly={Number(s.employer_pf)} />
+        </div>
+      )}
 
       {s.other_components && s.other_components.length > 0 && (
         <div className="mt-3 rounded-lg bg-surface/60 border border-outline p-3">
@@ -250,9 +266,11 @@ function CurrentStructureCard({ s, canEdit, canDelete, onEdit, onDelete }: {
         <div className="mt-3 flex items-start gap-2 text-[11px] text-warning bg-warning-container/40 border border-warning/30 rounded-lg px-3 py-2">
           <Info size={12} className="mt-0.5 shrink-0" />
           <span>
-            Components (monthly × 12 + employer PF × 12 = <span className="num-mono font-semibold">{fmtINR(monthlyTotal * 12 + Number(s.employer_pf) * 12)}</span>)
-            don't match the CTC (<span className="num-mono font-semibold">{fmtINR(s.ctc_annual)}</span>) — difference {fmtINR(drift)}/year.
-            Either adjust a component or the CTC before Phase 2 generates payslips from this.
+            {isFlat
+              ? <>Monthly × 12 = <span className="num-mono font-semibold">{fmtINR(monthlyTotal * 12)}</span> doesn't match CTC <span className="num-mono font-semibold">{fmtINR(s.ctc_annual)}</span> — difference {fmtINR(drift)}/year.</>
+              : <>Components (monthly × 12 + employer PF × 12 = <span className="num-mono font-semibold">{fmtINR(monthlyTotal * 12 + Number(s.employer_pf) * 12)}</span>) don't match the CTC (<span className="num-mono font-semibold">{fmtINR(s.ctc_annual)}</span>) — difference {fmtINR(drift)}/year.</>
+            }
+            {' '}Payslip generation uses the monthly number, not the CTC.
           </span>
         </div>
       )}
@@ -274,11 +292,13 @@ function ComponentTile({ label, monthly }: { label: string; monthly: number }) {
   );
 }
 
-function StructureFormModal({ employeeId, employeeName, existing, onClose, onSaved }: {
+function StructureFormModal({ employeeId, employeeName, existing, mode, onClose, onSaved }: {
   employeeId: string; employeeName?: string;
   existing: Structure | null;
+  mode: 'flat' | 'structured';
   onClose: () => void; onSaved: () => void;
 }) {
+  const isFlat = mode === 'flat';
   const [effectiveFrom, setEffectiveFrom] = useState<string>(
     existing ? String(existing.effective_from).slice(0, 10) : new Date().toISOString().slice(0, 10)
   );
@@ -384,15 +404,33 @@ function StructureFormModal({ employeeId, employeeName, existing, onClose, onSav
             </label>
           </div>
 
-          <div>
-            <p className="text-[10px] font-bold uppercase tracking-[0.14em] text-on-surface-subtle mb-2">Monthly components</p>
-            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-              <RupeeField label="Basic" value={basic} onChange={setBasic} />
-              <RupeeField label="HRA" value={hra} onChange={setHra} />
-              <RupeeField label="Special Allowance" value={special} onChange={setSpecial} />
-              <RupeeField label="Employer PF" value={employerPf} onChange={setEmployerPf} />
+          {isFlat ? (
+            <div>
+              <p className="text-[10px] font-bold uppercase tracking-[0.14em] text-on-surface-subtle mb-2">Monthly salary</p>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <RupeeField label="Monthly salary" value={basic} onChange={v => {
+                  // Flat mode: the single field is Basic; HRA/SA/PF stay 0.
+                  // We also flush the split fields to 0 in case the user
+                  // previously entered structured values and the org has
+                  // since flipped to flat mode.
+                  setBasic(v); setHra('0'); setSpecial('0'); setEmployerPf('0');
+                }} />
+              </div>
+              <p className="text-[11px] text-on-surface-muted mt-2">
+                Payslip generation multiplies this by (paid days / working days) each month. Add one-off allowances or deductions when running payroll.
+              </p>
             </div>
-          </div>
+          ) : (
+            <div>
+              <p className="text-[10px] font-bold uppercase tracking-[0.14em] text-on-surface-subtle mb-2">Monthly components</p>
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                <RupeeField label="Basic" value={basic} onChange={setBasic} />
+                <RupeeField label="HRA" value={hra} onChange={setHra} />
+                <RupeeField label="Special Allowance" value={special} onChange={setSpecial} />
+                <RupeeField label="Employer PF" value={employerPf} onChange={setEmployerPf} />
+              </div>
+            </div>
+          )}
 
           <div>
             <div className="flex items-center justify-between mb-2">
@@ -430,15 +468,17 @@ function StructureFormModal({ employeeId, employeeName, existing, onClose, onSav
           </div>
 
           <div className="rounded-lg bg-surface-2 border border-outline p-3">
-            <div className="grid grid-cols-3 gap-3 text-center">
+            <div className={`grid ${isFlat ? 'grid-cols-2' : 'grid-cols-3'} gap-3 text-center`}>
               <div>
-                <p className="text-[10px] uppercase tracking-wider text-on-surface-subtle">Monthly gross</p>
+                <p className="text-[10px] uppercase tracking-wider text-on-surface-subtle">{isFlat ? 'Monthly' : 'Monthly gross'}</p>
                 <p className="num-mono text-lg font-bold text-on-surface">{fmtINR(monthlyTotal)}</p>
               </div>
-              <div>
-                <p className="text-[10px] uppercase tracking-wider text-on-surface-subtle">+ Employer PF</p>
-                <p className="num-mono text-lg font-bold text-on-surface">{fmtINR(Number(employerPf))}</p>
-              </div>
+              {!isFlat && (
+                <div>
+                  <p className="text-[10px] uppercase tracking-wider text-on-surface-subtle">+ Employer PF</p>
+                  <p className="num-mono text-lg font-bold text-on-surface">{fmtINR(Number(employerPf))}</p>
+                </div>
+              )}
               <div>
                 <p className="text-[10px] uppercase tracking-wider text-on-surface-subtle">= Derived yearly</p>
                 <p className={`num-mono text-lg font-bold ${Math.abs(yearlyDerived - Number(ctcAnnual)) > 1 ? 'text-warning' : 'text-success'}`}>
@@ -448,7 +488,7 @@ function StructureFormModal({ employeeId, employeeName, existing, onClose, onSav
             </div>
             {Math.abs(yearlyDerived - Number(ctcAnnual)) > 1 && Number(ctcAnnual) > 0 && (
               <p className="text-[11px] text-warning mt-2 text-center">
-                Derived yearly doesn't match CTC ({fmtINR(ctcAnnual)}) — off by {fmtINR(Math.abs(yearlyDerived - Number(ctcAnnual)))}. You can still save — Phase 2 will use the individual components, not the CTC field.
+                Derived yearly doesn't match CTC ({fmtINR(ctcAnnual)}) — off by {fmtINR(Math.abs(yearlyDerived - Number(ctcAnnual)))}. You can still save — payslips use the monthly number, not CTC.
               </p>
             )}
           </div>

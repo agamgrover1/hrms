@@ -3,6 +3,8 @@ import { useSearchParams } from 'react-router-dom';
 import { Clock, Calendar, DollarSign, User, CheckCircle, XCircle, AlertCircle, Plus, X, Target, FileText, Lock, Trash2, Save, Users, Monitor, Briefcase, Edit2, BookOpen, Wrench, ListChecks, Circle, CheckSquare, ShieldCheck, ChevronDown, ChevronRight, MessageSquare, Sparkles } from 'lucide-react';
 import MyRoleTab from '../../components/MyRoleTab';
 import TodoTab from '../../components/TodoTab';
+import { PayslipPrintable, triggerPrint } from '../Payroll';
+import { Printer } from 'lucide-react';
 import TwoFactorSection from '../../components/TwoFactorSection';
 import { ReviewCommentsPanel } from '../Performance';
 import MonthSelector, { monthLabel } from '../../components/MonthSelector';
@@ -2658,54 +2660,8 @@ export default function MyPortal() {
         );
       })()}
 
-      {/* ── Pay Slip ── */}
-      {tab === 'payslip' && (
-        <div className="max-w-lg">
-          {payroll ? (
-            <div className="bg-surface rounded-2xl border border-outline shadow-sm overflow-hidden">
-              <div className="px-6 py-5 text-white" style={{ background: 'linear-gradient(135deg, #192250 0%, #141c43 100%)' }}>
-                <h3 className="font-bold text-lg">Salary Slip</h3>
-                <p className="text-sm mt-0.5" style={{ color: 'rgba(255,255,255,0.65)' }}>{payroll.month} {payroll.year}</p>
-                <p className="text-xs mt-1" style={{ color: '#EE2770' }}>{(user as any)?.employee_code ?? user?.employee_id_ref} · {user?.designation}</p>
-              </div>
-              <div className="p-6 space-y-2.5">
-                <p className="text-xs font-semibold text-on-surface-subtle uppercase tracking-wide mb-2">Earnings</p>
-                {[
-                  { label: 'Basic Pay', value: payroll.basic },
-                  { label: 'HRA', value: payroll.hra },
-                  { label: 'Special Allowance', value: payroll.special_allowance },
-                ].map(({ label, value }) => (
-                  <div key={label} className="flex justify-between text-sm border-b border-gray-50 pb-2">
-                    <span className="text-on-surface-muted">{label}</span>
-                    <span className="font-medium text-on-surface">₹{Number(value).toLocaleString('en-IN')}</span>
-                  </div>
-                ))}
-                <div className="flex justify-between text-sm font-semibold pt-1 pb-3 border-b border-dashed border-outline">
-                  <span>Gross Pay</span>
-                  <span>₹{Number(payroll.gross_pay).toLocaleString('en-IN')}</span>
-                </div>
-                <p className="text-xs font-semibold text-on-surface-subtle uppercase tracking-wide mb-2 pt-1">Deductions</p>
-                {[
-                  { label: 'Provident Fund', value: payroll.provident_fund },
-                  { label: 'Professional Tax', value: payroll.professional_tax },
-                  { label: 'Income Tax (TDS)', value: payroll.income_tax },
-                ].map(({ label, value }) => (
-                  <div key={label} className="flex justify-between text-sm border-b border-gray-50 pb-2">
-                    <span className="text-on-surface-muted">{label}</span>
-                    <span className="font-medium text-danger">−₹{Number(value).toLocaleString('en-IN')}</span>
-                  </div>
-                ))}
-                <div className="mt-4 rounded-xl p-4 flex justify-between items-center" style={{ background: 'rgba(25,34,80,0.06)' }}>
-                  <span className="font-bold text-on-surface">Net Pay</span>
-                  <span className="text-xl font-bold" style={{ color: '#192250' }}>₹{Number(payroll.net_pay).toLocaleString('en-IN')}</span>
-                </div>
-              </div>
-            </div>
-          ) : (
-            <p className="text-center text-on-surface-subtle text-sm py-16">No payroll data available</p>
-          )}
-        </div>
-      )}
+      {/* ── Pay Slip ── Phase 2: reads real distributed payslips. */}
+      {tab === 'payslip' && <MyPayslipsPanel employeeId={empDbId} />}
 
       {/* ── Performance ── */}
       {tab === 'performance' && (
@@ -4515,6 +4471,101 @@ function HourLogModal({
           currentUser={{ id: user?.id ?? '', name: user?.name ?? '', role: user?.role ?? 'employee' }}
           onClose={() => setReplyingDay(null)}
         />
+      )}
+    </div>
+  );
+}
+
+// ── Employee payslip history ────────────────────────────────────────────
+// Reads api.getMyPayslips() — the server only returns rows from
+// distributed runs, so drafts and finalized-but-undistributed months
+// never leak into an employee's view.
+function MyPayslipsPanel({ employeeId }: { employeeId: string | null | undefined }) {
+  const [rows, setRows] = useState<any[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [selected, setSelected] = useState<any | null>(null);
+
+  useEffect(() => {
+    setLoading(true);
+    api.getMyPayslips(employeeId ?? undefined)
+      .then(r => setRows(r ?? []))
+      .catch(() => setRows([]))
+      .finally(() => setLoading(false));
+  }, [employeeId]);
+
+  const monthLabels = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+
+  return (
+    <div className="max-w-4xl">
+      <div className="flex items-center justify-between mb-4">
+        <div>
+          <h3 className="font-display text-lg font-bold text-on-surface">My payslips</h3>
+          <p className="text-xs text-on-surface-muted mt-0.5">
+            Distributed payslips only. Click any to view the full breakdown or print.
+          </p>
+        </div>
+      </div>
+
+      {loading ? (
+        <div className="h-40 rounded-xl-2 bg-surface-2 animate-pulse" />
+      ) : rows.length === 0 ? (
+        <div className="rounded-xl-2 border border-outline bg-surface p-10 text-center">
+          <p className="text-sm text-on-surface-muted">No payslips yet.</p>
+          <p className="text-xs text-on-surface-subtle mt-1">
+            Once HR distributes a payroll run, that month's payslip appears here.
+          </p>
+        </div>
+      ) : (
+        <div className="rounded-xl-2 border border-outline bg-surface overflow-hidden">
+          <table className="w-full text-sm">
+            <thead className="bg-surface-2 text-[10px] uppercase tracking-wider text-on-surface-subtle">
+              <tr>
+                <th className="px-4 py-2.5 text-left">Period</th>
+                <th className="px-4 py-2.5 text-right">Gross</th>
+                <th className="px-4 py-2.5 text-right">LOP (days)</th>
+                <th className="px-4 py-2.5 text-right font-bold">Net pay</th>
+                <th className="px-4 py-2.5 text-right">Actions</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-outline">
+              {rows.map(p => (
+                <tr key={p.id} className="hover:bg-surface-2/40">
+                  <td className="px-4 py-3 font-semibold text-on-surface">
+                    {monthLabels[p.month - 1]} {p.year}
+                  </td>
+                  <td className="px-4 py-3 text-right num-mono">₹{Number(p.monthly_gross).toLocaleString('en-IN')}</td>
+                  <td className="px-4 py-3 text-right num-mono">{Number(p.lop_days)}</td>
+                  <td className="px-4 py-3 text-right num-mono font-bold text-on-surface">₹{Number(p.net_pay).toLocaleString('en-IN')}</td>
+                  <td className="px-4 py-3 text-right">
+                    <button onClick={() => setSelected(p)}
+                      className="text-xs font-semibold text-accent hover:underline">View</button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {selected && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm p-4">
+          <div className="bg-surface rounded-2xl shadow-elev-4 border border-outline w-full max-w-3xl max-h-[92vh] flex flex-col">
+            <div className="px-6 py-4 border-b border-outline flex items-center justify-between no-print">
+              <h3 className="font-display text-lg font-bold text-on-surface">Payslip · {monthLabels[selected.month - 1]} {selected.year}</h3>
+              <div className="flex items-center gap-2">
+                <button onClick={triggerPrint}
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-accent text-on-accent text-xs font-semibold hover:opacity-90">
+                  <Printer size={12} /> Print / Save PDF
+                </button>
+                <button onClick={() => setSelected(null)}
+                  className="p-1.5 hover:bg-surface-2 rounded-lg"><X size={16} /></button>
+              </div>
+            </div>
+            <div className="overflow-y-auto flex-1">
+              <PayslipPrintable p={selected} />
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );

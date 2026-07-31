@@ -261,11 +261,13 @@ export const api = {
       id: string;
       basic_pct: number; hra_pct: number; special_allowance_pct: number; employer_pf_pct: number;
       working_days_convention: 'fixed_30' | 'actual_month';
+      salary_mode: 'flat' | 'structured';
       updated_by: string | null; updated_at: string | null;
     }>('/payroll/config'),
   updatePayrollConfig: (data: {
     basic_pct: number; hra_pct: number; special_allowance_pct: number; employer_pf_pct: number;
     working_days_convention: 'fixed_30' | 'actual_month';
+    salary_mode: 'flat' | 'structured';
   }) => request<{ ok: true }>('/payroll/config', { method: 'PUT', body: JSON.stringify(data) }),
 
   getSalaryStructures: (employee_id: string) =>
@@ -287,6 +289,43 @@ export const api = {
   }) => request<any>(`/payroll/structures/${id}`, { method: 'PATCH', body: JSON.stringify(data) }),
   deleteSalaryStructure: (id: string) =>
     request<{ ok: true }>(`/payroll/structures/${id}`, { method: 'DELETE' }),
+
+  // Payroll · Phase 2: runs + payslips.
+  listPayrollRuns: () =>
+    request<Array<{
+      id: string; month: number; year: number; status: 'draft' | 'finalized' | 'distributed';
+      notes: string | null;
+      created_by: string | null; created_at: string;
+      finalized_by: string | null; finalized_at: string | null;
+      distributed_by: string | null; distributed_at: string | null;
+      unlocked_by: string | null; unlocked_at: string | null; unlocked_reason: string | null;
+      payslip_count: number; total_net_pay: number;
+    }>>('/payroll/runs'),
+  getPayrollRun: (id: string) =>
+    request<{ run: any; payslips: any[] }>(`/payroll/runs/${id}`),
+  createPayrollRun: (month: number, year: number) =>
+    request<{ run_id: string; snapped: number; missing_structure: number }>(
+      '/payroll/runs', { method: 'POST', body: JSON.stringify({ month, year }) }
+    ),
+  finalizePayrollRun: (id: string) =>
+    request<{ ok: true }>(`/payroll/runs/${id}/finalize`, { method: 'PATCH', body: '{}' }),
+  unlockPayrollRun: (id: string, reason: string) =>
+    request<{ ok: true }>(`/payroll/runs/${id}/unlock`, { method: 'PATCH', body: JSON.stringify({ reason }) }),
+  distributePayrollRun: (id: string) =>
+    request<{ ok: true; distributed_to: number }>(`/payroll/runs/${id}/distribute`, { method: 'PATCH', body: '{}' }),
+  deletePayrollRun: (id: string) =>
+    request<{ ok: true }>(`/payroll/runs/${id}`, { method: 'DELETE' }),
+  updatePayslip: (id: string, data: {
+    lop_days?: number; lop_override_reason?: string;
+    additions?: Array<{ label: string; amount: number }>;
+    deductions?: Array<{ label: string; amount: number }>;
+    notes?: string;
+  }) => request<any>(`/payroll/payslips/${id}`, { method: 'PATCH', body: JSON.stringify(data) }),
+  getMyPayslips: (employee_id?: string) => {
+    const qs = employee_id ? `?employee_id=${employee_id}` : '';
+    return request<any[]>(`/payroll/payslips${qs}`);
+  },
+  getPayslip: (id: string) => request<any>(`/payroll/payslips/${id}`),
 
   // Performance (legacy goals/reviews)
   getGoals: (employee_id?: string) => {

@@ -881,7 +881,7 @@ async function runStartupMigrations() {
     // For a *seed* (rows, not columns), we probe with EXISTS-style: an
     // empty result set means "still needs to run", so we don't set the
     // flag and fall through.
-    await sql`SELECT id FROM salary_structures LIMIT 0`;
+    await sql`SELECT id FROM payslips LIMIT 0`;
     _migrated = true;
     return;
   } catch {
@@ -1397,6 +1397,105 @@ async function runStartupMigrations() {
     INSERT INTO payroll_config (id, basic_pct, hra_pct, special_allowance_pct, employer_pf_pct, working_days_convention)
     VALUES ('default', 50, 20, 25, 5, 'fixed_30')
     ON CONFLICT (id) DO NOTHING`;
+  // salary_mode = 'flat' means "no split, one monthly amount". The
+  // SalaryPanel collapses to a single field and the Payslip generator
+  // (Phase 2) reads Basic as the whole monthly. 'structured' keeps the
+  // 4-component breakdown that already existed. Default 'flat' because
+  // DL doesn't split — a customer with statutory PF needs can flip it.
+  await sql`ALTER TABLE payroll_config ADD COLUMN IF NOT EXISTS salary_mode TEXT NOT NULL DEFAULT 'flat'`.catch(()=>{});
+  // On the DL DB where the config row was seeded before this column
+  // existed, that row will pick up 'flat' as its default. On a fresh DB
+  // the INSERT above sets the defaults, then this UPDATE force-normalises
+  // the split for flat: 100 in Basic, everything else 0. Idempotent.
+  await sql`
+    UPDATE payroll_config
+    SET basic_pct=100, hra_pct=0, special_allowance_pct=0, employer_pf_pct=0
+    WHERE id='default' AND salary_mode='flat'
+      AND (basic_pct <> 100 OR hra_pct <> 0 OR special_allowance_pct <> 0 OR employer_pf_pct <> 0)`.catch(()=>{});
+
+  // ── Payroll: runs (Phase 2) ──────────────────────────────────────────
+  // One row per (month, year). State machine:
+  //   draft       → run just created, payslips editable
+  //   finalized   → payslips locked, admin unlock needed to edit again
+  //   distributed → notifications sent, employees can see their payslip
+  // A finalized run stays visible to HR but is read-only unless an admin
+  // hits unlock (audited via the run's own status + timestamps).
+  await sql`
+    CREATE TABLE IF NOT EXISTS payroll_runs (
+      id TEXT PRIMARY KEY,
+      month INTEGER NOT NULL,
+      year INTEGER NOT NULL,
+      status TEXT NOT NULL DEFAULT 'draft',
+      notes TEXT,
+      created_by TEXT,
+      created_at TIMESTAMPTZ DEFAULT NOW(),
+      finalized_by TEXT,
+      finalized_at TIMESTAMPTZ,
+      distributed_by TEXT,
+      distributed_at TIMESTAMPTZ,
+      unlocked_by TEXT,
+      unlocked_at TIMESTAMPTZ,
+      unlocked_reason TEXT,
+      updated_at TIMESTAMPTZ DEFAULT NOW(),
+      UNIQUE (month, year)
+    )`;
+  await sql`CREATE INDEX IF NOT EXISTS idx_payroll_runs_period ON payroll_runs(year DESC, month DESC)`.catch(()=>{});
+
+  // ── Payroll: payslips (Phase 2) ──────────────────────────────────────
+  // One row per (run, employee), created when the run is created. Every
+  // component is SNAPSHOTTED so a raise in October doesn't retroactively
+  // change July's payslip. LOP days come from unpaid leaves + absences
+  // in that month; HR can override before finalize. additions and
+  // deductions are JSONB arrays of {label, amount} for one-off
+  // reimbursements / bonuses / fines.
+  await sql`
+    CREATE TABLE IF NOT EXISTS payslips (
+      id TEXT PRIMARY KEY,
+      payroll_run_id TEXT NOT NULL REFERENCES payroll_runs(id) ON DELETE CASCADE,
+      employee_id TEXT NOT NULL,
+      employee_name TEXT,
+      employee_code TEXT,
+      designation TEXT,
+      month INTEGER NOT NULL,
+      year INTEGER NOT NULL,
+
+      -- Snapshot of the salary structure resolved for this month
+      structure_id TEXT,
+      ctc_annual NUMERIC NOT NULL DEFAULT 0,
+      basic NUMERIC NOT NULL DEFAULT 0,
+      hra NUMERIC NOT NULL DEFAULT 0,
+      special_allowance NUMERIC NOT NULL DEFAULT 0,
+      employer_pf NUMERIC NOT NULL DEFAULT 0,
+      other_components JSONB NOT NULL DEFAULT '[]'::jsonb,
+
+      -- Working days + LOP
+      working_days NUMERIC NOT NULL DEFAULT 30,
+      lop_days_auto NUMERIC NOT NULL DEFAULT 0,
+      lop_days NUMERIC NOT NULL DEFAULT 0,
+      lop_override_reason TEXT,
+      paid_days NUMERIC NOT NULL DEFAULT 0,
+
+      -- Computed
+      monthly_gross NUMERIC NOT NULL DEFAULT 0,
+      lop_deduction NUMERIC NOT NULL DEFAULT 0,
+      earned_gross NUMERIC NOT NULL DEFAULT 0,
+      additions_total NUMERIC NOT NULL DEFAULT 0,
+      deductions_total NUMERIC NOT NULL DEFAULT 0,
+      net_pay NUMERIC NOT NULL DEFAULT 0,
+
+      -- Per-payslip line items (added by HR during review)
+      additions JSONB NOT NULL DEFAULT '[]'::jsonb,
+      deductions JSONB NOT NULL DEFAULT '[]'::jsonb,
+
+      notes TEXT,
+      created_at TIMESTAMPTZ DEFAULT NOW(),
+      updated_at TIMESTAMPTZ DEFAULT NOW(),
+      distributed_at TIMESTAMPTZ,
+
+      UNIQUE (payroll_run_id, employee_id)
+    )`;
+  await sql`CREATE INDEX IF NOT EXISTS idx_payslips_run ON payslips(payroll_run_id)`.catch(()=>{});
+  await sql`CREATE INDEX IF NOT EXISTS idx_payslips_emp ON payslips(employee_id, year DESC, month DESC)`.catch(()=>{});
 
   await sql`
     CREATE TABLE IF NOT EXISTS hour_logs (
@@ -8070,8 +8169,8 @@ app.get('/api/payroll/config', async (req, res) => {
     // Row is seeded on migration; if it somehow isn't, hand back
     // hardcoded defaults so the UI doesn't render an empty form.
     res.json(rows[0] ?? {
-      id: 'default', basic_pct: 50, hra_pct: 20, special_allowance_pct: 25,
-      employer_pf_pct: 5, working_days_convention: 'fixed_30',
+      id: 'default', basic_pct: 100, hra_pct: 0, special_allowance_pct: 0,
+      employer_pf_pct: 0, working_days_convention: 'fixed_30', salary_mode: 'flat',
     });
   } catch (err: any) { res.status(500).json({ error: err.message ?? 'Server error' }); }
 });
@@ -8080,14 +8179,20 @@ app.put('/api/payroll/config', async (req, res) => {
   try {
     const gate = await requireAdmin(req, res);
     if (!gate) return;
-    const { basic_pct, hra_pct, special_allowance_pct, employer_pf_pct, working_days_convention } = req.body ?? {};
-    // Percentages should sum to 100 for the gross split (basic + hra +
-    // special). Employer PF is on top of gross and doesn't need to fit
-    // in. Reject a sum that's off by more than a rounding error so a
-    // typo doesn't quietly under-allocate.
-    const grossSum = Number(basic_pct ?? 0) + Number(hra_pct ?? 0) + Number(special_allowance_pct ?? 0);
-    if (Math.abs(grossSum - 100) > 0.5) {
-      return res.status(400).json({ error: `Basic + HRA + Special Allowance must sum to 100% (got ${grossSum}%).` });
+    const { basic_pct, hra_pct, special_allowance_pct, employer_pf_pct, working_days_convention, salary_mode } = req.body ?? {};
+    const mode = salary_mode === 'structured' ? 'structured' : 'flat';
+    // Flat mode: force the split to 100/0/0/0 so the auto-fill on new
+    // structures puts the whole monthly into Basic. HR doesn't get to
+    // set percentages they're not using.
+    // Structured mode: validate basic+hra+special = 100 like before.
+    let b = 100, h = 0, s = 0, pf = 0;
+    if (mode === 'structured') {
+      b = Number(basic_pct ?? 0); h = Number(hra_pct ?? 0);
+      s = Number(special_allowance_pct ?? 0); pf = Number(employer_pf_pct ?? 0);
+      const grossSum = b + h + s;
+      if (Math.abs(grossSum - 100) > 0.5) {
+        return res.status(400).json({ error: `Basic + HRA + Special Allowance must sum to 100% (got ${grossSum}%).` });
+      }
     }
     if (!['fixed_30', 'actual_month'].includes(String(working_days_convention))) {
       return res.status(400).json({ error: 'working_days_convention must be fixed_30 or actual_month' });
@@ -8095,11 +8200,9 @@ app.put('/api/payroll/config', async (req, res) => {
     const actorId = req.header('x-user-id') || null;
     await sql`
       UPDATE payroll_config SET
-        basic_pct=${Number(basic_pct)},
-        hra_pct=${Number(hra_pct)},
-        special_allowance_pct=${Number(special_allowance_pct)},
-        employer_pf_pct=${Number(employer_pf_pct ?? 0)},
+        basic_pct=${b}, hra_pct=${h}, special_allowance_pct=${s}, employer_pf_pct=${pf},
         working_days_convention=${working_days_convention},
+        salary_mode=${mode},
         updated_by=${actorId}, updated_at=NOW()
       WHERE id='default'`;
     res.json({ ok: true });
@@ -8202,13 +8305,400 @@ app.patch('/api/payroll/structures/:id', async (req, res) => {
 app.delete('/api/payroll/structures/:id', async (req, res) => {
   try {
     // Delete is a corrections-only action (typo'd effective_from,
-    // duplicate entry). Once Phase 2 links payslips to a structure,
-    // this endpoint gains a "referenced by a finalized payslip?" check
-    // and refuses in that case. For now it's a straight delete.
+    // duplicate entry). Snapshots into payslips are independent of
+    // this row, so deleting a structure never touches history.
     if (!(await requireAdmin(req, res))) return;
     const rows = await sql`DELETE FROM salary_structures WHERE id=${req.params.id} RETURNING id`;
     if (!(rows as any[]).length) return res.status(404).json({ error: 'Not found' });
     res.json({ ok: true });
+  } catch (err: any) { res.status(500).json({ error: err.message ?? 'Server error' }); }
+});
+
+// ── Payroll · Phase 2 helpers ─────────────────────────────────────────────
+
+// Resolve the salary structure in effect for `employeeId` at `dateISO`.
+// Returns the latest row whose effective_from <= dateISO. Falls back to
+// the earliest row if the employee only has future-dated structures
+// (better to pay from something than to error out — HR sees the drift
+// warning on the salary tab).
+async function resolveSalaryStructureAt(employeeId: string, dateISO: string) {
+  const past = (await sql`
+    SELECT * FROM salary_structures
+    WHERE employee_id=${employeeId} AND effective_from <= ${dateISO}::date
+    ORDER BY effective_from DESC LIMIT 1` as any[])[0];
+  if (past) return past;
+  const future = (await sql`
+    SELECT * FROM salary_structures
+    WHERE employee_id=${employeeId}
+    ORDER BY effective_from ASC LIMIT 1` as any[])[0];
+  return future ?? null;
+}
+
+// Compute LOP days for one employee in a given month.
+// Signals:
+//   - Approved leave_requests of type 'unpaid' overlapping the month
+//   - Attendance rows in the month with status 'absent' or 'lop'
+//     (weekends / Sundays are excluded by matching only Mon-Fri dates)
+// Half-days (short_leave etc) don't reduce pay in the current policy;
+// only fully-unpaid days count. HR can always override on the payslip.
+async function computeLopDays(employeeId: string, month: number, year: number): Promise<number> {
+  const firstDay = `${year}-${String(month).padStart(2, '0')}-01`;
+  const lastDate = new Date(year, month, 0).getDate();
+  const lastDay = `${year}-${String(month).padStart(2, '0')}-${String(lastDate).padStart(2, '0')}`;
+
+  // Unpaid leave days within the month. Approved-only.
+  const leaves = (await sql`
+    SELECT from_date, to_date, days FROM leave_requests
+    WHERE employee_id=${employeeId}
+      AND type='unpaid'
+      AND status='approved'
+      AND from_date <= ${lastDay}::date
+      AND to_date >= ${firstDay}::date` as any[]);
+  let leaveDays = 0;
+  for (const l of leaves) {
+    // Clip the leave window to the month.
+    const from = new Date(String(l.from_date).slice(0, 10) + 'T00:00:00Z');
+    const to   = new Date(String(l.to_date).slice(0, 10)   + 'T00:00:00Z');
+    const monthStart = new Date(firstDay + 'T00:00:00Z');
+    const monthEnd   = new Date(lastDay  + 'T00:00:00Z');
+    const start = from < monthStart ? monthStart : from;
+    const end   = to   > monthEnd   ? monthEnd   : to;
+    // Count weekdays only.
+    for (let d = new Date(start); d <= end; d.setUTCDate(d.getUTCDate() + 1)) {
+      const dow = d.getUTCDay();
+      if (dow !== 0 && dow !== 6) leaveDays += 1;
+    }
+  }
+
+  // Explicit LOP-marked attendance days within the month.
+  const abs = (await sql`
+    SELECT COUNT(*)::int AS n FROM attendance_records
+    WHERE employee_id=${employeeId}
+      AND date BETWEEN ${firstDay}::date AND ${lastDay}::date
+      AND status IN ('absent','lop')
+      AND EXTRACT(DOW FROM date) NOT IN (0, 6)` as any[])[0];
+  const absDays = Number(abs?.n ?? 0);
+
+  return leaveDays + absDays;
+}
+
+// Given the payroll_config + a payslip row shape, recompute the derived
+// numbers (monthly_gross, lop_deduction, earned_gross, net_pay). Called
+// on every payslip write so the derived fields stay honest.
+function recomputePayslip(
+  cfg: { working_days_convention: 'fixed_30' | 'actual_month' },
+  p: {
+    basic: number; hra: number; special_allowance: number; employer_pf: number;
+    other_components: Array<{ label: string; amount: number }>;
+    additions: Array<{ label: string; amount: number }>;
+    deductions: Array<{ label: string; amount: number }>;
+    lop_days: number; month: number; year: number;
+  }
+) {
+  const othersMonthly = (p.other_components ?? []).reduce((s, c) => s + Number(c.amount || 0), 0);
+  const monthly_gross = Number(p.basic) + Number(p.hra) + Number(p.special_allowance) + othersMonthly;
+  const working_days = cfg.working_days_convention === 'actual_month'
+    ? new Date(p.year, p.month, 0).getDate()
+    : 30;
+  const paid_days = Math.max(0, working_days - Number(p.lop_days));
+  const lop_deduction = working_days > 0 ? (monthly_gross * Number(p.lop_days) / working_days) : 0;
+  const earned_gross = monthly_gross - lop_deduction;
+  const additions_total = (p.additions ?? []).reduce((s, a) => s + Number(a.amount || 0), 0);
+  const deductions_total = (p.deductions ?? []).reduce((s, a) => s + Number(a.amount || 0), 0);
+  const net_pay = earned_gross + additions_total - deductions_total;
+  return {
+    working_days, paid_days,
+    monthly_gross: round2(monthly_gross),
+    lop_deduction: round2(lop_deduction),
+    earned_gross: round2(earned_gross),
+    additions_total: round2(additions_total),
+    deductions_total: round2(deductions_total),
+    net_pay: round2(net_pay),
+  };
+}
+
+function round2(n: number): number { return Math.round(n * 100) / 100; }
+
+// ── Payroll · Phase 2 endpoints: runs ────────────────────────────────────
+
+app.get('/api/payroll/runs', async (req, res) => {
+  try {
+    if (!(await requireFullHR(req, res)).ok) return;
+    await runStartupMigrations();
+    const rows = await sql`
+      SELECT r.*,
+        (SELECT COUNT(*)::int FROM payslips p WHERE p.payroll_run_id=r.id) AS payslip_count,
+        (SELECT COALESCE(SUM(p.net_pay), 0) FROM payslips p WHERE p.payroll_run_id=r.id) AS total_net_pay
+      FROM payroll_runs r
+      ORDER BY r.year DESC, r.month DESC`;
+    res.json(rows);
+  } catch (err: any) { res.status(500).json({ error: err.message ?? 'Server error' }); }
+});
+
+app.get('/api/payroll/runs/:id', async (req, res) => {
+  try {
+    if (!(await requireFullHR(req, res)).ok) return;
+    const run = (await sql`SELECT * FROM payroll_runs WHERE id=${req.params.id}` as any[])[0];
+    if (!run) return res.status(404).json({ error: 'Payroll run not found' });
+    const payslips = await sql`
+      SELECT * FROM payslips
+      WHERE payroll_run_id=${req.params.id}
+      ORDER BY employee_name ASC, employee_code ASC`;
+    res.json({ run, payslips });
+  } catch (err: any) { res.status(500).json({ error: err.message ?? 'Server error' }); }
+});
+
+// Create a draft run for (month, year). Snapshots every active employee's
+// current salary structure + auto-computes LOP. Idempotent: creating a
+// run for a month that already has one is a 409, not a duplicate.
+app.post('/api/payroll/runs', async (req, res) => {
+  try {
+    const gate = await requireFullHR(req, res);
+    if (!gate.ok) return;
+    const { month, year } = req.body ?? {};
+    const m = Number(month), y = Number(year);
+    if (!Number.isInteger(m) || m < 1 || m > 12) return res.status(400).json({ error: 'month must be 1-12' });
+    if (!Number.isInteger(y) || y < 2000)         return res.status(400).json({ error: 'year is required' });
+    const clash = await sql`SELECT id FROM payroll_runs WHERE month=${m} AND year=${y} LIMIT 1` as any[];
+    if (clash.length > 0) return res.status(409).json({ error: `A payroll run for ${m}/${y} already exists.` });
+
+    const cfg = (await sql`SELECT * FROM payroll_config WHERE id='default'` as any[])[0] ?? { working_days_convention: 'fixed_30' };
+    const lastDay = `${y}-${String(m).padStart(2, '0')}-${String(new Date(y, m, 0).getDate()).padStart(2, '0')}`;
+
+    // Snapshot only active employees. Someone on 'inactive' /
+    // 'offboarded' shouldn't be in this month's run (HR can add them
+    // back via a special-case create-payslip if needed).
+    const emps = await sql`
+      SELECT id, name, employee_id AS emp_code, designation
+      FROM employees WHERE active = TRUE` as any[];
+
+    const runId = `pr_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
+    await sql`
+      INSERT INTO payroll_runs (id, month, year, status, created_by)
+      VALUES (${runId}, ${m}, ${y}, 'draft', ${gate.user?.name ?? null})`;
+
+    // Snapshot loop. If an employee has no salary structure at all,
+    // insert a zero payslip with a note so HR can either add a
+    // structure and re-snapshot or delete the row.
+    let snapped = 0, missing = 0;
+    for (const e of emps) {
+      const s = await resolveSalaryStructureAt(e.id, lastDay);
+      const lopDays = await computeLopDays(e.id, m, y);
+      const structureFields = s ? {
+        structure_id: s.id,
+        ctc_annual: Number(s.ctc_annual),
+        basic: Number(s.basic),
+        hra: Number(s.hra),
+        special_allowance: Number(s.special_allowance),
+        employer_pf: Number(s.employer_pf),
+        other_components: s.other_components ?? [],
+      } : {
+        structure_id: null, ctc_annual: 0, basic: 0, hra: 0,
+        special_allowance: 0, employer_pf: 0, other_components: [],
+      };
+      const derived = recomputePayslip(cfg, {
+        ...structureFields,
+        additions: [], deductions: [],
+        lop_days: lopDays, month: m, year: y,
+      });
+      const noteOnMissing = s ? null : 'No salary structure was set for this employee. Add one and delete this payslip to re-snapshot.';
+      await sql`
+        INSERT INTO payslips (
+          id, payroll_run_id, employee_id, employee_name, employee_code, designation,
+          month, year, structure_id,
+          ctc_annual, basic, hra, special_allowance, employer_pf, other_components,
+          working_days, lop_days_auto, lop_days, paid_days,
+          monthly_gross, lop_deduction, earned_gross, additions_total, deductions_total, net_pay,
+          additions, deductions, notes
+        ) VALUES (
+          ${`ps_${runId}_${e.id}`.slice(0, 60)}, ${runId}, ${e.id}, ${e.name}, ${e.emp_code}, ${e.designation ?? null},
+          ${m}, ${y}, ${structureFields.structure_id},
+          ${structureFields.ctc_annual}, ${structureFields.basic}, ${structureFields.hra}, ${structureFields.special_allowance},
+          ${structureFields.employer_pf}, ${JSON.stringify(structureFields.other_components)},
+          ${derived.working_days}, ${lopDays}, ${lopDays}, ${derived.paid_days},
+          ${derived.monthly_gross}, ${derived.lop_deduction}, ${derived.earned_gross}, ${derived.additions_total}, ${derived.deductions_total}, ${derived.net_pay},
+          '[]'::jsonb, '[]'::jsonb, ${noteOnMissing}
+        )`;
+      snapped += 1;
+      if (!s) missing += 1;
+    }
+    res.status(201).json({ run_id: runId, snapped, missing_structure: missing });
+  } catch (err: any) { res.status(500).json({ error: err.message ?? 'Server error' }); }
+});
+
+app.patch('/api/payroll/runs/:id/finalize', async (req, res) => {
+  try {
+    const gate = await requireFullHR(req, res);
+    if (!gate.ok) return;
+    const run = (await sql`SELECT status FROM payroll_runs WHERE id=${req.params.id}` as any[])[0];
+    if (!run) return res.status(404).json({ error: 'Run not found' });
+    if (run.status !== 'draft') return res.status(400).json({ error: `Run is already ${run.status}. Unlock first if you want to edit.` });
+    await sql`
+      UPDATE payroll_runs SET
+        status='finalized',
+        finalized_by=${gate.user?.name ?? null},
+        finalized_at=NOW(), updated_at=NOW()
+      WHERE id=${req.params.id}`;
+    res.json({ ok: true });
+  } catch (err: any) { res.status(500).json({ error: err.message ?? 'Server error' }); }
+});
+
+app.patch('/api/payroll/runs/:id/unlock', async (req, res) => {
+  try {
+    // Unlock is admin-only + requires a reason (audit trail). Flips
+    // finalized/distributed back to draft so payslips can be edited.
+    if (!(await requireAdmin(req, res))) return;
+    const reason = String(req.body?.reason ?? '').trim();
+    if (!reason) return res.status(400).json({ error: 'reason is required to unlock a run' });
+    const actor = req.header('x-user-id') || null;
+    const rows = await sql`
+      UPDATE payroll_runs SET
+        status='draft',
+        unlocked_by=${actor}, unlocked_at=NOW(), unlocked_reason=${reason},
+        updated_at=NOW()
+      WHERE id=${req.params.id}
+      RETURNING id`;
+    if (!(rows as any[]).length) return res.status(404).json({ error: 'Run not found' });
+    res.json({ ok: true });
+  } catch (err: any) { res.status(500).json({ error: err.message ?? 'Server error' }); }
+});
+
+app.patch('/api/payroll/runs/:id/distribute', async (req, res) => {
+  try {
+    const gate = await requireFullHR(req, res);
+    if (!gate.ok) return;
+    const run = (await sql`SELECT * FROM payroll_runs WHERE id=${req.params.id}` as any[])[0];
+    if (!run) return res.status(404).json({ error: 'Run not found' });
+    if (run.status !== 'finalized') return res.status(400).json({ error: 'Finalize the run before distributing.' });
+    const ps = await sql`SELECT id, employee_id, net_pay FROM payslips WHERE payroll_run_id=${req.params.id}` as any[];
+    const monthName = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'][run.month - 1];
+    await sql`
+      UPDATE payroll_runs SET
+        status='distributed', distributed_by=${gate.user?.name ?? null}, distributed_at=NOW(), updated_at=NOW()
+      WHERE id=${req.params.id}`;
+    await sql`UPDATE payslips SET distributed_at=NOW() WHERE payroll_run_id=${req.params.id}`;
+    // Notify each employee — best-effort, non-blocking.
+    void Promise.all(ps.map(p => notifyEmployeeUser(
+      p.employee_id, 'payslip_available',
+      `${monthName} ${run.year} payslip available`,
+      `Your payslip for ${monthName} ${run.year} is now available. Net pay ₹${Number(p.net_pay).toLocaleString('en-IN')}.`,
+      `/my?tab=payslips`,
+    ).catch(()=>{})));
+    res.json({ ok: true, distributed_to: ps.length });
+  } catch (err: any) { res.status(500).json({ error: err.message ?? 'Server error' }); }
+});
+
+app.delete('/api/payroll/runs/:id', async (req, res) => {
+  try {
+    // Only drafts can be deleted. Distributed runs stay forever
+    // (employees have seen them, deleting silently would be dishonest).
+    const gate = await requireFullHR(req, res);
+    if (!gate.ok) return;
+    const run = (await sql`SELECT status FROM payroll_runs WHERE id=${req.params.id}` as any[])[0];
+    if (!run) return res.status(404).json({ error: 'Run not found' });
+    if (run.status !== 'draft') return res.status(400).json({ error: `Can't delete a ${run.status} run. Unlock first if you need to change something.` });
+    await sql`DELETE FROM payroll_runs WHERE id=${req.params.id}`; // ON DELETE CASCADE clears payslips
+    res.json({ ok: true });
+  } catch (err: any) { res.status(500).json({ error: err.message ?? 'Server error' }); }
+});
+
+// ── Payroll · Phase 2 endpoints: payslips ────────────────────────────────
+
+app.patch('/api/payroll/payslips/:id', async (req, res) => {
+  try {
+    // Editable only while the parent run is draft. On save, derived
+    // fields are recomputed server-side so a bad client can't push a
+    // net_pay that doesn't match its own component math.
+    const gate = await requireFullHR(req, res);
+    if (!gate.ok) return;
+    const ps = (await sql`SELECT p.*, r.status AS run_status FROM payslips p JOIN payroll_runs r ON r.id=p.payroll_run_id WHERE p.id=${req.params.id}` as any[])[0];
+    if (!ps) return res.status(404).json({ error: 'Payslip not found' });
+    if (ps.run_status !== 'draft') return res.status(400).json({ error: `Run is ${ps.run_status}. Unlock it to edit payslips.` });
+
+    const { lop_days, lop_override_reason, additions, deductions, notes } = req.body ?? {};
+    // If HR changes lop_days but doesn't provide a reason (and it's
+    // different from lop_days_auto), demand one — protects the audit
+    // trail from silent overrides.
+    const nextLop = lop_days === undefined ? Number(ps.lop_days) : Number(lop_days);
+    if (nextLop !== Number(ps.lop_days_auto) && !String(lop_override_reason ?? ps.lop_override_reason ?? '').trim()) {
+      return res.status(400).json({ error: 'Provide a reason when overriding the auto-computed LOP days.' });
+    }
+    const cfg = (await sql`SELECT working_days_convention FROM payroll_config WHERE id='default'` as any[])[0] ?? { working_days_convention: 'fixed_30' };
+    const nextAdditions = Array.isArray(additions) ? additions : ps.additions;
+    const nextDeductions = Array.isArray(deductions) ? deductions : ps.deductions;
+    const derived = recomputePayslip(cfg, {
+      basic: Number(ps.basic), hra: Number(ps.hra),
+      special_allowance: Number(ps.special_allowance), employer_pf: Number(ps.employer_pf),
+      other_components: ps.other_components ?? [],
+      additions: nextAdditions, deductions: nextDeductions,
+      lop_days: nextLop, month: ps.month, year: ps.year,
+    });
+    const rows = await sql`
+      UPDATE payslips SET
+        lop_days=${nextLop},
+        lop_override_reason=${lop_override_reason ?? ps.lop_override_reason ?? null},
+        additions=${JSON.stringify(nextAdditions)},
+        deductions=${JSON.stringify(nextDeductions)},
+        notes=${notes === undefined ? ps.notes : (notes || null)},
+        working_days=${derived.working_days}, paid_days=${derived.paid_days},
+        monthly_gross=${derived.monthly_gross}, lop_deduction=${derived.lop_deduction},
+        earned_gross=${derived.earned_gross},
+        additions_total=${derived.additions_total}, deductions_total=${derived.deductions_total},
+        net_pay=${derived.net_pay},
+        updated_at=NOW()
+      WHERE id=${req.params.id} RETURNING *`;
+    res.json((rows as any[])[0]);
+  } catch (err: any) { res.status(500).json({ error: err.message ?? 'Server error' }); }
+});
+
+// Employee-facing: list their own payslips (only DISTRIBUTED runs).
+// HR gets to hit /api/payroll/runs/:id for the full grid; this endpoint
+// is the payslip-history view for an individual.
+app.get('/api/payroll/payslips', async (req, res) => {
+  try {
+    const uid = req.header('x-user-id');
+    if (!uid) return res.status(401).json({ error: 'Sign in required' });
+    const u = (await sql`SELECT id, role, employee_id_ref FROM app_users WHERE id=${uid}` as any[])[0];
+    if (!u) return res.status(401).json({ error: 'Unknown user' });
+    const targetEmp = String(req.query.employee_id ?? '');
+    const self = (await sql`SELECT id FROM employees WHERE employee_id=${u.employee_id_ref} OR id=${u.employee_id_ref} LIMIT 1` as any[])[0];
+    // Non-HR callers can only see their own.
+    const isHR = u.role === 'admin' || u.role === 'hr_manager';
+    const empId = targetEmp || (self?.id ?? null);
+    if (!empId) return res.json([]);
+    if (!isHR && (!self || self.id !== empId)) {
+      return res.status(403).json({ error: 'You can only view your own payslips.' });
+    }
+    const rows = await sql`
+      SELECT p.* FROM payslips p
+      JOIN payroll_runs r ON r.id=p.payroll_run_id
+      WHERE p.employee_id=${empId} AND r.status='distributed'
+      ORDER BY p.year DESC, p.month DESC`;
+    res.json(rows);
+  } catch (err: any) { res.status(500).json({ error: err.message ?? 'Server error' }); }
+});
+
+// Single payslip fetch — HR sees any; employee sees only their own
+// distributed ones. Used by the payslip detail modal / print view.
+app.get('/api/payroll/payslips/:id', async (req, res) => {
+  try {
+    const uid = req.header('x-user-id');
+    if (!uid) return res.status(401).json({ error: 'Sign in required' });
+    const u = (await sql`SELECT id, role, employee_id_ref FROM app_users WHERE id=${uid}` as any[])[0];
+    if (!u) return res.status(401).json({ error: 'Unknown user' });
+    const ps = (await sql`
+      SELECT p.*, r.status AS run_status FROM payslips p
+      JOIN payroll_runs r ON r.id=p.payroll_run_id
+      WHERE p.id=${req.params.id}` as any[])[0];
+    if (!ps) return res.status(404).json({ error: 'Payslip not found' });
+    const isHR = u.role === 'admin' || u.role === 'hr_manager';
+    if (!isHR) {
+      const self = (await sql`SELECT id FROM employees WHERE employee_id=${u.employee_id_ref} OR id=${u.employee_id_ref} LIMIT 1` as any[])[0];
+      if (!self || self.id !== ps.employee_id || ps.run_status !== 'distributed') {
+        return res.status(403).json({ error: 'Not permitted.' });
+      }
+    }
+    res.json(ps);
   } catch (err: any) { res.status(500).json({ error: err.message ?? 'Server error' }); }
 });
 
