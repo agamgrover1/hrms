@@ -8460,7 +8460,14 @@ app.post('/api/payroll/runs', async (req, res) => {
     if (!Number.isInteger(m) || m < 1 || m > 12) return res.status(400).json({ error: 'month must be 1-12' });
     if (!Number.isInteger(y) || y < 2000)         return res.status(400).json({ error: 'year is required' });
     const clash = await sql`SELECT id FROM payroll_runs WHERE month=${m} AND year=${y} LIMIT 1` as any[];
-    if (clash.length > 0) return res.status(409).json({ error: `A payroll run for ${m}/${y} already exists.` });
+    if (clash.length > 0) {
+      // Include the existing id so the client can offer "Open" / "Delete
+      // and re-create" affordances instead of dead-ending the user.
+      return res.status(409).json({
+        error: `A payroll run for ${m}/${y} already exists.`,
+        existing_run_id: clash[0].id,
+      });
+    }
 
     const cfg = (await sql`SELECT * FROM payroll_config WHERE id='default'` as any[])[0] ?? { working_days_convention: 'fixed_30' };
     const lastDay = `${y}-${String(m).padStart(2, '0')}-${String(new Date(y, m, 0).getDate()).padStart(2, '0')}`;

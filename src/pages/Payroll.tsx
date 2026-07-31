@@ -51,10 +51,19 @@ function RunsList({ onOpen }: { onOpen: (id: string) => void }) {
   const [rows, setRows] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [creating, setCreating] = useState(false);
+  const [loadError, setLoadError] = useState('');
 
   const load = useCallback(() => {
     setLoading(true);
-    api.listPayrollRuns().then(setRows).catch(() => setRows([])).finally(() => setLoading(false));
+    setLoadError('');
+    api.listPayrollRuns()
+      .then(setRows)
+      // Surface errors instead of swallowing to an empty list — a
+      // silently empty list next to a "run already exists" 409 (see
+      // /payroll July 2026 issue on 2026-07-31) was impossible to
+      // debug without opening devtools.
+      .catch(e => { setRows([]); setLoadError(e?.message ?? 'Failed to load runs'); })
+      .finally(() => setLoading(false));
   }, []);
   useEffect(load, [load]);
 
@@ -81,9 +90,18 @@ function RunsList({ onOpen }: { onOpen: (id: string) => void }) {
         </button>
       </div>
 
+      {loadError && (
+        <div className="rounded-lg border border-danger/40 bg-danger-container/50 px-4 py-3 flex items-start justify-between gap-3 text-sm text-danger">
+          <div className="flex items-start gap-2">
+            <AlertTriangle size={14} className="mt-0.5 shrink-0" />
+            <span>Failed to load runs: {loadError}</span>
+          </div>
+          <button onClick={load} className="text-[11px] font-semibold underline">Retry</button>
+        </div>
+      )}
       {loading ? (
         <div className="h-40 rounded-xl-2 bg-surface-2 animate-pulse" />
-      ) : rows.length === 0 ? (
+      ) : rows.length === 0 && !loadError ? (
         <div className="rounded-xl-2 border border-outline bg-surface p-10 text-center">
           <Wallet className="w-8 h-8 mx-auto text-on-surface-subtle mb-2" />
           <p className="text-sm text-on-surface-muted">No payroll runs yet.</p>
@@ -91,7 +109,7 @@ function RunsList({ onOpen }: { onOpen: (id: string) => void }) {
             Click "New run" to snapshot everyone's salary for a month.
           </p>
         </div>
-      ) : (
+      ) : rows.length === 0 ? null : (
         <div className="rounded-xl-2 border border-outline bg-surface overflow-hidden">
           <table className="w-full text-sm">
             <thead className="bg-surface-2 text-[10px] uppercase tracking-wider text-on-surface-subtle">
@@ -161,17 +179,21 @@ function RunStatusPill({ status }: { status: string }) {
   );
 }
 
-function NewRunModal({ onClose, onCreated }: { onClose: () => void; onCreated: (id: string) => void }) {
+function NewRunModal({ onClose, onCreated }: { onClose: (existingId?: string) => void; onCreated: (id: string) => void }) {
   const now = new Date();
   const prev = new Date(now.getFullYear(), now.getMonth() - 1, 1);
   const [month, setMonth] = useState(prev.getMonth() + 1);
   const [year, setYear] = useState(prev.getFullYear());
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
+  // Server returns existing_run_id on 409 so we can offer the user
+  // "Open" / "Delete and re-create" instead of dead-ending them.
+  const [existingId, setExistingId] = useState<string | null>(null);
+  const [deleting, setDeleting] = useState(false);
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
-    setBusy(true); setError('');
+    setBusy(true); setError(''); setExistingId(null);
     try {
       const r = await api.createPayrollRun(month, year);
       toast.success('Run created',
@@ -179,8 +201,26 @@ function NewRunModal({ onClose, onCreated }: { onClose: () => void; onCreated: (
           ? `${r.snapped} payslips created. ${r.missing_structure} have no salary on record — set it under Employees, then delete + recreate this run.`
           : `${r.snapped} payslips created.`);
       onCreated(r.run_id);
-    } catch (e: any) { setError(e?.message ?? 'Failed'); }
+    } catch (e: any) {
+      setError(e?.message ?? 'Failed');
+      if (e?.status === 409 && e?.body?.existing_run_id) setExistingId(e.body.existing_run_id);
+    }
     finally { setBusy(false); }
+  };
+
+  const deleteExisting = async () => {
+    if (!existingId) return;
+    setDeleting(true);
+    try {
+      await api.deletePayrollRun(existingId);
+      // Retry create right after cleanup so the user doesn't have to
+      // click through again.
+      const r = await api.createPayrollRun(month, year);
+      toast.success('Existing draft deleted and new run created');
+      onCreated(r.run_id);
+    } catch (e: any) {
+      setError(e?.message ?? 'Delete failed');
+    } finally { setDeleting(false); }
   };
 
   return (
@@ -210,9 +250,25 @@ function NewRunModal({ onClose, onCreated }: { onClose: () => void; onCreated: (
                 className="w-full num-mono px-3 py-2 rounded-lg border border-outline bg-surface text-sm text-on-surface focus:outline-none focus:ring-2 focus:ring-accent/30" />
             </label>
           </div>
-          {error && <p className="text-sm text-danger bg-danger-container/40 border border-danger/30 rounded px-3 py-2">{error}</p>}
+          {error && (
+            <div className="text-sm bg-danger-container/40 border border-danger/30 rounded px-3 py-2 space-y-2">
+              <p className="text-danger">{error}</p>
+              {existingId && (
+                <div className="flex flex-wrap items-center gap-2 pt-1">
+                  <button type="button" onClick={() => { onClose(existingId); onCreated(existingId); }}
+                    className="inline-flex items-center gap-1 px-3 py-1.5 rounded-md text-[11px] font-semibold text-accent border border-accent/40 hover:bg-accent/10">
+                    Open existing run
+                  </button>
+                  <button type="button" onClick={deleteExisting} disabled={deleting}
+                    className="inline-flex items-center gap-1 px-3 py-1.5 rounded-md text-[11px] font-semibold text-danger border border-danger/40 hover:bg-danger-container/50 disabled:opacity-50">
+                    {deleting && <Loader2 size={11} className="animate-spin" />} Delete existing + re-create
+                  </button>
+                </div>
+              )}
+            </div>
+          )}
           <div className="flex justify-end gap-2 pt-1">
-            <button type="button" onClick={onClose} className="px-4 py-2 text-sm text-on-surface-muted hover:bg-surface-2 rounded-lg">Cancel</button>
+            <button type="button" onClick={() => onClose()} className="px-4 py-2 text-sm text-on-surface-muted hover:bg-surface-2 rounded-lg">Cancel</button>
             <button disabled={busy} className="px-4 py-2 rounded-lg bg-accent text-on-accent text-sm font-semibold hover:opacity-90 disabled:opacity-50 inline-flex items-center gap-1.5">
               {busy && <Loader2 size={13} className="animate-spin" />} Create draft
             </button>

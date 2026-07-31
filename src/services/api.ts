@@ -98,7 +98,15 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
     );
   }
   const data = await res.json();
-  if (!res.ok) throw new Error(data.error || 'Request failed');
+  if (!res.ok) {
+    // Attach the whole response body to the Error so callers can
+    // read structured metadata (e.g. { existing_run_id } on a 409)
+    // without changing every call site.
+    const err = new Error(data.error || 'Request failed') as Error & { body?: any; status?: number };
+    err.body = data;
+    err.status = res.status;
+    throw err;
+  }
   return data as T;
 }
 
