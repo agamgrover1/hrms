@@ -8477,7 +8477,7 @@ app.post('/api/payroll/runs', async (req, res) => {
     // date-log raises), then the employee record, then zero.
     const emps = await sql`
       SELECT id, name, employee_id AS emp_code, designation, salary, ctc
-      FROM employees WHERE active = TRUE` as any[];
+      FROM employees WHERE status='active'` as any[];
 
     const runId = `pr_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
     await sql`
