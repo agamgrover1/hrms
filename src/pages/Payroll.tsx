@@ -691,7 +691,7 @@ function PayrollConfigPanel() {
   const [loading, setLoading] = useState(true);
   const [cfg, setCfg] = useState<{
     basic_pct: number; hra_pct: number; special_allowance_pct: number; employer_pf_pct: number;
-    working_days_convention: 'fixed_30' | 'actual_month';
+    working_days_convention: 'fixed_30' | 'actual_month' | 'actual_working_days';
     salary_mode: 'flat' | 'structured';
   } | null>(null);
   const [busy, setBusy] = useState(false);
@@ -794,11 +794,13 @@ function PayrollConfigPanel() {
                     disabled={!isAdmin}
                     onChange={e => setCfg(c => c && ({ ...c, working_days_convention: e.target.value as any }))}
                     className="bg-surface border border-outline rounded-lg px-3 py-1.5 text-sm text-on-surface disabled:opacity-60">
-                    <option value="fixed_30">Fixed 30 days (per-day = monthly/30)</option>
-                    <option value="actual_month">Actual month days (per-day = monthly/actual days)</option>
+                    <option value="actual_working_days">Actual working days — Mon–Fri (~22 days, recommended for 5-day weeks)</option>
+                    <option value="fixed_30">Fixed 30 days — regardless of month</option>
+                    <option value="actual_month">Actual calendar days — 28 / 29 / 30 / 31 (for 6-day-week orgs)</option>
                   </select>
                   <span className="block text-[11px] text-on-surface-muted mt-1">
-                    Divisor used when the payslip generator computes LOP deduction (LOP days × monthly / working days).
+                    Divisor when the payslip generator computes the per-day rate. LOP deduction = LOP days × (monthly / working days).
+                    Change takes effect on future runs — existing payslips keep their snapshot.
                   </span>
                 </label>
               </div>

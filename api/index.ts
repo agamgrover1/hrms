@@ -1395,7 +1395,7 @@ async function runStartupMigrations() {
     )`;
   await sql`
     INSERT INTO payroll_config (id, basic_pct, hra_pct, special_allowance_pct, employer_pf_pct, working_days_convention)
-    VALUES ('default', 50, 20, 25, 5, 'fixed_30')
+    VALUES ('default', 100, 0, 0, 0, 'actual_working_days')
     ON CONFLICT (id) DO NOTHING`;
   // salary_mode = 'flat' means "no split, one monthly amount". The
   // SalaryPanel collapses to a single field and the Payslip generator
@@ -8194,8 +8194,8 @@ app.put('/api/payroll/config', async (req, res) => {
         return res.status(400).json({ error: `Basic + HRA + Special Allowance must sum to 100% (got ${grossSum}%).` });
       }
     }
-    if (!['fixed_30', 'actual_month'].includes(String(working_days_convention))) {
-      return res.status(400).json({ error: 'working_days_convention must be fixed_30 or actual_month' });
+    if (!['fixed_30', 'actual_month', 'actual_working_days'].includes(String(working_days_convention))) {
+      return res.status(400).json({ error: 'working_days_convention must be fixed_30, actual_month, or actual_working_days' });
     }
     const actorId = req.header('x-user-id') || null;
     await sql`
@@ -8382,11 +8382,23 @@ async function computeLopDays(employeeId: string, month: number, year: number): 
   return leaveDays + absDays;
 }
 
+// Count Mon-Fri days in the (year, month) window. Excludes Saturdays and
+// Sundays only — a 6-day-week org should stick with `actual_month`.
+function weekdaysInMonth(year: number, month: number): number {
+  const lastDay = new Date(year, month, 0).getDate();
+  let n = 0;
+  for (let d = 1; d <= lastDay; d++) {
+    const dow = new Date(Date.UTC(year, month - 1, d)).getUTCDay();
+    if (dow !== 0 && dow !== 6) n += 1;
+  }
+  return n;
+}
+
 // Given the payroll_config + a payslip row shape, recompute the derived
 // numbers (monthly_gross, lop_deduction, earned_gross, net_pay). Called
 // on every payslip write so the derived fields stay honest.
 function recomputePayslip(
-  cfg: { working_days_convention: 'fixed_30' | 'actual_month' },
+  cfg: { working_days_convention: 'fixed_30' | 'actual_month' | 'actual_working_days' },
   p: {
     basic: number; hra: number; special_allowance: number; employer_pf: number;
     other_components: Array<{ label: string; amount: number }>;
@@ -8397,8 +8409,13 @@ function recomputePayslip(
 ) {
   const othersMonthly = (p.other_components ?? []).reduce((s, c) => s + Number(c.amount || 0), 0);
   const monthly_gross = Number(p.basic) + Number(p.hra) + Number(p.special_allowance) + othersMonthly;
-  const working_days = cfg.working_days_convention === 'actual_month'
-    ? new Date(p.year, p.month, 0).getDate()
+  // Divisor for the per-day rate. 'actual_working_days' is the common
+  // Indian mid-market default — 22-23 in a 5-day-week month. The other
+  // two are still supported for orgs that pay a flat monthly (fixed_30)
+  // or count calendar days (actual_month, useful for 6-day weeks).
+  const working_days =
+    cfg.working_days_convention === 'actual_working_days' ? weekdaysInMonth(p.year, p.month)
+    : cfg.working_days_convention === 'actual_month' ? new Date(p.year, p.month, 0).getDate()
     : 30;
   const paid_days = Math.max(0, working_days - Number(p.lop_days));
   const lop_deduction = working_days > 0 ? (monthly_gross * Number(p.lop_days) / working_days) : 0;
