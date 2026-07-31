@@ -3,6 +3,10 @@
 .env.*
 !.env.example
 
+# DB backups produced by scripts/backup-db.sh — kept local, never pushed
+# (dumps contain full customer data — treat as sensitive).
+backups/
+
 # Logs
 logs
 *.log
