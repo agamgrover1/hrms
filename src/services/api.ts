@@ -325,6 +325,10 @@ export const api = {
     request<{ ok: true; updated: number; convention: string }>(
       `/payroll/runs/${id}/resync-working-days`, { method: 'PATCH', body: '{}' }
     ),
+  restampAttendanceFromLeaves: (month: number, year: number) =>
+    request<{ ok: true; leaves_processed: number; month: number; year: number }>(
+      '/attendance/restamp-from-leaves', { method: 'POST', body: JSON.stringify({ month, year }) }
+    ),
   unlockPayrollRun: (id: string, reason: string) =>
     request<{ ok: true }>(`/payroll/runs/${id}/unlock`, { method: 'PATCH', body: JSON.stringify({ reason }) }),
   distributePayrollRun: (id: string) =>

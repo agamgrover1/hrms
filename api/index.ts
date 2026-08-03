@@ -3889,9 +3889,30 @@ async function runBiometricSyncV(trigger: string, triggeredBy?: string, fromDate
     ON CONFLICT (employee_id, date) DO UPDATE SET
       check_in = EXCLUDED.check_in,
       check_out = EXCLUDED.check_out,
-      status = EXCLUDED.status,
-      total_hours = EXCLUDED.total_hours,
-      source = 'biometric',
+      -- Preserve statuses that were set by a leave / WFH approval.
+      -- The biometric device doesn't know about leaves; if we let it
+      -- overwrite here, an approved leave gets silently flipped to
+      -- 'absent' the next time the sync runs, and downstream (payroll
+      -- LOP) reads that as a deduction. The employee is on approved
+      -- leave — leave wins, biometric loses.
+      status = CASE
+        WHEN attendance_records.status IN
+          ('on_leave','half-day','short_leave','unpaid_leave','wfh','wfh_half','holiday')
+        THEN attendance_records.status
+        ELSE EXCLUDED.status
+      END,
+      total_hours = CASE
+        WHEN attendance_records.status IN
+          ('on_leave','half-day','short_leave','unpaid_leave','wfh','wfh_half','holiday')
+        THEN attendance_records.total_hours
+        ELSE EXCLUDED.total_hours
+      END,
+      source = CASE
+        WHEN attendance_records.status IN
+          ('on_leave','half-day','short_leave','unpaid_leave','wfh','wfh_half','holiday')
+        THEN attendance_records.source
+        ELSE 'biometric'
+      END,
       biometric_sync_id = EXCLUDED.biometric_sync_id`;
   const created = finalRows.filter(r => !existingMap.has(wfhKey(r.iid, r.recDate))).length;
   const updated = finalRows.length - created;
@@ -8813,6 +8834,41 @@ app.patch('/api/payroll/payslips/:id', async (req, res) => {
         updated_at=NOW()
       WHERE id=${req.params.id} RETURNING *`;
     res.json((rows as any[])[0]);
+  } catch (err: any) { res.status(500).json({ error: err.message ?? 'Server error' }); }
+});
+
+// One-shot fix: re-stamp attendance from approved leaves for a month.
+// Fixes the class of rows where an approved leave got overwritten by a
+// biometric sync (the bug that landed 'absent' rows on days people were
+// actually on approved leave). Iterates every approved leave overlapping
+// the month, and forces attendance_records back to the leave's mapped
+// status via markLeaveAttendance's logic. Safe to run repeatedly — a day
+// already in the right leave status stays put.
+app.post('/api/attendance/restamp-from-leaves', async (req, res) => {
+  try {
+    if (!(await requireFullHR(req, res)).ok) return;
+    const month = Number(req.body?.month);
+    const year  = Number(req.body?.year);
+    if (!Number.isInteger(month) || month < 1 || month > 12) return res.status(400).json({ error: 'month 1..12 required' });
+    if (!Number.isInteger(year))  return res.status(400).json({ error: 'year required' });
+    const firstDay = `${year}-${String(month).padStart(2, '0')}-01`;
+    const lastDate = new Date(year, month, 0).getDate();
+    const lastDay = `${year}-${String(month).padStart(2, '0')}-${String(lastDate).padStart(2, '0')}`;
+    const leaves = await sql`
+      SELECT employee_id, type, from_date::text AS from_date, to_date::text AS to_date
+      FROM leave_requests
+      WHERE status='approved'
+        AND from_date <= ${lastDay}::date
+        AND to_date   >= ${firstDay}::date` as any[];
+    let restamped = 0;
+    for (const l of leaves) {
+      // Clip the leave window to the month.
+      const from = String(l.from_date).slice(0, 10) < firstDay ? firstDay : String(l.from_date).slice(0, 10);
+      const to   = String(l.to_date).slice(0, 10)   > lastDay  ? lastDay  : String(l.to_date).slice(0, 10);
+      await markLeaveAttendance(l.employee_id, from, to, l.type);
+      restamped += 1;
+    }
+    res.json({ ok: true, leaves_processed: restamped, month, year });
   } catch (err: any) { res.status(500).json({ error: err.message ?? 'Server error' }); }
 });
 

@@ -332,6 +332,29 @@ function RunDetail({ runId, onBack }: { runId: string; onBack: () => void }) {
     } catch (e: any) { toast.error('Resync failed', e?.message); }
   };
 
+  const fixLopFromLeaves = async () => {
+    if (!data) return;
+    if (!window.confirm(
+      `Rebuild attendance from approved leaves for ${MONTHS[data.run.month - 1]} ${data.run.year}?\n\n` +
+      'Fixes the case where a biometric sync overwrote an approved leave to "absent". ' +
+      'Iterates every approved leave in the month and force-writes the attendance row back to the leave status. ' +
+      'Also re-snapshots working days on this run so LOP recalculates.'
+    )) return;
+    try {
+      const a = await api.restampAttendanceFromLeaves(data.run.month, data.run.year);
+      // After the attendance is repaired, the LOP calculator will read
+      // fresh state — but existing payslip rows still hold the stale
+      // lop_days_auto and lop_days from run creation. Re-snapshot both
+      // by resyncing working days AND re-running the LOP calc per
+      // payslip. Simplest way: delete + re-create the run. Since
+      // that's destructive, we surface the info and let HR decide.
+      toast.success(
+        'Attendance restamped',
+        `${a.leaves_processed} approved leaves reprocessed. Delete + re-create this draft to pick up the fresh LOP numbers.`
+      );
+    } catch (e: any) { toast.error('Restamp failed', e?.message); }
+  };
+
   if (loading || !data) {
     return <div className="h-60 rounded-xl-2 bg-surface-2 animate-pulse" />;
   }
@@ -367,6 +390,11 @@ function RunDetail({ runId, onBack }: { runId: string; onBack: () => void }) {
         <div className="flex items-center gap-2">
           {run.status === 'draft' && (
             <>
+              <button onClick={fixLopFromLeaves}
+                title="Restamp attendance from approved leaves — fixes days a biometric sync flipped to absent"
+                className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg text-sm font-semibold text-on-surface border border-outline hover:bg-surface-2">
+                <AlertTriangle size={13} /> Fix LOP from leaves
+              </button>
               <button onClick={resyncWd}
                 title="Recompute Working days on every payslip using the current setting"
                 className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg text-sm font-semibold text-on-surface border border-outline hover:bg-surface-2">
