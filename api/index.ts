@@ -8198,33 +8198,57 @@ app.put('/api/payroll/config', async (req, res) => {
   try {
     const gate = await requireAdmin(req, res);
     if (!gate) return;
-    const { basic_pct, hra_pct, special_allowance_pct, employer_pf_pct, working_days_convention, salary_mode } = req.body ?? {};
-    const mode = salary_mode === 'structured' ? 'structured' : 'flat';
-    // Flat mode: force the split to 100/0/0/0 so the auto-fill on new
-    // structures puts the whole monthly into Basic. HR doesn't get to
-    // set percentages they're not using.
-    // Structured mode: validate basic+hra+special = 100 like before.
+    const body = req.body ?? {};
+    const { basic_pct, hra_pct, special_allowance_pct, employer_pf_pct, working_days_convention, salary_mode } = body;
+
+    // Partial-update semantics: read the current row first, then only
+    // overwrite fields the caller actually sent. A stale / partial client
+    // (e.g. rendered from a cached bundle) that omits a field falls back
+    // to the DB value instead of 400-ing on "must be one of…".
+    const current = (await sql`SELECT * FROM payroll_config WHERE id='default'` as any[])[0] ?? {
+      basic_pct: 100, hra_pct: 0, special_allowance_pct: 0, employer_pf_pct: 0,
+      working_days_convention: 'actual_working_days', salary_mode: 'flat',
+    };
+
+    const nextMode: 'flat' | 'structured' =
+      salary_mode === 'flat' || salary_mode === 'structured'
+        ? salary_mode
+        : (current.salary_mode ?? 'flat');
+
+    // Flat mode: force the split to 100/0/0/0. Structured mode: validate
+    // basic+hra+special = 100 like before. Missing pct values fall back
+    // to the current row so a partial submit doesn't zero everything out.
     let b = 100, h = 0, s = 0, pf = 0;
-    if (mode === 'structured') {
-      b = Number(basic_pct ?? 0); h = Number(hra_pct ?? 0);
-      s = Number(special_allowance_pct ?? 0); pf = Number(employer_pf_pct ?? 0);
+    if (nextMode === 'structured') {
+      b  = basic_pct  == null || basic_pct  === '' ? Number(current.basic_pct  ?? 0) : Number(basic_pct);
+      h  = hra_pct    == null || hra_pct    === '' ? Number(current.hra_pct    ?? 0) : Number(hra_pct);
+      s  = special_allowance_pct == null || special_allowance_pct === '' ? Number(current.special_allowance_pct ?? 0) : Number(special_allowance_pct);
+      pf = employer_pf_pct       == null || employer_pf_pct       === '' ? Number(current.employer_pf_pct       ?? 0) : Number(employer_pf_pct);
       const grossSum = b + h + s;
       if (Math.abs(grossSum - 100) > 0.5) {
         return res.status(400).json({ error: `Basic + HRA + Special Allowance must sum to 100% (got ${grossSum}%).` });
       }
     }
-    if (!['fixed_30', 'actual_month', 'actual_working_days'].includes(String(working_days_convention))) {
-      return res.status(400).json({ error: 'working_days_convention must be fixed_30, actual_month, or actual_working_days' });
-    }
+
+    // Working-days convention: accept the three known enum values;
+    // anything else (including undefined / '') keeps the current DB value
+    // rather than rejecting the whole save.
+    const KNOWN_WD = ['fixed_30', 'actual_month', 'actual_working_days'];
+    const nextWd: string = KNOWN_WD.includes(String(working_days_convention))
+      ? String(working_days_convention)
+      : (KNOWN_WD.includes(String(current.working_days_convention))
+          ? String(current.working_days_convention)
+          : 'actual_working_days');
+
     const actorId = req.header('x-user-id') || null;
     await sql`
       UPDATE payroll_config SET
         basic_pct=${b}, hra_pct=${h}, special_allowance_pct=${s}, employer_pf_pct=${pf},
-        working_days_convention=${working_days_convention},
-        salary_mode=${mode},
+        working_days_convention=${nextWd},
+        salary_mode=${nextMode},
         updated_by=${actorId}, updated_at=NOW()
       WHERE id='default'`;
-    res.json({ ok: true });
+    res.json({ ok: true, saved: { basic_pct: b, hra_pct: h, special_allowance_pct: s, employer_pf_pct: pf, working_days_convention: nextWd, salary_mode: nextMode } });
   } catch (err: any) { res.status(500).json({ error: err.message ?? 'Server error' }); }
 });
 
