@@ -8424,6 +8424,12 @@ function recomputePayslip(
     additions: Array<{ label: string; amount: number }>;
     deductions: Array<{ label: string; amount: number }>;
     lop_days: number; month: number; year: number;
+    // Optional per-payslip override. When set, this overrides the org-wide
+    // convention for THIS payslip only — HR needs to bump the divisor
+    // down when a company holiday falls in the month (e.g. 22 instead
+    // of 23 weekdays) or up for a special campaign week. Any positive
+    // number wins over the convention.
+    working_days_override?: number | null;
   }
 ) {
   const othersMonthly = (p.other_components ?? []).reduce((s, c) => s + Number(c.amount || 0), 0);
@@ -8432,8 +8438,10 @@ function recomputePayslip(
   // Indian mid-market default — 22-23 in a 5-day-week month. The other
   // two are still supported for orgs that pay a flat monthly (fixed_30)
   // or count calendar days (actual_month, useful for 6-day weeks).
-  const working_days =
-    cfg.working_days_convention === 'actual_working_days' ? weekdaysInMonth(p.year, p.month)
+  const override = Number(p.working_days_override ?? NaN);
+  const working_days = Number.isFinite(override) && override > 0
+    ? override
+    : cfg.working_days_convention === 'actual_working_days' ? weekdaysInMonth(p.year, p.month)
     : cfg.working_days_convention === 'actual_month' ? new Date(p.year, p.month, 0).getDate()
     : 30;
   const paid_days = Math.max(0, working_days - Number(p.lop_days));
@@ -8688,13 +8696,25 @@ app.patch('/api/payroll/payslips/:id', async (req, res) => {
     if (!ps) return res.status(404).json({ error: 'Payslip not found' });
     if (ps.run_status !== 'draft') return res.status(400).json({ error: `Run is ${ps.run_status}. Unlock it to edit payslips.` });
 
-    const { lop_days, lop_override_reason, additions, deductions, notes } = req.body ?? {};
+    const { lop_days, lop_override_reason, additions, deductions, notes, working_days } = req.body ?? {};
     // If HR changes lop_days but doesn't provide a reason (and it's
     // different from lop_days_auto), demand one — protects the audit
     // trail from silent overrides.
     const nextLop = lop_days === undefined ? Number(ps.lop_days) : Number(lop_days);
     if (nextLop !== Number(ps.lop_days_auto) && !String(lop_override_reason ?? ps.lop_override_reason ?? '').trim()) {
       return res.status(400).json({ error: 'Provide a reason when overriding the auto-computed LOP days.' });
+    }
+    // Working-days override — HR can bump this per-payslip when a
+    // company holiday reduced effective working days for the month, or
+    // when they want to run a specific person on fixed_30 while the
+    // rest of the org is on actual_working_days. Positive number wins;
+    // undefined / null / non-positive falls back to the org convention.
+    const workingDaysOverride = working_days === undefined ? Number(ps.working_days) : Number(working_days);
+    if (Number.isFinite(workingDaysOverride) && workingDaysOverride < 1) {
+      return res.status(400).json({ error: 'Working days must be at least 1.' });
+    }
+    if (nextLop > workingDaysOverride) {
+      return res.status(400).json({ error: `LOP days (${nextLop}) can't exceed working days (${workingDaysOverride}).` });
     }
     const cfg = (await sql`SELECT working_days_convention FROM payroll_config WHERE id='default'` as any[])[0] ?? { working_days_convention: 'fixed_30' };
     const nextAdditions = Array.isArray(additions) ? additions : ps.additions;
@@ -8705,6 +8725,7 @@ app.patch('/api/payroll/payslips/:id', async (req, res) => {
       other_components: ps.other_components ?? [],
       additions: nextAdditions, deductions: nextDeductions,
       lop_days: nextLop, month: ps.month, year: ps.year,
+      working_days_override: workingDaysOverride,
     });
     const rows = await sql`
       UPDATE payslips SET

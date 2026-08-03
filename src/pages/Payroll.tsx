@@ -405,6 +405,7 @@ function RunDetail({ runId, onBack }: { runId: string; onBack: () => void }) {
             <tr>
               <th className="px-4 py-2.5 text-left">Employee</th>
               <th className="px-4 py-2.5 text-right">Monthly gross</th>
+              <th className="px-4 py-2.5 text-right">Paid / Working</th>
               <th className="px-4 py-2.5 text-right">LOP (days)</th>
               <th className="px-4 py-2.5 text-right">LOP deduction</th>
               <th className="px-4 py-2.5 text-right">+ Additions</th>
@@ -415,7 +416,7 @@ function RunDetail({ runId, onBack }: { runId: string; onBack: () => void }) {
           </thead>
           <tbody className="divide-y divide-outline">
             {payslips.length === 0 ? (
-              <tr><td colSpan={8} className="px-4 py-10 text-center text-on-surface-subtle">No payslips in this run.</td></tr>
+              <tr><td colSpan={9} className="px-4 py-10 text-center text-on-surface-subtle">No payslips in this run.</td></tr>
             ) : payslips.map(p => (
               <tr key={p.id} className="hover:bg-surface-2/40">
                 <td className="px-4 py-3">
@@ -423,6 +424,10 @@ function RunDetail({ runId, onBack }: { runId: string; onBack: () => void }) {
                   <p className="text-[11px] text-on-surface-subtle">{p.designation ?? '—'}</p>
                 </td>
                 <td className="px-4 py-3 text-right num-mono">{fmtINR(p.monthly_gross)}</td>
+                <td className="px-4 py-3 text-right num-mono">
+                  <span className="font-semibold text-on-surface">{Number(p.paid_days)}</span>
+                  <span className="text-on-surface-subtle"> / {Number(p.working_days)}</span>
+                </td>
                 <td className="px-4 py-3 text-right num-mono">
                   {Number(p.lop_days)}
                   {Number(p.lop_days) !== Number(p.lop_days_auto) && (
@@ -470,6 +475,7 @@ function PayslipEditorModal({ payslip, canEdit, onClose, onSaved }:
 ) {
   const [lopDays, setLopDays] = useState<string>(String(payslip.lop_days));
   const [lopReason, setLopReason] = useState<string>(payslip.lop_override_reason ?? '');
+  const [workingDays, setWorkingDays] = useState<string>(String(payslip.working_days));
   const [additions, setAdditions] = useState<Array<{ label: string; amount: number }>>(payslip.additions ?? []);
   const [deductions, setDeductions] = useState<Array<{ label: string; amount: number }>>(payslip.deductions ?? []);
   const [notes, setNotes] = useState<string>(payslip.notes ?? '');
@@ -477,6 +483,9 @@ function PayslipEditorModal({ payslip, canEdit, onClose, onSaved }:
   const [error, setError] = useState('');
 
   const lopChanged = Number(lopDays) !== Number(payslip.lop_days_auto);
+  const wdNum = Number(workingDays);
+  const lopNum = Number(lopDays);
+  const paidPreview = Number.isFinite(wdNum) && Number.isFinite(lopNum) ? Math.max(0, wdNum - lopNum) : 0;
 
   const save = async () => {
     setBusy(true); setError('');
@@ -484,6 +493,7 @@ function PayslipEditorModal({ payslip, canEdit, onClose, onSaved }:
       const updated = await api.updatePayslip(payslip.id, {
         lop_days: Number(lopDays),
         lop_override_reason: lopChanged ? lopReason.trim() : undefined,
+        working_days: Number(workingDays),
         additions: additions.filter(a => a.label.trim() && Number(a.amount) > 0),
         deductions: deductions.filter(a => a.label.trim() && Number(a.amount) > 0),
         notes: notes.trim() || undefined,
@@ -531,28 +541,43 @@ function PayslipEditorModal({ payslip, canEdit, onClose, onSaved }:
             )}
           </div>
 
-          {/* LOP */}
+          {/* Days & LOP */}
           <div>
-            <p className="text-[10px] font-bold uppercase tracking-[0.14em] text-on-surface-subtle mb-2">Loss of Pay</p>
-            <div className="grid grid-cols-2 gap-3">
+            <p className="text-[10px] font-bold uppercase tracking-[0.14em] text-on-surface-subtle mb-2">Days & LOP</p>
+            <div className="grid grid-cols-3 gap-3">
+              <label className="block">
+                <span className="block text-[11px] text-on-surface-muted mb-1">Working days</span>
+                <input type="number" min="1" step="1" value={workingDays} disabled={!canEdit}
+                  onChange={e => setWorkingDays(e.target.value)}
+                  className="w-full num-mono px-3 py-2 rounded-lg border border-outline bg-surface text-sm text-on-surface focus:outline-none focus:ring-2 focus:ring-accent/30 disabled:opacity-60" />
+              </label>
               <label className="block">
                 <span className="block text-[11px] text-on-surface-muted mb-1">LOP days (auto: {Number(payslip.lop_days_auto)})</span>
                 <input type="number" min="0" step="0.5" value={lopDays} disabled={!canEdit}
                   onChange={e => setLopDays(e.target.value)}
                   className="w-full num-mono px-3 py-2 rounded-lg border border-outline bg-surface text-sm text-on-surface focus:outline-none focus:ring-2 focus:ring-accent/30 disabled:opacity-60" />
               </label>
-              <label className="block">
+              <div className="block">
+                <span className="block text-[11px] text-on-surface-muted mb-1">Paid days (auto)</span>
+                <div className="w-full num-mono px-3 py-2 rounded-lg border border-outline bg-surface-2/40 text-sm text-on-surface font-semibold">
+                  {paidPreview}
+                </div>
+              </div>
+            </div>
+            {lopChanged && (
+              <label className="block mt-3">
                 <span className="block text-[11px] text-on-surface-muted mb-1">
-                  Override reason {lopChanged ? <span className="text-warning">*</span> : ''}
+                  Override reason <span className="text-warning">*</span>
                 </span>
-                <input type="text" value={lopReason} disabled={!canEdit || !lopChanged}
-                  placeholder={lopChanged ? 'Why the override?' : 'Not needed — matches auto'}
+                <input type="text" value={lopReason} disabled={!canEdit}
+                  placeholder="Why the override? (visible on the audit trail)"
                   onChange={e => setLopReason(e.target.value)}
                   className="w-full px-3 py-2 rounded-lg border border-outline bg-surface text-sm text-on-surface focus:outline-none focus:ring-2 focus:ring-accent/30 disabled:opacity-60" />
               </label>
-            </div>
-            <p className="text-[11px] text-on-surface-muted mt-1">
-              Auto = unpaid-leave days + absent days (weekdays only). Working days basis: {Number(payslip.working_days)}.
+            )}
+            <p className="text-[11px] text-on-surface-muted mt-2">
+              Working days defaults from the org convention. Bump it down when a company holiday reduced the month, or up if you want to run this person on a different basis.
+              LOP days auto = unpaid-leave + absent days (weekdays only). Per-day rate = monthly ÷ working days.
             </p>
           </div>
 
@@ -582,8 +607,12 @@ function PayslipEditorModal({ payslip, canEdit, onClose, onSaved }:
               className="w-full px-3 py-2 rounded-lg border border-outline bg-surface text-sm text-on-surface focus:outline-none focus:ring-2 focus:ring-accent/30 resize-none disabled:opacity-60" />
           </label>
 
-          {/* Summary */}
+          {/* Summary — numbers below are the LAST-SAVED values. Editing
+              working/LOP days above updates the "Paid days" preview
+              live, but the deduction figures only reflect the change
+              after Save. */}
           <div className="rounded-lg border border-accent/40 bg-accent/5 p-3 space-y-1 text-sm">
+            <SumRow label={`Paid days · ${Number(payslip.paid_days)} of ${Number(payslip.working_days)}`} value="" />
             <SumRow label="Monthly gross" value={fmtINR(payslip.monthly_gross)} />
             <SumRow label={`LOP deduction (${Number(payslip.lop_days)}d)`} value={`− ${fmtINR(payslip.lop_deduction)}`} tone="danger" />
             <SumRow label="Earned gross" value={fmtINR(payslip.earned_gross)} bold />

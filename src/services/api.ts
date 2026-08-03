@@ -325,6 +325,7 @@ export const api = {
     request<{ ok: true }>(`/payroll/runs/${id}`, { method: 'DELETE' }),
   updatePayslip: (id: string, data: {
     lop_days?: number; lop_override_reason?: string;
+    working_days?: number;
     additions?: Array<{ label: string; amount: number }>;
     deductions?: Array<{ label: string; amount: number }>;
     notes?: string;
