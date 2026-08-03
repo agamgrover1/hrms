@@ -8184,12 +8184,18 @@ app.get('/api/payroll/config', async (req, res) => {
   try {
     if (!(await requireFullHR(req, res)).ok) return;
     await runStartupMigrations();
+    // No caching. Config changes need to reflect immediately across
+    // browsers — a stale cache here previously handed a client a
+    // response missing new columns (salary_mode, working_days_convention)
+    // which then round-tripped as undefined and silently no-op'd the
+    // next save.
+    res.setHeader('Cache-Control', 'no-store, must-revalidate');
     const rows = await sql`SELECT * FROM payroll_config WHERE id='default'` as any[];
     // Row is seeded on migration; if it somehow isn't, hand back
     // hardcoded defaults so the UI doesn't render an empty form.
     res.json(rows[0] ?? {
       id: 'default', basic_pct: 100, hra_pct: 0, special_allowance_pct: 0,
-      employer_pf_pct: 0, working_days_convention: 'fixed_30', salary_mode: 'flat',
+      employer_pf_pct: 0, working_days_convention: 'actual_working_days', salary_mode: 'flat',
     });
   } catch (err: any) { res.status(500).json({ error: err.message ?? 'Server error' }); }
 });

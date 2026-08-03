@@ -749,14 +749,27 @@ function PayrollConfigPanel() {
     if (!open || cfg) return;
     setLoading(true);
     api.getPayrollConfig()
-      .then(c => setCfg({
-        basic_pct: Number(c.basic_pct),
-        hra_pct: Number(c.hra_pct),
-        special_allowance_pct: Number(c.special_allowance_pct),
-        employer_pf_pct: Number(c.employer_pf_pct),
-        working_days_convention: c.working_days_convention,
-        salary_mode: c.salary_mode ?? 'flat',
-      }))
+      .then(c => {
+        // Coerce every field to a valid value on load. A stale cached
+        // response missing working_days_convention (e.g. from before that
+        // column existed) would leave cfg.working_days_convention as
+        // undefined; the select then shows the first option but nothing
+        // is actually set in state, so a subsequent Save silently ships
+        // undefined and the backend can't tell the intent. Explicit
+        // defaults short-circuit the whole class of bug.
+        const KNOWN_WD = ['fixed_30', 'actual_month', 'actual_working_days'];
+        const wd = KNOWN_WD.includes(String(c.working_days_convention))
+          ? c.working_days_convention as any
+          : 'actual_working_days';
+        setCfg({
+          basic_pct: Number(c.basic_pct ?? 100),
+          hra_pct: Number(c.hra_pct ?? 0),
+          special_allowance_pct: Number(c.special_allowance_pct ?? 0),
+          employer_pf_pct: Number(c.employer_pf_pct ?? 0),
+          working_days_convention: wd,
+          salary_mode: (c.salary_mode === 'structured' ? 'structured' : 'flat'),
+        });
+      })
       .catch(() => setMsg('Failed to load config'))
       .finally(() => setLoading(false));
   }, [open, cfg]);
@@ -770,7 +783,18 @@ function PayrollConfigPanel() {
     if (!sumOk) { setMsg(`Basic + HRA + Special must sum to 100% (currently ${grossSum}%).`); return; }
     setBusy(true); setMsg('');
     try {
-      const r = await api.updatePayrollConfig(cfg);
+      // Never ship undefined for the enum fields — a stale panel could
+      // still have them null, and JSON.stringify would drop them. Force
+      // safe fallbacks right at the call site.
+      const KNOWN_WD = ['fixed_30', 'actual_month', 'actual_working_days'];
+      const payload = {
+        ...cfg,
+        working_days_convention: (KNOWN_WD.includes(String(cfg.working_days_convention))
+          ? cfg.working_days_convention
+          : 'actual_working_days') as 'fixed_30' | 'actual_month' | 'actual_working_days',
+        salary_mode: (cfg.salary_mode === 'structured' ? 'structured' : 'flat') as 'flat' | 'structured',
+      };
+      const r = await api.updatePayrollConfig(payload);
       // Trust the SERVER's reply, not local state. If the backend
       // coerced a value (e.g. dropped an unknown enum value and kept
       // the DB value), we want the UI to reflect what actually landed
@@ -786,9 +810,11 @@ function PayrollConfigPanel() {
         });
         // Warn loudly if what the server saved differs from what the
         // user asked for — this used to fail silently and surface later
-        // as "why do my payslips still say 30 days".
-        if (r.saved.working_days_convention !== cfg.working_days_convention) {
-          setMsg(`Server saved "${r.saved.working_days_convention}" instead of "${cfg.working_days_convention}". Hard-refresh (⌘/Ctrl+Shift+R) and try again.`);
+        // as "why do my payslips still say 30 days". Compare against
+        // the SENT payload, not raw cfg, so the "you sent undefined"
+        // false-alarm case doesn't scare the user.
+        if (r.saved.working_days_convention !== payload.working_days_convention) {
+          setMsg(`Server saved "${r.saved.working_days_convention}" instead of "${payload.working_days_convention}". Hard-refresh (⌘/Ctrl+Shift+R) and try again.`);
           return;
         }
       }
