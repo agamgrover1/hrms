@@ -112,6 +112,11 @@ export default function ProjectHours() {
   const [detail, setDetail] = useState<{ employeeId: string; employeeName: string; focusWeek?: number } | null>(null);
   const [savingCell, setSavingCell] = useState<string | null>(null);
   const [view, setView] = useState<'capacity' | 'plan' | 'mine' | 'activity'>('capacity');
+  // Bulk-select state for the Plan grid — Set of assignment ids the user
+  // has ticked. Cleared on month/year/search/view change so a stale
+  // selection can't outlive its context and get deleted accidentally.
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [bulkBusy, setBulkBusy] = useState(false);
 
   // Determine viewer's identity for the "Mine" tab — direct reports + projects they review
   const [me, setMe] = useState<{ id: string; name: string } | null>(null);
@@ -235,6 +240,27 @@ export default function ProjectHours() {
     await api.deleteProjectAssignment(a.id).catch(() => {});
     load();
   };
+
+  // Bulk-delete every ticked assignment. Fires the DELETE calls in
+  // parallel — the endpoint is idempotent so partial failures leave a
+  // consistent state (the survivors reappear on reload). Once done,
+  // we clear the selection and refetch. Confirm gates against accidental
+  // wipes of a big selection.
+  const handleBulkDelete = async () => {
+    if (selectedIds.size === 0) return;
+    if (!confirm(`Remove ${selectedIds.size} assignment${selectedIds.size === 1 ? '' : 's'}? This cannot be undone.`)) return;
+    setBulkBusy(true);
+    try {
+      await Promise.all(Array.from(selectedIds).map(id =>
+        api.deleteProjectAssignment(id).catch(() => {})));
+      setSelectedIds(new Set());
+      load();
+    } finally { setBulkBusy(false); }
+  };
+
+  // Clear selection whenever the user changes what they're looking at —
+  // a selection ticked in July shouldn't survive a switch to August.
+  useEffect(() => { setSelectedIds(new Set()); }, [month, year, view, search]);
 
   const handleCopyPrev = async () => {
     const prevMonth = month === 1 ? 12 : month - 1;
@@ -416,9 +442,47 @@ export default function ProjectHours() {
       {/* ── Plan view: inline-edit spreadsheet (the original grid, no rail) ── */}
       {view === 'plan' && (
         <div className="bg-surface rounded-xl-2 border border-outline shadow-elev-1 overflow-x-auto">
+          {/* Bulk action bar — only rendered when the user has ticked at least
+              one row. Kept above the table (not sticky) so it doesn't fight
+              with the header on scroll; the row count on the left tells them
+              how many they're about to affect. */}
+          {selectedIds.size > 0 && (
+            <div className="px-4 py-2.5 border-b border-outline bg-accent/10 flex items-center justify-between gap-3 flex-wrap">
+              <p className="text-sm text-on-surface font-medium">
+                <span className="num-mono font-bold">{selectedIds.size}</span> selected
+              </p>
+              <div className="flex items-center gap-2">
+                <button onClick={() => setSelectedIds(new Set())}
+                  className="text-xs font-semibold text-on-surface-muted hover:text-on-surface px-2 py-1">
+                  Clear
+                </button>
+                <button onClick={handleBulkDelete} disabled={bulkBusy}
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-danger text-white text-xs font-semibold hover:opacity-90 disabled:opacity-50">
+                  <Trash2 size={12} /> {bulkBusy ? 'Deleting…' : `Delete ${selectedIds.size}`}
+                </button>
+              </div>
+            </div>
+          )}
           <table className="w-full text-sm">
             <thead className="bg-surface-2 border-b border-outline sticky top-0">
               <tr className="text-left text-xs font-semibold text-on-surface-muted uppercase tracking-wider">
+                <th className="pl-3 pr-1 py-3 w-9">
+                  {/* Select-all toggles every row currently rendered under
+                      the current search/sort. If all are already selected,
+                      the click clears; otherwise it ticks them all. */}
+                  <input type="checkbox"
+                    checked={sortedPlan.length > 0 && sortedPlan.every(a => selectedIds.has(a.id))}
+                    ref={el => {
+                      if (!el) return;
+                      const selectedCount = sortedPlan.filter(a => selectedIds.has(a.id)).length;
+                      el.indeterminate = selectedCount > 0 && selectedCount < sortedPlan.length;
+                    }}
+                    onChange={e => {
+                      if (e.target.checked) setSelectedIds(new Set(sortedPlan.map(a => a.id)));
+                      else setSelectedIds(new Set());
+                    }}
+                    className="w-4 h-4 rounded border-outline accent-accent cursor-pointer" />
+                </th>
                 <SortableTh label="Project"   sortKey="project_name"          current={planSort} onSort={onPlanSort} className="px-3 py-3" align="left" />
                 <SortableTh label="Employee"  sortKey="employee_name"         current={planSort} onSort={onPlanSort} className="px-3 py-3" align="left" />
                 <SortableTh label="Reporting" sortKey="project_reporting_name" current={planSort} onSort={onPlanSort} className="px-3 py-3" align="left" />
@@ -449,17 +513,29 @@ export default function ProjectHours() {
             </thead>
             <tbody className="divide-y divide-outline">
               {loading ? (
-                <tr><td colSpan={10} className="px-3 py-8 text-center text-on-surface-subtle">Loading…</td></tr>
+                <tr><td colSpan={11} className="px-3 py-8 text-center text-on-surface-subtle">Loading…</td></tr>
               ) : sortedPlan.length === 0 ? (
-                <tr><td colSpan={10} className="px-3 py-12 text-center">
+                <tr><td colSpan={11} className="px-3 py-12 text-center">
                   <ClipboardCheck size={28} className="mx-auto text-on-surface-subtle mb-2" />
                   <p className="text-sm text-on-surface-muted">No assignments for {MONTHS[month-1]} {year}.</p>
                   <p className="text-xs text-on-surface-subtle mt-0.5">Use "Add Assignment" or "Copy from previous month".</p>
                 </td></tr>
               ) : sortedPlan.map(a => {
                 const flagBg = a.project_flag === 'red' ? 'rgb(var(--danger-container) / 0.4)' : a.project_flag === 'yellow' ? 'rgb(var(--warning-container) / 0.4)' : 'transparent';
+                const isSelected = selectedIds.has(a.id);
                 return (
-                  <tr key={a.id} style={{ background: flagBg }}>
+                  <tr key={a.id} style={{ background: isSelected ? 'rgb(var(--accent) / 0.08)' : flagBg }}>
+                    <td className="pl-3 pr-1 py-2">
+                      <input type="checkbox" checked={isSelected}
+                        onChange={e => {
+                          setSelectedIds(prev => {
+                            const next = new Set(prev);
+                            if (e.target.checked) next.add(a.id); else next.delete(a.id);
+                            return next;
+                          });
+                        }}
+                        className="w-4 h-4 rounded border-outline accent-accent cursor-pointer" />
+                    </td>
                     <td className="px-3 py-2">
                       <div className="flex items-start gap-2">
                         {a.project_flag && (
