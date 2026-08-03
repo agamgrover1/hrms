@@ -3218,10 +3218,10 @@ app.put('/api/employees/:id', async (req, res) => {
     if (!(await requireFullHR(req, res)).ok) return;
     invalidateEmployeesCache();
     const { name, email, phone, department, designation, join_date, location, manager, reporting_manager_id, status, salary, ctc, biometric_id, shift, next_appraisal_month, next_appraisal_year, date_of_birth, exit_date, exit_salary_override } = req.body;
-    // Snapshot exit_date pre-update so we can hint the caller when it
-    // transitions NULL → set (that's when HR should think about
-    // starting the offboarding checklist).
-    const prior = (await sql`SELECT exit_date::text AS exit_date FROM employees WHERE id=${req.params.id} OR employee_id=${req.params.id}` as any[])[0];
+    // Snapshot exit_date + status pre-update so we can (a) hint the caller
+    // when exit_date transitions NULL → set (start offboarding), and
+    // (b) detect the exit transition to auto-clean project allocations.
+    const prior = (await sql`SELECT id, status, exit_date::text AS exit_date FROM employees WHERE id=${req.params.id} OR employee_id=${req.params.id}` as any[])[0];
     await sql`ALTER TABLE employees ADD COLUMN IF NOT EXISTS date_of_birth DATE`.catch(()=>{});
     await sql`ALTER TABLE employees ADD COLUMN IF NOT EXISTS exit_date DATE`.catch(()=>{});
     await sql`ALTER TABLE employees ADD COLUMN IF NOT EXISTS exit_salary_override NUMERIC`.catch(()=>{});
@@ -3280,7 +3280,26 @@ app.put('/api/employees/:id', async (req, res) => {
     // present doesn't nag. The frontend uses this to surface a toast
     // "Start offboarding?" that deep-links to the profile Offboarding tab.
     const offboardingHint = !prior?.exit_date && !!exit_date;
-    res.json({ ...updated, __hint_start_offboarding: offboardingHint });
+
+    // Auto-remove current + future project allocations when the employee
+    // exits. Fires on the same NULL → set transition on exit_date OR when
+    // status flips from 'active' to any non-active value. Past-month
+    // allocations stay for historical reporting; pending allocation
+    // change requests get cancelled so the coord's queue isn't cluttered
+    // with reviews for someone who's gone. Best-effort — if this fails,
+    // the update above still succeeds and HR can clean up manually via
+    // the new bulk-delete on /hours-allocations.
+    const wasActive = prior?.status === 'active';
+    const nowNotActive = status && status !== 'active';
+    const justExited = (!prior?.exit_date && !!exit_date) || (wasActive && nowNotActive);
+    let cleanedAllocations = false;
+    if (justExited && updated?.id) {
+      try {
+        await dismissFutureAssignmentsForEmployee(updated.id, updated.name);
+        cleanedAllocations = true;
+      } catch { /* non-fatal */ }
+    }
+    res.json({ ...updated, __hint_start_offboarding: offboardingHint, __cleaned_allocations: cleanedAllocations });
   } catch (err) { res.status(500).json({ error: 'Server error' }); }
 });
 
@@ -12310,6 +12329,32 @@ async function dismissFutureAssignments(projectId: string) {
       AND (year > ${y} OR (year = ${y} AND month >= ${m}))`;
 }
 
+// Mirror of dismissFutureAssignments for the exit-of-employee side. Fires
+// when an employee's status flips to inactive/offboarded OR when their
+// exit_date is set for the first time. Wipes current-month + future
+// project_assignments so the coordinator doesn't see stale rows against
+// people who've left. Past-month rows stay for historical reporting +
+// payroll history. Any pending allocation_change_requests targeting the
+// same employee get cancelled so they don't linger in the approval queue.
+async function dismissFutureAssignmentsForEmployee(employeeId: string, actorName?: string | null) {
+  const now = new Date();
+  const m = now.getMonth() + 1;
+  const y = now.getFullYear();
+  await sql`
+    DELETE FROM project_assignments
+    WHERE employee_id = ${employeeId}
+      AND (year > ${y} OR (year = ${y} AND month >= ${m}))`.catch(()=>{});
+  // Kill any pending allocation change requests — the employee is gone,
+  // there's no point in a coord reviewing / approving these.
+  await sql`
+    UPDATE allocation_change_requests SET
+      status='cancelled',
+      cancelled_by=${actorName ?? 'system: employee exit'},
+      cancelled_at=NOW(),
+      cancellation_reason='Employee exited — future allocations auto-removed.'
+    WHERE employee_id=${employeeId} AND status='pending'`.catch(()=>{});
+}
+
 app.delete('/api/projects/:id', async (req, res) => {
   try {
     invalidateProjectsCache();
@@ -14353,6 +14398,45 @@ app.get('/api/hours/allocations', async (req, res) => {
 // Body: { project_id, year, week_num, target_hours?, actual_override?, notes? }
 // Any field left undefined is preserved. target_hours=0 clears the target.
 // Coordinator / admin only.
+// One-shot cleanup: for every employee whose status is non-active OR who
+// has an exit_date on/before today, remove their current-month + future
+// project allocations. Idempotent — running it twice removes 0 rows on
+// the second call. Meant for the "we already have exited people with
+// stale allocations" case; going forward, dismissFutureAssignmentsForEmployee
+// runs automatically on the exit transition.
+app.post('/api/hours-allocations/cleanup-inactive', async (req, res) => {
+  try {
+    if (!(await requireAdmin(req, res))) return;
+    const now = new Date();
+    const m = now.getMonth() + 1;
+    const y = now.getFullYear();
+    const today = now.toISOString().slice(0, 10);
+    // Collect targets first so we can report + cancel pending requests
+    // per employee.
+    const exited = await sql`
+      SELECT id, name FROM employees
+      WHERE status <> 'active'
+         OR (exit_date IS NOT NULL AND exit_date <= ${today}::date)` as any[];
+    let removed = 0;
+    for (const e of exited) {
+      const r = await sql`
+        DELETE FROM project_assignments
+        WHERE employee_id=${e.id}
+          AND (year > ${y} OR (year = ${y} AND month >= ${m}))
+        RETURNING id` as any[];
+      removed += r.length;
+      await sql`
+        UPDATE allocation_change_requests SET
+          status='cancelled',
+          cancelled_by='system: cleanup-inactive',
+          cancelled_at=NOW(),
+          cancellation_reason='Employee exited — future allocations auto-removed.'
+        WHERE employee_id=${e.id} AND status='pending'`.catch(()=>{});
+    }
+    res.json({ ok: true, employees_checked: exited.length, allocations_removed: removed });
+  } catch (err: any) { res.status(500).json({ error: err.message ?? 'Server error' }); }
+});
+
 app.put('/api/hours/allocations', async (req, res) => {
   try {
     await runStartupMigrations();

@@ -306,6 +306,21 @@ export default function ProjectHours() {
           className="inline-flex items-center gap-2 px-3 py-2.5 rounded-lg text-sm font-medium border border-outline bg-surface-2 text-on-surface hover:bg-surface-3 transition-colors">
           <Copy size={14} /> Copy from previous month
         </button>
+        {role === 'admin' && (
+          <button
+            onClick={async () => {
+              if (!confirm('Remove all current + future project allocations for every exited / inactive employee?\n\nPast-month allocations stay for history. Going forward this runs automatically on exit.')) return;
+              try {
+                const r = await api.cleanupInactiveAllocations();
+                alert(`Cleaned up ${r.allocations_removed} allocation${r.allocations_removed === 1 ? '' : 's'} across ${r.employees_checked} exited employee${r.employees_checked === 1 ? '' : 's'}.`);
+                load();
+              } catch (e: any) { alert(e?.message ?? 'Cleanup failed'); }
+            }}
+            title="One-shot: remove current + future allocations for anyone whose status is not active"
+            className="inline-flex items-center gap-2 px-3 py-2.5 rounded-lg text-sm font-medium border border-outline bg-surface-2 text-on-surface-muted hover:bg-surface-3 transition-colors">
+            <Trash2 size={14} /> Cleanup exited
+          </button>
+        )}
         <button onClick={() => setShowAdd(true)}
           className="inline-flex items-center gap-2 px-4 py-2.5 rounded-lg text-sm font-semibold bg-accent text-on-accent">
           <Plus size={15} /> Add Assignment

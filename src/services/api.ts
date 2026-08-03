@@ -650,6 +650,10 @@ export const api = {
     w1_hours?: number; w2_hours?: number; w3_hours?: number; w4_hours?: number; w5_hours?: number; notes?: string;
   }) => request<any>(`/project-assignments/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
   deleteProjectAssignment: (id: string) => request<any>(`/project-assignments/${id}`, { method: 'DELETE' }),
+  cleanupInactiveAllocations: () =>
+    request<{ ok: true; employees_checked: number; allocations_removed: number }>(
+      '/hours-allocations/cleanup-inactive', { method: 'POST', body: '{}' }
+    ),
   copyAssignmentsMonth: (data: { from_month: number; from_year: number; to_month: number; to_year: number; blank_hours?: boolean; created_by?: string }) =>
     request<{ success: boolean; copied: number }>('/project-assignments/copy-month', { method: 'POST', body: JSON.stringify(data) }),
 
