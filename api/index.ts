@@ -8405,51 +8405,144 @@ async function resolveSalaryStructureAt(employeeId: string, dateISO: string) {
 }
 
 // Compute LOP days for one employee in a given month.
-// Signals:
-//   - Approved leave_requests of type 'unpaid' overlapping the month
-//   - Attendance rows in the month with status 'absent' or 'lop'
-//     (weekends / Sundays are excluded by matching only Mon-Fri dates)
-// Half-days (short_leave etc) don't reduce pay in the current policy;
-// only fully-unpaid days count. HR can always override on the payslip.
+//
+// Rule of thumb: an approved leave / WFH ALWAYS wins over attendance
+// state. So we build two per-date sets from the leave + wfh tables
+// (the source of truth for time-off decisions), then treat attendance
+// only as a fallback signal for days that have no leave / WFH cover:
+//
+//   * covered_by_paid  = approved non-unpaid leave OR approved WFH
+//                        → these days are paid, cannot be LOP
+//   * covered_by_unpaid = approved unpaid leave → these count as LOP
+//   * absent_uncovered = attendance status IN (absent, lop) AND the
+//                        date isn't in either covered set → LOP
+//
+// This means a stale attendance row (biometric marked 'absent' after
+// leave was approved but before the sync fix landed) can no longer
+// double as LOP — the leave record trumps. Weekends are excluded from
+// LOP everywhere.
 async function computeLopDays(employeeId: string, month: number, year: number): Promise<number> {
+  const detail = await computeLopDaysDetailed(employeeId, month, year);
+  return detail.total;
+}
+
+// Same math as computeLopDays, but returns the per-day breakdown too
+// so the /lop-explain endpoint can use one code path (avoids drift
+// between "what the calculator does" and "what we tell HR happened").
+async function computeLopDaysDetailed(employeeId: string, month: number, year: number) {
   const firstDay = `${year}-${String(month).padStart(2, '0')}-01`;
   const lastDate = new Date(year, month, 0).getDate();
   const lastDay = `${year}-${String(month).padStart(2, '0')}-${String(lastDate).padStart(2, '0')}`;
 
-  // Unpaid leave days within the month. Approved-only.
-  const leaves = (await sql`
-    SELECT from_date, to_date, days FROM leave_requests
+  // All approved leaves that overlap the month. We keep BOTH the type
+  // and the covering window so the classifier can distinguish "paid
+  // leave" (skip) from "unpaid leave" (LOP).
+  const leaves = await sql`
+    SELECT type, from_date::text AS from_date, to_date::text AS to_date, status
+    FROM leave_requests
     WHERE employee_id=${employeeId}
-      AND type='unpaid'
       AND status='approved'
       AND from_date <= ${lastDay}::date
-      AND to_date >= ${firstDay}::date` as any[]);
-  let leaveDays = 0;
-  for (const l of leaves) {
-    // Clip the leave window to the month.
-    const from = new Date(String(l.from_date).slice(0, 10) + 'T00:00:00Z');
-    const to   = new Date(String(l.to_date).slice(0, 10)   + 'T00:00:00Z');
+      AND to_date   >= ${firstDay}::date` as any[];
+  // All approved WFH days in the month.
+  const wfh = await sql`
+    SELECT date::text AS date
+    FROM wfh_requests
+    WHERE employee_id=${employeeId}
+      AND status='approved'
+      AND date BETWEEN ${firstDay}::date AND ${lastDay}::date` as any[];
+  // Attendance rows in the month that we'd otherwise call LOP.
+  const att = await sql`
+    SELECT date::text AS date, status, source
+    FROM attendance_records
+    WHERE employee_id=${employeeId}
+      AND date BETWEEN ${firstDay}::date AND ${lastDay}::date` as any[];
+  const attByDate = new Map<string, { status: string; source: string | null }>();
+  for (const a of att) attByDate.set(String(a.date).slice(0, 10), { status: a.status, source: a.source });
+
+  // Build per-date coverage.
+  const paidCover = new Map<string, { type: string }>();   // date → leave/wfh that pays
+  const unpaidCover = new Map<string, { type: string }>(); // date → unpaid leave that LOPs
+
+  const walkDays = (fromISO: string, toISO: string, apply: (iso: string) => void) => {
     const monthStart = new Date(firstDay + 'T00:00:00Z');
     const monthEnd   = new Date(lastDay  + 'T00:00:00Z');
-    const start = from < monthStart ? monthStart : from;
-    const end   = to   > monthEnd   ? monthEnd   : to;
-    // Count weekdays only.
-    for (let d = new Date(start); d <= end; d.setUTCDate(d.getUTCDate() + 1)) {
+    const fromD = new Date(fromISO + 'T00:00:00Z');
+    const toD   = new Date(toISO   + 'T00:00:00Z');
+    const s = fromD < monthStart ? monthStart : fromD;
+    const e = toD   > monthEnd   ? monthEnd   : toD;
+    for (let d = new Date(s); d <= e; d.setUTCDate(d.getUTCDate() + 1)) {
       const dow = d.getUTCDay();
-      if (dow !== 0 && dow !== 6) leaveDays += 1;
+      if (dow === 0 || dow === 6) continue;
+      apply(d.toISOString().slice(0, 10));
+    }
+  };
+  for (const l of leaves) {
+    const from = String(l.from_date).slice(0, 10);
+    const to   = String(l.to_date).slice(0, 10);
+    if (l.type === 'unpaid') {
+      walkDays(from, to, iso => unpaidCover.set(iso, { type: l.type }));
+    } else {
+      walkDays(from, to, iso => paidCover.set(iso, { type: l.type }));
     }
   }
+  for (const w of wfh) {
+    const iso = String(w.date).slice(0, 10);
+    // Reuse walkDays for the weekend/window checks even though wfh is single-day.
+    walkDays(iso, iso, day => paidCover.set(day, { type: 'wfh' }));
+  }
 
-  // Explicit LOP-marked attendance days within the month.
-  const abs = (await sql`
-    SELECT COUNT(*)::int AS n FROM attendance_records
-    WHERE employee_id=${employeeId}
-      AND date BETWEEN ${firstDay}::date AND ${lastDay}::date
-      AND status IN ('absent','lop')
-      AND EXTRACT(DOW FROM date) NOT IN (0, 6)` as any[])[0];
-  const absDays = Number(abs?.n ?? 0);
+  // Now classify every weekday. Unpaid > absent > paid > default.
+  const details: Array<{
+    date: string; weekday: string; is_weekend: boolean;
+    counted: 'lop' | 'ok'; reason: string;
+    att_status: string | null; att_source: string | null;
+    leave: Array<{ type: string; status: string }> | null;
+  }> = [];
+  let lop = 0;
+  for (let d = 1; d <= lastDate; d++) {
+    const iso = `${year}-${String(month).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
+    const dow = new Date(Date.UTC(year, month - 1, d)).getUTCDay();
+    const isWeekend = dow === 0 || dow === 6;
+    const paid = paidCover.get(iso);
+    const unpaid = unpaidCover.get(iso);
+    const attRow = attByDate.get(iso);
+    const coveringLeaves = leaves
+      .filter(l => String(l.from_date).slice(0, 10) <= iso && String(l.to_date).slice(0, 10) >= iso)
+      .map(l => ({ type: l.type, status: l.status }));
 
-  return leaveDays + absDays;
+    let counted: 'lop' | 'ok' = 'ok';
+    let reason = '';
+    if (isWeekend) {
+      reason = 'Weekend — skipped';
+    } else if (unpaid && !paid) {
+      counted = 'lop';
+      reason = `Approved UNPAID leave (${unpaid.type})`;
+    } else if (paid) {
+      // Paid leave / WFH beats a stale 'absent' attendance row.
+      reason = paid.type === 'wfh'
+        ? 'Approved WFH — paid'
+        : `Covered by approved ${paid.type} leave`;
+    } else if (attRow && ['absent', 'lop'].includes(attRow.status)) {
+      counted = 'lop';
+      reason = `Attendance marked "${attRow.status}"${attRow.source ? ` (source: ${attRow.source})` : ''} — no covering paid leave / WFH`;
+    } else if (attRow) {
+      reason = `Attendance: ${attRow.status}${attRow.source ? ` (${attRow.source})` : ''}`;
+    } else {
+      reason = 'No attendance record, no leave — not counted (default present)';
+    }
+    if (counted === 'lop') lop += 1;
+    details.push({
+      date: iso,
+      weekday: ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'][dow],
+      is_weekend: isWeekend,
+      counted, reason,
+      att_status: attRow?.status ?? null,
+      att_source: attRow?.source ?? null,
+      leave: coveringLeaves.length ? coveringLeaves : null,
+    });
+  }
+  return { total: lop, days: details };
 }
 
 // Count Mon-Fri days in the (year, month) window. Excludes Saturdays and
@@ -8882,78 +8975,16 @@ app.get('/api/payroll/payslips/:id/lop-explain', async (req, res) => {
     if (!(await requireFullHR(req, res)).ok) return;
     const ps = (await sql`SELECT id, employee_id, employee_name, month, year FROM payslips WHERE id=${req.params.id}` as any[])[0];
     if (!ps) return res.status(404).json({ error: 'Payslip not found' });
-    const firstDay = `${ps.year}-${String(ps.month).padStart(2, '0')}-01`;
-    const lastDate = new Date(ps.year, ps.month, 0).getDate();
-    const lastDay = `${ps.year}-${String(ps.month).padStart(2, '0')}-${String(lastDate).padStart(2, '0')}`;
-
-    // Pull raw signals for the whole month up-front so we don't hit the
-    // DB per-day (31 round-trips would be silly).
-    const leaves = await sql`
-      SELECT type, status, from_date::text AS from_date, to_date::text AS to_date, rejection_reason
-      FROM leave_requests
-      WHERE employee_id=${ps.employee_id}
-        AND from_date <= ${lastDay}::date
-        AND to_date   >= ${firstDay}::date` as any[];
-    const att = await sql`
-      SELECT date::text AS date, status, source
-      FROM attendance_records
-      WHERE employee_id=${ps.employee_id}
-        AND date BETWEEN ${firstDay}::date AND ${lastDay}::date` as any[];
-    const attByDate = new Map<string, any>();
-    for (const a of att) attByDate.set(String(a.date).slice(0, 10), a);
-
-    // Walk every day in the month; classify.
-    const days: any[] = [];
-    let lop = 0;
-    for (let d = 1; d <= lastDate; d++) {
-      const iso = `${ps.year}-${String(ps.month).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
-      const dow = new Date(Date.UTC(ps.year, ps.month - 1, d)).getUTCDay();
-      const isWeekend = dow === 0 || dow === 6;
-      const attRow = attByDate.get(iso);
-      const covering = leaves.filter(l =>
-        String(l.from_date).slice(0, 10) <= iso &&
-        String(l.to_date).slice(0, 10)   >= iso);
-      // The calculator's two LOP branches, replicated:
-      //   1. Approved unpaid leave that covers this date (weekdays only)
-      //   2. Attendance status in ('absent','lop') (weekdays only)
-      const unpaidLeave = covering.find(l => l.type === 'unpaid' && l.status === 'approved');
-      const attIsLop = attRow && ['absent', 'lop'].includes(attRow.status);
-      let counted: 'lop' | 'ok' = 'ok';
-      let reason = '';
-      if (isWeekend) {
-        reason = 'Weekend — skipped';
-      } else if (unpaidLeave) {
-        counted = 'lop';
-        reason = `Approved UNPAID leave (${String(unpaidLeave.from_date).slice(0,10)}→${String(unpaidLeave.to_date).slice(0,10)})`;
-      } else if (attIsLop) {
-        counted = 'lop';
-        reason = `Attendance marked "${attRow.status}"${attRow.source ? ` (source: ${attRow.source})` : ''} — no covering paid leave / WFH`;
-      } else if (covering.length > 0) {
-        const c = covering[0];
-        reason = `Covered by ${c.status} ${c.type} leave (${String(c.from_date).slice(0,10)}→${String(c.to_date).slice(0,10)})`;
-      } else if (attRow) {
-        reason = `Attendance: ${attRow.status}${attRow.source ? ` (${attRow.source})` : ''}`;
-      } else {
-        reason = 'No attendance record, no leave — not counted (default present)';
-      }
-      if (counted === 'lop') lop += 1;
-      days.push({
-        date: iso,
-        weekday: ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'][dow],
-        is_weekend: isWeekend,
-        counted,
-        reason,
-        att_status: attRow?.status ?? null,
-        att_source: attRow?.source ?? null,
-        leave: covering.length ? covering.map(l => ({ type: l.type, status: l.status })) : null,
-      });
-    }
+    // Single source of truth — same helper the payroll run uses to
+    // snapshot lop_days_auto. Any drift between "what the calculator
+    // counts" and "what we tell HR happened" is a bug.
+    const detail = await computeLopDaysDetailed(ps.employee_id, ps.month, ps.year);
     res.json({
       employee_id: ps.employee_id,
       employee_name: ps.employee_name,
       month: ps.month, year: ps.year,
-      lop_days_computed: lop,
-      days,
+      lop_days_computed: detail.total,
+      days: detail.days,
     });
   } catch (err: any) { res.status(500).json({ error: err.message ?? 'Server error' }); }
 });
