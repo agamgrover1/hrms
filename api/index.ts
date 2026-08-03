@@ -14406,7 +14406,11 @@ app.get('/api/hours/allocations', async (req, res) => {
 // runs automatically on the exit transition.
 app.post('/api/hours-allocations/cleanup-inactive', async (req, res) => {
   try {
-    if (!(await requireAdmin(req, res))) return;
+    // Admin + PC both own the allocation grid, so both can trigger the
+    // cleanup. HR is intentionally excluded — they own people-ops
+    // (exit_date, status) but not the allocation surface itself.
+    const gate = await requireAdminOrCoord(req, res);
+    if (!gate.ok) return;
     const now = new Date();
     const m = now.getMonth() + 1;
     const y = now.getFullYear();
