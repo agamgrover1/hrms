@@ -320,6 +320,18 @@ function RunDetail({ runId, onBack }: { runId: string; onBack: () => void }) {
     catch (e: any) { toast.error('Unlock failed', e?.message); }
   };
 
+  const resyncWd = async () => {
+    if (!window.confirm(
+      'Re-snapshot Working days on every payslip in this draft using the current Payroll setting?\n\n' +
+      'LOP days, additions, deductions, and notes are preserved. Only working_days and the downstream totals get recomputed.'
+    )) return;
+    try {
+      const r = await api.resyncPayrollRunWorkingDays(runId);
+      toast.success('Resynced', `${r.updated} payslip${r.updated === 1 ? '' : 's'} updated to "${r.convention}".`);
+      load();
+    } catch (e: any) { toast.error('Resync failed', e?.message); }
+  };
+
   if (loading || !data) {
     return <div className="h-60 rounded-xl-2 bg-surface-2 animate-pulse" />;
   }
@@ -354,10 +366,17 @@ function RunDetail({ runId, onBack }: { runId: string; onBack: () => void }) {
         </div>
         <div className="flex items-center gap-2">
           {run.status === 'draft' && (
-            <button onClick={finalize}
-              className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg bg-accent text-on-accent text-sm font-semibold hover:opacity-90">
-              <Lock size={13} /> Finalize
-            </button>
+            <>
+              <button onClick={resyncWd}
+                title="Recompute Working days on every payslip using the current setting"
+                className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg text-sm font-semibold text-on-surface border border-outline hover:bg-surface-2">
+                <Settings size={13} /> Resync working days
+              </button>
+              <button onClick={finalize}
+                className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg bg-accent text-on-accent text-sm font-semibold hover:opacity-90">
+                <Lock size={13} /> Finalize
+              </button>
+            </>
           )}
           {run.status === 'finalized' && (
             <>

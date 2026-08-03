@@ -317,6 +317,10 @@ export const api = {
     ),
   finalizePayrollRun: (id: string) =>
     request<{ ok: true }>(`/payroll/runs/${id}/finalize`, { method: 'PATCH', body: '{}' }),
+  resyncPayrollRunWorkingDays: (id: string) =>
+    request<{ ok: true; updated: number; convention: string }>(
+      `/payroll/runs/${id}/resync-working-days`, { method: 'PATCH', body: '{}' }
+    ),
   unlockPayrollRun: (id: string, reason: string) =>
     request<{ ok: true }>(`/payroll/runs/${id}/unlock`, { method: 'PATCH', body: JSON.stringify({ reason }) }),
   distributePayrollRun: (id: string) =>

@@ -8631,6 +8631,47 @@ app.post('/api/payroll/runs', async (req, res) => {
   } catch (err: any) { res.status(500).json({ error: err.message ?? 'Server error' }); }
 });
 
+// Re-snapshot working_days for every payslip in a DRAFT run using the
+// current org convention. Doesn't touch salary snapshot, LOP overrides,
+// additions/deductions, or notes — only the working_days divisor (and
+// the derived paid_days / lop_deduction / earned_gross / net_pay).
+// Meant for the "I changed the convention after creating the run" case,
+// so HR doesn't have to delete + recreate and lose manual edits.
+app.patch('/api/payroll/runs/:id/resync-working-days', async (req, res) => {
+  try {
+    const gate = await requireFullHR(req, res);
+    if (!gate.ok) return;
+    const run = (await sql`SELECT id, status FROM payroll_runs WHERE id=${req.params.id}` as any[])[0];
+    if (!run) return res.status(404).json({ error: 'Run not found' });
+    if (run.status !== 'draft') return res.status(400).json({ error: `Run is ${run.status}. Unlock it first if you need to resync.` });
+    const cfg = (await sql`SELECT working_days_convention FROM payroll_config WHERE id='default'` as any[])[0] ?? { working_days_convention: 'actual_working_days' };
+    const payslips = await sql`SELECT * FROM payslips WHERE payroll_run_id=${req.params.id}` as any[];
+    let updated = 0;
+    for (const ps of payslips) {
+      const derived = recomputePayslip(cfg, {
+        basic: Number(ps.basic), hra: Number(ps.hra),
+        special_allowance: Number(ps.special_allowance), employer_pf: Number(ps.employer_pf),
+        other_components: ps.other_components ?? [],
+        additions: ps.additions ?? [], deductions: ps.deductions ?? [],
+        lop_days: Number(ps.lop_days), month: ps.month, year: ps.year,
+        // No override — force the current convention.
+        working_days_override: null,
+      });
+      await sql`
+        UPDATE payslips SET
+          working_days=${derived.working_days}, paid_days=${derived.paid_days},
+          monthly_gross=${derived.monthly_gross}, lop_deduction=${derived.lop_deduction},
+          earned_gross=${derived.earned_gross},
+          additions_total=${derived.additions_total}, deductions_total=${derived.deductions_total},
+          net_pay=${derived.net_pay},
+          updated_at=NOW()
+        WHERE id=${ps.id}`.catch(()=>{});
+      updated += 1;
+    }
+    res.json({ ok: true, updated, convention: cfg.working_days_convention });
+  } catch (err: any) { res.status(500).json({ error: err.message ?? 'Server error' }); }
+});
+
 app.patch('/api/payroll/runs/:id/finalize', async (req, res) => {
   try {
     const gate = await requireFullHR(req, res);
