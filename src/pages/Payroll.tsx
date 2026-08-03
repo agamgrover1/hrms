@@ -679,7 +679,7 @@ function PayslipEditorModal({ payslip, canEdit, onClose, onSaved }:
                                 {l.from_date.slice(5)} → {l.to_date.slice(5)}
                               </span>
                               <span className="flex-1 text-on-surface">
-                                {l.type} · manager: <span className="text-on-surface-muted">{l.manager_status}{l.manager_name ? ` (${l.manager_name})` : ''}</span>
+                                {(l.type as string).split('_').map(w => w[0].toUpperCase() + w.slice(1)).join(' ')} · manager: <span className="text-on-surface-muted">{l.manager_status}{l.manager_name ? ` (${l.manager_name})` : ''}</span>
                                 {l.hr_actioner_name && <> · HR: <span className="text-on-surface-muted">{l.hr_actioner_name}</span></>}
                               </span>
                             </li>

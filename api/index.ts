@@ -8426,6 +8426,25 @@ async function computeLopDays(employeeId: string, month: number, year: number): 
   return detail.total;
 }
 
+// Human-readable label for a leave type key. Keeps "full_day" from
+// leaking into HR-facing text as "full_day" (looks like a code, not a
+// label). Falls back to a title-cased version of unknown keys so a
+// future custom type doesn't render as raw snake_case.
+function formatLeaveType(k: string): string {
+  const map: Record<string, string> = {
+    full_day: 'Full-day',
+    half_day: 'Half-day',
+    short_leave: 'Short leave',
+    unpaid: 'Unpaid',
+    casual: 'Casual',
+    sick: 'Sick',
+    earned: 'Earned',
+    optional: 'Optional holiday',
+    wfh: 'WFH',
+  };
+  return map[k] ?? k.split('_').map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(' ');
+}
+
 // Same math as computeLopDays, but returns the per-day breakdown too
 // so the /lop-explain endpoint can use one code path (avoids drift
 // between "what the calculator does" and "what we tell HR happened").
@@ -8434,18 +8453,21 @@ async function computeLopDaysDetailed(employeeId: string, month: number, year: n
   const lastDate = new Date(year, month, 0).getDate();
   const lastDay = `${year}-${String(month).padStart(2, '0')}-${String(lastDate).padStart(2, '0')}`;
 
-  // Resolve the employee to BOTH id forms — payslip.employee_id is the
-  // internal uuid, but leave_requests / wfh_requests / attendance_records
-  // historically accept either the internal id OR the human code
-  // (employees.employee_id). A leave filed under one form and a payslip
-  // built from the other used to silently miss the join → false LOP.
+  // Canonicalise on the internal employees.id (the "DL identifier" HR
+  // uses everywhere) before any join, then include the human code as
+  // fallback for legacy rows filed against it. Historical data has both
+  // forms floating around — leave_requests / wfh_requests /
+  // attendance_records accept either — but the internal id is the one
+  // payroll runs snapshot, so it's the authoritative match. The code
+  // form only gets included so a leave filed the old way isn't missed.
   const empRow = (await sql`
     SELECT id, employee_id FROM employees
     WHERE id=${employeeId} OR employee_id=${employeeId}
     LIMIT 1` as any[])[0];
-  const idForms = [employeeId];
-  if (empRow?.id && !idForms.includes(empRow.id)) idForms.push(empRow.id);
+  const idForms: string[] = [];
+  if (empRow?.id) idForms.push(empRow.id);
   if (empRow?.employee_id && !idForms.includes(empRow.employee_id)) idForms.push(empRow.employee_id);
+  if (!idForms.length) idForms.push(employeeId); // last resort — no employee row found
 
   // All approved leaves that overlap the month. We keep BOTH the type
   // and the covering window so the classifier can distinguish "paid
@@ -8530,19 +8552,20 @@ async function computeLopDaysDetailed(employeeId: string, month: number, year: n
       reason = 'Weekend — skipped';
     } else if (unpaid && !paid) {
       counted = 'lop';
-      reason = `Approved UNPAID leave (${unpaid.type})`;
+      reason = `Approved unpaid leave (${formatLeaveType(unpaid.type)})`;
     } else if (paid) {
       // Paid leave / WFH beats a stale 'absent' attendance row.
       reason = paid.type === 'wfh'
         ? 'Approved WFH — paid'
-        : `Covered by approved ${paid.type} leave`;
+        : `Covered by approved ${formatLeaveType(paid.type)} leave`;
     } else if (attRow && ['absent', 'lop'].includes(attRow.status)) {
       counted = 'lop';
-      reason = `Attendance marked "${attRow.status}"${attRow.source ? ` (source: ${attRow.source})` : ''} — no covering paid leave / WFH`;
+      const statusLabel = attRow.status === 'lop' ? 'LOP' : 'Absent';
+      reason = `Attendance marked ${statusLabel}${attRow.source ? ` (${attRow.source})` : ''} — no approved leave / WFH covers this date`;
     } else if (attRow) {
       reason = `Attendance: ${attRow.status}${attRow.source ? ` (${attRow.source})` : ''}`;
     } else {
-      reason = 'No attendance record, no leave — not counted (default present)';
+      reason = 'No attendance record, no leave — treated as present';
     }
     if (counted === 'lop') lop += 1;
     details.push({
