@@ -343,6 +343,16 @@ export const api = {
     return request<any[]>(`/payroll/payslips${qs}`);
   },
   getPayslip: (id: string) => request<any>(`/payroll/payslips/${id}`),
+  explainPayslipLop: (id: string) => request<{
+    employee_id: string; employee_name: string; month: number; year: number;
+    lop_days_computed: number;
+    days: Array<{
+      date: string; weekday: string; is_weekend: boolean;
+      counted: 'lop' | 'ok'; reason: string;
+      att_status: string | null; att_source: string | null;
+      leave: Array<{ type: string; status: string }> | null;
+    }>;
+  }>(`/payroll/payslips/${id}/lop-explain`),
 
   // Performance (legacy goals/reviews)
   getGoals: (employee_id?: string) => {

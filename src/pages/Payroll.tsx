@@ -500,6 +500,19 @@ function PayslipEditorModal({ payslip, canEdit, onClose, onSaved }:
   const [notes, setNotes] = useState<string>(payslip.notes ?? '');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
+  // Per-day LOP breakdown — lazy-loaded when the reviewer clicks "Why?".
+  // Answers "why did Abhishek get LOP even though his paid leave was
+  // approved" by showing each day's leave + attendance state and how
+  // the classifier decided.
+  const [lopExplain, setLopExplain] = useState<any | null>(null);
+  const [lopExplainLoading, setLopExplainLoading] = useState(false);
+  const loadLopExplain = async () => {
+    if (lopExplain) { setLopExplain(null); return; }
+    setLopExplainLoading(true);
+    try { setLopExplain(await api.explainPayslipLop(payslip.id)); }
+    catch (e: any) { toast.error('Explain failed', e?.message); }
+    finally { setLopExplainLoading(false); }
+  };
 
   const lopChanged = Number(lopDays) !== Number(payslip.lop_days_auto);
   const wdNum = Number(workingDays);
@@ -562,7 +575,13 @@ function PayslipEditorModal({ payslip, canEdit, onClose, onSaved }:
 
           {/* Days & LOP */}
           <div>
-            <p className="text-[10px] font-bold uppercase tracking-[0.14em] text-on-surface-subtle mb-2">Days & LOP</p>
+            <div className="flex items-center justify-between mb-2">
+              <p className="text-[10px] font-bold uppercase tracking-[0.14em] text-on-surface-subtle">Days & LOP</p>
+              <button type="button" onClick={loadLopExplain} disabled={lopExplainLoading}
+                className="text-[11px] font-semibold text-accent hover:underline disabled:opacity-50">
+                {lopExplainLoading ? 'Loading…' : (lopExplain ? 'Hide details' : 'Why this LOP?')}
+              </button>
+            </div>
             <div className="grid grid-cols-3 gap-3">
               <label className="block">
                 <span className="block text-[11px] text-on-surface-muted mb-1">Working days</span>
@@ -598,6 +617,35 @@ function PayslipEditorModal({ payslip, canEdit, onClose, onSaved }:
               Working days defaults from the org convention. Bump it down when a company holiday reduced the month, or up if you want to run this person on a different basis.
               LOP days auto = unpaid-leave + absent days (weekdays only). Per-day rate = monthly ÷ working days.
             </p>
+
+            {/* Per-day LOP breakdown — only weekdays; each row shows the
+                classifier's reasoning. LOP-counted rows highlighted red,
+                paid-leave / WFH rows in green, weekends collapsed to a
+                summary count so the list stays scannable. */}
+            {lopExplain && (
+              <div className="mt-3 rounded-lg border border-outline bg-surface-2/40 overflow-hidden">
+                <div className="px-3 py-2 border-b border-outline bg-surface-2 text-[11px] text-on-surface-muted">
+                  <span className="font-semibold text-on-surface">Auto-computed LOP: {lopExplain.lop_days_computed}</span>
+                  {' · '}checked {lopExplain.days.filter((d: any) => !d.is_weekend).length} weekdays in {MONTHS[lopExplain.month - 1]} {lopExplain.year}
+                </div>
+                <ul className="divide-y divide-outline max-h-64 overflow-y-auto text-[12px]">
+                  {lopExplain.days.filter((d: any) => !d.is_weekend).map((d: any) => (
+                    <li key={d.date}
+                      className={`px-3 py-1.5 flex items-start gap-2 ${d.counted === 'lop' ? 'bg-danger-container/30' : ''}`}>
+                      <span className="w-24 shrink-0 num-mono text-on-surface-muted">
+                        {d.weekday} {d.date.slice(8, 10)}
+                      </span>
+                      <span className={`w-14 shrink-0 text-[10px] font-bold uppercase tracking-wider ${
+                        d.counted === 'lop' ? 'text-danger' : 'text-success'
+                      }`}>
+                        {d.counted === 'lop' ? 'LOP' : 'Paid'}
+                      </span>
+                      <span className="flex-1 text-on-surface">{d.reason}</span>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
           </div>
 
           {/* Additions */}

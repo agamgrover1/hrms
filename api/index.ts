@@ -8816,6 +8816,92 @@ app.patch('/api/payroll/payslips/:id', async (req, res) => {
   } catch (err: any) { res.status(500).json({ error: err.message ?? 'Server error' }); }
 });
 
+// Explain the LOP number: walks every weekday in the month, joins each
+// against the employee's leave_requests + attendance_records, and
+// classifies why the calculator did (or didn't) count that day.
+// Answers questions like "Abhishek's July shows LOP 1, but he was on
+// approved paid leave — why?" without HR having to open psql.
+app.get('/api/payroll/payslips/:id/lop-explain', async (req, res) => {
+  try {
+    if (!(await requireFullHR(req, res)).ok) return;
+    const ps = (await sql`SELECT id, employee_id, employee_name, month, year FROM payslips WHERE id=${req.params.id}` as any[])[0];
+    if (!ps) return res.status(404).json({ error: 'Payslip not found' });
+    const firstDay = `${ps.year}-${String(ps.month).padStart(2, '0')}-01`;
+    const lastDate = new Date(ps.year, ps.month, 0).getDate();
+    const lastDay = `${ps.year}-${String(ps.month).padStart(2, '0')}-${String(lastDate).padStart(2, '0')}`;
+
+    // Pull raw signals for the whole month up-front so we don't hit the
+    // DB per-day (31 round-trips would be silly).
+    const leaves = await sql`
+      SELECT type, status, from_date::text AS from_date, to_date::text AS to_date, rejection_reason
+      FROM leave_requests
+      WHERE employee_id=${ps.employee_id}
+        AND from_date <= ${lastDay}::date
+        AND to_date   >= ${firstDay}::date` as any[];
+    const att = await sql`
+      SELECT date::text AS date, status, source
+      FROM attendance_records
+      WHERE employee_id=${ps.employee_id}
+        AND date BETWEEN ${firstDay}::date AND ${lastDay}::date` as any[];
+    const attByDate = new Map<string, any>();
+    for (const a of att) attByDate.set(String(a.date).slice(0, 10), a);
+
+    // Walk every day in the month; classify.
+    const days: any[] = [];
+    let lop = 0;
+    for (let d = 1; d <= lastDate; d++) {
+      const iso = `${ps.year}-${String(ps.month).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
+      const dow = new Date(Date.UTC(ps.year, ps.month - 1, d)).getUTCDay();
+      const isWeekend = dow === 0 || dow === 6;
+      const attRow = attByDate.get(iso);
+      const covering = leaves.filter(l =>
+        String(l.from_date).slice(0, 10) <= iso &&
+        String(l.to_date).slice(0, 10)   >= iso);
+      // The calculator's two LOP branches, replicated:
+      //   1. Approved unpaid leave that covers this date (weekdays only)
+      //   2. Attendance status in ('absent','lop') (weekdays only)
+      const unpaidLeave = covering.find(l => l.type === 'unpaid' && l.status === 'approved');
+      const attIsLop = attRow && ['absent', 'lop'].includes(attRow.status);
+      let counted: 'lop' | 'ok' = 'ok';
+      let reason = '';
+      if (isWeekend) {
+        reason = 'Weekend — skipped';
+      } else if (unpaidLeave) {
+        counted = 'lop';
+        reason = `Approved UNPAID leave (${String(unpaidLeave.from_date).slice(0,10)}→${String(unpaidLeave.to_date).slice(0,10)})`;
+      } else if (attIsLop) {
+        counted = 'lop';
+        reason = `Attendance marked "${attRow.status}"${attRow.source ? ` (source: ${attRow.source})` : ''} — no covering paid leave / WFH`;
+      } else if (covering.length > 0) {
+        const c = covering[0];
+        reason = `Covered by ${c.status} ${c.type} leave (${String(c.from_date).slice(0,10)}→${String(c.to_date).slice(0,10)})`;
+      } else if (attRow) {
+        reason = `Attendance: ${attRow.status}${attRow.source ? ` (${attRow.source})` : ''}`;
+      } else {
+        reason = 'No attendance record, no leave — not counted (default present)';
+      }
+      if (counted === 'lop') lop += 1;
+      days.push({
+        date: iso,
+        weekday: ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'][dow],
+        is_weekend: isWeekend,
+        counted,
+        reason,
+        att_status: attRow?.status ?? null,
+        att_source: attRow?.source ?? null,
+        leave: covering.length ? covering.map(l => ({ type: l.type, status: l.status })) : null,
+      });
+    }
+    res.json({
+      employee_id: ps.employee_id,
+      employee_name: ps.employee_name,
+      month: ps.month, year: ps.year,
+      lop_days_computed: lop,
+      days,
+    });
+  } catch (err: any) { res.status(500).json({ error: err.message ?? 'Server error' }); }
+});
+
 // Employee-facing: list their own payslips (only DISTRIBUTED runs).
 // HR gets to hit /api/payroll/runs/:id for the full grid; this endpoint
 // is the payslip-history view for an individual.
