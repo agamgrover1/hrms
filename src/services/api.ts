@@ -276,7 +276,11 @@ export const api = {
     basic_pct: number; hra_pct: number; special_allowance_pct: number; employer_pf_pct: number;
     working_days_convention: 'fixed_30' | 'actual_month' | 'actual_working_days';
     salary_mode: 'flat' | 'structured';
-  }) => request<{ ok: true }>('/payroll/config', { method: 'PUT', body: JSON.stringify(data) }),
+  }) => request<{ ok: true; saved: {
+    basic_pct: number; hra_pct: number; special_allowance_pct: number; employer_pf_pct: number;
+    working_days_convention: 'fixed_30' | 'actual_month' | 'actual_working_days';
+    salary_mode: 'flat' | 'structured';
+  } }>('/payroll/config', { method: 'PUT', body: JSON.stringify(data) }),
 
   getSalaryStructures: (employee_id: string) =>
     request<Array<{

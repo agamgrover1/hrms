@@ -770,12 +770,52 @@ function PayrollConfigPanel() {
     if (!sumOk) { setMsg(`Basic + HRA + Special must sum to 100% (currently ${grossSum}%).`); return; }
     setBusy(true); setMsg('');
     try {
-      await api.updatePayrollConfig(cfg);
+      const r = await api.updatePayrollConfig(cfg);
+      // Trust the SERVER's reply, not local state. If the backend
+      // coerced a value (e.g. dropped an unknown enum value and kept
+      // the DB value), we want the UI to reflect what actually landed
+      // so the user isn't misled by a stale dropdown selection.
+      if (r?.saved) {
+        setCfg({
+          basic_pct: Number(r.saved.basic_pct),
+          hra_pct: Number(r.saved.hra_pct),
+          special_allowance_pct: Number(r.saved.special_allowance_pct),
+          employer_pf_pct: Number(r.saved.employer_pf_pct),
+          working_days_convention: r.saved.working_days_convention,
+          salary_mode: r.saved.salary_mode ?? 'flat',
+        });
+        // Warn loudly if what the server saved differs from what the
+        // user asked for — this used to fail silently and surface later
+        // as "why do my payslips still say 30 days".
+        if (r.saved.working_days_convention !== cfg.working_days_convention) {
+          setMsg(`Server saved "${r.saved.working_days_convention}" instead of "${cfg.working_days_convention}". Hard-refresh (⌘/Ctrl+Shift+R) and try again.`);
+          return;
+        }
+      }
       setMsg('Saved.');
       setTimeout(() => setMsg(''), 2500);
     } catch (e: any) { setMsg(e?.message ?? 'Save failed'); }
     finally { setBusy(false); }
   };
+
+  // Read the currently-active setting once on mount, regardless of whether
+  // the panel is open. This is what payroll-run creation actually uses,
+  // so it's the source of truth to show — the panel body's cfg state is
+  // "what the user is EDITING", but the summary line is "what's LIVE".
+  const [live, setLive] = useState<{ salary_mode: string; wd: string } | null>(null);
+  useEffect(() => {
+    api.getPayrollConfig()
+      .then(c => setLive({
+        salary_mode: c.salary_mode ?? 'flat',
+        wd: c.working_days_convention ?? 'fixed_30',
+      }))
+      .catch(() => {});
+  }, [cfg?.working_days_convention, cfg?.salary_mode]); // re-read after any save
+
+  const wdLabel = (k: string) =>
+    k === 'actual_working_days' ? 'Actual working days (Mon–Fri)'
+    : k === 'actual_month' ? 'Actual calendar days'
+    : 'Fixed 30 days';
 
   return (
     <div className="bg-surface rounded-xl-2 border border-outline shadow-elev-1 overflow-hidden">
@@ -785,7 +825,9 @@ function PayrollConfigPanel() {
           <Settings size={14} className="text-accent" /> Payroll settings
         </span>
         <span className="inline-flex items-center gap-2 text-[11px] text-on-surface-muted">
-          Salary model · working days convention
+          {live
+            ? <span className="num-mono">{live.salary_mode} · {wdLabel(live.wd)}</span>
+            : 'Salary model · working days convention'}
           {open ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
         </span>
       </button>
