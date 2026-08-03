@@ -8434,13 +8434,26 @@ async function computeLopDaysDetailed(employeeId: string, month: number, year: n
   const lastDate = new Date(year, month, 0).getDate();
   const lastDay = `${year}-${String(month).padStart(2, '0')}-${String(lastDate).padStart(2, '0')}`;
 
+  // Resolve the employee to BOTH id forms — payslip.employee_id is the
+  // internal uuid, but leave_requests / wfh_requests / attendance_records
+  // historically accept either the internal id OR the human code
+  // (employees.employee_id). A leave filed under one form and a payslip
+  // built from the other used to silently miss the join → false LOP.
+  const empRow = (await sql`
+    SELECT id, employee_id FROM employees
+    WHERE id=${employeeId} OR employee_id=${employeeId}
+    LIMIT 1` as any[])[0];
+  const idForms = [employeeId];
+  if (empRow?.id && !idForms.includes(empRow.id)) idForms.push(empRow.id);
+  if (empRow?.employee_id && !idForms.includes(empRow.employee_id)) idForms.push(empRow.employee_id);
+
   // All approved leaves that overlap the month. We keep BOTH the type
   // and the covering window so the classifier can distinguish "paid
   // leave" (skip) from "unpaid leave" (LOP).
   const leaves = await sql`
     SELECT type, from_date::text AS from_date, to_date::text AS to_date, status
     FROM leave_requests
-    WHERE employee_id=${employeeId}
+    WHERE employee_id = ANY(${idForms}::text[])
       AND status='approved'
       AND from_date <= ${lastDay}::date
       AND to_date   >= ${firstDay}::date` as any[];
@@ -8448,14 +8461,14 @@ async function computeLopDaysDetailed(employeeId: string, month: number, year: n
   const wfh = await sql`
     SELECT date::text AS date
     FROM wfh_requests
-    WHERE employee_id=${employeeId}
+    WHERE employee_id = ANY(${idForms}::text[])
       AND status='approved'
       AND date BETWEEN ${firstDay}::date AND ${lastDay}::date` as any[];
   // Attendance rows in the month that we'd otherwise call LOP.
   const att = await sql`
     SELECT date::text AS date, status, source
     FROM attendance_records
-    WHERE employee_id=${employeeId}
+    WHERE employee_id = ANY(${idForms}::text[])
       AND date BETWEEN ${firstDay}::date AND ${lastDay}::date` as any[];
   const attByDate = new Map<string, { status: string; source: string | null }>();
   for (const a of att) attByDate.set(String(a.date).slice(0, 10), { status: a.status, source: a.source });
@@ -8979,12 +8992,41 @@ app.get('/api/payroll/payslips/:id/lop-explain', async (req, res) => {
     // snapshot lop_days_auto. Any drift between "what the calculator
     // counts" and "what we tell HR happened" is a bug.
     const detail = await computeLopDaysDetailed(ps.employee_id, ps.month, ps.year);
+    // Diagnostic dump — every leave for this employee overlapping the
+    // month regardless of status. If HR expects a leave to cover a date
+    // and the classifier says otherwise, this list shows exactly what's
+    // in leave_requests (wrong status, wrong dates, wrong employee_id).
+    const firstDay = `${ps.year}-${String(ps.month).padStart(2, '0')}-01`;
+    const lastDate = new Date(ps.year, ps.month, 0).getDate();
+    const lastDay = `${ps.year}-${String(ps.month).padStart(2, '0')}-${String(lastDate).padStart(2, '0')}`;
+    const empRow = (await sql`
+      SELECT id, employee_id, name FROM employees
+      WHERE id=${ps.employee_id} OR employee_id=${ps.employee_id}
+      LIMIT 1` as any[])[0];
+    const idForms = [ps.employee_id];
+    if (empRow?.id && !idForms.includes(empRow.id)) idForms.push(empRow.id);
+    if (empRow?.employee_id && !idForms.includes(empRow.employee_id)) idForms.push(empRow.employee_id);
+    const allLeaves = await sql`
+      SELECT id, type, status, manager_status, from_date::text AS from_date, to_date::text AS to_date,
+             hr_actioner_name, manager_name, employee_id
+      FROM leave_requests
+      WHERE employee_id = ANY(${idForms}::text[])
+        AND from_date <= ${lastDay}::date
+        AND to_date   >= ${firstDay}::date
+      ORDER BY from_date ASC` as any[];
     res.json({
       employee_id: ps.employee_id,
       employee_name: ps.employee_name,
       month: ps.month, year: ps.year,
       lop_days_computed: detail.total,
       days: detail.days,
+      diagnostic: {
+        id_forms_checked: idForms,
+        employee_resolved: empRow
+          ? { id: empRow.id, employee_id: empRow.employee_id, name: empRow.name }
+          : null,
+        all_leaves_in_month: allLeaves,
+      },
     });
   } catch (err: any) { res.status(500).json({ error: err.message ?? 'Server error' }); }
 });

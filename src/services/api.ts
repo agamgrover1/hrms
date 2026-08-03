@@ -356,6 +356,16 @@ export const api = {
       att_status: string | null; att_source: string | null;
       leave: Array<{ type: string; status: string }> | null;
     }>;
+    diagnostic?: {
+      id_forms_checked: string[];
+      employee_resolved: { id: string; employee_id: string; name: string } | null;
+      all_leaves_in_month: Array<{
+        id: string; type: string; status: string; manager_status: string;
+        from_date: string; to_date: string;
+        hr_actioner_name: string | null; manager_name: string | null;
+        employee_id: string;
+      }>;
+    };
   }>(`/payroll/payslips/${id}/lop-explain`),
 
   // Performance (legacy goals/reviews)

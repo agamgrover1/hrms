@@ -651,27 +651,67 @@ function PayslipEditorModal({ payslip, canEdit, onClose, onSaved }:
                 paid-leave / WFH rows in green, weekends collapsed to a
                 summary count so the list stays scannable. */}
             {lopExplain && (
-              <div className="mt-3 rounded-lg border border-outline bg-surface-2/40 overflow-hidden">
-                <div className="px-3 py-2 border-b border-outline bg-surface-2 text-[11px] text-on-surface-muted">
-                  <span className="font-semibold text-on-surface">Auto-computed LOP: {lopExplain.lop_days_computed}</span>
-                  {' · '}checked {lopExplain.days.filter((d: any) => !d.is_weekend).length} weekdays in {MONTHS[lopExplain.month - 1]} {lopExplain.year}
+              <div className="mt-3 space-y-2">
+                {/* Leaves-in-month dump — what's actually in leave_requests
+                    for this person. If HR expects a leave to cover a LOP
+                    date but the classifier disagrees, this list tells them
+                    why: wrong status, wrong window, wrong employee_id. */}
+                {lopExplain.diagnostic && (
+                  <div className="rounded-lg border border-outline bg-surface-2/60 overflow-hidden">
+                    <div className="px-3 py-2 border-b border-outline bg-surface-2 text-[11px] text-on-surface-muted">
+                      <span className="font-semibold text-on-surface">All leaves this month · {lopExplain.diagnostic.all_leaves_in_month.length}</span>
+                      {' · '}checked employee ids: <span className="num-mono">{lopExplain.diagnostic.id_forms_checked.join(', ')}</span>
+                    </div>
+                    {lopExplain.diagnostic.all_leaves_in_month.length === 0 ? (
+                      <p className="px-3 py-2 text-[12px] text-on-surface-muted italic">
+                        No leave requests found for this employee overlapping {MONTHS[lopExplain.month - 1]}. If a leave was applied but isn't here, the employee_id on the leave row probably differs from the payslip's — screenshot this for me.
+                      </p>
+                    ) : (
+                      <ul className="divide-y divide-outline text-[12px]">
+                        {lopExplain.diagnostic.all_leaves_in_month.map(l => {
+                          const good = l.status === 'approved';
+                          return (
+                            <li key={l.id} className="px-3 py-1.5 flex items-start gap-2">
+                              <span className={`w-16 shrink-0 text-[10px] font-bold uppercase tracking-wider ${good ? 'text-success' : 'text-warning'}`}>
+                                {l.status}
+                              </span>
+                              <span className="w-40 shrink-0 num-mono text-on-surface-muted">
+                                {l.from_date.slice(5)} → {l.to_date.slice(5)}
+                              </span>
+                              <span className="flex-1 text-on-surface">
+                                {l.type} · manager: <span className="text-on-surface-muted">{l.manager_status}{l.manager_name ? ` (${l.manager_name})` : ''}</span>
+                                {l.hr_actioner_name && <> · HR: <span className="text-on-surface-muted">{l.hr_actioner_name}</span></>}
+                              </span>
+                            </li>
+                          );
+                        })}
+                      </ul>
+                    )}
+                  </div>
+                )}
+
+                <div className="rounded-lg border border-outline bg-surface-2/40 overflow-hidden">
+                  <div className="px-3 py-2 border-b border-outline bg-surface-2 text-[11px] text-on-surface-muted">
+                    <span className="font-semibold text-on-surface">Auto-computed LOP: {lopExplain.lop_days_computed}</span>
+                    {' · '}checked {lopExplain.days.filter((d: any) => !d.is_weekend).length} weekdays in {MONTHS[lopExplain.month - 1]} {lopExplain.year}
+                  </div>
+                  <ul className="divide-y divide-outline max-h-64 overflow-y-auto text-[12px]">
+                    {lopExplain.days.filter((d: any) => !d.is_weekend).map((d: any) => (
+                      <li key={d.date}
+                        className={`px-3 py-1.5 flex items-start gap-2 ${d.counted === 'lop' ? 'bg-danger-container/30' : ''}`}>
+                        <span className="w-24 shrink-0 num-mono text-on-surface-muted">
+                          {d.weekday} {d.date.slice(8, 10)}
+                        </span>
+                        <span className={`w-14 shrink-0 text-[10px] font-bold uppercase tracking-wider ${
+                          d.counted === 'lop' ? 'text-danger' : 'text-success'
+                        }`}>
+                          {d.counted === 'lop' ? 'LOP' : 'Paid'}
+                        </span>
+                        <span className="flex-1 text-on-surface">{d.reason}</span>
+                      </li>
+                    ))}
+                  </ul>
                 </div>
-                <ul className="divide-y divide-outline max-h-64 overflow-y-auto text-[12px]">
-                  {lopExplain.days.filter((d: any) => !d.is_weekend).map((d: any) => (
-                    <li key={d.date}
-                      className={`px-3 py-1.5 flex items-start gap-2 ${d.counted === 'lop' ? 'bg-danger-container/30' : ''}`}>
-                      <span className="w-24 shrink-0 num-mono text-on-surface-muted">
-                        {d.weekday} {d.date.slice(8, 10)}
-                      </span>
-                      <span className={`w-14 shrink-0 text-[10px] font-bold uppercase tracking-wider ${
-                        d.counted === 'lop' ? 'text-danger' : 'text-success'
-                      }`}>
-                        {d.counted === 'lop' ? 'LOP' : 'Paid'}
-                      </span>
-                      <span className="flex-1 text-on-surface">{d.reason}</span>
-                    </li>
-                  ))}
-                </ul>
               </div>
             )}
           </div>
