@@ -77,6 +77,13 @@ export default function Projects() {
   // Bulk expense import busy flag — prevents double-clicks while the
   // CSV upload is in flight.
   const [bulkBusy, setBulkBusy] = useState(false);
+  // In-app spreadsheet-style bulk expense entry. Opens a modal with a
+  // grid of rows (project dropdown per row + category / vendor /
+  // description / amount) so the coordinator doesn't have to open each
+  // project's modal separately. Server-side same insert path as the
+  // per-project add, so anything added here shows up in Project
+  // Expenses modal for that project too.
+  const [showBulkExpenses, setShowBulkExpenses] = useState(false);
   // Period used for the template download AND the upload's default
   // month/year on rows that don't carry their own. Defaults to "now."
   const today = new Date();
@@ -317,6 +324,11 @@ export default function Projects() {
                     onChange={e => { const f = e.target.files?.[0]; if (f) { uploadCsv(f); e.target.value = ''; } }}
                     className="hidden" />
                 </label>
+                <button onClick={() => setShowBulkExpenses(true)}
+                  title="Open a spreadsheet-style grid — add expenses across many projects in one shot"
+                  className="inline-flex items-center gap-1 px-2 py-1 rounded text-on-surface-muted hover:text-on-surface hover:bg-surface-3">
+                  <Plus size={13} /> Bulk add
+                </button>
               </div>
               <button
                 onClick={() => { setEditing(null); setShowForm(true); }}
@@ -534,6 +546,16 @@ export default function Projects() {
       )}
 
       {showHistory && <ProjectActivityLogModal onClose={() => setShowHistory(false)} />}
+
+      {showBulkExpenses && (
+        <BulkExpensesModal
+          projects={filtered.filter(p => p.status !== 'archived')}
+          initialMonth={bulkMonth}
+          initialYear={bulkYear}
+          onClose={() => setShowBulkExpenses(false)}
+          onSaved={() => setShowBulkExpenses(false)}
+        />
+      )}
     </div>
   );
 }
@@ -1223,6 +1245,223 @@ function ProjectForm({
             className="px-4 py-2 text-sm font-semibold rounded-lg bg-accent text-on-accent hover:opacity-90 shadow-elev-1 hover:shadow-elev-2 transition-all disabled:opacity-50">
             {saving ? 'Saving…' : (existing ? 'Save Changes' : 'Create Project')}
           </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// BulkExpensesModal — spreadsheet-style grid for logging expenses across
+// many projects in one submit. Every filled row hits the same insert path
+// as the per-project modal, so entries here show up in the individual
+// Project Expenses modal too.
+// ─────────────────────────────────────────────────────────────────────────
+interface BulkRow {
+  project_id: string;
+  category: string;
+  vendor: string;
+  description: string;
+  amount: string;
+}
+
+const BULK_MONTHS = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+
+function BulkExpensesModal({ projects, initialMonth, initialYear, onClose, onSaved }: {
+  projects: Project[]; initialMonth: number; initialYear: number;
+  onClose: () => void; onSaved: () => void;
+}) {
+  const [month, setMonth] = useState(initialMonth);
+  const [year, setYear] = useState(initialYear);
+  // Start with three blank rows so the coordinator sees the shape.
+  const blank = (): BulkRow => ({ project_id: '', category: 'outsource', vendor: '', description: '', amount: '' });
+  const [rows, setRows] = useState<BulkRow[]>([blank(), blank(), blank()]);
+  const [busy, setBusy] = useState(false);
+  const [result, setResult] = useState<{ inserted: number; skipped: number; errors: string[] } | null>(null);
+  const [error, setError] = useState('');
+
+  // Auto-append a blank row whenever the LAST row starts getting real
+  // input — sheets-style. Keeps the coordinator's hand on the keyboard.
+  useEffect(() => {
+    const last = rows[rows.length - 1];
+    const touched = !!(last?.project_id || last?.description.trim() || last?.amount.trim());
+    if (touched) setRows(r => [...r, blank()]);
+  }, [rows]);
+
+  const setRow = (i: number, patch: Partial<BulkRow>) =>
+    setRows(rs => rs.map((r, idx) => idx === i ? { ...r, ...patch } : r));
+  const removeRow = (i: number) => setRows(rs => rs.length <= 1 ? [blank()] : rs.filter((_, idx) => idx !== i));
+
+  // Rows that are "worth submitting" — must have project + description +
+  // positive amount. Everything else is ignored on save (they might be
+  // half-typed drafts or the auto-appended blank).
+  const submittable = rows.filter(r =>
+    r.project_id && r.description.trim() && Number(r.amount) > 0);
+
+  const total = submittable.reduce((s, r) => s + Number(r.amount), 0);
+
+  const save = async () => {
+    if (submittable.length === 0) {
+      setError('Fill at least one row with project, description, and amount.');
+      return;
+    }
+    setBusy(true); setError('');
+    try {
+      const r = await financeApi.uploadProjectExpenses(
+        submittable.map(row => ({
+          project_id: row.project_id,
+          month, year,
+          vendor: row.vendor.trim() || undefined,
+          description: row.description.trim(),
+          amount: Number(row.amount),
+          category: row.category,
+        })),
+      );
+      setResult(r);
+      if (r.inserted > 0 && r.skipped === 0) {
+        // Clean success — close after a beat so the user sees the toast.
+        setTimeout(() => onSaved(), 900);
+      }
+    } catch (e: any) { setError(e?.message ?? 'Bulk save failed'); }
+    finally { setBusy(false); }
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm p-4">
+      <div className="bg-surface rounded-2xl border border-outline shadow-elev-4 w-full max-w-5xl flex flex-col max-h-[92vh]">
+        {/* Header */}
+        <div className="px-6 py-4 border-b border-outline flex items-start justify-between gap-3">
+          <div>
+            <h3 className="font-display text-lg font-bold text-on-surface">Bulk add expenses</h3>
+            <p className="text-xs text-on-surface-muted mt-0.5">
+              One row per expense. Pick the project, fill the amount + description. Rows without all three are ignored on save.
+            </p>
+          </div>
+          <button onClick={onClose} className="p-1.5 rounded hover:bg-surface-2"><X size={16} className="text-on-surface-muted" /></button>
+        </div>
+
+        {/* Period picker */}
+        <div className="px-6 py-3 border-b border-outline flex items-center justify-between bg-surface-2/40 flex-wrap gap-2">
+          <div className="inline-flex items-center gap-2 text-xs">
+            <span className="text-on-surface-muted font-semibold">All rows count against</span>
+            <select value={month} onChange={e => setMonth(Number(e.target.value))}
+              className="bg-surface border border-outline rounded px-2 py-1 text-sm font-semibold focus:outline-none">
+              {BULK_MONTHS.map((m, i) => <option key={m} value={i + 1}>{m}</option>)}
+            </select>
+            <select value={year} onChange={e => setYear(Number(e.target.value))}
+              className="bg-surface border border-outline rounded px-2 py-1 text-sm font-semibold num-mono focus:outline-none">
+              {[year - 1, year, year + 1].map(y => <option key={y} value={y}>{y}</option>)}
+            </select>
+          </div>
+          <div className="text-xs text-on-surface-muted">
+            <span className="num-mono font-semibold text-on-surface">{submittable.length}</span> valid rows ·
+            {' '}total <span className="num-mono font-semibold text-on-surface">{fmtINR(total)}</span>
+          </div>
+        </div>
+
+        {/* Grid */}
+        <div className="flex-1 overflow-auto p-4">
+          <table className="w-full text-sm">
+            <thead className="bg-surface-2 text-[10px] uppercase tracking-wider text-on-surface-subtle sticky top-0">
+              <tr>
+                <th className="px-2 py-2 text-left w-8">#</th>
+                <th className="px-2 py-2 text-left">Project *</th>
+                <th className="px-2 py-2 text-left">Category</th>
+                <th className="px-2 py-2 text-left">Vendor</th>
+                <th className="px-2 py-2 text-left">Description *</th>
+                <th className="px-2 py-2 text-right">Amount *</th>
+                <th className="px-2 py-2 w-8"></th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-outline">
+              {rows.map((r, i) => {
+                const missing = !!(r.project_id || r.description.trim() || r.amount.trim())
+                  && !(r.project_id && r.description.trim() && Number(r.amount) > 0);
+                return (
+                  <tr key={i} className={missing ? 'bg-warning-container/20' : ''}>
+                    <td className="px-2 py-1 text-[11px] text-on-surface-subtle num-mono">{i + 1}</td>
+                    <td className="px-2 py-1">
+                      <select value={r.project_id} onChange={e => setRow(i, { project_id: e.target.value })}
+                        className="w-full px-2 py-1.5 rounded border border-outline bg-surface text-sm focus:outline-none focus:ring-2 focus:ring-accent/30">
+                        <option value="">— pick project —</option>
+                        {projects.map(p => (
+                          <option key={p.id} value={p.id}>
+                            {p.name}{p.client_name ? ` · ${p.client_name}` : ''}
+                          </option>
+                        ))}
+                      </select>
+                    </td>
+                    <td className="px-2 py-1">
+                      <select value={r.category} onChange={e => setRow(i, { category: e.target.value })}
+                        className="w-full px-2 py-1.5 rounded border border-outline bg-surface text-sm focus:outline-none focus:ring-2 focus:ring-accent/30">
+                        {EXPENSE_CATEGORIES.map(c => (
+                          <option key={c.value} value={c.value}>{c.label}</option>
+                        ))}
+                      </select>
+                    </td>
+                    <td className="px-2 py-1">
+                      <input value={r.vendor} onChange={e => setRow(i, { vendor: e.target.value })}
+                        placeholder="optional"
+                        className="w-full px-2 py-1.5 rounded border border-outline bg-surface text-sm focus:outline-none focus:ring-2 focus:ring-accent/30" />
+                    </td>
+                    <td className="px-2 py-1">
+                      <input value={r.description} onChange={e => setRow(i, { description: e.target.value })}
+                        placeholder="e.g. Guest post — May"
+                        className="w-full px-2 py-1.5 rounded border border-outline bg-surface text-sm focus:outline-none focus:ring-2 focus:ring-accent/30" />
+                    </td>
+                    <td className="px-2 py-1">
+                      <div className="relative">
+                        <span className="absolute left-2 top-1/2 -translate-y-1/2 text-[11px] text-on-surface-subtle">₹</span>
+                        <input type="number" min="0" step="1" value={r.amount}
+                          onChange={e => setRow(i, { amount: e.target.value })}
+                          className="w-full pl-5 pr-2 py-1.5 rounded border border-outline bg-surface text-sm text-right num-mono focus:outline-none focus:ring-2 focus:ring-accent/30" />
+                      </div>
+                    </td>
+                    <td className="px-2 py-1 text-center">
+                      {rows.length > 1 && (
+                        <button onClick={() => removeRow(i)}
+                          className="p-1 text-on-surface-muted hover:text-danger hover:bg-danger-container/40 rounded"
+                          title="Remove row">
+                          <Trash2 size={12} />
+                        </button>
+                      )}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+
+          {/* Result feedback */}
+          {result && (
+            <div className="mt-3 rounded-lg border border-outline p-3 text-sm bg-surface-2/40">
+              <p className="font-semibold text-on-surface">
+                {result.inserted} inserted{result.skipped ? ` · ${result.skipped} skipped` : ''}
+              </p>
+              {result.errors.length > 0 && (
+                <ul className="mt-2 space-y-0.5 text-[11px] text-danger">
+                  {result.errors.map((e, i) => <li key={i}>• {e}</li>)}
+                </ul>
+              )}
+            </div>
+          )}
+          {error && (
+            <p className="mt-3 text-sm text-danger bg-danger-container/40 border border-danger/30 rounded px-3 py-2">{error}</p>
+          )}
+        </div>
+
+        {/* Footer */}
+        <div className="px-6 py-4 border-t border-outline flex items-center justify-between gap-2 bg-surface-2/30">
+          <span className="text-[11px] text-on-surface-subtle">
+            Half-typed rows (missing project, description, or amount) are skipped — highlighted in amber above.
+          </span>
+          <div className="flex items-center gap-2">
+            <button type="button" onClick={onClose} className="px-4 py-2 text-sm text-on-surface-muted hover:bg-surface-2 rounded-lg">Close</button>
+            <button onClick={save} disabled={busy || submittable.length === 0}
+              className="px-4 py-2 rounded-lg bg-accent text-on-accent text-sm font-semibold hover:opacity-90 disabled:opacity-50">
+              {busy ? 'Saving…' : `Save ${submittable.length} row${submittable.length === 1 ? '' : 's'}`}
+            </button>
+          </div>
         </div>
       </div>
     </div>
