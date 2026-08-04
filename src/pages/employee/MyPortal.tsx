@@ -719,6 +719,21 @@ export default function MyPortal() {
   const [repairForm, setRepairForm] = useState({ issue: '', notes: '' });
   const [repairSubmitting, setRepairSubmitting] = useState(false);
   const [repairError, setRepairError] = useState('');
+  // Asset takeout — employee requests HR permission before taking a
+  // laptop / device home. `myTakeouts` is the caller's history (any
+  // status). `takeoutForm` is the request-modal state.
+  const [myTakeouts, setMyTakeouts] = useState<any[]>([]);
+  const [showTakeoutForm, setShowTakeoutForm] = useState(false);
+  const [takeoutForm, setTakeoutForm] = useState<{
+    asset_id: string; asset_label: string; reason: string;
+    takeout_date: string; expected_return_date: string; notes: string;
+  }>({ asset_id: '', asset_label: '', reason: '', takeout_date: new Date().toISOString().slice(0, 10), expected_return_date: '', notes: '' });
+  const [takeoutSubmitting, setTakeoutSubmitting] = useState(false);
+  const [takeoutError, setTakeoutError] = useState('');
+  const loadMyTakeouts = () => {
+    api.listAssetTakeouts({ mine: true }).then(setMyTakeouts).catch(() => setMyTakeouts([]));
+  };
+  useEffect(() => { if (tab === 'device') loadMyTakeouts(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [tab]);
   const [showExpenseForm, setShowExpenseForm] = useState(false);
   const [expCategories, setExpCategories] = useState<string[]>([]);
   const [expenseForm, setExpenseForm] = useState({ category: '', description: '', amount: '', receipt_note: '', expense_date: '' });
@@ -2526,6 +2541,188 @@ export default function MyPortal() {
                 </div>
               )}
             </div>
+
+            {/* ── Asset takeout requests ────────────────────────────
+                Employees need HR approval before taking a device home.
+                Shows recent requests + a button to raise a new one. */}
+            <div>
+              <div className="flex items-center justify-between mb-3">
+                <p className="text-xs font-bold text-on-surface-subtle uppercase tracking-wider">Take device home</p>
+                <button
+                  onClick={() => {
+                    // Pre-fill asset from the employee's first assigned device
+                    // to save a click; they can change it in the modal.
+                    const first = myAssets[0];
+                    setTakeoutForm({
+                      asset_id: first?.id ?? '',
+                      asset_label: first ? `${first.asset_tag}${first.model ? ` — ${first.model}` : ''}` : '',
+                      reason: '', takeout_date: new Date().toISOString().slice(0, 10),
+                      expected_return_date: '', notes: '',
+                    });
+                    setTakeoutError('');
+                    setShowTakeoutForm(true);
+                  }}
+                  className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs font-semibold bg-accent text-on-accent hover:opacity-90 transition-opacity">
+                  <Briefcase size={13} /> Request takeout
+                </button>
+              </div>
+              {myTakeouts.length === 0 ? (
+                <div className="bg-surface rounded-2xl border border-outline shadow-sm p-6 text-center">
+                  <p className="text-sm text-on-surface-subtle">No takeout requests yet.</p>
+                  <p className="text-[11px] text-on-surface-subtle mt-1">
+                    Ask HR before taking a company laptop or device off-premises.
+                  </p>
+                </div>
+              ) : (
+                <div className="bg-surface rounded-2xl border border-outline shadow-sm divide-y divide-outline overflow-hidden">
+                  {myTakeouts.slice(0, 8).map(t => {
+                    const statusCfg =
+                      t.status === 'approved'  ? { label: t.is_overdue ? 'Overdue' : 'Approved', cls: t.is_overdue ? 'bg-danger-container text-danger' : 'bg-success-container text-success' }
+                      : t.status === 'pending' ? { label: 'Pending', cls: 'bg-warning-container text-warning' }
+                      : t.status === 'rejected' ? { label: 'Rejected', cls: 'bg-danger-container text-danger' }
+                      : t.status === 'returned' ? { label: 'Returned', cls: 'bg-surface-2 text-on-surface-muted' }
+                      : { label: t.status, cls: 'bg-surface-2 text-on-surface-muted' };
+                    return (
+                      <div key={t.id} className="p-4">
+                        <div className="flex items-start justify-between gap-3">
+                          <div className="min-w-0">
+                            <p className="text-sm font-semibold text-on-surface">{t.asset_label}</p>
+                            <p className="text-[11px] text-on-surface-subtle mt-0.5">
+                              Take: <span className="num-mono">{t.takeout_date?.slice(0, 10)}</span>
+                              {t.expected_return_date && <> · Return by <span className="num-mono">{t.expected_return_date.slice(0, 10)}</span></>}
+                              {t.actual_return_date && <> · Returned <span className="num-mono">{t.actual_return_date.slice(0, 10)}</span></>}
+                            </p>
+                            {t.reason && <p className="text-[11px] text-on-surface-muted mt-1 italic">"{t.reason}"</p>}
+                            {t.rejection_reason && <p className="text-[11px] text-danger mt-1 italic">Rejected: "{t.rejection_reason}"</p>}
+                          </div>
+                          <span className={`text-[10px] font-bold uppercase px-2 py-0.5 rounded-full shrink-0 ${statusCfg.cls}`}>
+                            {statusCfg.label}
+                          </span>
+                        </div>
+                        <div className="mt-2 flex items-center gap-2 justify-end">
+                          {t.status === 'approved' && !t.actual_return_date && (
+                            <button
+                              onClick={async () => {
+                                try { await api.returnAssetTakeout(t.id); loadMyTakeouts(); }
+                                catch (e: any) { window.alert(e?.message ?? 'Failed'); }
+                              }}
+                              className="text-[11px] font-semibold text-success hover:underline">
+                              Mark returned
+                            </button>
+                          )}
+                          {t.status === 'pending' && (
+                            <button
+                              onClick={async () => {
+                                if (!confirm('Cancel this pending takeout request?')) return;
+                                try { await api.cancelAssetTakeout(t.id); loadMyTakeouts(); }
+                                catch (e: any) { window.alert(e?.message ?? 'Failed'); }
+                              }}
+                              className="text-[11px] text-on-surface-muted hover:text-danger">
+                              Cancel
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+
+            {/* Takeout request modal */}
+            {showTakeoutForm && (
+              <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm"
+                onClick={() => !takeoutSubmitting && setShowTakeoutForm(false)}>
+                <div className="bg-surface rounded-xl-3 border border-outline shadow-elev-3 w-full max-w-md" onClick={e => e.stopPropagation()}>
+                  <div className="px-5 py-4 border-b border-outline flex items-center justify-between">
+                    <div>
+                      <h3 className="text-base font-bold text-on-surface">Take device home</h3>
+                      <p className="text-xs text-on-surface-muted mt-0.5">HR will approve before you can take it.</p>
+                    </div>
+                    <button onClick={() => setShowTakeoutForm(false)} className="p-1.5 rounded-lg hover:bg-surface-2"><X size={16} className="text-on-surface-muted" /></button>
+                  </div>
+                  <form
+                    onSubmit={async e => {
+                      e.preventDefault();
+                      setTakeoutError(''); setTakeoutSubmitting(true);
+                      try {
+                        await api.createAssetTakeout({
+                          asset_id: takeoutForm.asset_id || null,
+                          asset_label: takeoutForm.asset_label.trim(),
+                          reason: takeoutForm.reason.trim() || undefined,
+                          takeout_date: takeoutForm.takeout_date,
+                          expected_return_date: takeoutForm.expected_return_date || undefined,
+                          notes: takeoutForm.notes.trim() || undefined,
+                        });
+                        setShowTakeoutForm(false);
+                        loadMyTakeouts();
+                      } catch (e2: any) { setTakeoutError(e2?.message ?? 'Failed'); }
+                      finally { setTakeoutSubmitting(false); }
+                    }}
+                    className="p-5 space-y-3">
+                    {myAssets.length > 0 && (
+                      <label className="block">
+                        <span className="block text-[10px] font-bold uppercase tracking-[0.14em] text-on-surface-subtle mb-1">Which device?</span>
+                        <select value={takeoutForm.asset_id}
+                          onChange={e => {
+                            const a = myAssets.find(x => x.id === e.target.value);
+                            setTakeoutForm(f => ({
+                              ...f,
+                              asset_id: e.target.value,
+                              asset_label: a ? `${a.asset_tag}${a.model ? ` — ${a.model}` : ''}` : f.asset_label,
+                            }));
+                          }}
+                          className="w-full px-3 py-2 rounded-lg border border-outline bg-surface text-sm focus:outline-none focus:ring-2 focus:ring-accent/30">
+                          <option value="">Other / not in my list</option>
+                          {myAssets.map(a => (
+                            <option key={a.id} value={a.id}>{a.asset_tag} — {a.model ?? 'Device'}</option>
+                          ))}
+                        </select>
+                      </label>
+                    )}
+                    <label className="block">
+                      <span className="block text-[10px] font-bold uppercase tracking-[0.14em] text-on-surface-subtle mb-1">What are you taking?</span>
+                      <input required value={takeoutForm.asset_label}
+                        onChange={e => setTakeoutForm(f => ({ ...f, asset_label: e.target.value, asset_id: '' }))}
+                        placeholder="MacBook Pro 14, charger, HDMI cable"
+                        className="w-full px-3 py-2 rounded-lg border border-outline bg-surface text-sm focus:outline-none focus:ring-2 focus:ring-accent/30" />
+                    </label>
+                    <div className="grid grid-cols-2 gap-3">
+                      <label className="block">
+                        <span className="block text-[10px] font-bold uppercase tracking-[0.14em] text-on-surface-subtle mb-1">Take out on</span>
+                        <input required type="date" value={takeoutForm.takeout_date}
+                          onChange={e => setTakeoutForm(f => ({ ...f, takeout_date: e.target.value }))}
+                          className="w-full px-3 py-2 rounded-lg border border-outline bg-surface text-sm focus:outline-none focus:ring-2 focus:ring-accent/30" />
+                      </label>
+                      <label className="block">
+                        <span className="block text-[10px] font-bold uppercase tracking-[0.14em] text-on-surface-subtle mb-1">Return by</span>
+                        <input type="date" value={takeoutForm.expected_return_date}
+                          onChange={e => setTakeoutForm(f => ({ ...f, expected_return_date: e.target.value }))}
+                          className="w-full px-3 py-2 rounded-lg border border-outline bg-surface text-sm focus:outline-none focus:ring-2 focus:ring-accent/30" />
+                      </label>
+                    </div>
+                    <label className="block">
+                      <span className="block text-[10px] font-bold uppercase tracking-[0.14em] text-on-surface-subtle mb-1">Reason</span>
+                      <input value={takeoutForm.reason}
+                        onChange={e => setTakeoutForm(f => ({ ...f, reason: e.target.value }))}
+                        placeholder="e.g. WFH tomorrow, client visit, weekend project"
+                        className="w-full px-3 py-2 rounded-lg border border-outline bg-surface text-sm focus:outline-none focus:ring-2 focus:ring-accent/30" />
+                    </label>
+                    {takeoutError && (
+                      <p className="text-xs text-danger bg-danger-container/40 border border-danger/30 rounded px-3 py-2">{takeoutError}</p>
+                    )}
+                    <div className="flex justify-end gap-2 pt-1">
+                      <button type="button" onClick={() => setShowTakeoutForm(false)}
+                        className="px-4 py-2 text-sm text-on-surface-muted hover:bg-surface-2 rounded-lg">Cancel</button>
+                      <button disabled={takeoutSubmitting}
+                        className="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg bg-accent text-on-accent text-sm font-semibold hover:opacity-90 disabled:opacity-50">
+                        {takeoutSubmitting ? 'Submitting…' : 'Submit request'}
+                      </button>
+                    </div>
+                  </form>
+                </div>
+              </div>
+            )}
 
             {/* Repair tickets */}
             <div>

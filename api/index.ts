@@ -881,7 +881,7 @@ async function runStartupMigrations() {
     // For a *seed* (rows, not columns), we probe with EXISTS-style: an
     // empty result set means "still needs to run", so we don't set the
     // flag and fall through.
-    await sql`SELECT id FROM payslips LIMIT 0`;
+    await sql`SELECT id FROM asset_takeout_requests LIMIT 0`;
     _migrated = true;
     return;
   } catch {
@@ -1137,6 +1137,37 @@ async function runStartupMigrations() {
       paid_at TIMESTAMPTZ, cancelled_at TIMESTAMPTZ,
       created_by TEXT, updated_at TIMESTAMPTZ DEFAULT NOW()
     )`;
+  // ── Asset takeout requests ─────────────────────────────────────────────
+  // Employees ask HR before taking a company laptop / device home. Gives
+  // HR a paper trail of who has what off-premises and when it should be
+  // back. Not tied to a specific `assets` row — the user may take a
+  // combo (laptop + charger + monitor cable) that isn't fully catalogued,
+  // so `asset_label` is the freeform "what's being carried" while
+  // `asset_id` is set only when the request is against a tracked device.
+  await sql`
+    CREATE TABLE IF NOT EXISTS asset_takeout_requests (
+      id TEXT PRIMARY KEY,
+      employee_id TEXT NOT NULL,
+      employee_name TEXT,
+      asset_id TEXT,                  -- optional link to assets.id
+      asset_label TEXT NOT NULL,      -- "MacBook Pro 14, charger" — freeform
+      reason TEXT,
+      takeout_date DATE NOT NULL,
+      expected_return_date DATE,
+      actual_return_date DATE,
+      status TEXT NOT NULL DEFAULT 'pending',
+        -- pending | approved | rejected | returned | cancelled
+      approved_by_name TEXT, approved_at TIMESTAMPTZ,
+      rejected_by_name TEXT, rejected_at TIMESTAMPTZ, rejection_reason TEXT,
+      returned_by_name TEXT,
+      notes TEXT,
+      created_at TIMESTAMPTZ DEFAULT NOW(),
+      updated_at TIMESTAMPTZ DEFAULT NOW()
+    )`;
+  await sql`CREATE INDEX IF NOT EXISTS idx_asset_takeouts_status ON asset_takeout_requests(status, takeout_date DESC)`.catch(()=>{});
+  await sql`CREATE INDEX IF NOT EXISTS idx_asset_takeouts_emp ON asset_takeout_requests(employee_id, created_at DESC)`.catch(()=>{});
+  await sql`CREATE INDEX IF NOT EXISTS idx_asset_takeouts_return ON asset_takeout_requests(expected_return_date) WHERE status='approved' AND actual_return_date IS NULL`.catch(()=>{});
+
   await sql`
     CREATE TABLE IF NOT EXISTS config_departments (
       id TEXT PRIMARY KEY, name TEXT NOT NULL UNIQUE, created_at TIMESTAMPTZ DEFAULT NOW()
@@ -11304,6 +11335,189 @@ app.delete('/api/repair-tickets/:id', async (req, res) => {
     memoBust('repairTickets:*');
     res.json({ success: true });
   } catch (e: any) { res.status(500).json({ error: e.message }); }
+});
+
+// ── Asset takeout requests ────────────────────────────────────────────────
+// Employees ask HR before taking a device home; HR approves / rejects.
+// Once approved and the person is back, HR (or the employee) marks it
+// returned. Anything overdue surfaces on the admin queue.
+
+// GET /api/asset-takeouts
+// Filters: mine=1 (self only), status=..., employee_id=..., overdue=1
+// Non-admin callers are ALWAYS scoped to their own employee record —
+// there's no "see everyone" leak even if the frontend forgets the mine=1.
+app.get('/api/asset-takeouts', async (req, res) => {
+  try {
+    await runStartupMigrations();
+    const uid = req.header('x-user-id');
+    if (!uid) return res.status(401).json({ error: 'Sign in required' });
+    const u = (await sql`SELECT id, role, employee_id_ref FROM app_users WHERE id=${uid} LIMIT 1` as any[])[0];
+    if (!u) return res.status(401).json({ error: 'Unknown user' });
+    const isAdminLike = u.role === 'admin' || u.role === 'hr_manager' || u.role === 'hr_intern';
+    const status = String(req.query.status ?? '');
+    const overdueOnly = String(req.query.overdue ?? '') === '1';
+    const explicitEmp = String(req.query.employee_id ?? '');
+    // Resolve caller to internal id so "mine" is unambiguous.
+    const self = (await sql`
+      SELECT id FROM employees WHERE id=${u.employee_id_ref} OR employee_id=${u.employee_id_ref} LIMIT 1` as any[])[0];
+    const selfId = self?.id ?? null;
+    // Non-admin: force employee_id filter to self, ignore anything else.
+    const empFilter = !isAdminLike ? selfId : (explicitEmp || null);
+
+    const rows = await sql`
+      SELECT t.*, a.asset_tag, a.model AS asset_model,
+        (t.status='approved' AND t.actual_return_date IS NULL
+          AND t.expected_return_date IS NOT NULL
+          AND t.expected_return_date < CURRENT_DATE) AS is_overdue
+      FROM asset_takeout_requests t
+      LEFT JOIN assets a ON a.id = t.asset_id
+      WHERE (${empFilter}::text IS NULL OR t.employee_id = ${empFilter})
+        AND (${status}::text = '' OR t.status = ${status})
+        AND (${overdueOnly}::boolean = FALSE OR (
+          t.status='approved' AND t.actual_return_date IS NULL
+          AND t.expected_return_date IS NOT NULL
+          AND t.expected_return_date < CURRENT_DATE
+        ))
+      ORDER BY t.created_at DESC` as any[];
+    res.json(rows);
+  } catch (err: any) { res.status(500).json({ error: err.message ?? 'Server error' }); }
+});
+
+// POST /api/asset-takeouts — employee submits.
+// asset_id optional; asset_label mandatory. HR gets a bell notification.
+app.post('/api/asset-takeouts', async (req, res) => {
+  try {
+    await runStartupMigrations();
+    const uid = req.header('x-user-id');
+    if (!uid) return res.status(401).json({ error: 'Sign in required' });
+    const u = (await sql`SELECT id, name, employee_id_ref FROM app_users WHERE id=${uid} LIMIT 1` as any[])[0];
+    if (!u) return res.status(401).json({ error: 'Unknown user' });
+    const self = (await sql`
+      SELECT id, name FROM employees WHERE id=${u.employee_id_ref} OR employee_id=${u.employee_id_ref} LIMIT 1` as any[])[0];
+    if (!self) return res.status(400).json({ error: 'Your login is not linked to an employee record.' });
+    const { asset_id, asset_label, reason, takeout_date, expected_return_date, notes } = req.body ?? {};
+    if (!asset_label?.trim()) return res.status(400).json({ error: 'What are you taking? (asset_label required)' });
+    if (!takeout_date) return res.status(400).json({ error: 'When are you taking it? (takeout_date required)' });
+    if (expected_return_date && expected_return_date < takeout_date) {
+      return res.status(400).json({ error: 'Expected return date can\'t be before takeout date.' });
+    }
+    // Verify asset (if supplied) belongs to the caller — otherwise anyone
+    // could request-then-approve for someone else's laptop.
+    if (asset_id) {
+      const owned = (await sql`
+        SELECT id FROM assets WHERE id=${asset_id} AND assigned_to_id=${self.id} LIMIT 1` as any[])[0];
+      if (!owned) return res.status(400).json({ error: 'That asset isn\'t assigned to you.' });
+    }
+    const id = `ato_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
+    const rows = await sql`
+      INSERT INTO asset_takeout_requests
+        (id, employee_id, employee_name, asset_id, asset_label, reason,
+         takeout_date, expected_return_date, notes)
+      VALUES (${id}, ${self.id}, ${self.name}, ${asset_id ?? null}, ${asset_label.trim()},
+              ${reason?.trim() || null}, ${takeout_date}, ${expected_return_date || null},
+              ${notes?.trim() || null})
+      RETURNING *`;
+    notifyAdminsAndHR('asset_takeout_requested', 'Asset takeout request',
+      `${self.name} is requesting to take "${asset_label.trim().slice(0, 60)}" home on ${takeout_date}.${expected_return_date ? ` Return by ${expected_return_date}.` : ''}`,
+    ).catch(()=>{});
+    res.status(201).json((rows as any[])[0]);
+  } catch (err: any) { res.status(500).json({ error: err.message ?? 'Server error' }); }
+});
+
+// PATCH /api/asset-takeouts/:id/approve — HR only.
+app.patch('/api/asset-takeouts/:id/approve', async (req, res) => {
+  try {
+    const gate = await requireFullHR(req, res);
+    if (!gate.ok) return;
+    const pre = (await sql`SELECT * FROM asset_takeout_requests WHERE id=${req.params.id}` as any[])[0];
+    if (!pre) return res.status(404).json({ error: 'Request not found' });
+    if (pre.status !== 'pending') return res.status(400).json({ error: `Can't approve a ${pre.status} request.` });
+    const rows = await sql`
+      UPDATE asset_takeout_requests SET
+        status='approved',
+        approved_by_name=${gate.user?.name ?? null},
+        approved_at=NOW(), updated_at=NOW()
+      WHERE id=${req.params.id} RETURNING *`;
+    notifyEmployeeUser(pre.employee_id, 'asset_takeout_approved', 'Takeout approved',
+      `${gate.user?.name ?? 'HR'} approved your request to take "${pre.asset_label}" home.`).catch(()=>{});
+    res.json((rows as any[])[0]);
+  } catch (err: any) { res.status(500).json({ error: err.message ?? 'Server error' }); }
+});
+
+// PATCH /api/asset-takeouts/:id/reject — HR only, reason required.
+app.patch('/api/asset-takeouts/:id/reject', async (req, res) => {
+  try {
+    const gate = await requireFullHR(req, res);
+    if (!gate.ok) return;
+    const reason = String(req.body?.rejection_reason ?? '').trim();
+    if (!reason) return res.status(400).json({ error: 'rejection_reason is required.' });
+    const pre = (await sql`SELECT * FROM asset_takeout_requests WHERE id=${req.params.id}` as any[])[0];
+    if (!pre) return res.status(404).json({ error: 'Request not found' });
+    if (pre.status !== 'pending') return res.status(400).json({ error: `Can't reject a ${pre.status} request.` });
+    const rows = await sql`
+      UPDATE asset_takeout_requests SET
+        status='rejected',
+        rejected_by_name=${gate.user?.name ?? null},
+        rejected_at=NOW(), rejection_reason=${reason}, updated_at=NOW()
+      WHERE id=${req.params.id} RETURNING *`;
+    notifyEmployeeUser(pre.employee_id, 'asset_takeout_rejected', 'Takeout rejected',
+      `${gate.user?.name ?? 'HR'} rejected your takeout for "${pre.asset_label}": ${reason.slice(0, 140)}`).catch(()=>{});
+    res.json((rows as any[])[0]);
+  } catch (err: any) { res.status(500).json({ error: err.message ?? 'Server error' }); }
+});
+
+// PATCH /api/asset-takeouts/:id/return — mark it returned.
+// Both HR AND the employee themselves can hit this. The employee can
+// only mark their OWN request as returned; HR can mark anyone's.
+app.patch('/api/asset-takeouts/:id/return', async (req, res) => {
+  try {
+    await runStartupMigrations();
+    const uid = req.header('x-user-id');
+    if (!uid) return res.status(401).json({ error: 'Sign in required' });
+    const u = (await sql`SELECT id, name, role, employee_id_ref FROM app_users WHERE id=${uid} LIMIT 1` as any[])[0];
+    if (!u) return res.status(401).json({ error: 'Unknown user' });
+    const isHR = u.role === 'admin' || u.role === 'hr_manager' || u.role === 'hr_intern';
+    const pre = (await sql`SELECT * FROM asset_takeout_requests WHERE id=${req.params.id}` as any[])[0];
+    if (!pre) return res.status(404).json({ error: 'Request not found' });
+    if (pre.status !== 'approved') return res.status(400).json({ error: `Only approved takeouts can be returned (this one is ${pre.status}).` });
+    if (!isHR) {
+      const self = (await sql`
+        SELECT id FROM employees WHERE id=${u.employee_id_ref} OR employee_id=${u.employee_id_ref} LIMIT 1` as any[])[0];
+      if (!self || self.id !== pre.employee_id) return res.status(403).json({ error: 'Not your request.' });
+    }
+    const actualDate = req.body?.actual_return_date || new Date().toISOString().slice(0, 10);
+    const rows = await sql`
+      UPDATE asset_takeout_requests SET
+        status='returned',
+        actual_return_date=${actualDate},
+        returned_by_name=${u.name ?? null},
+        updated_at=NOW()
+      WHERE id=${req.params.id} RETURNING *`;
+    res.json((rows as any[])[0]);
+  } catch (err: any) { res.status(500).json({ error: err.message ?? 'Server error' }); }
+});
+
+// DELETE /api/asset-takeouts/:id — owner cancels a PENDING request only.
+// HR can also delete any request outright.
+app.delete('/api/asset-takeouts/:id', async (req, res) => {
+  try {
+    await runStartupMigrations();
+    const uid = req.header('x-user-id');
+    if (!uid) return res.status(401).json({ error: 'Sign in required' });
+    const u = (await sql`SELECT id, role, employee_id_ref FROM app_users WHERE id=${uid} LIMIT 1` as any[])[0];
+    if (!u) return res.status(401).json({ error: 'Unknown user' });
+    const isHR = u.role === 'admin' || u.role === 'hr_manager';
+    const pre = (await sql`SELECT * FROM asset_takeout_requests WHERE id=${req.params.id}` as any[])[0];
+    if (!pre) return res.status(404).json({ error: 'Request not found' });
+    if (!isHR) {
+      const self = (await sql`
+        SELECT id FROM employees WHERE id=${u.employee_id_ref} OR employee_id=${u.employee_id_ref} LIMIT 1` as any[])[0];
+      if (!self || self.id !== pre.employee_id) return res.status(403).json({ error: 'Not your request.' });
+      if (pre.status !== 'pending') return res.status(400).json({ error: 'You can only cancel a pending request. Ask HR to remove it once approved.' });
+    }
+    await sql`DELETE FROM asset_takeout_requests WHERE id=${req.params.id}`;
+    res.json({ ok: true });
+  } catch (err: any) { res.status(500).json({ error: err.message ?? 'Server error' }); }
 });
 
 // ── Warnings & PIP ────────────────────────────────────────────────────────

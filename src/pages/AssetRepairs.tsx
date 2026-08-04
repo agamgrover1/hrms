@@ -2,12 +2,12 @@ import { useState, useEffect, useMemo } from 'react';
 import {
   Wrench, Laptop, Building2, Plus, Trash2, Pencil, X, Check, AlertTriangle,
   Clock, CheckCircle, XCircle, DollarSign, Search, IndianRupee, History,
-  ArrowUpDown, ChevronUp, ChevronDown, Filter,
+  ArrowUpDown, ChevronUp, ChevronDown, Filter, Briefcase,
 } from 'lucide-react';
 import { api } from '../services/api';
 import { useAuth } from '../context/AuthContext';
 
-type Tab = 'tickets' | 'assets' | 'vendor';
+type Tab = 'tickets' | 'assets' | 'vendor' | 'takeouts';
 
 const APPROVAL_THRESHOLD = 10000;
 
@@ -121,9 +121,10 @@ export default function AssetRepairs() {
       {/* ── Tabs ─────────────────────────────────────────────────────────── */}
       <div className="flex bg-surface rounded-xl-2 p-1 border border-outline shadow-elev-1 w-fit">
         {[
-          { k: 'tickets', label: 'Repair Tickets', icon: Wrench  },
-          { k: 'assets',  label: 'Asset Registry', icon: Laptop  },
-          { k: 'vendor',  label: 'Vendor',         icon: Building2 },
+          { k: 'tickets',  label: 'Repair Tickets', icon: Wrench  },
+          { k: 'assets',   label: 'Asset Registry', icon: Laptop  },
+          { k: 'takeouts', label: 'Takeouts',       icon: Briefcase },
+          { k: 'vendor',   label: 'Vendor',         icon: Building2 },
         ].map(({ k, label, icon: Icon }) => (
           <button key={k} onClick={() => setTab(k as Tab)}
             className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-semibold transition-all ${tab === k ? 'bg-accent text-on-accent shadow-elev-1' : 'text-on-surface-muted hover:bg-surface-2'}`}>
@@ -174,6 +175,10 @@ export default function AssetRepairs() {
                 refetchAssets();
               }}
             />
+          )}
+
+          {tab === 'takeouts' && (
+            <TakeoutsTab />
           )}
 
           {tab === 'vendor' && (
@@ -1808,3 +1813,183 @@ function PastRepairModal({ asset, employees, vendors, currentUser, onClose, onSa
   );
 }
 
+
+// ─────────────────────────────────────────────────────────────────────────
+// TakeoutsTab — HR-facing queue for asset takeout requests.
+// Lists pending / approved / rejected / returned. Approve or reject
+// pending items; mark approved items returned when they come back.
+// ─────────────────────────────────────────────────────────────────────────
+function TakeoutsTab() {
+  const [rows, setRows] = useState<any[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [filter, setFilter] = useState<'pending' | 'approved' | 'rejected' | 'returned' | 'all'>('pending');
+  const [rejecting, setRejecting] = useState<any | null>(null);
+  const [rejectReason, setRejectReason] = useState('');
+
+  const load = () => {
+    setLoading(true);
+    api.listAssetTakeouts({ status: filter === 'all' ? undefined : filter })
+      .then(setRows).catch(() => setRows([])).finally(() => setLoading(false));
+  };
+  useEffect(load, [filter]);
+
+  const counts = useMemo(() => {
+    const c: Record<string, number> = { pending: 0, approved: 0, rejected: 0, returned: 0, overdue: 0 };
+    for (const r of rows) {
+      c[r.status] = (c[r.status] ?? 0) + 1;
+      if (r.is_overdue) c.overdue += 1;
+    }
+    return c;
+  }, [rows]);
+
+  const approve = async (t: any) => {
+    if (!confirm(`Approve ${t.employee_name} taking "${t.asset_label}"?`)) return;
+    try { await api.approveAssetTakeout(t.id); load(); }
+    catch (e: any) { alert(e?.message ?? 'Failed'); }
+  };
+  const doReject = async () => {
+    if (!rejecting) return;
+    if (!rejectReason.trim()) { alert('Reason is required.'); return; }
+    try { await api.rejectAssetTakeout(rejecting.id, rejectReason.trim()); setRejecting(null); setRejectReason(''); load(); }
+    catch (e: any) { alert(e?.message ?? 'Failed'); }
+  };
+  const markReturned = async (t: any) => {
+    if (!confirm(`Mark "${t.asset_label}" as returned by ${t.employee_name}?`)) return;
+    try { await api.returnAssetTakeout(t.id); load(); }
+    catch (e: any) { alert(e?.message ?? 'Failed'); }
+  };
+
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center gap-2 flex-wrap">
+        {(['pending', 'approved', 'rejected', 'returned', 'all'] as const).map(k => (
+          <button key={k} onClick={() => setFilter(k)}
+            className={`px-3 py-1.5 rounded-lg text-xs font-semibold capitalize transition-colors ${
+              filter === k
+                ? 'bg-accent text-on-accent shadow-elev-1'
+                : 'bg-surface border border-outline text-on-surface-muted hover:bg-surface-2'
+            }`}>
+            {k}{k !== 'all' && counts[k] > 0 && <span className="ml-1.5 num-mono opacity-75">({counts[k]})</span>}
+          </button>
+        ))}
+        {counts.overdue > 0 && (
+          <span className="ml-auto inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[11px] font-bold uppercase bg-danger-container text-danger">
+            <AlertTriangle size={11} /> {counts.overdue} overdue
+          </span>
+        )}
+      </div>
+
+      {loading ? (
+        <div className="h-40 rounded-xl-2 bg-surface-2 animate-pulse" />
+      ) : rows.length === 0 ? (
+        <div className="rounded-xl-2 border border-outline bg-surface p-10 text-center">
+          <Briefcase className="w-8 h-8 mx-auto text-on-surface-subtle mb-2" />
+          <p className="text-sm text-on-surface-muted">No {filter === 'all' ? '' : filter} takeout requests.</p>
+          {filter === 'pending' && <p className="text-xs text-on-surface-subtle mt-1">New requests from employees will appear here.</p>}
+        </div>
+      ) : (
+        <div className="rounded-xl-2 border border-outline bg-surface overflow-hidden">
+          <table className="w-full text-sm">
+            <thead className="bg-surface-2 text-[10px] uppercase tracking-wider text-on-surface-subtle">
+              <tr>
+                <th className="px-4 py-2.5 text-left">Employee</th>
+                <th className="px-4 py-2.5 text-left">Item</th>
+                <th className="px-4 py-2.5 text-left">Reason</th>
+                <th className="px-4 py-2.5 text-left">Dates</th>
+                <th className="px-4 py-2.5 text-left">Status</th>
+                <th className="px-4 py-2.5 text-right">Actions</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-outline">
+              {rows.map(t => {
+                const overdue = t.is_overdue;
+                const statusCfg =
+                  t.status === 'approved'  ? { label: overdue ? 'Overdue' : 'Approved', cls: overdue ? 'bg-danger-container text-danger' : 'bg-success-container text-success' }
+                  : t.status === 'pending' ? { label: 'Pending', cls: 'bg-warning-container text-warning' }
+                  : t.status === 'rejected' ? { label: 'Rejected', cls: 'bg-danger-container text-danger' }
+                  : t.status === 'returned' ? { label: 'Returned', cls: 'bg-surface-2 text-on-surface-muted' }
+                  : { label: t.status, cls: 'bg-surface-2 text-on-surface-muted' };
+                return (
+                  <tr key={t.id} className="hover:bg-surface-2/40">
+                    <td className="px-4 py-3">
+                      <p className="font-semibold text-on-surface">{t.employee_name ?? '—'}</p>
+                    </td>
+                    <td className="px-4 py-3">
+                      <p className="text-on-surface">{t.asset_label}</p>
+                      {t.asset_tag && <p className="text-[11px] text-on-surface-subtle font-mono">{t.asset_tag}{t.asset_model ? ` · ${t.asset_model}` : ''}</p>}
+                    </td>
+                    <td className="px-4 py-3 text-on-surface-muted text-[13px] max-w-xs truncate">
+                      {t.reason ?? '—'}
+                    </td>
+                    <td className="px-4 py-3 text-[11px] text-on-surface-muted num-mono">
+                      <p>Take: {t.takeout_date?.slice(0, 10)}</p>
+                      {t.expected_return_date && <p>Due: {t.expected_return_date.slice(0, 10)}</p>}
+                      {t.actual_return_date && <p className="text-success">Returned: {t.actual_return_date.slice(0, 10)}</p>}
+                    </td>
+                    <td className="px-4 py-3">
+                      <span className={`text-[10px] font-bold uppercase px-2 py-0.5 rounded-full ${statusCfg.cls}`}>
+                        {statusCfg.label}
+                      </span>
+                      {t.rejection_reason && (
+                        <p className="text-[11px] text-danger italic mt-1 max-w-xs">"{t.rejection_reason}"</p>
+                      )}
+                    </td>
+                    <td className="px-4 py-3 text-right space-x-1 whitespace-nowrap">
+                      {t.status === 'pending' && (
+                        <>
+                          <button onClick={() => approve(t)}
+                            className="inline-flex items-center gap-1 px-2.5 py-1 rounded-md text-xs font-semibold bg-success-container text-success hover:opacity-90">
+                            <Check size={11} /> Approve
+                          </button>
+                          <button onClick={() => { setRejecting(t); setRejectReason(''); }}
+                            className="inline-flex items-center gap-1 px-2.5 py-1 rounded-md text-xs font-semibold text-danger border border-danger/30 hover:bg-danger-container">
+                            <X size={11} /> Reject
+                          </button>
+                        </>
+                      )}
+                      {t.status === 'approved' && !t.actual_return_date && (
+                        <button onClick={() => markReturned(t)}
+                          className="inline-flex items-center gap-1 px-2.5 py-1 rounded-md text-xs font-semibold text-on-surface border border-outline hover:bg-surface-2">
+                          <Check size={11} /> Mark returned
+                        </button>
+                      )}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {rejecting && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm p-4">
+          <div className="bg-surface rounded-2xl border border-outline shadow-elev-4 w-full max-w-md">
+            <div className="px-5 py-4 border-b border-outline flex items-center justify-between">
+              <div>
+                <h3 className="font-bold text-on-surface">Reject takeout</h3>
+                <p className="text-xs text-on-surface-muted mt-0.5">{rejecting.employee_name} · {rejecting.asset_label}</p>
+              </div>
+              <button onClick={() => setRejecting(null)} className="p-1.5 rounded hover:bg-surface-2"><X size={16} /></button>
+            </div>
+            <div className="p-5 space-y-3">
+              <label className="block">
+                <span className="block text-[10px] font-bold uppercase tracking-[0.14em] text-on-surface-subtle mb-1">Reason (visible to the employee)</span>
+                <textarea rows={3} autoFocus value={rejectReason} onChange={e => setRejectReason(e.target.value)}
+                  placeholder="e.g. asset in use by client demo, security policy, etc."
+                  className="w-full px-3 py-2 rounded-lg border border-outline bg-surface text-sm focus:outline-none focus:ring-2 focus:ring-danger/30 resize-none" />
+              </label>
+              <div className="flex justify-end gap-2">
+                <button onClick={() => setRejecting(null)} className="px-4 py-2 text-sm text-on-surface-muted hover:bg-surface-2 rounded-lg">Cancel</button>
+                <button onClick={doReject}
+                  className="px-4 py-2 rounded-lg bg-danger text-white text-sm font-semibold hover:opacity-90">
+                  Reject
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}

@@ -533,6 +533,41 @@ export const api = {
   rejectRepairTicket: (id: string, rejected_by?: string, rejection_reason?: string) =>
     request<any>(`/repair-tickets/${id}/reject`, { method: 'PATCH', body: JSON.stringify({ rejected_by, rejection_reason }) }),
   deleteRepairTicket: (id: string) => request<any>(`/repair-tickets/${id}`, { method: 'DELETE' }),
+
+  // ── Asset takeout requests ────────────────────────────────────────
+  listAssetTakeouts: (params: { mine?: boolean; status?: string; employee_id?: string; overdue?: boolean } = {}) => {
+    const qs = new URLSearchParams();
+    if (params.mine)         qs.set('mine', '1');
+    if (params.status)       qs.set('status', params.status);
+    if (params.employee_id)  qs.set('employee_id', params.employee_id);
+    if (params.overdue)      qs.set('overdue', '1');
+    return request<Array<{
+      id: string; employee_id: string; employee_name: string | null;
+      asset_id: string | null; asset_label: string;
+      reason: string | null;
+      takeout_date: string; expected_return_date: string | null; actual_return_date: string | null;
+      status: 'pending' | 'approved' | 'rejected' | 'returned' | 'cancelled';
+      approved_by_name: string | null; approved_at: string | null;
+      rejected_by_name: string | null; rejected_at: string | null; rejection_reason: string | null;
+      returned_by_name: string | null;
+      notes: string | null;
+      created_at: string; updated_at: string;
+      asset_tag: string | null; asset_model: string | null;
+      is_overdue: boolean;
+    }>>(`/asset-takeouts?${qs}`);
+  },
+  createAssetTakeout: (data: {
+    asset_id?: string | null; asset_label: string; reason?: string;
+    takeout_date: string; expected_return_date?: string; notes?: string;
+  }) => request<any>('/asset-takeouts', { method: 'POST', body: JSON.stringify(data) }),
+  approveAssetTakeout: (id: string) =>
+    request<any>(`/asset-takeouts/${id}/approve`, { method: 'PATCH', body: '{}' }),
+  rejectAssetTakeout: (id: string, rejection_reason: string) =>
+    request<any>(`/asset-takeouts/${id}/reject`, { method: 'PATCH', body: JSON.stringify({ rejection_reason }) }),
+  returnAssetTakeout: (id: string, actual_return_date?: string) =>
+    request<any>(`/asset-takeouts/${id}/return`, { method: 'PATCH', body: JSON.stringify({ actual_return_date }) }),
+  cancelAssetTakeout: (id: string) =>
+    request<any>(`/asset-takeouts/${id}`, { method: 'DELETE' }),
   getRepairTicketActivity: (id: string) =>
     request<Array<{
       id: number;
