@@ -15287,6 +15287,9 @@ async function _finComputeMonthUncached(month: number, year: number) {
   const lastDay  = new Date(Date.UTC(year, month, 0));
   const totalWorkingDays = countWorkingDays(firstDay, lastDay);
   for (const e of employees) {
+    // Preserve the original monthly salary before any pro-ration so the
+    // breakdown modal can show "full ₹X, pro-rated to ₹Y (12 of 22 days)".
+    e.full_monthly_salary = Number(e.salary);
     if (!e.exit_date) { e.salary_factor = 1; continue; }
     const fullSalary = Number(e.salary);
     if (e.exit_salary_override !== null && e.exit_salary_override !== undefined) {
@@ -15446,6 +15449,16 @@ async function _finComputeMonthUncached(month: number, year: number) {
       salary: Number(e.salary), rate, capacity, allocatedHours: allocated, benchHours: bench,
       allocatedCost: isDirect ? rate * allocated : 0, benchCost: isDirect ? rate * bench : 0,
       utilization: isDirect && capacity > 0 ? allocated / capacity : null,
+      // Pro-ration audit fields — populated only for mid-month exits.
+      // Full monthly salary before pro-ration; salary_factor is the
+      // fraction we billed for; the two _days fields explain "X of Y
+      // working days worked" in the breakdown UI.
+      full_monthly_salary: Number(e.full_monthly_salary ?? e.salary),
+      salary_factor: Number(e.salary_factor ?? 1),
+      salary_prorated_days: e.salary_prorated_days ?? null,
+      salary_prorated_total_days: e.salary_prorated_total_days ?? null,
+      salary_override_used: !!e.salary_override_used,
+      exit_date: e.exit_date ? String(e.exit_date).slice(0, 10) : null,
     };
   });
 

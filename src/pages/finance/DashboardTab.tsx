@@ -40,6 +40,7 @@ export default function DashboardTab({ month, year, rev }: { month: number; year
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState('');
   const [drilldown, setDrilldown] = useState<FinEmployeeRow | null>(null);
+  const [showSalaryBreakdown, setShowSalaryBreakdown] = useState(false);
   const [projectDrilldown, setProjectDrilldown] = useState<FinProjectRow | null>(null);
   const [utilGroup, setUtilGroup] = useState<UtilGroupKey>('none');
   // Click any header in the project profitability table to cycle the sort.
@@ -99,7 +100,7 @@ export default function DashboardTab({ month, year, rev }: { month: number; year
         {/* Cost waterfall */}
         <div className="lg:col-span-2 rounded-xl-2 border border-outline bg-surface p-5">
           <h3 className="text-sm font-semibold text-on-surface mb-4">Where the money goes · {MONTHS[month - 1]} {year}</h3>
-          <Waterfall t={t} currency={c} />
+          <Waterfall t={t} currency={c} onShowSalaryBreakdown={() => setShowSalaryBreakdown(true)} />
         </div>
         {/* Cost by department */}
         <div className="rounded-xl-2 border border-outline bg-surface p-5">
@@ -250,6 +251,16 @@ export default function DashboardTab({ month, year, rev }: { month: number; year
           month={month}
           year={year}
           onClose={() => setDrilldown(null)}
+        />
+      )}
+
+      {/* Salary bill breakdown — every employee that contributed to the
+          totalSalary tile, with cost_type, pro-ration state and running
+          totals. Answers "why doesn't this match my payroll draft?". */}
+      {showSalaryBreakdown && (
+        <SalaryBreakdownModal
+          model={model} month={month} year={year} currency={c}
+          onClose={() => setShowSalaryBreakdown(false)}
         />
       )}
 
@@ -576,7 +587,7 @@ function Kpi({ label, value, sub, tone = 'text-on-surface' }: { label: string; v
   );
 }
 
-function Waterfall({ t, currency }: { t: any; currency: string }) {
+function Waterfall({ t, currency, onShowSalaryBreakdown }: { t: any; currency: string; onShowSalaryBreakdown?: () => void }) {
   const segments = [
     { label: 'Direct labour', value: t.directCost, color: 'bg-brand' },
     { label: 'Idle / bench', value: t.benchCost, color: 'bg-warning' },
@@ -606,7 +617,17 @@ function Waterfall({ t, currency }: { t: any; currency: string }) {
       <div className="mt-4 flex flex-wrap gap-x-6 gap-y-1 border-t border-outline pt-3 text-xs text-on-surface-muted">
         <span>Revenue <b className="text-on-surface">{money(t.revenue, currency)}</b></span>
         <span>Total cost <b className="text-on-surface">{money(t.totalCost, currency)}</b></span>
-        <span>Salary bill <b className="text-on-surface">{money(t.totalSalary, currency)}</b></span>
+        <span>
+          Salary bill{' '}
+          {onShowSalaryBreakdown ? (
+            <button onClick={onShowSalaryBreakdown}
+              className="font-bold text-on-surface hover:text-accent hover:underline underline-offset-2 cursor-pointer">
+              {money(t.totalSalary, currency)}
+            </button>
+          ) : (
+            <b className="text-on-surface">{money(t.totalSalary, currency)}</b>
+          )}
+        </span>
       </div>
     </div>
   );
@@ -1142,6 +1163,123 @@ function Line({ label, value, bold, minus, tone }: { label: string; value: strin
     <div className="flex items-center justify-between text-sm">
       <span className={`${bold ? 'font-bold text-on-surface' : 'text-on-surface-muted'}`}>{label}</span>
       <span className={`num-mono tabular-nums ${bold ? 'font-bold' : ''} ${tone || 'text-on-surface'}`}>{minus ? '−' : ''}{value}</span>
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Salary bill breakdown — one row per employee that contributed to the
+// totalSalary tile. Groups by cost_type so HR can eyeball direct labour
+// vs indirect vs supervisors. Highlights pro-rated exit-month rows.
+// Used to reconcile against the draft payroll for the same month.
+// ─────────────────────────────────────────────────────────────────────────
+function SalaryBreakdownModal({ model, month, year, currency, onClose }: {
+  model: FinModel; month: number; year: number; currency: string; onClose: () => void;
+}) {
+  // Sort within each group by contribution desc so the biggest lines
+  // are on top. Direct / supervisor / indirect is the same ordering
+  // the waterfall tile uses.
+  const grouped = useMemo(() => {
+    const groups: Array<{ key: 'direct' | 'supervisor' | 'indirect'; label: string; rows: FinEmployeeRow[]; total: number }> = [
+      { key: 'direct',     label: 'Direct labour',     rows: [], total: 0 },
+      { key: 'supervisor', label: 'Management (leads)', rows: [], total: 0 },
+      { key: 'indirect',   label: 'Indirect salaries',  rows: [], total: 0 },
+    ];
+    for (const e of model.employeeRows) {
+      const g = groups.find(g => g.key === e.cost_type);
+      if (!g) continue;
+      g.rows.push(e);
+      g.total += Number(e.salary);
+    }
+    for (const g of groups) g.rows.sort((a, b) => Number(b.salary) - Number(a.salary));
+    return groups;
+  }, [model]);
+
+  const grandTotal = model.totals.totalSalary;
+  const proratedCount = model.employeeRows.filter(e => Number(e.salary_factor ?? 1) < 1).length;
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm p-4">
+      <div className="bg-surface rounded-2xl border border-outline shadow-elev-4 w-full max-w-4xl flex flex-col max-h-[92vh]">
+        <div className="px-6 py-4 border-b border-outline flex items-start justify-between gap-3">
+          <div>
+            <h3 className="font-display text-lg font-bold text-on-surface">
+              Salary bill breakdown · {MONTHS[month - 1]} {year}
+            </h3>
+            <p className="text-xs text-on-surface-muted mt-0.5">
+              Grand total <span className="num-mono font-semibold text-on-surface">{money(grandTotal, currency)}</span>
+              {' · '}{model.employeeRows.length} employees
+              {proratedCount > 0 && <> · <span className="text-warning">{proratedCount} pro-rated for mid-month exit</span></>}
+            </p>
+            <p className="text-[11px] text-on-surface-subtle mt-1 max-w-2xl">
+              This is the <b>accrued</b> salary cost — pre-LOP, pre-additions, pre-deductions. Payroll's draft total is
+              net pay (post those adjustments), so the two won't match to the paisa; that's expected.
+            </p>
+          </div>
+          <button onClick={onClose} className="p-1.5 rounded hover:bg-surface-2"><X size={16} className="text-on-surface-muted" /></button>
+        </div>
+
+        <div className="flex-1 overflow-auto">
+          {grouped.map((g, gi) => g.rows.length === 0 ? null : (
+            <div key={g.key} className={gi > 0 ? 'border-t-4 border-surface-2' : ''}>
+              <div className="px-6 py-2 bg-surface-2/60 flex items-center justify-between sticky top-0">
+                <p className="text-[11px] font-bold uppercase tracking-wider text-on-surface-muted">
+                  {g.label} <span className="text-on-surface-subtle">· {g.rows.length}</span>
+                </p>
+                <p className="num-mono text-sm font-semibold text-on-surface">{money(g.total, currency)}</p>
+              </div>
+              <table className="w-full text-sm">
+                <thead className="text-[10px] uppercase tracking-wider text-on-surface-subtle">
+                  <tr>
+                    <th className="px-4 py-2 text-left">Employee</th>
+                    <th className="px-4 py-2 text-left">Designation</th>
+                    <th className="px-4 py-2 text-right">Full monthly</th>
+                    <th className="px-4 py-2 text-right">Pro-ration</th>
+                    <th className="px-4 py-2 text-right font-bold">Contribution</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-outline">
+                  {g.rows.map(e => {
+                    const factor = Number(e.salary_factor ?? 1);
+                    const isProrated = factor < 1;
+                    const full = Number(e.full_monthly_salary ?? e.salary);
+                    return (
+                      <tr key={e.id} className={isProrated ? 'bg-warning-container/20' : ''}>
+                        <td className="px-4 py-2">
+                          <p className="font-semibold text-on-surface">{e.name}</p>
+                          {e.department && <p className="text-[11px] text-on-surface-subtle">{e.department}</p>}
+                        </td>
+                        <td className="px-4 py-2 text-on-surface-muted text-[13px]">{e.designation ?? '—'}</td>
+                        <td className="px-4 py-2 text-right num-mono text-on-surface-muted">{money(full, currency)}</td>
+                        <td className="px-4 py-2 text-right text-[11px]">
+                          {!isProrated ? (
+                            <span className="text-on-surface-subtle">Full month</span>
+                          ) : e.salary_override_used ? (
+                            <span className="text-warning">Manual override · {(factor * 100).toFixed(0)}%</span>
+                          ) : (
+                            <span className="text-warning">
+                              {e.salary_prorated_days ?? '?'} / {e.salary_prorated_total_days ?? '?'} working days
+                              {e.exit_date && <span className="block text-on-surface-subtle">exit {e.exit_date}</span>}
+                            </span>
+                          )}
+                        </td>
+                        <td className="px-4 py-2 text-right num-mono font-semibold text-on-surface">{money(Number(e.salary), currency)}</td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          ))}
+        </div>
+
+        <div className="px-6 py-3 border-t border-outline bg-surface-2/40 flex items-center justify-between">
+          <span className="text-[11px] text-on-surface-subtle">
+            Reconcile against Payroll → the July draft's total is net pay (post-LOP + adjustments).
+          </span>
+          <button onClick={onClose} className="px-4 py-2 text-sm text-on-surface-muted hover:bg-surface-2 rounded-lg">Close</button>
+        </div>
+      </div>
     </div>
   );
 }

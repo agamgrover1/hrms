@@ -127,6 +127,13 @@ export interface FinEmployeeRow {
   reporting_manager_name: string | null;
   salary: number; rate: number; capacity: number; allocatedHours: number; benchHours: number;
   allocatedCost: number; benchCost: number; utilization: number | null; managedProjects?: number;
+  // Pro-ration audit — populated only for mid-month exits.
+  full_monthly_salary?: number;
+  salary_factor?: number;
+  salary_prorated_days?: number | null;
+  salary_prorated_total_days?: number | null;
+  salary_override_used?: boolean;
+  exit_date?: string | null;
 }
 
 export interface FinModel {
