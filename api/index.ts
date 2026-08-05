@@ -8496,13 +8496,25 @@ async function computeLopDaysDetailed(employeeId: string, month: number, year: n
   // payroll runs snapshot, so it's the authoritative match. The code
   // form only gets included so a leave filed the old way isn't missed.
   const empRow = (await sql`
-    SELECT id, employee_id FROM employees
+    SELECT id, employee_id, join_date::text AS join_date, exit_date::text AS exit_date
+    FROM employees
     WHERE id=${employeeId} OR employee_id=${employeeId}
     LIMIT 1` as any[])[0];
   const idForms: string[] = [];
   if (empRow?.id) idForms.push(empRow.id);
   if (empRow?.employee_id && !idForms.includes(empRow.employee_id)) idForms.push(empRow.employee_id);
   if (!idForms.length) idForms.push(employeeId); // last resort — no employee row found
+  const joinISO = empRow?.join_date ? String(empRow.join_date).slice(0, 10) : null;
+  const exitISO = empRow?.exit_date ? String(empRow.exit_date).slice(0, 10) : null;
+
+  // Company holidays in the month. Weekdays that fall on a holiday
+  // never count as LOP even when there's no attendance record —
+  // otherwise turning on "no-record = absent" would silently LOP the
+  // whole team every public holiday.
+  const holidayRows = await sql`
+    SELECT date::text AS date FROM holidays
+    WHERE date BETWEEN ${firstDay}::date AND ${lastDay}::date` as any[];
+  const holidays = new Set<string>(holidayRows.map(h => String(h.date).slice(0, 10)));
 
   // All leaves that overlap the month — approved AND rejected. Approved
   // splits into paid (skip) vs unpaid (LOP). REJECTED leaves signal that
@@ -8592,11 +8604,22 @@ async function computeLopDaysDetailed(employeeId: string, month: number, year: n
     // rejected leave = LOP.
     const CAME_TO_WORK = new Set(['present', 'late', 'wfh', 'wfh_half', 'holiday', 'half-day']);
     const rejected = rejectedCover.get(iso);
+    const isHoliday = holidays.has(iso);
+    // Employee wasn't part of the payroll for this day if it falls
+    // outside their [join_date, exit_date] window. Skip LOP for those.
+    const beforeJoin = joinISO && iso < joinISO;
+    const afterExit  = exitISO && iso > exitISO;
 
     let counted: 'lop' | 'ok' = 'ok';
     let reason = '';
     if (isWeekend) {
       reason = 'Weekend — skipped';
+    } else if (isHoliday) {
+      reason = 'Company holiday — skipped';
+    } else if (beforeJoin) {
+      reason = `Before join date (${joinISO}) — skipped`;
+    } else if (afterExit) {
+      reason = `After exit date (${exitISO}) — skipped`;
     } else if (unpaid && !paid) {
       counted = 'lop';
       reason = `Approved unpaid leave (${formatLeaveType(unpaid.type)})`;
@@ -8610,10 +8633,7 @@ async function computeLopDaysDetailed(employeeId: string, month: number, year: n
       const statusLabel = attRow.status === 'lop' ? 'LOP' : 'Absent';
       reason = `Attendance marked ${statusLabel}${attRow.source ? ` (${attRow.source})` : ''} — no approved leave / WFH covers this date`;
     } else if (rejected && !(attRow && CAME_TO_WORK.has(attRow.status))) {
-      // Employee applied for leave, it was rejected, and there's no
-      // clear "they came to work" signal → LOP. Closes the gap where a
-      // rejected leave day had no attendance row (or an ambiguous one)
-      // and previously slipped through as "default present".
+      // Rejected leave without a clear "came to work" signal → LOP.
       counted = 'lop';
       const attTail = attRow
         ? ` · attendance: ${attRow.status}${attRow.source ? ` (${attRow.source})` : ''}`
@@ -8622,7 +8642,14 @@ async function computeLopDaysDetailed(employeeId: string, month: number, year: n
     } else if (attRow) {
       reason = `Attendance: ${attRow.status}${attRow.source ? ` (${attRow.source})` : ''}`;
     } else {
-      reason = 'No attendance record, no leave — treated as present';
+      // No attendance record + no leave + not a weekend / holiday /
+      // outside employment window → LOP. Previous default was "treated
+      // as present" which silently paid people who simply didn't clock
+      // in and didn't apply for leave. Now the burden of proof is on
+      // the employee: either the biometric captured them, they came in
+      // late, they were on WFH / approved leave, or they lose the day.
+      counted = 'lop';
+      reason = 'No attendance record and no approved leave — treated as LOP (absent)';
     }
     if (counted === 'lop') lop += 1;
     details.push({
