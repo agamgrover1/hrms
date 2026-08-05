@@ -607,7 +607,7 @@ export const api = {
   },
   applyWfh: (data: { employee_id: string; employee_name?: string; date: string; type: string; reason: string }) =>
     request<any>('/wfh/requests', { method: 'POST', body: JSON.stringify(data) }),
-  managerApproveWfh: (id: string, data: { status: 'approved' | 'rejected'; manager_id: string; manager_name?: string; rejection_reason?: string }) =>
+  managerApproveWfh: (id: string, data: { status: 'approved' | 'rejected'; manager_id: string; manager_name?: string; rejection_reason?: string; approver_note?: string }) =>
     request<any>(`/wfh/requests/${id}/manager-approve`, { method: 'PATCH', body: JSON.stringify(data) }),
   hrApproveWfh: (id: string, data: { status: 'approved' | 'rejected'; actioner_name?: string; rejection_reason?: string }) =>
     request<any>(`/wfh/requests/${id}`, { method: 'PATCH', body: JSON.stringify(data) }),

@@ -2769,6 +2769,10 @@ async function runStartupMigrations() {
     // approver_note tracks the final HR decision.
     await sql`ALTER TABLE leave_requests ADD COLUMN IF NOT EXISTS approver_note TEXT`;
     await sql`ALTER TABLE leave_requests ADD COLUMN IF NOT EXISTS manager_approver_note TEXT`;
+    // Same note fields on WFH so the manager / HR can send a message
+    // with the approval ("please attend the 3pm sync from home").
+    await sql`ALTER TABLE wfh_requests ADD COLUMN IF NOT EXISTS approver_note TEXT`.catch(()=>{});
+    await sql`ALTER TABLE wfh_requests ADD COLUMN IF NOT EXISTS manager_approver_note TEXT`.catch(()=>{});
     // Sub-slot for half-day / short-leave so the manager knows WHEN inside
     // the day. half_day → 'morning' | 'evening'. short_leave → 'q1'..'q4'.
     // Null for full_day / unpaid where it's not meaningful.
@@ -12509,25 +12513,28 @@ app.post('/api/wfh/requests', async (req, res) => {
 app.patch('/api/wfh/requests/:id/manager-approve', async (req, res) => {
   try {
     invalidateWfhCache();
-    const { status, manager_id, manager_name, rejection_reason } = req.body;
+    const { status, manager_id, manager_name, rejection_reason, approver_note } = req.body;
+    const note = typeof approver_note === 'string' && approver_note.trim() ? approver_note.trim() : null;
     if (status === 'rejected') {
       const rows = await sql`UPDATE wfh_requests SET manager_status='rejected',manager_id=${manager_id??null},manager_name=${manager_name??null},manager_approved_at=NOW(),manager_rejection_reason=${rejection_reason??null},status='rejected' WHERE id=${req.params.id} RETURNING *`;
       const w = rows[0] as any;
       notifyEmployeeUser(w.employee_id,'wfh_rejected','WFH Request Rejected by Manager',`Your Work From Home request was rejected by your manager.`).catch(()=>{});
       return res.json(w);
     }
-    const rows = await sql`UPDATE wfh_requests SET manager_status='approved',manager_id=${manager_id??null},manager_name=${manager_name??null},manager_approved_at=NOW() WHERE id=${req.params.id} RETURNING *`;
+    const rows = await sql`UPDATE wfh_requests SET manager_status='approved',manager_id=${manager_id??null},manager_name=${manager_name??null},manager_approved_at=NOW(),manager_approver_note=${note} WHERE id=${req.params.id} RETURNING *`;
     const w = rows[0] as any;
+    const noteSuffix = note ? ` Note: ${note.slice(0, 200)}` : '';
     notifyAdminsAndHR('wfh_applied','WFH Needs HR Approval',
-      `${w.employee_name}'s WFH request approved by manager — awaiting final HR approval.`).catch(()=>{});
+      `${w.employee_name}'s WFH request approved by manager — awaiting final HR approval.${noteSuffix}`).catch(()=>{});
     res.json(w);
   } catch { res.status(500).json({ error: 'Server error' }); }
 });
 app.patch('/api/wfh/requests/:id', async (req, res) => {
   try {
     invalidateWfhCache();
-    const { status, actioner_name, rejection_reason } = req.body;
-    const rows = await sql`UPDATE wfh_requests SET status=${status},hr_actioner_name=${actioner_name??null},hr_actioned_at=NOW(),rejection_reason=${status==='rejected'?(rejection_reason??null):null} WHERE id=${req.params.id} RETURNING *`;
+    const { status, actioner_name, rejection_reason, approver_note } = req.body;
+    const note = typeof approver_note === 'string' && approver_note.trim() ? approver_note.trim() : null;
+    const rows = await sql`UPDATE wfh_requests SET status=${status},hr_actioner_name=${actioner_name??null},hr_actioned_at=NOW(),rejection_reason=${status==='rejected'?(rejection_reason??null):null},approver_note=${status==='approved'?note:null} WHERE id=${req.params.id} RETURNING *`;
     if (!rows.length) return res.status(404).json({ error: 'Not found' });
     const w = rows[0] as any;
     const _wd = w.date instanceof Date ? w.date.toISOString() : String(w.date);
@@ -12535,7 +12542,8 @@ app.patch('/api/wfh/requests/:id', async (req, res) => {
     const wfhStatus = w.type === 'half_day' ? 'wfh_half' : 'wfh';
     if (status === 'approved') {
       await sql`INSERT INTO attendance_records (employee_id,date,status,total_hours,source) VALUES (${w.employee_id},${dateStr},${wfhStatus},0,'wfh') ON CONFLICT (employee_id,date) DO UPDATE SET status=${wfhStatus},source='wfh'`.catch(()=>{});
-      notifyEmployeeUser(w.employee_id,'wfh_approved','WFH Approved',`Your Work From Home request has been approved.`).catch(()=>{});
+      const noteSuffix = note ? ` Note: ${note.slice(0, 200)}` : '';
+      notifyEmployeeUser(w.employee_id,'wfh_approved','WFH Approved',`Your Work From Home request has been approved.${noteSuffix}`).catch(()=>{});
     } else {
       await sql`DELETE FROM attendance_records WHERE employee_id=${w.employee_id} AND date::date=${dateStr}::date AND source='wfh'`.catch(()=>{});
       notifyEmployeeUser(w.employee_id,'wfh_rejected','WFH Request Rejected',`Your Work From Home request was rejected by HR.`).catch(()=>{});

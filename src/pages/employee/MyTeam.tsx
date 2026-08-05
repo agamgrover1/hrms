@@ -364,6 +364,12 @@ export default function MyTeam() {
   const [pendingLeaves, setPendingLeaves] = useState<any[]>([]);
   const [approvingLeave, setApprovingLeave] = useState<Record<string, boolean>>({});
   const [rejectTarget, setRejectTarget] = useState<string | null>(null);
+  // Optional note prompt on Approve — managers/HR often want to add a
+  // send-off ("Update your tasks before leaving", "Handover doc to Rahul")
+  // that the employee sees in the notification. Two targets so leave and
+  // WFH approvals can reuse the same UI shell.
+  const [approveLeaveTarget, setApproveLeaveTarget] = useState<any | null>(null);
+  const [approveWfhTarget, setApproveWfhTarget] = useState<any | null>(null);
   const [viewLeavesFor, setViewLeavesFor] = useState<any | null>(null);
   // Per-member calendar drill-in: a month grid showing every day color-coded
   // by attendance + leave status. Click a member card → opens this.
@@ -536,10 +542,21 @@ export default function MyTeam() {
   }, [user?.employee_id_ref, currentYear, teamScope]);
 
   // ── Leave handlers ──────────────────────────────────────────────────────────
-  const handleApproveLeave = async (id: string, status: 'approved' | 'rejected', reason?: string) => {
+  // For approvals, `note` becomes the approver_note the employee sees in
+  // their bell notification + on the leave row ("Before leaving the office,
+  // update all your tasks."). For rejections, `note` is the reason.
+  const handleApproveLeave = async (
+    id: string, status: 'approved' | 'rejected', reason?: string, note?: string,
+  ) => {
     setApprovingLeave(p => ({ ...p, [id]: true }));
     try {
-      await api.managerApproveLeave(id, { status, manager_id: empDbId, manager_name: user?.name, rejection_reason: reason });
+      await api.managerApproveLeave(id, {
+        status,
+        manager_id: empDbId,
+        manager_name: user?.name,
+        rejection_reason: reason,
+        approver_note: status === 'approved' ? (note?.trim() || undefined) : undefined,
+      });
       setPendingLeaves(p => p.filter(l => l.id !== id));
     } catch { /* ignore */ }
     finally { setApprovingLeave(p => ({ ...p, [id]: false })); }
@@ -568,10 +585,18 @@ export default function MyTeam() {
   };
 
   // ── WFH handler ──────────────────────────────────────────────────────────────
-  const handleApproveWfh = async (id: string, status: 'approved' | 'rejected', reason?: string) => {
+  const handleApproveWfh = async (
+    id: string, status: 'approved' | 'rejected', reason?: string, note?: string,
+  ) => {
     setApprovingWfh(p => ({ ...p, [id]: true }));
     try {
-      await api.managerApproveWfh(id, { status, manager_id: empDbId, manager_name: user?.name, rejection_reason: reason });
+      await api.managerApproveWfh(id, {
+        status,
+        manager_id: empDbId,
+        manager_name: user?.name,
+        rejection_reason: reason,
+        approver_note: status === 'approved' ? (note?.trim() || undefined) : undefined,
+      });
       setPendingWfh(p => p.filter(w => w.id !== id));
     } catch { /* ignore */ }
     finally { setApprovingWfh(p => ({ ...p, [id]: false })); }
@@ -1111,7 +1136,7 @@ export default function MyTeam() {
                       </div>
                     </div>
                     <div className="flex gap-2 flex-shrink-0">
-                      <button onClick={() => handleApproveLeave(l.id, 'approved')}
+                      <button onClick={() => setApproveLeaveTarget(l)}
                         disabled={approvingLeave[l.id]}
                         className="flex items-center gap-1 px-3 py-1.5 text-xs font-semibold rounded-lg disabled:opacity-50 bg-success-container text-success hover:opacity-80 transition-opacity">
                         <CheckCircle size={12} /> {approvingLeave[l.id] ? '…' : 'Approve'}
@@ -1159,7 +1184,7 @@ export default function MyTeam() {
                       {w.reason && <p className="text-xs text-on-surface-muted mt-0.5 italic">"{w.reason}"</p>}
                     </div>
                     <div className="flex gap-2 flex-shrink-0">
-                      <button onClick={() => handleApproveWfh(w.id, 'approved')} disabled={approvingWfh[w.id]}
+                      <button onClick={() => setApproveWfhTarget(w)} disabled={approvingWfh[w.id]}
                         className="flex items-center gap-1 px-3 py-1.5 text-xs font-semibold rounded-lg disabled:opacity-50 bg-success-container text-success hover:opacity-80 transition-opacity">
                         <CheckCircle size={12} /> {approvingWfh[w.id] ? '…' : 'Approve'}
                       </button>
@@ -1600,6 +1625,35 @@ export default function MyTeam() {
         </div>
       )}
 
+      {/* Approve-with-note prompt. Note is OPTIONAL — an empty submit
+          is a clean approval. Any text becomes the approver_note the
+          employee sees in their bell + on the leave row. */}
+      {approveLeaveTarget && (
+        <ApproveNoteModal
+          title={`Approve ${approveLeaveTarget.employee_name}'s leave`}
+          subtitle={`${approveLeaveTarget.type.replace('_', ' ')} · ${approveLeaveTarget.days}d · ${parseLocalDate(approveLeaveTarget.from_date).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' })}${approveLeaveTarget.from_date !== approveLeaveTarget.to_date ? ` – ${parseLocalDate(approveLeaveTarget.to_date).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' })}` : ''}`}
+          placeholder="e.g. Before leaving, please update all your tasks and handover to Rahul."
+          onClose={() => setApproveLeaveTarget(null)}
+          onConfirm={(note) => {
+            handleApproveLeave(approveLeaveTarget.id, 'approved', undefined, note);
+            setApproveLeaveTarget(null);
+          }}
+        />
+      )}
+
+      {approveWfhTarget && (
+        <ApproveNoteModal
+          title={`Approve ${approveWfhTarget.employee_name}'s WFH`}
+          subtitle={`${approveWfhTarget.type === 'half_day' ? 'Half day' : 'Full day'} · ${parseLocalDate(approveWfhTarget.date).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' })}`}
+          placeholder="e.g. Please join the 3 pm sync from home; escalate to me if anything blocks."
+          onClose={() => setApproveWfhTarget(null)}
+          onConfirm={(note) => {
+            handleApproveWfh(approveWfhTarget.id, 'approved', undefined, note);
+            setApproveWfhTarget(null);
+          }}
+        />
+      )}
+
       {/* ── Cancel leave modal ───────────────────────────────────────────────── */}
       {cancelTarget && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-bg/55 backdrop-blur-sm p-4">
@@ -1808,6 +1862,50 @@ export default function MyTeam() {
           </div>
         </div>
       )}
+    </div>
+  );
+}
+
+// Small modal used by the leave + WFH approve flows. Optional note —
+// blank submit is a plain approval. Not shared with RejectInput because
+// the semantics differ (rejection reason is REQUIRED; approval note is
+// optional), and mixing the two into one component muddled the buttons.
+function ApproveNoteModal({ title, subtitle, placeholder, onClose, onConfirm }: {
+  title: string; subtitle: string; placeholder: string;
+  onClose: () => void; onConfirm: (note: string) => void;
+}) {
+  const [note, setNote] = useState('');
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-bg/55 backdrop-blur-sm p-4">
+      <div className="bg-surface rounded-2xl shadow-elev-4 border border-outline w-full max-w-md">
+        <div className="px-5 py-4 border-b border-outline flex items-start justify-between gap-3">
+          <div>
+            <h3 className="text-base font-semibold text-on-surface">{title}</h3>
+            <p className="text-[11px] text-on-surface-muted mt-0.5">{subtitle}</p>
+          </div>
+          <button onClick={onClose} className="p-1.5 rounded hover:bg-surface-2"><X size={16} className="text-on-surface-subtle" /></button>
+        </div>
+        <div className="p-5 space-y-3">
+          <label className="block">
+            <span className="block text-[10px] font-bold uppercase tracking-[0.14em] text-on-surface-subtle mb-1">
+              Note to the employee <span className="font-normal normal-case text-[11px] text-on-surface-subtle">(optional)</span>
+            </span>
+            <textarea autoFocus rows={3} value={note} onChange={e => setNote(e.target.value)}
+              placeholder={placeholder}
+              className="w-full px-3 py-2 rounded-lg border border-outline bg-surface text-sm text-on-surface focus:outline-none focus:ring-2 focus:ring-accent/30 resize-none" />
+            <p className="text-[11px] text-on-surface-subtle mt-1">
+              Appears in the employee's approval notification and on their leave row. Leave blank for a plain approval.
+            </p>
+          </label>
+          <div className="flex items-center gap-2 justify-end pt-1">
+            <button onClick={onClose} className="px-4 py-2 text-sm text-on-surface-muted hover:bg-surface-2 rounded-lg">Cancel</button>
+            <button onClick={() => onConfirm(note)}
+              className="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg bg-success text-white text-sm font-semibold hover:opacity-90">
+              Approve
+            </button>
+          </div>
+        </div>
+      </div>
     </div>
   );
 }
