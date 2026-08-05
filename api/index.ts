@@ -8504,14 +8504,17 @@ async function computeLopDaysDetailed(employeeId: string, month: number, year: n
   if (empRow?.employee_id && !idForms.includes(empRow.employee_id)) idForms.push(empRow.employee_id);
   if (!idForms.length) idForms.push(employeeId); // last resort — no employee row found
 
-  // All approved leaves that overlap the month. We keep BOTH the type
-  // and the covering window so the classifier can distinguish "paid
-  // leave" (skip) from "unpaid leave" (LOP).
+  // All leaves that overlap the month — approved AND rejected. Approved
+  // splits into paid (skip) vs unpaid (LOP). REJECTED leaves signal that
+  // the employee wanted the day off but HR / manager said no; if they
+  // still didn't show up (no clear present/WFH/late signal), that day is
+  // LOP because they were absent-without-permission. If they did come to
+  // work despite the rejection, attendance wins and it's paid.
   const leaves = await sql`
     SELECT type, from_date::text AS from_date, to_date::text AS to_date, status
     FROM leave_requests
     WHERE employee_id = ANY(${idForms}::text[])
-      AND status='approved'
+      AND status IN ('approved', 'rejected')
       AND from_date <= ${lastDay}::date
       AND to_date   >= ${firstDay}::date` as any[];
   // All approved WFH days in the month.
@@ -8531,8 +8534,9 @@ async function computeLopDaysDetailed(employeeId: string, month: number, year: n
   for (const a of att) attByDate.set(String(a.date).slice(0, 10), { status: a.status, source: a.source });
 
   // Build per-date coverage.
-  const paidCover = new Map<string, { type: string }>();   // date → leave/wfh that pays
-  const unpaidCover = new Map<string, { type: string }>(); // date → unpaid leave that LOPs
+  const paidCover = new Map<string, { type: string }>();     // date → leave/wfh that pays
+  const unpaidCover = new Map<string, { type: string }>();   // date → unpaid leave that LOPs
+  const rejectedCover = new Map<string, { type: string }>(); // date → rejected leave the person applied for
 
   const walkDays = (fromISO: string, toISO: string, apply: (iso: string) => void) => {
     const monthStart = new Date(firstDay + 'T00:00:00Z');
@@ -8550,7 +8554,9 @@ async function computeLopDaysDetailed(employeeId: string, month: number, year: n
   for (const l of leaves) {
     const from = String(l.from_date).slice(0, 10);
     const to   = String(l.to_date).slice(0, 10);
-    if (l.type === 'unpaid') {
+    if (l.status === 'rejected') {
+      walkDays(from, to, iso => rejectedCover.set(iso, { type: l.type }));
+    } else if (l.type === 'unpaid') {
       walkDays(from, to, iso => unpaidCover.set(iso, { type: l.type }));
     } else {
       walkDays(from, to, iso => paidCover.set(iso, { type: l.type }));
@@ -8581,6 +8587,12 @@ async function computeLopDaysDetailed(employeeId: string, month: number, year: n
       .filter(l => String(l.from_date).slice(0, 10) <= iso && String(l.to_date).slice(0, 10) >= iso)
       .map(l => ({ type: l.type, status: l.status }));
 
+    // Statuses that count as "employee was clearly at work" and override
+    // a rejected-leave LOP verdict. Anything outside this set + a
+    // rejected leave = LOP.
+    const CAME_TO_WORK = new Set(['present', 'late', 'wfh', 'wfh_half', 'holiday', 'half-day']);
+    const rejected = rejectedCover.get(iso);
+
     let counted: 'lop' | 'ok' = 'ok';
     let reason = '';
     if (isWeekend) {
@@ -8597,6 +8609,16 @@ async function computeLopDaysDetailed(employeeId: string, month: number, year: n
       counted = 'lop';
       const statusLabel = attRow.status === 'lop' ? 'LOP' : 'Absent';
       reason = `Attendance marked ${statusLabel}${attRow.source ? ` (${attRow.source})` : ''} — no approved leave / WFH covers this date`;
+    } else if (rejected && !(attRow && CAME_TO_WORK.has(attRow.status))) {
+      // Employee applied for leave, it was rejected, and there's no
+      // clear "they came to work" signal → LOP. Closes the gap where a
+      // rejected leave day had no attendance row (or an ambiguous one)
+      // and previously slipped through as "default present".
+      counted = 'lop';
+      const attTail = attRow
+        ? ` · attendance: ${attRow.status}${attRow.source ? ` (${attRow.source})` : ''}`
+        : ' · no attendance record';
+      reason = `Rejected ${formatLeaveType(rejected.type)} leave — treated as LOP${attTail}`;
     } else if (attRow) {
       reason = `Attendance: ${attRow.status}${attRow.source ? ` (${attRow.source})` : ''}`;
     } else {
