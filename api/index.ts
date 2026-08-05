@@ -8693,6 +8693,22 @@ function weekdaysInMonth(year: number, month: number): number {
   return n;
 }
 
+// Count Mon-Fri days between two ISO dates (inclusive). Used to pro-rate
+// payslip working days for mid-month joiners / exits — if someone's last
+// day is July 10, only weekdays between July 1 and July 10 count as
+// working days for their July payslip.
+function weekdaysBetween(fromISO: string, toISO: string): number {
+  const from = new Date(fromISO + 'T00:00:00Z');
+  const to   = new Date(toISO   + 'T00:00:00Z');
+  if (to < from) return 0;
+  let n = 0;
+  for (let d = new Date(from); d <= to; d.setUTCDate(d.getUTCDate() + 1)) {
+    const dow = d.getUTCDay();
+    if (dow !== 0 && dow !== 6) n += 1;
+  }
+  return n;
+}
+
 // Given the payroll_config + a payslip row shape, recompute the derived
 // numbers (monthly_gross, lop_deduction, earned_gross, net_pay). Called
 // on every payslip write so the derived fields stay honest.
@@ -8794,21 +8810,27 @@ app.post('/api/payroll/runs', async (req, res) => {
     }
 
     const cfg = (await sql`SELECT * FROM payroll_config WHERE id='default'` as any[])[0] ?? { working_days_convention: 'fixed_30' };
+    const firstDay = `${y}-${String(m).padStart(2, '0')}-01`;
     const lastDay = `${y}-${String(m).padStart(2, '0')}-${String(new Date(y, m, 0).getDate()).padStart(2, '0')}`;
 
-    // Snapshot only active employees. Someone on 'inactive' /
-    // 'offboarded' shouldn't be in this month's run (HR can add them
-    // back via a special-case create-payslip if needed).
-    // We pull `salary` (monthly gross) and `ctc` (annual) alongside so
-    // the snapshot loop below can fall back to the primary employee
-    // record when no dated salary_structures row exists — HR already
-    // enters the monthly amount when they create the employee, so
-    // asking them to re-enter it under a "Salary structure" tab was
-    // pointless. Structures are still consulted first (for orgs that
-    // date-log raises), then the employee record, then zero.
+    // Include:
+    //   1. Everyone currently active — normal case.
+    //   2. Anyone who exited during OR after this month — even if they
+    //      only worked a few days, they're owed a pro-rated salary and
+    //      must appear in the run (Jai and Karuna were being silently
+    //      dropped because they'd already been flipped to inactive).
+    //   3. Anyone whose join_date falls inside the month — new joiners
+    //      similarly need a pro-rated first payslip even if their
+    //      status flipped later.
+    // Excluded: anyone with an exit_date before this month started
+    // (they were paid off in a prior run).
     const emps = await sql`
-      SELECT id, name, employee_id AS emp_code, designation, salary, ctc
-      FROM employees WHERE status='active'` as any[];
+      SELECT id, name, employee_id AS emp_code, designation, salary, ctc,
+             join_date::text AS join_date, exit_date::text AS exit_date, status
+      FROM employees
+      WHERE status='active'
+         OR (exit_date IS NOT NULL AND exit_date >= ${firstDay}::date)
+         OR (join_date IS NOT NULL AND join_date BETWEEN ${firstDay}::date AND ${lastDay}::date)` as any[];
 
     const runId = `pr_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
     await sql`
@@ -8856,10 +8878,26 @@ app.post('/api/payroll/runs', async (req, res) => {
         };
         noteOnMissing = 'No salary on record. Set it under Employees, then delete this payslip and re-create it.';
       }
+      // Pro-rate working days when the employee joined or exited in
+      // this month. For a mid-month exit on July 10, working days count
+      // only weekdays from July 1 → July 10. Payslip still shows the
+      // full monthly gross snapshot, but paid_days = pro-rated
+      // working_days minus LOP, so the effective earned_gross reflects
+      // just the days they were employed. For everyone else this is a
+      // no-op (override stays undefined → convention wins).
+      const joinISO = e.join_date ? String(e.join_date).slice(0, 10) : null;
+      const exitISO = e.exit_date ? String(e.exit_date).slice(0, 10) : null;
+      const overrideWd = (joinISO && joinISO > firstDay) || (exitISO && exitISO < lastDay)
+        ? weekdaysBetween(
+            joinISO && joinISO > firstDay ? joinISO : firstDay,
+            exitISO && exitISO < lastDay ? exitISO : lastDay,
+          )
+        : undefined;
       const derived = recomputePayslip(cfg, {
         ...structureFields,
         additions: [], deductions: [],
         lop_days: lopDays, month: m, year: y,
+        working_days_override: overrideWd ?? null,
       });
       await sql`
         INSERT INTO payslips (
@@ -8904,14 +8942,28 @@ app.patch('/api/payroll/runs/:id/resync-working-days', async (req, res) => {
     const payslips = await sql`SELECT * FROM payslips WHERE payroll_run_id=${req.params.id}` as any[];
     let updated = 0;
     for (const ps of payslips) {
+      // Preserve pro-ration for mid-month joiners/exits — re-lookup the
+      // employee's dates and recompute the window instead of blindly
+      // falling back to the full convention. Otherwise a resync wipes
+      // Jai's July-1-to-10 window and gives him full-month pay.
+      const empRow = (await sql`SELECT join_date::text AS join_date, exit_date::text AS exit_date FROM employees WHERE id=${ps.employee_id} LIMIT 1` as any[])[0];
+      const firstDay = `${ps.year}-${String(ps.month).padStart(2, '0')}-01`;
+      const lastDay = `${ps.year}-${String(ps.month).padStart(2, '0')}-${String(new Date(ps.year, ps.month, 0).getDate()).padStart(2, '0')}`;
+      const joinISO = empRow?.join_date ? String(empRow.join_date).slice(0, 10) : null;
+      const exitISO = empRow?.exit_date ? String(empRow.exit_date).slice(0, 10) : null;
+      const overrideWd = (joinISO && joinISO > firstDay) || (exitISO && exitISO < lastDay)
+        ? weekdaysBetween(
+            joinISO && joinISO > firstDay ? joinISO : firstDay,
+            exitISO && exitISO < lastDay ? exitISO : lastDay,
+          )
+        : null;
       const derived = recomputePayslip(cfg, {
         basic: Number(ps.basic), hra: Number(ps.hra),
         special_allowance: Number(ps.special_allowance), employer_pf: Number(ps.employer_pf),
         other_components: ps.other_components ?? [],
         additions: ps.additions ?? [], deductions: ps.deductions ?? [],
         lop_days: Number(ps.lop_days), month: ps.month, year: ps.year,
-        // No override — force the current convention.
-        working_days_override: null,
+        working_days_override: overrideWd,
       });
       await sql`
         UPDATE payslips SET
