@@ -854,7 +854,7 @@ export default function EmployeeProfile() {
         <div className="space-y-5">
           <TabError t="Leave"/>
           {leaveBalance && (
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
               {/* Full day card with breakdown */}
               <div className="group relative bg-surface rounded-xl-2 border border-outline shadow-elev-1 p-4 overflow-hidden animate-fade-up stagger-1">
                 <div className="absolute -top-8 -right-8 w-28 h-28 rounded-full bg-brand/15 blur-2xl opacity-50" />
@@ -886,6 +886,31 @@ export default function EmployeeProfile() {
                     <div className="h-1 rounded-full" style={{background:'#7c3aed',width:`${Math.min(100,Number(leaveBalance.short_leave??0)*50)}%`}}/>
                   </div>
                   <p className="text-[11px] text-on-surface-muted mt-2 pt-2 border-t border-outline">Resets to 2 every month</p>
+                </div>
+              </div>
+              {/* Optional leaves card — annual pool of 2 days from the
+                  optional_leave_dates config, tracked in leave_requests
+                  with type='optional'. Reads optional_remaining /
+                  optional_cap / optional_used off the balance response
+                  so the number matches what the employee sees in
+                  their own portal. */}
+              <div className="group relative bg-surface rounded-xl-2 border border-outline shadow-elev-1 p-4 overflow-hidden animate-fade-up stagger-3">
+                <div className="absolute -top-8 -right-8 w-28 h-28 rounded-full bg-success/15 blur-2xl opacity-50" />
+                <div className="relative">
+                  <p className="num-mono text-2xl font-black text-success">
+                    {leaveBalance.optional_remaining ?? 0}
+                    <span className="text-on-surface-subtle text-lg font-bold"> / {leaveBalance.optional_cap ?? 2}</span>
+                  </p>
+                  <p className="text-xs text-on-surface-subtle mt-0.5">Optional leaves remaining</p>
+                  <div className="h-1 rounded-full mt-2 bg-success/10">
+                    <div className="h-1 rounded-full bg-success" style={{width:`${Math.min(100,(Number(leaveBalance.optional_remaining??0) / Math.max(1, Number(leaveBalance.optional_cap??2))) * 100)}%`}}/>
+                  </div>
+                  <p className="text-[11px] text-on-surface-muted mt-2 pt-2 border-t border-outline">
+                    Used <span className="num-mono font-semibold">{leaveBalance.optional_used ?? 0}</span> this year
+                    {Array.isArray(leaveBalance.optional_taken) && leaveBalance.optional_taken.length > 0 && (
+                      <> · latest {new Date(String(leaveBalance.optional_taken[leaveBalance.optional_taken.length - 1].date) + 'T12:00:00Z').toLocaleDateString('en-IN', { day: 'numeric', month: 'short' })}</>
+                    )}
+                  </p>
                 </div>
               </div>
             </div>
