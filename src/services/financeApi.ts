@@ -139,6 +139,15 @@ export interface FinEmployeeRow {
 export interface FinModel {
   month: number; year: number; settings: FinSettings;
   employeeRows: FinEmployeeRow[]; projectRows: FinProjectRow[];
+  // Active HR employees that aren't classified in Finance Settings
+  // (no fin_employee_meta row OR flagged inactive there). They're
+  // absent from every finance number — surface them so admin can
+  // classify them instead of "salary bill has 3 fewer people than
+  // payroll" reading as a bug.
+  unclassifiedEmployees?: Array<{
+    id: string; name: string; designation: string | null; department: string | null;
+    salary: number; exit_date: string | null; reason: string;
+  }>;
   otherCosts: { id: number; name: string; amount: number; category: string }[];
   byDept: { department: string; headcount: number; salary: number }[];
   totals: FinTotals;

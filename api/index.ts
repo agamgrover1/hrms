@@ -15659,6 +15659,26 @@ async function _finComputeMonthUncached(month: number, year: number) {
     };
   }).sort((a, b) => b.netProfit - a.netProfit);
 
+  // Employees active in HR but NOT classified for finance (no
+  // fin_employee_meta row OR flagged inactive there). These get
+  // silently dropped from every finance number, so surface them so
+  // admin can go classify them. Otherwise "salary bill has fewer
+  // people than payroll" reads as a bug when it's really a config
+  // gap.
+  const unclassifiedEmployees = (await sql`
+    SELECT e.id, e.name, e.designation, e.department,
+           COALESCE(e.salary, 0) AS salary,
+           e.exit_date::text AS exit_date,
+           CASE WHEN m.employee_id IS NULL THEN 'not classified'
+                WHEN m.active = FALSE      THEN 'marked inactive'
+                ELSE 'other' END AS reason
+    FROM employees e
+    LEFT JOIN fin_employee_meta m ON m.employee_id = e.id
+    WHERE e.status = 'active'
+      AND (e.exit_date IS NULL OR e.exit_date >= ${periodFirstDay}::date)
+      AND (m.employee_id IS NULL OR m.active = FALSE)
+    ORDER BY e.name ASC`) as any[];
+
   const totalDirectCost = projectRows.reduce((s, p) => s + p.directCost, 0);
   // Project expenses: sum over the full set, not just active-project rows.
   // A project archived mid-month can still have expenses booked against it
@@ -15682,6 +15702,10 @@ async function _finComputeMonthUncached(month: number, year: number) {
   return {
     month, year, settings,
     employeeRows, projectRows,
+    unclassifiedEmployees: unclassifiedEmployees.map((e) => ({
+      id: e.id, name: e.name, designation: e.designation, department: e.department,
+      salary: Number(e.salary), exit_date: e.exit_date ?? null, reason: e.reason,
+    })),
     otherCosts: otherCosts.map((c) => ({ id: c.id, name: c.name, amount: Number(c.amount), category: c.category })),
     byDept,
     totals: {

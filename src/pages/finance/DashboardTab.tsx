@@ -1197,6 +1197,7 @@ function SalaryBreakdownModal({ model, month, year, currency, onClose }: {
 
   const grandTotal = model.totals.totalSalary;
   const proratedCount = model.employeeRows.filter(e => Number(e.salary_factor ?? 1) < 1).length;
+  const unclassified = model.unclassifiedEmployees ?? [];
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm p-4">
@@ -1220,6 +1221,34 @@ function SalaryBreakdownModal({ model, month, year, currency, onClose }: {
         </div>
 
         <div className="flex-1 overflow-auto">
+          {unclassified.length > 0 && (
+            <div className="mx-6 mt-4 rounded-lg border border-warning/30 bg-warning-container/40 p-4">
+              <p className="text-sm font-semibold text-warning">
+                {unclassified.length} employee{unclassified.length === 1 ? '' : 's'} missing from the salary bill
+              </p>
+              <p className="text-[11px] text-on-surface-muted mt-1">
+                These are active in HR but not classified in <b>Finance → Settings</b> (direct / indirect / supervisor).
+                Their salary doesn't hit any finance number until they're classified — which is likely why the count
+                here is lower than in the payroll draft. Total unclassified salary:
+                {' '}<span className="num-mono font-semibold text-on-surface">{money(unclassified.reduce((s: number, e: any) => s + Number(e.salary), 0), currency)}</span>.
+              </p>
+              <ul className="mt-2 space-y-0.5 text-[12px]">
+                {unclassified.map((e: any) => (
+                  <li key={e.id} className="flex items-center justify-between gap-2 border-t border-warning/20 pt-1">
+                    <span className="text-on-surface">
+                      <b>{e.name}</b>
+                      {e.designation && <span className="text-on-surface-muted"> · {e.designation}</span>}
+                      <span className="text-on-surface-subtle"> · {e.reason}</span>
+                    </span>
+                    <span className="num-mono text-on-surface-muted">{money(Number(e.salary), currency)}</span>
+                  </li>
+                ))}
+              </ul>
+              <p className="text-[11px] text-on-surface-muted mt-2">
+                Fix: open <b>/finance → Settings tab</b> and set each person's cost type.
+              </p>
+            </div>
+          )}
           {grouped.map((g, gi) => g.rows.length === 0 ? null : (
             <div key={g.key} className={gi > 0 ? 'border-t-4 border-surface-2' : ''}>
               <div className="px-6 py-2 bg-surface-2/60 flex items-center justify-between sticky top-0">
