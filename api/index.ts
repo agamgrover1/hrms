@@ -7517,6 +7517,17 @@ function isOnProbation(joinDate: string | null, probationEndDate?: string | null
   return new Date() < end;
 }
 
+// "On notice" mirrors the frontend helper in Employees.tsx — an
+// employee is on notice when they have an exit_date set that hasn't
+// passed yet. Used to gate optional leaves so people can't burn their
+// annual quota on the way out (and to give HR a lever if we ever want
+// to gate other leave types too).
+function isOnNotice(exitDate: string | null): boolean {
+  if (!exitDate) return false;
+  const exit = new Date(exitDate + 'T23:59:59Z');
+  return exit.getTime() >= new Date(new Date().toDateString()).getTime();
+}
+
 const LEAVE_TYPE_ATT_STATUS: Record<string, string> = {
   full_day:    'on_leave',
   half_day:    'half-day',
@@ -7830,13 +7841,15 @@ app.post('/api/leave/requests', async (req, res) => {
       }
       if (!employee_id) return res.status(400).json({ error: 'Could not resolve your employee record. Refresh and try again.' });
     }
-    const empRows = await sql`SELECT join_date, probation_end_date, reporting_manager_id, date_of_birth FROM employees WHERE id=${employee_id}`.catch(() => []);
+    const empRows = await sql`SELECT join_date, probation_end_date, reporting_manager_id, date_of_birth, exit_date::text AS exit_date FROM employees WHERE id=${employee_id}`.catch(() => []);
     const emp = (empRows as any[])[0] ?? {};
     const onProbation = isOnProbation(emp.join_date ?? null, emp.probation_end_date ?? null);
+    const onNotice    = isOnNotice(emp.exit_date ?? null);
 
     // ── Optional leave ────────────────────────────────────────────────────
     if (type === 'optional') {
       if (onProbation) return res.status(400).json({ error: 'Optional leave is not available during the probation period.' });
+      if (onNotice)    return res.status(400).json({ error: 'Optional leave is not available during the notice period.' });
       const year = new Date(from_date).getFullYear();
       const countRows = await sql`SELECT COUNT(*) FROM leave_requests WHERE employee_id=${employee_id} AND type='optional' AND status NOT IN ('rejected','cancelled') AND EXTRACT(YEAR FROM from_date)=${year}`;
       if (Number((countRows[0] as any).count) >= 2)
@@ -8151,14 +8164,17 @@ app.get('/api/leave/balances/:employee_id', async (req, res) => {
     // First-hit trigger for the month-wide batch. Fires only once per
     // (year, month) via the log table; siblings are cheap no-ops.
     void ensureMonthlyLeaveCreditRun('auto:balance-view').catch(() => {});
-    const empRows = await sql`SELECT join_date, probation_end_date FROM employees WHERE id=${req.params.employee_id}`.catch(() => []);
+    const empRows = await sql`SELECT join_date, probation_end_date, exit_date::text AS exit_date FROM employees WHERE id=${req.params.employee_id}`.catch(() => []);
     const joinDate = (empRows[0] as any)?.join_date ?? null;
     const probationEndDate = (empRows[0] as any)?.probation_end_date ?? null;
+    const exitDate = (empRows[0] as any)?.exit_date ?? null;
     await creditMonthlyLeave(req.params.employee_id, joinDate).catch(() => {});
     const rows = await sql`SELECT * FROM leave_balances WHERE employee_id=${req.params.employee_id}`;
     if (!rows.length) return res.status(404).json({ error: 'Not found' });
     const bal = rows[0] as any;
     bal.on_probation = isOnProbation(joinDate, probationEndDate);
+    bal.on_notice    = isOnNotice(exitDate);
+    bal.exit_date    = exitDate;
     bal.probation_end_date = probationEndDate ? neonDateToStrV(probationEndDate instanceof Date ? probationEndDate.toISOString() : String(probationEndDate)) : null;
     bal.probation_short_remaining = Math.max(0, 2 - (bal.probation_short_used ?? 0));
     // Optional leave usage for the current calendar year. Cap is 2/year for

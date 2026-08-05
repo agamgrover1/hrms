@@ -1844,7 +1844,10 @@ export default function MyPortal() {
                   {optionalLeaveData.dates.map(d => {
                     const dateObj = new Date(d.date + 'T12:00:00Z');
                     const isPast = d.date < new Date().toISOString().slice(0,10);
-                    const canApply = !d.already_applied && !balance?.on_probation && optionalLeaveData.remaining > 0 && !isPast;
+                    // Optional leaves aren't available while on probation OR notice.
+                    // Backend rejects both — this gate hides the Apply CTA so the
+                    // employee doesn't hit a 400 after typing a reason.
+                    const canApply = !d.already_applied && !balance?.on_probation && !balance?.on_notice && optionalLeaveData.remaining > 0 && !isPast;
                     const statusColors: Record<string,string> = {
                       pending: '#d97706', approved: '#15803d', rejected: '#dc2626',
                     };

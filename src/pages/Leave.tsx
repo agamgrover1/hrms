@@ -206,7 +206,7 @@ function RejectReasonModal({
   );
 }
 
-function ApplyModal({ onClose, onSubmit }: { onClose: () => void; onSubmit: (data: any) => Promise<void> | void }) {
+function ApplyModal({ onClose, onSubmit, balance }: { onClose: () => void; onSubmit: (data: any) => Promise<void> | void; balance?: any }) {
   const defaultSlot = (t: string) => t === 'half_day' ? 'morning' : t === 'short_leave' ? 'q1' : '';
   const [form, setForm] = useState({ type: 'full_day', slot: defaultSlot('full_day'), from: '', to: '', reason: '' });
   const [error, setError] = useState('');
@@ -239,7 +239,12 @@ function ApplyModal({ onClose, onSubmit }: { onClose: () => void; onSubmit: (dat
       setError(e?.message ?? 'Failed to apply leave.');
     } finally { setSubmitting(false); }
   };
-  const newTypes = leaveTypes.filter(t => !['casual', 'sick', 'earned'].includes(t.key));
+  // Drop legacy types + drop 'optional' when the caller is on probation
+  // or serving notice (backend rejects those anyway; hiding here saves
+  // the round-trip and the confusing error).
+  const excluded = new Set(['casual', 'sick', 'earned']);
+  if (balance?.on_probation || balance?.on_notice) excluded.add('optional');
+  const newTypes = leaveTypes.filter(t => !excluded.has(t.key));
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 backdrop-blur-sm p-4">
       <div className="bg-surface rounded-xl-2 shadow-elev-3 w-full max-w-md p-6 border border-outline">
@@ -389,16 +394,30 @@ function EmployeeLeaveBalance({ balance, employeeId, canEdit, onUpdated }: { bal
               <p className="num-mono text-2xl font-bold text-purple-700 mt-1">{balance.short_leave ?? 0}</p>
               <p className="text-xs text-purple-500 mt-0.5">credits this month</p>
             </div>
-            <div className="bg-teal-50 border border-teal-200 rounded-xl-2 p-4">
-              <p className="text-xs font-semibold text-teal-700 uppercase tracking-wide">Optional</p>
-              <p className="num-mono text-2xl font-bold text-teal-800 mt-1">{balance.optional_remaining ?? 0} / {balance.optional_cap ?? 2}</p>
-              <p className="text-xs text-teal-600 mt-0.5">used {balance.optional_used ?? 0} this year</p>
+            <div className={`rounded-xl-2 p-4 border ${balance.on_notice ? 'bg-surface-2 border-outline opacity-60' : 'bg-teal-50 border-teal-200'}`}>
+              <p className={`text-xs font-semibold uppercase tracking-wide ${balance.on_notice ? 'text-on-surface-muted' : 'text-teal-700'}`}>Optional</p>
+              <p className={`num-mono text-2xl font-bold mt-1 ${balance.on_notice ? 'text-on-surface-subtle' : 'text-teal-800'}`}>{balance.optional_remaining ?? 0} / {balance.optional_cap ?? 2}</p>
+              <p className={`text-xs mt-0.5 ${balance.on_notice ? 'text-on-surface-subtle' : 'text-teal-600'}`}>
+                {balance.on_notice ? 'not available on notice' : `used ${balance.optional_used ?? 0} this year`}
+              </p>
             </div>
-            <div className="bg-success-container border border-success/20 rounded-xl-2 p-4">
-              <p className="text-xs font-semibold text-success uppercase tracking-wide">Status</p>
-              <p className="font-display text-lg font-bold text-success tracking-tight mt-1">Confirmed</p>
-              <p className="text-xs text-success/80 mt-0.5">probation complete</p>
-            </div>
+            {balance.on_notice ? (
+              <div className="bg-warning-container border border-warning/20 rounded-xl-2 p-4">
+                <p className="text-xs font-semibold text-warning uppercase tracking-wide">Status</p>
+                <p className="font-display text-lg font-bold text-warning tracking-tight mt-1">On Notice</p>
+                {balance.exit_date && (
+                  <p className="text-xs text-warning/80 mt-0.5">
+                    Last day {new Date(balance.exit_date + 'T12:00:00Z').toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' })}
+                  </p>
+                )}
+              </div>
+            ) : (
+              <div className="bg-success-container border border-success/20 rounded-xl-2 p-4">
+                <p className="text-xs font-semibold text-success uppercase tracking-wide">Status</p>
+                <p className="font-display text-lg font-bold text-success tracking-tight mt-1">Confirmed</p>
+                <p className="text-xs text-success/80 mt-0.5">probation complete</p>
+              </div>
+            )}
           </>
         )}
       </div>
@@ -1216,7 +1235,7 @@ export default function Leave() {
         )}
       </div>
 
-      {showApply && <ApplyModal onClose={() => setShowApply(false)} onSubmit={handleApply} />}
+      {showApply && <ApplyModal onClose={() => setShowApply(false)} onSubmit={handleApply} balance={balance} />}
       {approveTarget && (
         <ApproveNoteModal
           onClose={() => setApproveTarget(null)}
