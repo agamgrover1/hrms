@@ -1210,7 +1210,7 @@ function SalaryBreakdownModal({ model, month, year, currency, onClose }: {
             <p className="text-xs text-on-surface-muted mt-0.5">
               Grand total <span className="num-mono font-semibold text-on-surface">{money(grandTotal, currency)}</span>
               {' · '}{model.employeeRows.length} employees
-              {proratedCount > 0 && <> · <span className="text-warning">{proratedCount} pro-rated for mid-month exit</span></>}
+              {proratedCount > 0 && <> · <span className="text-warning">{proratedCount} pro-rated (mid-month join or exit)</span></>}
             </p>
             <p className="text-[11px] text-on-surface-subtle mt-1 max-w-2xl">
               This is the <b>accrued</b> salary cost — pre-LOP, pre-additions, pre-deductions. Payroll's draft total is
@@ -1272,6 +1272,9 @@ function SalaryBreakdownModal({ model, month, year, currency, onClose }: {
                     const factor = Number(e.salary_factor ?? 1);
                     const isProrated = factor < 1;
                     const full = Number(e.full_monthly_salary ?? e.salary);
+                    const periodPrefix = `${year}-${String(month).padStart(2, '0')}-`;
+                    const joinedInPeriod = e.join_date && String(e.join_date).startsWith(periodPrefix);
+                    const exitedInPeriod = e.exit_date && String(e.exit_date).startsWith(periodPrefix);
                     return (
                       <tr key={e.id} className={isProrated ? 'bg-warning-container/20' : ''}>
                         <td className="px-4 py-2">
@@ -1288,7 +1291,8 @@ function SalaryBreakdownModal({ model, month, year, currency, onClose }: {
                           ) : (
                             <span className="text-warning">
                               {e.salary_prorated_days ?? '?'} / {e.salary_prorated_total_days ?? '?'} working days
-                              {e.exit_date && <span className="block text-on-surface-subtle">exit {e.exit_date}</span>}
+                              {joinedInPeriod && <span className="block text-on-surface-subtle">joined {e.join_date}</span>}
+                              {exitedInPeriod && <span className="block text-on-surface-subtle">exit {e.exit_date}</span>}
                             </span>
                           )}
                         </td>

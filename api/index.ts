@@ -15241,14 +15241,19 @@ async function _finComputeMonthUncached(month: number, year: number) {
     const d = new Date(Date.UTC(year, month, 0));
     return d.toISOString().slice(0, 10);
   })();
+  // join_date guard: skip anyone who hadn't joined yet by the last day of
+  // the period. Without this a July joiner appears (and their full salary
+  // is billed) in every prior month's roll-up.
   const employees = (await sql`
     SELECT e.id, e.name, e.designation, e.department, e.reporting_manager_id,
            COALESCE(e.salary,0) AS salary, m.cost_type, m.capacity_hours,
+           e.join_date::text AS join_date,
            e.exit_date::text AS exit_date,
            e.exit_salary_override
     FROM employees e
     LEFT JOIN fin_employee_meta m ON m.employee_id = e.id
-    WHERE (
+    WHERE (e.join_date IS NULL OR e.join_date <= ${periodLastDay}::date)
+      AND (
             (m.active = TRUE AND (e.exit_date IS NULL OR e.exit_date >= ${periodFirstDay}::date))
             OR
             (e.exit_date IS NOT NULL
@@ -15290,24 +15295,31 @@ async function _finComputeMonthUncached(month: number, year: number) {
     // Preserve the original monthly salary before any pro-ration so the
     // breakdown modal can show "full ₹X, pro-rated to ₹Y (12 of 22 days)".
     e.full_monthly_salary = Number(e.salary);
-    if (!e.exit_date) { e.salary_factor = 1; continue; }
     const fullSalary = Number(e.salary);
-    if (e.exit_salary_override !== null && e.exit_salary_override !== undefined) {
-      // Manual override wins. Record the implied factor so downstream
-      // surfaces can show "X of Y working days" + the override flag.
+    const jd = e.join_date ? new Date(String(e.join_date).slice(0, 10) + 'T00:00:00Z') : null;
+    const ed = e.exit_date ? new Date(String(e.exit_date).slice(0, 10) + 'T00:00:00Z') : null;
+    // Manual exit override still wins when set — it captures leave
+    // encashment / bonuses / deductions the day-count math can't.
+    if (ed && e.exit_salary_override !== null && e.exit_salary_override !== undefined) {
       const override = Number(e.exit_salary_override);
       e.salary_factor = fullSalary > 0 ? override / fullSalary : 0;
       e.salary_override_used = true;
       e.salary = override;
-    } else {
-      const ed = new Date(String(e.exit_date).slice(0, 10) + 'T00:00:00Z');
-      const exitDate = ed < firstDay ? firstDay : ed > lastDay ? lastDay : ed;
-      const workedDays = countWorkingDays(firstDay, exitDate);
-      e.salary_factor = totalWorkingDays > 0 ? workedDays / totalWorkingDays : 0;
-      e.salary_prorated_days = workedDays;
-      e.salary_prorated_total_days = totalWorkingDays;
-      e.salary = fullSalary * e.salary_factor;
+      continue;
     }
+    // Effective attendance window inside the period, clipped by join and
+    // exit dates. If neither edge falls inside the month this collapses
+    // to [firstDay, lastDay] and factor = 1 (full month).
+    const startBound = jd && jd > firstDay ? jd : firstDay;
+    const endBound   = ed && ed < lastDay  ? ed : lastDay;
+    const joinsMidMonth = !!(jd && jd > firstDay && jd <= lastDay);
+    const exitsMidMonth = !!(ed && ed >= firstDay && ed < lastDay);
+    if (!joinsMidMonth && !exitsMidMonth) { e.salary_factor = 1; continue; }
+    const workedDays = countWorkingDays(startBound, endBound);
+    e.salary_factor = totalWorkingDays > 0 ? workedDays / totalWorkingDays : 0;
+    e.salary_prorated_days = workedDays;
+    e.salary_prorated_total_days = totalWorkingDays;
+    e.salary = fullSalary * e.salary_factor;
   }
   // Include archived projects that had ANY activity in the period —
   // allocations, logged hours, or invoices. A project closed mid-month
@@ -15458,6 +15470,7 @@ async function _finComputeMonthUncached(month: number, year: number) {
       salary_prorated_days: e.salary_prorated_days ?? null,
       salary_prorated_total_days: e.salary_prorated_total_days ?? null,
       salary_override_used: !!e.salary_override_used,
+      join_date: e.join_date ? String(e.join_date).slice(0, 10) : null,
       exit_date: e.exit_date ? String(e.exit_date).slice(0, 10) : null,
     };
   });
@@ -15675,6 +15688,7 @@ async function _finComputeMonthUncached(month: number, year: number) {
     FROM employees e
     LEFT JOIN fin_employee_meta m ON m.employee_id = e.id
     WHERE e.status = 'active'
+      AND (e.join_date IS NULL OR e.join_date <= ${periodLastDay}::date)
       AND (e.exit_date IS NULL OR e.exit_date >= ${periodFirstDay}::date)
       AND (m.employee_id IS NULL OR m.active = FALSE)
     ORDER BY e.name ASC`) as any[];
