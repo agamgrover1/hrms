@@ -587,8 +587,26 @@ function ApplyLeaveModal({ onClose, onSubmit, balance, reportingManager }: { onC
               {availableTypes.map(t => <option key={t.key} value={t.key}>{t.label}</option>)}
             </select>
             {form.type === 'full_day' && <p className="text-xs text-blue-600 mt-1">Balance: {balance?.full_day ?? 0} day(s) — carries forward</p>}
-            {form.type === 'half_day' && <p className="text-xs text-purple-600 mt-1">Costs 2 short leave credits — this month: {balance?.short_leave ?? 0} remaining</p>}
-            {form.type === 'short_leave' && <p className="text-xs text-warning mt-1">Costs 1 short leave credit — this month: {balance?.short_leave ?? 0} remaining</p>}
+            {/* Probation employees use a lifetime-of-probation counter
+                (probation_short_remaining), not the monthly short_leave
+                pool — surfacing the monthly one would say "2 remaining"
+                even after they've spent the probation cap and Submit
+                would then 400 with "Probation leave limit exceeded".
+                Post-probation employees fall back to the monthly pool. */}
+            {form.type === 'half_day' && (
+              <p className="text-xs text-purple-600 mt-1">
+                Costs 2 short leave credits — {onProbation
+                  ? `probation cap: ${balance?.probation_short_remaining ?? 0} credit(s) left`
+                  : `this month: ${balance?.short_leave ?? 0} remaining`}
+              </p>
+            )}
+            {form.type === 'short_leave' && (
+              <p className="text-xs text-warning mt-1">
+                Costs 1 short leave credit — {onProbation
+                  ? `probation cap: ${balance?.probation_short_remaining ?? 0} credit(s) left`
+                  : `this month: ${balance?.short_leave ?? 0} remaining`}
+              </p>
+            )}
             {form.type === 'unpaid' && <p className="text-xs text-danger mt-1">No credits deducted — attendance will be marked as Unpaid Leave</p>}
           </div>
 
@@ -673,9 +691,29 @@ function ApplyLeaveModal({ onClose, onSubmit, balance, reportingManager }: { onC
               {error}
             </p>
           )}
+          {(() => {
+            // Client-side quota check so the button disables BEFORE the
+            // backend 400s. Only relevant on probation + non-unpaid types
+            // (unpaid never deducts). Mirrors the backend cost table at
+            // api/index.ts:7949 (half=2, short=1). Full-day is blocked
+            // during probation entirely and already filtered from
+            // availableTypes, so we don't need to model it here.
+            if (!onProbation || form.type === 'unpaid') return null;
+            const cost = form.type === 'half_day' ? 2 : form.type === 'short_leave' ? 1 : 0;
+            const remaining = balance?.probation_short_remaining ?? 0;
+            if (cost <= remaining) return null;
+            return (
+              <p className="text-xs text-danger bg-danger-container/40 border border-danger/20 rounded-lg px-3 py-2">
+                This would exceed your probation cap ({remaining} credit{remaining === 1 ? '' : 's'} left, this needs {cost}). Ask HR to grant an unpaid leave instead.
+              </p>
+            );
+          })()}
           <div className="flex gap-3 pt-1">
             <button onClick={onClose} disabled={submitting} className="flex-1 py-2.5 border border-outline rounded-lg text-sm font-medium text-on-surface-muted hover:bg-surface-2 disabled:opacity-50">Cancel</button>
-            <button onClick={handleSubmit} disabled={submitting} className="flex-1 py-2.5 text-white rounded-lg text-sm font-medium disabled:opacity-50" style={{ background: '#192250' }}>
+            <button onClick={handleSubmit}
+              disabled={submitting || (onProbation && form.type !== 'unpaid'
+                && (form.type === 'half_day' ? 2 : form.type === 'short_leave' ? 1 : 0) > (balance?.probation_short_remaining ?? 0))}
+              className="flex-1 py-2.5 text-white rounded-lg text-sm font-medium disabled:opacity-50 disabled:cursor-not-allowed" style={{ background: '#192250' }}>
               {submitting ? 'Submitting…' : 'Submit'}
             </button>
           </div>
