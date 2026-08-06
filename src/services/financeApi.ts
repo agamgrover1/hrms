@@ -43,7 +43,7 @@ export interface FinTotals {
   totalInvoiced: number; totalReceived: number; totalPending: number;
   pendingInvoiceCount: number; clearedInvoiceCount: number;
   benchCost: number; indirectSalaries: number;
-  supervisionCost: number; supervisorHeadcount: number; otherCosts: number;
+  supervisionCost: number; supervisorHeadcount: number; unallocatedSupervision: number; otherCosts: number;
   overheadPool: number; grossProfit: number; grossMargin: number; netProfit: number; netMargin: number;
   totalSalary: number; totalCost: number; directCapacityHours: number; allocatedDirectHours: number;
   utilization: number | null; headcount: number; directHeadcount: number; indirectHeadcount: number; activeProjects: number;
@@ -148,6 +148,14 @@ export interface FinModel {
   unclassifiedEmployees?: Array<{
     id: string; name: string; designation: string | null; department: string | null;
     salary: number; exit_date: string | null; reason: string;
+  }>;
+  // Supervisors whose full salary lands in the overhead pool because
+  // they aren't the lead / reporter of any active project this month
+  // AND none of their reports are allocated to any project. Surfaces
+  // in the Waterfall + Salary breakdown modal so sum-of-projects vs
+  // company Net has an explanation.
+  unallocatedSupervisors?: Array<{
+    id: string; name: string; designation: string | null; salary: number;
   }>;
   otherCosts: { id: number; name: string; amount: number; category: string }[];
   byDept: { department: string; headcount: number; salary: number }[];

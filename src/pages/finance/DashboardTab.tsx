@@ -115,6 +115,10 @@ export default function DashboardTab({ month, year, rev }: { month: number; year
             ))}
             <div className="mt-2 border-t border-outline pt-2 text-xs text-on-surface-muted">
               Overhead pool: <b className="text-on-surface">{money(t.overheadPool, c)}</b>/mo
+              <span className="block text-[10px] text-on-surface-subtle mt-0.5">
+                = indirect salaries + unallocated supervision + other overhead
+                {model.settings.include_bench_in_overhead ? ' + bench' : ' (bench shown separately)'}
+              </span>
             </div>
           </div>
         </div>
@@ -1198,6 +1202,8 @@ function SalaryBreakdownModal({ model, month, year, currency, onClose }: {
   const grandTotal = model.totals.totalSalary;
   const proratedCount = model.employeeRows.filter(e => Number(e.salary_factor ?? 1) < 1).length;
   const unclassified = model.unclassifiedEmployees ?? [];
+  const unallocSupers = (model as any).unallocatedSupervisors ?? [];
+  const unallocSuperTotal = unallocSupers.reduce((s: number, e: any) => s + Number(e.salary), 0);
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm p-4">
@@ -1247,6 +1253,30 @@ function SalaryBreakdownModal({ model, month, year, currency, onClose }: {
               <p className="text-[11px] text-on-surface-muted mt-2">
                 Fix: open <b>/finance → Settings tab</b> and set each person's cost type.
               </p>
+            </div>
+          )}
+          {unallocSupers.length > 0 && (
+            <div className="mx-6 mt-4 rounded-lg border border-info/30 bg-info-container/40 p-4">
+              <p className="text-sm font-semibold text-info">
+                {unallocSupers.length} supervisor{unallocSupers.length === 1 ? '' : 's'} not tied to any project this month
+              </p>
+              <p className="text-[11px] text-on-surface-muted mt-1">
+                A supervisor's salary normally splits across the projects they lead / whose reports they manage.
+                These supervisors have no such project this month, so their full salary falls into the general
+                <b> Overhead pool</b>. That's why the sum of per-project Net won't match company Net.
+                Total in overhead: <span className="num-mono font-semibold text-on-surface">{money(unallocSuperTotal, currency)}</span>.
+              </p>
+              <ul className="mt-2 space-y-0.5 text-[12px]">
+                {unallocSupers.map((e: any) => (
+                  <li key={e.id} className="flex items-center justify-between gap-2 border-t border-info/20 pt-1">
+                    <span className="text-on-surface">
+                      <b>{e.name}</b>
+                      {e.designation && <span className="text-on-surface-muted"> · {e.designation}</span>}
+                    </span>
+                    <span className="num-mono text-on-surface-muted">{money(Number(e.salary), currency)}</span>
+                  </li>
+                ))}
+              </ul>
             </div>
           )}
           {grouped.map((g, gi) => g.rows.length === 0 ? null : (

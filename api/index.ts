@@ -15254,8 +15254,15 @@ async function _finComputeMonthUncached(month: number, year: number) {
     LEFT JOIN fin_employee_meta m ON m.employee_id = e.id
     WHERE (e.join_date IS NULL OR e.join_date <= ${periodLastDay}::date)
       AND (
-            (m.active = TRUE AND (e.exit_date IS NULL OR e.exit_date >= ${periodFirstDay}::date))
+            -- Active branch: HR status active AND finance meta active AND
+            -- either no exit set or exit is still in the future.
+            (e.status = 'active' AND m.active = TRUE
+              AND (e.exit_date IS NULL OR e.exit_date >= ${periodFirstDay}::date))
             OR
+            -- Exit branch: pull anyone whose exit falls INSIDE this period,
+            -- regardless of current HR status (they'll usually have been
+            -- flipped to inactive by now, but we still owe their partial
+            -- month's salary in the exit month).
             (e.exit_date IS NOT NULL
               AND e.exit_date >= ${periodFirstDay}::date
               AND e.exit_date <= ${periodLastDay}::date)
@@ -15344,6 +15351,9 @@ async function _finComputeMonthUncached(month: number, year: number) {
          UNION
          SELECT project_id FROM fin_project_revenue
            WHERE month=${month} AND year=${year}
+         UNION
+         SELECT project_id FROM fin_project_expenses
+           WHERE month=${month} AND year=${year}
        )`) as any[];
   // For the org-wide INVOICED / RECEIVED / PENDING tiles we need every
   // non-cancelled invoice in the period — not just those tied to an active
@@ -15396,7 +15406,18 @@ async function _finComputeMonthUncached(month: number, year: number) {
   const revByProj = new Map(revenues.map((r) => [r.project_id, r]));
 
   const capOf = (e: any) => { const c = Number(e.capacity_hours); return c > 0 ? c : defCap; };
-  const rateOf = (e: any) => { const c = capOf(e); return c > 0 ? Number(e.salary) / c : 0; };
+  // Per-hour cost = FULL monthly salary / capacity. If we divide the
+  // prorated salary by full capacity for a mid-month joiner, rate is
+  // artificially halved — direct-project cost gets under-billed and
+  // bench cost gets over-billed by the same amount. Rate should stay
+  // constant regardless of proration; the proration is expressed via
+  // effectiveCapOf below, which shrinks their available hours.
+  const rateOf = (e: any) => { const c = capOf(e); const full = Number(e.full_monthly_salary ?? e.salary); return c > 0 ? full / c : 0; };
+  // Effective capacity honors the working-day proration: a person who
+  // only worked 10 of 22 days had ~45% of their monthly hours available,
+  // so bench = effective_capacity - allocated. Without this, joiners
+  // and mid-month exits look permanently benched.
+  const effectiveCapOf = (e: any) => capOf(e) * Number(e.salary_factor ?? 1);
   const revenueOf = (p: any) => {
     // Invoices win when present. Use the *realized* figure — cleared invoices
     // contribute their received amount, pending invoices their invoiced amount.
@@ -15451,14 +15472,21 @@ async function _finComputeMonthUncached(month: number, year: number) {
   };
 
   const employeeRows = employees.map((e) => {
-    const rate = rateOf(e), capacity = capOf(e), isDirect = e.cost_type === 'direct';
+    const rate = rateOf(e), fullCapacity = capOf(e), isDirect = e.cost_type === 'direct';
+    // Effective capacity = full capacity × salary_factor. For a full-month
+    // employee it equals full capacity; for a mid-month joiner/exit it
+    // shrinks to their actual available hours. `capacity` on the returned
+    // row IS the effective one so utilization / bench math downstream all
+    // agree; `full_capacity` is preserved for reference and header labels.
+    const capacity = isDirect ? fullCapacity * Number(e.salary_factor ?? 1) : fullCapacity;
     const allocated = isDirect ? (allocByEmp.get(e.id) || 0) : 0;
     const bench = isDirect ? Math.max(capacity - allocated, 0) : 0;
     return {
       id: e.id, name: e.name, designation: e.designation, department: e.department, cost_type: e.cost_type,
       reporting_manager_id: e.reporting_manager_id ?? null,
       reporting_manager_name: managerNameOf(e),
-      salary: Number(e.salary), rate, capacity, allocatedHours: allocated, benchHours: bench,
+      salary: Number(e.salary), rate, capacity, full_capacity: fullCapacity,
+      allocatedHours: allocated, benchHours: bench,
       allocatedCost: isDirect ? rate * allocated : 0, benchCost: isDirect ? rate * bench : 0,
       utilization: isDirect && capacity > 0 ? allocated / capacity : null,
       // Pro-ration audit fields — populated only for mid-month exits.
@@ -15517,13 +15545,21 @@ async function _finComputeMonthUncached(month: number, year: number) {
   const supervisorBreakdownByProject = new Map<string, Array<{ id: string; name: string; salary: number; share: number; amount: number }>>();
   const managedCountBySupervisor = new Map<string, number>();
   let unallocatedSupervision = 0;
+  // Track unallocated supervisors so the dashboard can surface a callout
+  // explaining why sum-of-projects ≠ company Net. Same pattern as
+  // unclassifiedEmployees + benchCost banner.
+  const unallocatedSupervisors: Array<{ id: string; name: string; designation: string | null; salary: number }> = [];
   for (const s of supervisors) {
     const managed = projects.filter((p) =>
       p.project_lead_id === s.id || p.project_reporting_id === s.id || managersByProject.get(p.id)?.has(s.id)
     ).map((p) => p.id);
     managedCountBySupervisor.set(s.id, managed.length);
     const salary = Number(s.salary);
-    if (managed.length === 0) { unallocatedSupervision += salary; continue; }
+    if (managed.length === 0) {
+      unallocatedSupervision += salary;
+      unallocatedSupervisors.push({ id: s.id, name: s.name, designation: s.designation ?? null, salary });
+      continue;
+    }
     const totalMgHours = managed.reduce((sum, pid) => sum + (directHoursByProject.get(pid) || 0), 0);
     for (const pid of managed) {
       const share = totalMgHours > 0 ? (directHoursByProject.get(pid) || 0) / totalMgHours : 1 / managed.length;
@@ -15560,10 +15596,16 @@ async function _finComputeMonthUncached(month: number, year: number) {
       pendingInvoiceCount += Number((inv as any).pending_count || 0);
       clearedInvoiceCount += Number((inv as any).cleared_count || 0);
     }
-    const upworkProjIds = new Set(allProjects.filter(p => p.billing_source === 'upwork').map(p => p.id));
+    // Active Upwork projects only. revenueOf() zeros out billing-setup
+    // rows on archived projects (admin can't maintain them via the
+    // Billing setup tab), so counting them here inflates org revenue
+    // above the sum of per-project revenue.
+    const upworkProjIds = new Set(
+      allProjects.filter(p => p.billing_source === 'upwork' && p.status !== 'archived').map(p => p.id)
+    );
     for (const [pid, r] of revByProj) {
       if (accountedByInvoice.has(pid)) continue; // invoice wins (same precedence as revenueOf)
-      if (!upworkProjIds.has(pid)) continue;     // only Upwork billing contributes here
+      if (!upworkProjIds.has(pid)) continue;     // active Upwork only — matches revenueOf
       const invoicedInr = Number((r as any).revenue_inr || 0);
       if (invoicedInr <= 0) continue;
       totalInvoiced += invoicedInr;
@@ -15720,6 +15762,7 @@ async function _finComputeMonthUncached(month: number, year: number) {
       id: e.id, name: e.name, designation: e.designation, department: e.department,
       salary: Number(e.salary), exit_date: e.exit_date ?? null, reason: e.reason,
     })),
+    unallocatedSupervisors,
     otherCosts: otherCosts.map((c) => ({ id: c.id, name: c.name, amount: Number(c.amount), category: c.category })),
     byDept,
     totals: {
@@ -15730,11 +15773,15 @@ async function _finComputeMonthUncached(month: number, year: number) {
       // source so they can't drift apart.
       totalInvoiced: orgFinTotals.totalInvoiced,
       totalReceived: orgFinTotals.totalReceived,
-      totalPending: Math.max(orgFinTotals.totalInvoiced - orgFinTotals.totalReceived, 0),
+      // Not clamped: a negative pending = we received more than we invoiced
+      // (advance / overpayment / refund pending). Hiding that as 0 would
+      // silently drop a real anomaly.
+      totalPending: orgFinTotals.totalInvoiced - orgFinTotals.totalReceived,
       pendingInvoiceCount: orgFinTotals.pendingInvoiceCount,
       clearedInvoiceCount: orgFinTotals.clearedInvoiceCount,
       benchCost, indirectSalaries,
       supervisionCost: supervisorSalariesTotal, supervisorHeadcount: supervisors.length,
+      unallocatedSupervision,
       otherCosts: otherCostTotal,
       overheadPool, grossProfit, grossMargin: totalRevenue > 0 ? grossProfit / totalRevenue : 0,
       netProfit, netMargin: totalRevenue > 0 ? netProfit / totalRevenue : 0, totalSalary, totalCost,
