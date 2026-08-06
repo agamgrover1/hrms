@@ -569,8 +569,9 @@ function ApplyLeaveModal({ onClose, onSubmit, balance, reportingManager }: { onC
         </div>
         {onProbation && (
           <div className="mb-4 px-3 py-2.5 rounded-xl text-xs font-medium" style={{ background: '#fef3c7', color: '#92400e' }}>
-            You are on probation — only Short Leave (×2) or Half Day allowed during this period.
-            Remaining: {balance?.probation_short_remaining ?? 0} short leave credit(s).
+            You are on probation — only Short Leave or Half Day allowed (no Full Day).
+            Monthly quota: 2 short-leave credits per month (2 short leaves OR 1 half-day).
+            Remaining this month: {balance?.probation_short_remaining ?? 0} credit(s).
           </div>
         )}
         <div className="space-y-3">
@@ -587,24 +588,24 @@ function ApplyLeaveModal({ onClose, onSubmit, balance, reportingManager }: { onC
               {availableTypes.map(t => <option key={t.key} value={t.key}>{t.label}</option>)}
             </select>
             {form.type === 'full_day' && <p className="text-xs text-blue-600 mt-1">Balance: {balance?.full_day ?? 0} day(s) — carries forward</p>}
-            {/* Probation employees use a lifetime-of-probation counter
-                (probation_short_remaining), not the monthly short_leave
-                pool — surfacing the monthly one would say "2 remaining"
-                even after they've spent the probation cap and Submit
-                would then 400 with "Probation leave limit exceeded".
-                Post-probation employees fall back to the monthly pool. */}
+            {/* Both probation and post-probation employees get 2 short-
+                leave credits per calendar month. The counter is
+                different (probation_short_remaining vs short_leave) but
+                the semantics match — surface the right one so the
+                number the employee sees matches what the backend will
+                enforce on Submit. */}
             {form.type === 'half_day' && (
               <p className="text-xs text-purple-600 mt-1">
-                Costs 2 short leave credits — {onProbation
-                  ? `probation cap: ${balance?.probation_short_remaining ?? 0} credit(s) left`
-                  : `this month: ${balance?.short_leave ?? 0} remaining`}
+                Costs 2 short leave credits — this month: {onProbation
+                  ? (balance?.probation_short_remaining ?? 0)
+                  : (balance?.short_leave ?? 0)} remaining
               </p>
             )}
             {form.type === 'short_leave' && (
               <p className="text-xs text-warning mt-1">
-                Costs 1 short leave credit — {onProbation
-                  ? `probation cap: ${balance?.probation_short_remaining ?? 0} credit(s) left`
-                  : `this month: ${balance?.short_leave ?? 0} remaining`}
+                Costs 1 short leave credit — this month: {onProbation
+                  ? (balance?.probation_short_remaining ?? 0)
+                  : (balance?.short_leave ?? 0)} remaining
               </p>
             )}
             {form.type === 'unpaid' && <p className="text-xs text-danger mt-1">No credits deducted — attendance will be marked as Unpaid Leave</p>}
@@ -704,7 +705,7 @@ function ApplyLeaveModal({ onClose, onSubmit, balance, reportingManager }: { onC
             if (cost <= remaining) return null;
             return (
               <p className="text-xs text-danger bg-danger-container/40 border border-danger/20 rounded-lg px-3 py-2">
-                This would exceed your probation cap ({remaining} credit{remaining === 1 ? '' : 's'} left, this needs {cost}). Ask HR to grant an unpaid leave instead.
+                This would exceed your monthly quota ({remaining} credit{remaining === 1 ? '' : 's'} left this month, this needs {cost}). Apply as Unpaid or wait for next month.
               </p>
             );
           })()}

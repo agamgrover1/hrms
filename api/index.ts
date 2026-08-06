@@ -7663,8 +7663,18 @@ async function creditMonthlyLeave(employeeId: string, joinDate: string | null) {
   // Guard: if last_credited fields are set correctly already, skip
   if (Number(bal.last_credited_month) === cm && Number(bal.last_credited_year) === cy) return;
   if (isOnProbation(joinDate)) {
-    // No new credit during probation, but we still want short_leave reset to 0 (probation employees use probation_short_used quota separately)
-    await sql`UPDATE leave_balances SET last_credited_month=${cm}, last_credited_year=${cy}, prev_month_carry_full_day=COALESCE(full_day, 0), current_month_credit_full_day=0 WHERE employee_id=${employeeId}`;
+    // Reset the probation short-leave counter monthly so the 2-credit
+    // cap is per-month (identical to how the post-probation short_leave
+    // pool refills at line 7688). Previously this counter was
+    // never reset, which made it read as a lifetime-of-probation cap —
+    // the rule was actually "2 credits/month during probation" all
+    // along. Full-day accrual still doesn't happen during probation.
+    await sql`UPDATE leave_balances SET
+        probation_short_used=0,
+        last_credited_month=${cm}, last_credited_year=${cy},
+        prev_month_carry_full_day=COALESCE(full_day, 0),
+        current_month_credit_full_day=0
+      WHERE employee_id=${employeeId}`;
     return;
   }
   // Always +1 for THIS month regardless of how many months elapsed
@@ -7944,10 +7954,14 @@ app.post('/api/leave/requests', async (req, res) => {
 
     if (!isUnpaid && onProbation) {
       if (type === 'full_day') return res.status(400).json({ error: 'Full day leaves are not allowed during the 90-day probation period.' });
+      // Reset the probation counter if we've rolled into a new month —
+      // otherwise the first application of the month would still see
+      // last month's usage and false-block the employee.
+      await creditMonthlyLeave(employee_id, emp.join_date ?? null).catch(() => {});
       const balRows = await sql`SELECT probation_short_used FROM leave_balances WHERE employee_id=${employee_id}`;
       const used = (balRows[0] as any)?.probation_short_used ?? 0;
       const cost = type === 'half_day' ? 2 : 1;
-      if (used + cost > 2) return res.status(400).json({ error: 'Probation leave limit exceeded. You may only take 2 short leaves or 1 half day during probation.' });
+      if (used + cost > 2) return res.status(400).json({ error: 'Monthly short-leave cap reached. During probation you get 2 short-leave credits per month (2 short leaves OR 1 half-day). Apply as Unpaid or wait for next month.' });
       await sql`UPDATE leave_balances SET probation_short_used=${used + cost} WHERE employee_id=${employee_id}`;
     } else if (!isUnpaid) {
       await creditMonthlyLeave(employee_id, emp.join_date ?? null).catch(() => {});
