@@ -288,6 +288,13 @@ export const api = {
       ctc_annual: number; basic: number; hra: number; special_allowance: number; employer_pf: number;
       other_components: Array<{ label: string; amount: number }>;
       notes: string | null; created_by: string | null; created_at: string; updated_at: string;
+      // Increment-history metadata (nullable on legacy rows; backfilled
+      // for existing employees at deploy time). change_type distinguishes
+      // seed / raise / correction so the UI can render a pill; previous
+      // monthly + changed_by_name drive the delta and actor line.
+      change_type: 'initial' | 'increment' | 'correction' | null;
+      previous_monthly: number | string | null;
+      changed_by_name: string | null;
     }>>(`/payroll/structures?employee_id=${employee_id}`),
   createSalaryStructure: (data: {
     employee_id: string; effective_from: string; ctc_annual: number;

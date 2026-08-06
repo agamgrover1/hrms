@@ -867,16 +867,25 @@ export function EditEmployeeModal({ emp, onClose, onSaved, allEmployees, departm
 
           <div>
             <p className="text-xs font-semibold text-on-surface-subtle uppercase tracking-wide mb-3">Compensation</p>
+            {/* Read-only on the edit form. All salary changes MUST go through
+                the Give Increment button on the profile so history is
+                automatic. Otherwise a silent edit here would break the
+                dated-history chain payroll relies on. */}
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
               <div>
                 <label className={labelCls}>Monthly Gross Salary (₹)</label>
-                <input type="number" value={form.salary} onChange={e => set('salary', e.target.value)} placeholder="e.g. 80000" className={inputCls + ' num-mono'} />
+                <input type="number" value={form.salary} readOnly disabled
+                  className={inputCls + ' num-mono opacity-70 cursor-not-allowed'} />
               </div>
               <div>
                 <label className={labelCls}>Annual CTC (₹)</label>
-                <input type="number" value={form.ctc} onChange={e => set('ctc', e.target.value)} placeholder="e.g. 1200000" className={inputCls + ' num-mono'} />
+                <input type="number" value={form.ctc} readOnly disabled
+                  className={inputCls + ' num-mono opacity-70 cursor-not-allowed'} />
               </div>
             </div>
+            <p className="text-[11px] text-on-surface-muted mt-2">
+              Salary is locked here. Use <b>Give Increment</b> on the profile page to record a raise — every change becomes a dated row in the salary history.
+            </p>
           </div>
 
           <div>

@@ -870,18 +870,18 @@ async function runStartupMigrations() {
   // full migration block.
   //
   // KEEP THIS PROBE POINTED AT THE MOST RECENT MIGRATION when you add one.
-  // Right now: upsell_requests.approver_note (added so admin/HR can
-  // attach a comment when approving an upsell/expense — the note is
-  // saved and included in the employee's approval notification). If
-  // you add a newer column / table, update this SELECT to reference it
-  // so cold starts re-run migrations once after each deploy.
+  // Right now: salary_structures.change_type (added Aug 2026 for the
+  // increment-history feature — every raise inserts a new dated row
+  // stamped 'increment' / 'correction' / 'initial'). If you add a newer
+  // column / table, update this SELECT to reference it so cold starts
+  // re-run migrations once after each deploy.
   try {
     // Bump this probe whenever a new migration lands; existing warm
     // Lambdas will fail the SELECT and re-run runStartupMigrations().
     // For a *seed* (rows, not columns), we probe with EXISTS-style: an
     // empty result set means "still needs to run", so we don't set the
     // flag and fall through.
-    await sql`SELECT id FROM asset_takeout_requests LIMIT 0`;
+    await sql`SELECT change_type FROM salary_structures LIMIT 0`;
     _migrated = true;
     return;
   } catch {
@@ -1406,6 +1406,38 @@ async function runStartupMigrations() {
       UNIQUE (employee_id, effective_from)
     )`;
   await sql`CREATE INDEX IF NOT EXISTS idx_salary_structures_emp_date ON salary_structures(employee_id, effective_from DESC)`.catch(()=>{});
+  // Increment-history columns (added Aug 2026). change_type distinguishes
+  // the seed row ('initial'), a positive change ('increment'), and a
+  // negative one ('correction' — e.g. demotion, undoing an earlier raise,
+  // or a data-entry fix). previous_monthly is denormalised so the history
+  // list can render delta pills without joining back to the previous row.
+  // changed_by_name is the actor at the time of change; using a name
+  // instead of an id so admins deleted later still appear correctly.
+  await sql`ALTER TABLE salary_structures ADD COLUMN IF NOT EXISTS change_type TEXT`.catch(()=>{});
+  await sql`ALTER TABLE salary_structures ADD COLUMN IF NOT EXISTS previous_monthly NUMERIC`.catch(()=>{});
+  await sql`ALTER TABLE salary_structures ADD COLUMN IF NOT EXISTS changed_by_name TEXT`.catch(()=>{});
+  // Backfill an 'initial' row for every employee that has a salary set
+  // but no salary_structures row yet — so the history list on their
+  // profile always starts from a known baseline. Idempotent: only inserts
+  // when there's no existing row for that employee.
+  await sql`
+    INSERT INTO salary_structures (id, employee_id, effective_from, ctc_annual, basic, hra, special_allowance, employer_pf, other_components, notes, change_type, previous_monthly, changed_by_name, created_at, updated_at)
+    SELECT 'sal_seed_' || e.id,
+           e.id,
+           COALESCE(e.join_date, e.created_at::date, CURRENT_DATE),
+           COALESCE(e.ctc, e.salary * 12, 0),
+           COALESCE(e.salary, 0),
+           0, 0, 0,
+           '[]'::jsonb,
+           'Initial salary (auto-seeded from employee record)',
+           'initial',
+           NULL,
+           'System',
+           NOW(), NOW()
+    FROM employees e
+    WHERE COALESCE(e.salary, 0) > 0
+      AND NOT EXISTS (SELECT 1 FROM salary_structures s WHERE s.employee_id = e.id)
+    ON CONFLICT DO NOTHING`.catch(()=>{});
 
   // ── Payroll: org-wide config ─────────────────────────────────────────
   // Single-row table (id='default'). Auto-split percentages drive the
@@ -3232,6 +3264,29 @@ app.post('/api/employees', async (req, res) => {
         ${new Date().getMonth() + 1}, ${new Date().getFullYear()}, 0)
       ON CONFLICT (employee_id) DO NOTHING
     `.catch(() => {});
+    // Seed the salary history so future increments have a baseline to
+    // diff against. Uses join_date as effective_from (falls back to
+    // today) so the initial row lines up with when the person actually
+    // started earning. Duplicate-key safe — the backfill in
+    // runStartupMigrations produces the same row for legacy employees.
+    if (Number(salary) > 0) {
+      const initialFrom = join_date || new Date().toISOString().slice(0, 10);
+      await sql`
+        INSERT INTO salary_structures (
+          id, employee_id, effective_from, ctc_annual,
+          basic, hra, special_allowance, employer_pf,
+          other_components, notes, created_by,
+          change_type, previous_monthly, changed_by_name
+        )
+        VALUES (
+          ${'sal_init_' + (emp as any).id}, ${(emp as any).id}, ${initialFrom},
+          ${Number(ctc || 0) > 0 ? Number(ctc) : Number(salary) * 12},
+          ${Number(salary)}, 0, 0, 0, '[]'::jsonb,
+          'Initial salary at joining', 'System',
+          'initial', NULL, 'System'
+        )
+        ON CONFLICT (employee_id, effective_from) DO NOTHING`.catch(() => {});
+    }
     if (password) {
       const existing = await sql`SELECT id FROM app_users WHERE LOWER(email)=LOWER(${email})`;
       if (!existing.length) {
@@ -3252,14 +3307,22 @@ app.put('/api/employees/:id', async (req, res) => {
   try {
     if (!(await requireFullHR(req, res)).ok) return;
     invalidateEmployeesCache();
-    const { name, email, phone, department, designation, join_date, location, manager, reporting_manager_id, status, salary, ctc, biometric_id, shift, next_appraisal_month, next_appraisal_year, date_of_birth, exit_date, exit_salary_override } = req.body;
+    const { name, email, phone, department, designation, join_date, location, manager, reporting_manager_id, status, biometric_id, shift, next_appraisal_month, next_appraisal_year, date_of_birth, exit_date, exit_salary_override } = req.body;
     // Snapshot exit_date + status pre-update so we can (a) hint the caller
     // when exit_date transitions NULL → set (start offboarding), and
     // (b) detect the exit transition to auto-clean project allocations.
-    const prior = (await sql`SELECT id, status, exit_date::text AS exit_date FROM employees WHERE id=${req.params.id} OR employee_id=${req.params.id}` as any[])[0];
+    const prior = (await sql`SELECT id, status, exit_date::text AS exit_date, salary, ctc FROM employees WHERE id=${req.params.id} OR employee_id=${req.params.id}` as any[])[0];
     await sql`ALTER TABLE employees ADD COLUMN IF NOT EXISTS date_of_birth DATE`.catch(()=>{});
     await sql`ALTER TABLE employees ADD COLUMN IF NOT EXISTS exit_date DATE`.catch(()=>{});
     await sql`ALTER TABLE employees ADD COLUMN IF NOT EXISTS exit_salary_override NUMERIC`.catch(()=>{});
+    // Salary + CTC intentionally NOT accepted here anymore — they are
+    // driven by the salary_structures table and cached back into these
+    // columns by syncEmployeeCurrentSalary(). Any change must go through
+    // POST /api/payroll/structures (the Give Increment button) so history
+    // is captured. Ignoring the body's salary/ctc keeps a stale form
+    // submission from silently reverting an increment made elsewhere.
+    const preservedSalary = Number(prior?.salary ?? 0);
+    const preservedCtc = Number(prior?.ctc ?? 0);
     // Normalize override: empty string / undefined → NULL (use auto math).
     // Numeric → store as-is. Negative gets coerced to 0 so the rollup
     // never goes the wrong direction.
@@ -3271,7 +3334,7 @@ app.put('/api/employees/:id', async (req, res) => {
         designation=${designation}, join_date=${join_date || null},
         location=${location}, manager=${manager ?? null},
         reporting_manager_id=${reporting_manager_id ?? null},
-        status=${status}, salary=${salary}, ctc=${ctc},
+        status=${status}, salary=${preservedSalary}, ctc=${preservedCtc},
         biometric_id=${biometric_id ?? null}, shift=${shift ?? 'day'},
         next_appraisal_month=${next_appraisal_month ?? null}, next_appraisal_year=${next_appraisal_year ?? null},
         date_of_birth=${date_of_birth || null},
@@ -8344,13 +8407,38 @@ app.get('/api/payroll/structures', async (req, res) => {
     const rows = await sql`
       SELECT id, employee_id, effective_from, ctc_annual,
              basic, hra, special_allowance, employer_pf, other_components,
-             notes, created_by, created_at, updated_at
+             notes, created_by, created_at, updated_at,
+             change_type, previous_monthly, changed_by_name
       FROM salary_structures
       WHERE employee_id=${employee_id}
       ORDER BY effective_from DESC, created_at DESC`;
     res.json(rows);
   } catch (err: any) { res.status(500).json({ error: err.message ?? 'Server error' }); }
 });
+
+// Sync employees.salary + employees.ctc to whatever structure is
+// currently effective (latest row with effective_from <= today). The
+// column is the denormalized "current" cache read by finance /
+// dashboards / the employee edit form. Structures are the source of
+// truth; this keeps the cache honest after every increment insert.
+async function syncEmployeeCurrentSalary(employeeId: string) {
+  const today = new Date().toISOString().slice(0, 10);
+  const rows = await sql`
+    SELECT ctc_annual, basic, hra, special_allowance
+    FROM salary_structures
+    WHERE employee_id=${employeeId} AND effective_from <= ${today}::date
+    ORDER BY effective_from DESC, created_at DESC
+    LIMIT 1` as any[];
+  if (!rows.length) return;
+  const s = rows[0];
+  // Monthly = basic + hra + special_allowance (employer_pf is employer's
+  // side, not the employee's paid salary). Matches the payroll snapshot
+  // convention at :8888 where the same three fields are summed for the
+  // payslip's monthly total.
+  const monthly = Number(s.basic || 0) + Number(s.hra || 0) + Number(s.special_allowance || 0);
+  const ctc = Number(s.ctc_annual || 0);
+  await sql`UPDATE employees SET salary=${monthly}, ctc=${ctc} WHERE id=${employeeId}`;
+}
 
 app.post('/api/payroll/structures', async (req, res) => {
   try {
@@ -8370,20 +8458,52 @@ app.post('/api/payroll/structures', async (req, res) => {
     const emp = (await sql`SELECT id FROM employees WHERE id=${employee_id} LIMIT 1` as any[])[0];
     if (!emp) return res.status(404).json({ error: 'Employee not found' });
     const id = `sal_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
+    // Compute delta metadata by comparing against whatever structure was
+    // previously the latest-effective as of the NEW row's effective_from.
+    // This is the number the payroll run would have picked up on that
+    // date, so the delta is meaningful (not just "vs the most recent
+    // future-dated row"). If nothing prior exists → 'initial' seed.
+    const prev = (await sql`
+      SELECT basic, hra, special_allowance
+      FROM salary_structures
+      WHERE employee_id=${employee_id} AND effective_from < ${effective_from}::date
+      ORDER BY effective_from DESC, created_at DESC
+      LIMIT 1` as any[])[0];
+    const newMonthly = Number(basic ?? 0) + Number(hra ?? 0) + Number(special_allowance ?? 0);
+    const prevMonthly = prev ? Number(prev.basic || 0) + Number(prev.hra || 0) + Number(prev.special_allowance || 0) : null;
+    const changeType = prevMonthly === null
+      ? 'initial'
+      : newMonthly > prevMonthly ? 'increment' : 'correction';
     try {
       const rows = await sql`
         INSERT INTO salary_structures (
           id, employee_id, effective_from, ctc_annual,
           basic, hra, special_allowance, employer_pf,
-          other_components, notes, created_by
+          other_components, notes, created_by,
+          change_type, previous_monthly, changed_by_name
         )
         VALUES (
           ${id}, ${employee_id}, ${effective_from}, ${ctc},
           ${Number(basic ?? 0)}, ${Number(hra ?? 0)}, ${Number(special_allowance ?? 0)}, ${Number(employer_pf ?? 0)},
-          ${JSON.stringify(other_components ?? [])}, ${notes ?? null}, ${gate.user?.name ?? null}
+          ${JSON.stringify(other_components ?? [])}, ${notes ?? null}, ${gate.user?.name ?? null},
+          ${changeType}, ${prevMonthly}, ${gate.user?.name ?? null}
         )
         RETURNING *`;
-      res.status(201).json((rows as any[])[0]);
+      const row = (rows as any[])[0];
+      // Sync the employees.salary cache to whatever's now current (may or
+      // may not be THIS new row, depending on effective_from). Then notify
+      // the employee if this was a real change they should know about.
+      await syncEmployeeCurrentSalary(employee_id);
+      invalidateEmployeesCache();
+      if (changeType !== 'initial' && prevMonthly !== null && newMonthly !== prevMonthly) {
+        const emp = (await sql`SELECT name FROM employees WHERE id=${employee_id}` as any[])[0];
+        const isRaise = newMonthly > prevMonthly;
+        const delta = Math.abs(newMonthly - prevMonthly);
+        const title = isRaise ? 'Salary revised upward' : 'Salary updated';
+        const body = `Your monthly salary has been ${isRaise ? 'increased' : 'revised'} to ₹${newMonthly.toLocaleString('en-IN')} (${isRaise ? '+' : '-'}₹${delta.toLocaleString('en-IN')}), effective ${effective_from}.${notes ? ' Reason: ' + notes : ''}`;
+        await notifyEmployeeUser(employee_id, 'salary_updated', title, body, `/employees/${employee_id}?tab=Salary`).catch(() => {});
+      }
+      res.status(201).json(row);
     } catch (e: any) {
       if (String(e.message).includes('duplicate key')) {
         return res.status(409).json({ error: 'A salary structure already exists for that employee on that effective-from date. Edit that row instead of creating a duplicate.' });
@@ -8419,7 +8539,12 @@ app.patch('/api/payroll/structures/:id', async (req, res) => {
       WHERE id=${req.params.id}
       RETURNING *`;
     if (!(rows as any[]).length) return res.status(404).json({ error: 'Salary structure not found' });
-    res.json((rows as any[])[0]);
+    const row = (rows as any[])[0];
+    // Edits can change which row is currently effective (e.g. HR moves
+    // an effective_from into or out of the past), so re-sync the cache.
+    await syncEmployeeCurrentSalary(row.employee_id);
+    invalidateEmployeesCache();
+    res.json(row);
   } catch (err: any) { res.status(500).json({ error: err.message ?? 'Server error' }); }
 });
 
@@ -8429,8 +8554,12 @@ app.delete('/api/payroll/structures/:id', async (req, res) => {
     // duplicate entry). Snapshots into payslips are independent of
     // this row, so deleting a structure never touches history.
     if (!(await requireAdmin(req, res))) return;
-    const rows = await sql`DELETE FROM salary_structures WHERE id=${req.params.id} RETURNING id`;
+    const rows = await sql`DELETE FROM salary_structures WHERE id=${req.params.id} RETURNING id, employee_id`;
     if (!(rows as any[]).length) return res.status(404).json({ error: 'Not found' });
+    // If we just deleted what was "current", the cache would now point
+    // at a stale value — re-sync to whatever's newly on top.
+    await syncEmployeeCurrentSalary((rows as any[])[0].employee_id);
+    invalidateEmployeesCache();
     res.json({ ok: true });
   } catch (err: any) { res.status(500).json({ error: err.message ?? 'Server error' }); }
 });

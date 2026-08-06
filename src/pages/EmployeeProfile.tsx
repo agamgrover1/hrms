@@ -16,6 +16,7 @@ import EmployeeHoursDetailModal from '../components/EmployeeHoursDetailModal';
 import ChecklistPanel from '../components/ChecklistPanel';
 import DocumentsPanel from '../components/hr/DocumentsPanel';
 import SalaryPanel from '../components/hr/SalaryPanel';
+import IncrementModal from '../components/hr/IncrementModal';
 import KpisPanel from '../components/hr/KpisPanel';
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -183,6 +184,7 @@ export default function EmployeeProfile() {
   const [showEdit, setShowEdit]     = useState(false);
   const [showDelete, setShowDelete] = useState(false);
   const [deleting, setDeleting]     = useState(false);
+  const [showIncrement, setShowIncrement] = useState(false);
 
   // Track which tabs have been loaded so empty results don't cause infinite refetch
   const [loaded, setLoaded] = useState(new Set<Tab>());
@@ -532,6 +534,13 @@ export default function EmployeeProfile() {
 
         <section className="relative aurora-bg grain-overlay rounded-xl-3 overflow-hidden text-white animate-fade-in">
           <div className="absolute top-4 right-4 z-10 flex gap-2">
+            {(me?.role === 'admin' || me?.role === 'hr_manager') && (
+              <button onClick={() => setShowIncrement(true)}
+                title="Log a raise / correction — creates a dated row in the salary history"
+                className="flex items-center gap-1.5 px-3 py-1.5 bg-success/70 hover:bg-success/90 rounded-lg text-white text-xs font-semibold transition-colors">
+                <TrendingUp size={12}/> Give increment
+              </button>
+            )}
             <button onClick={() => setShowEdit(true)}
               className="flex items-center gap-1.5 px-3 py-1.5 bg-white/15 hover:bg-white/25 border border-white/15 backdrop-blur-sm rounded-lg text-white text-xs font-semibold transition-colors">
               <Pencil size={12}/> Edit
@@ -1365,6 +1374,25 @@ export default function EmployeeProfile() {
           emp={emp} allEmployees={allEmps} departments={departments} designations={designations}
           onClose={() => setShowEdit(false)}
           onSaved={updated => { setEmp(updated); setShowEdit(false); }}
+        />
+      )}
+
+      {showIncrement && (
+        <IncrementModal
+          employeeId={emp.id}
+          employeeName={emp.name}
+          currentMonthly={Number(emp.salary || 0)}
+          currentCtc={Number(emp.ctc || 0)}
+          onClose={() => setShowIncrement(false)}
+          onSaved={({ newMonthly, newCtc, isEffectiveNow }) => {
+            // Patch the local employee record optimistically ONLY when
+            // the new structure is effective today or earlier — a future-
+            // dated increment leaves the current amount unchanged until
+            // that date arrives (backend cache stays honest too).
+            if (isEffectiveNow) setEmp((e: any) => ({ ...e, salary: newMonthly, ctc: newCtc }));
+            setShowIncrement(false);
+            setTab('Salary');
+          }}
         />
       )}
 

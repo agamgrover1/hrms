@@ -34,6 +34,15 @@ interface Structure {
   created_by: string | null;
   created_at: string;
   updated_at: string;
+  // Increment-history metadata (null on very old rows created before the
+  // Aug 2026 migration; backfill seeded existing employees with 'initial').
+  change_type?: 'initial' | 'increment' | 'correction' | null;
+  previous_monthly?: number | string | null;
+  changed_by_name?: string | null;
+}
+
+function monthlyOf(s: Structure): number {
+  return Number(s.basic || 0) + Number(s.hra || 0) + Number(s.special_allowance || 0);
 }
 
 function fmtINR(n: number | string | null | undefined): string {
@@ -102,14 +111,16 @@ export default function SalaryPanel({ employeeId, employeeName, employeeMonthlyS
             <IndianRupee className="w-5 h-5 text-accent" /> Salary
           </h3>
           <p className="text-xs text-on-surface-muted mt-0.5">
-            {employeeName ?? 'This employee'}'s pay. Payslip runs read the current monthly directly from the Employee record —
-            only add a dated row below if you want to log a raise / adjustment for audit history.
+            {employeeName ?? 'This employee'}'s pay history. Every raise / correction is a dated row below —
+            use <b>Give Increment</b> in the profile header to log one. Payroll always uses whichever row is
+            effective for the run's month.
           </p>
         </div>
         {canEdit && (
           <button onClick={() => setCreating(true)}
-            className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg text-accent border border-accent/40 hover:bg-accent/10 text-sm font-semibold">
-            <Plus className="w-4 h-4" /> Log a dated adjustment
+            title="Advanced: log a structure with a custom component split (Basic / HRA / SA / PF). Use Give Increment in the header for a plain raise."
+            className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg text-on-surface-muted border border-outline hover:bg-surface-2 text-xs font-semibold">
+            <Plus className="w-3.5 h-3.5" /> Advanced: custom structure
           </button>
         )}
       </div>
@@ -147,9 +158,9 @@ export default function SalaryPanel({ employeeId, employeeName, employeeMonthlyS
         <div className="h-40 rounded-xl-2 bg-surface-2 animate-pulse" />
       ) : rows.length === 0 ? (
         <div className="rounded-xl-2 border border-dashed border-outline bg-surface-2/30 p-6 text-center">
-          <p className="text-sm text-on-surface-muted">No dated adjustments logged.</p>
+          <p className="text-sm text-on-surface-muted">No salary history yet.</p>
           <p className="text-xs text-on-surface-subtle mt-1">
-            Optional — payroll works without this. Use it if you want a raise to take effect from a specific date and be visible on historical payslips.
+            Use <b>Give Increment</b> in the profile header to log the first entry — this list will then show every future raise / correction with dates and deltas.
           </p>
         </div>
       ) : (
@@ -161,29 +172,71 @@ export default function SalaryPanel({ employeeId, employeeName, employeeMonthlyS
             <div className="px-4 py-2.5 border-b border-outline bg-surface-2 flex items-center gap-2">
               <History size={13} className="text-on-surface-muted" />
               <p className="text-[10px] font-bold uppercase tracking-wider text-on-surface-subtle">
-                Dated adjustments · {rows.length}
+                Salary history · {rows.length}
               </p>
             </div>
             <ul className="divide-y divide-outline">
               {rows.map(s => {
                 const isActive = current?.id === s.id;
+                const monthly = monthlyOf(s);
+                // Prefer server-stored previous_monthly (frozen at insert-
+                // time, so it reflects what payroll actually saw). Falls
+                // back to computing from the next-older row for pre-
+                // migration data — same math, just done client-side.
+                const prevFromServer = s.previous_monthly != null ? Number(s.previous_monthly) : null;
+                const prevFallback = (() => {
+                  const idx = rows.findIndex(r => r.id === s.id);
+                  const older = rows[idx + 1];
+                  return older ? monthlyOf(older) : null;
+                })();
+                const prev = prevFromServer ?? prevFallback;
+                const delta = prev !== null ? monthly - prev : null;
+                const deltaPct = prev && prev > 0 && delta !== null ? (delta / prev) * 100 : null;
+                const changeType = s.change_type ?? (prev === null ? 'initial' : (delta !== null && delta > 0 ? 'increment' : 'correction'));
                 return (
-                  <li key={s.id} className={`px-4 py-3 flex items-center gap-4 ${isActive ? 'bg-accent/5' : 'hover:bg-surface-2/40'}`}>
+                  <li key={s.id} className={`px-4 py-3 flex items-start gap-4 ${isActive ? 'bg-accent/5' : 'hover:bg-surface-2/40'}`}>
                     <div className="w-32 shrink-0">
                       <p className="text-[10px] uppercase font-bold text-on-surface-subtle">Effective from</p>
                       <p className="text-sm font-semibold text-on-surface">{fmtDate(s.effective_from)}</p>
                     </div>
-                    <div className="flex-1 min-w-0 flex items-baseline gap-3 flex-wrap text-sm">
-                      <span className="num-mono font-bold text-on-surface">{fmtINR(s.ctc_annual)}<span className="text-on-surface-subtle font-normal text-[11px]"> / year</span></span>
+                    <div className="flex-1 min-w-0 space-y-1">
+                      <div className="flex items-baseline gap-3 flex-wrap text-sm">
+                        <span className="num-mono font-bold text-on-surface">{fmtINR(monthly)}<span className="text-on-surface-subtle font-normal text-[11px]"> / month</span></span>
+                        <span className="text-[11px] text-on-surface-muted num-mono">CTC {fmtINR(s.ctc_annual)}/yr</span>
+                        {delta !== null && delta !== 0 && (
+                          <span className={`text-[11px] font-semibold num-mono ${delta > 0 ? 'text-success' : 'text-warning'}`}>
+                            {delta > 0 ? '+' : ''}{fmtINR(Math.abs(delta))}
+                            {deltaPct !== null && <span className="ml-1">({deltaPct >= 0 ? '+' : ''}{deltaPct.toFixed(1)}%)</span>}
+                          </span>
+                        )}
+                        {changeType === 'initial' && (
+                          <span className="inline-flex items-center text-[10px] font-bold uppercase px-2 py-0.5 rounded-full bg-surface-2 text-on-surface-muted">Initial</span>
+                        )}
+                        {changeType === 'increment' && (
+                          <span className="inline-flex items-center gap-1 text-[10px] font-bold uppercase px-2 py-0.5 rounded-full bg-success/15 text-success">
+                            <TrendingUp size={10} /> Increment
+                          </span>
+                        )}
+                        {changeType === 'correction' && (
+                          <span className="inline-flex items-center text-[10px] font-bold uppercase px-2 py-0.5 rounded-full bg-warning/15 text-warning">Correction</span>
+                        )}
+                        {isActive && (
+                          <span className="inline-flex items-center gap-1 text-[10px] font-bold uppercase px-2 py-0.5 rounded-full bg-accent/15 text-accent">
+                            Current
+                          </span>
+                        )}
+                      </div>
                       {salaryMode === 'structured' && (
-                        <span className="text-[11px] text-on-surface-muted">
+                        <p className="text-[11px] text-on-surface-muted">
                           Basic {fmtINR(s.basic)} · HRA {fmtINR(s.hra)} · SA {fmtINR(s.special_allowance)}
-                        </span>
+                        </p>
                       )}
-                      {isActive && (
-                        <span className="inline-flex items-center gap-1 text-[10px] font-bold uppercase px-2 py-0.5 rounded-full bg-accent/15 text-accent">
-                          <TrendingUp size={10} /> Overriding now
-                        </span>
+                      {s.notes && <p className="text-[11px] text-on-surface-muted italic">"{s.notes}"</p>}
+                      {(s.changed_by_name || s.created_by) && (
+                        <p className="text-[10px] text-on-surface-subtle">
+                          by <span className="font-semibold text-on-surface-muted">{s.changed_by_name ?? s.created_by}</span>
+                          {s.created_at && <> on {fmtDate(s.created_at)}</>}
+                        </p>
                       )}
                     </div>
                     {canEdit && (
