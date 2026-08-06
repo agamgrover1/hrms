@@ -870,9 +870,9 @@ async function runStartupMigrations() {
   // full migration block.
   //
   // KEEP THIS PROBE POINTED AT THE MOST RECENT MIGRATION when you add one.
-  // Right now: salary_structures.change_type (added Aug 2026 for the
-  // increment-history feature — every raise inserts a new dated row
-  // stamped 'increment' / 'correction' / 'initial'). If you add a newer
+  // Right now: leave_balances.probation_last_reset_month (added Aug 2026
+  // to track monthly reset of the probation short-leave counter
+  // independently of the full-day-accrual guard). If you add a newer
   // column / table, update this SELECT to reference it so cold starts
   // re-run migrations once after each deploy.
   try {
@@ -881,7 +881,7 @@ async function runStartupMigrations() {
     // For a *seed* (rows, not columns), we probe with EXISTS-style: an
     // empty result set means "still needs to run", so we don't set the
     // flag and fall through.
-    await sql`SELECT change_type FROM salary_structures LIMIT 0`;
+    await sql`SELECT probation_last_reset_month FROM leave_balances LIMIT 0`;
     _migrated = true;
     return;
   } catch {
@@ -2783,6 +2783,16 @@ async function runStartupMigrations() {
     await sql`ALTER TABLE leave_balances ADD COLUMN IF NOT EXISTS prev_month_carry_full_day INTEGER DEFAULT 0`;
     await sql`ALTER TABLE leave_balances ADD COLUMN IF NOT EXISTS current_month_credit_full_day INTEGER DEFAULT 0`;
     await sql`ALTER TABLE leave_balances ADD COLUMN IF NOT EXISTS probation_short_used INTEGER NOT NULL DEFAULT 0`;
+    // Tracks the last (month, year) we reset probation_short_used to 0.
+    // Kept SEPARATE from last_credited_month because that guard runs
+    // per-employee for full-day accrual, and probation employees don't
+    // accrue — meaning last_credited_month could be stamped to the
+    // current month by the earlier code path (which advanced the guard
+    // without touching probation_short_used). Leaving the columns nullable
+    // for legacy rows so the first call this month always triggers a
+    // reset (null != current → mismatch), self-healing stuck balances.
+    await sql`ALTER TABLE leave_balances ADD COLUMN IF NOT EXISTS probation_last_reset_month INTEGER`.catch(()=>{});
+    await sql`ALTER TABLE leave_balances ADD COLUMN IF NOT EXISTS probation_last_reset_year INTEGER`.catch(()=>{});
     // Per-employee optional-leave allowance. Default is 2/year (the system
     // constant); admin/HR can grant extra via the leave page so the effective
     // cap becomes 2 + optional_extra.
@@ -7660,17 +7670,30 @@ async function creditMonthlyLeave(employeeId: string, joinDate: string | null) {
     return; // just created — no credit needed yet
   }
   const bal = (balRows as any[])[0];
-  // Guard: if last_credited fields are set correctly already, skip
+  // Probation reset — runs INDEPENDENTLY of the last_credited guard
+  // below so it fires even for rows already stamped this month by the
+  // older code path (which advanced last_credited but never reset the
+  // probation counter). Self-healing for legacy rows via the null-vs-
+  // current mismatch, and correct going forward via the dedicated
+  // (probation_last_reset_month, probation_last_reset_year) tracker.
+  if (isOnProbation(joinDate)) {
+    const resetM = bal.probation_last_reset_month == null ? null : Number(bal.probation_last_reset_month);
+    const resetY = bal.probation_last_reset_year == null ? null : Number(bal.probation_last_reset_year);
+    if (resetM !== cm || resetY !== cy) {
+      await sql`UPDATE leave_balances SET
+          probation_short_used=0,
+          probation_last_reset_month=${cm}, probation_last_reset_year=${cy}
+        WHERE employee_id=${employeeId}`;
+    }
+  }
+  // Guard: if last_credited fields are set correctly already, skip the
+  // full-day accrual below (probation reset above still ran).
   if (Number(bal.last_credited_month) === cm && Number(bal.last_credited_year) === cy) return;
   if (isOnProbation(joinDate)) {
-    // Reset the probation short-leave counter monthly so the 2-credit
-    // cap is per-month (identical to how the post-probation short_leave
-    // pool refills at line 7688). Previously this counter was
-    // never reset, which made it read as a lifetime-of-probation cap —
-    // the rule was actually "2 credits/month during probation" all
-    // along. Full-day accrual still doesn't happen during probation.
+    // Probation employees don't accrue a full day. Advance the guard
+    // (so we don't re-enter this block) and carry the previous-month
+    // balance for the UI split.
     await sql`UPDATE leave_balances SET
-        probation_short_used=0,
         last_credited_month=${cm}, last_credited_year=${cy},
         prev_month_carry_full_day=COALESCE(full_day, 0),
         current_month_credit_full_day=0
