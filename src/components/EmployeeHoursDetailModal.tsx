@@ -463,6 +463,46 @@ export default function EmployeeHoursDetailModal({ employeeId, employeeName, mon
                           );
                         })}
                     </tbody>
+                    {/* Totals row — sums every column so the coordinator
+                        can eyeball weekly / monthly load and delivery
+                        without adding it up in their head. Weekly totals
+                        come from the assignment rows (planned); Logged /
+                        Plan sums approved/pending logs vs planned. */}
+                    <tfoot>
+                      {(() => {
+                        const wSum = [0, 0, 0, 0, 0];
+                        let planSum = 0, approvedSum = 0, pendingSum = 0;
+                        for (const a of assignments) {
+                          wSum[0] += Number(a.w1_hours || 0);
+                          wSum[1] += Number(a.w2_hours || 0);
+                          wSum[2] += Number(a.w3_hours || 0);
+                          wSum[3] += Number(a.w4_hours || 0);
+                          wSum[4] += Number(a.w5_hours || 0);
+                          planSum += Number(a.monthly_hours || 0);
+                          const projectLogs = logs.filter(l => l.project_id === a.project_id);
+                          approvedSum += projectLogs.filter(l => l.status === 'approved').reduce((s, l) => s + Number(l.hours_logged), 0);
+                          pendingSum  += projectLogs.filter(l => l.status === 'pending').reduce((s, l) => s + Number(l.hours_logged), 0);
+                        }
+                        return (
+                          <tr className="border-t-2 border-outline bg-surface-2/60">
+                            <td className="px-4 py-2.5 text-[10px] uppercase tracking-wider font-bold text-on-surface-muted">Total</td>
+                            {wSum.map((h, i) => (
+                              <td key={i} className="px-2 py-2.5 text-center num-mono font-bold text-on-surface">{h}</td>
+                            ))}
+                            <td className="px-2 py-2.5 text-center bg-surface-3 num-mono font-bold text-on-surface">{planSum}</td>
+                            <td className="px-3 py-2.5 text-right">
+                              <p className={`num-mono font-bold ${approvedSum > planSum ? 'text-warning' : 'text-on-surface'}`}>
+                                {approvedSum}<span className="text-on-surface-muted font-normal">/{planSum}</span>
+                              </p>
+                              {pendingSum > 0 && (
+                                <p className="text-[10px] text-warning">+<span className="num-mono">{pendingSum}h</span> pending</p>
+                              )}
+                            </td>
+                            {canRequestAlloc && <td />}
+                          </tr>
+                        );
+                      })()}
+                    </tfoot>
                   </table>
                 </div>
               )}
