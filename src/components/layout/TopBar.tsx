@@ -1,4 +1,5 @@
-import { Bell, ChevronDown, LogOut, CheckCircle, Calendar, TrendingUp, FileText, Target, X, XCircle, Award, Check, Trash2, AlertTriangle, ShieldAlert, KeyRound, Eye, EyeOff, Wrench, Clock as ClockIcon, Search, Megaphone, Sparkles, Menu, AtSign } from 'lucide-react';
+import { Bell, ChevronDown, LogOut, CheckCircle, Calendar, TrendingUp, FileText, Target, X, XCircle, Award, Check, Trash2, AlertTriangle, ShieldAlert, KeyRound, Eye, EyeOff, Wrench, Clock as ClockIcon, Search, Megaphone, Sparkles, Menu, AtSign, Zap } from 'lucide-react';
+import { isActionRequired } from '../../lib/notificationTypes';
 import { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../../context/AuthContext';
@@ -277,6 +278,7 @@ export default function TopBar({ title, onMenuClick }: Props) {
   const navigate = useNavigate();
   const [showMenu, setShowMenu] = useState(false);
   const [showNotifs, setShowNotifs] = useState(false);
+  const [notifActionOnly, setNotifActionOnly] = useState(false);
   const [showChangePw, setShowChangePw] = useState(false);
   const [pwForm, setPwForm] = useState({ current: '', next: '', confirm: '' });
   const [showPw, setShowPw] = useState({ current: false, next: false, confirm: false });
@@ -295,6 +297,8 @@ export default function TopBar({ title, onMenuClick }: Props) {
   const seededRef = useRef(false);
 
   const unread = notifications.filter(n => !n.is_read).length;
+  const actionUnread = notifications.filter(n => !n.is_read && isActionRequired(n.type)).length;
+  const visibleNotifs = notifActionOnly ? notifications.filter(n => isActionRequired(n.type)) : notifications;
 
   const fetchNotifications = (opts: { showToasts?: boolean } = {}) => {
     if (!user?.id) return;
@@ -502,16 +506,41 @@ export default function TopBar({ title, onMenuClick }: Props) {
                   </div>
                 )}
               </div>
+              {/* Action-required toggle row — one tap cuts FYI noise
+                  down to just items still waiting on the viewer. */}
+              {notifications.length > 0 && (
+                <div className="px-3 py-2 border-b border-outline bg-surface-2/40 flex items-center justify-between gap-2">
+                  <button onClick={() => setNotifActionOnly(v => !v)}
+                    title="Show only notifications that need your review or approval"
+                    className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[11px] font-semibold border transition-colors ${
+                      notifActionOnly
+                        ? 'bg-warning-container/60 border-warning/40 text-warning'
+                        : 'bg-surface border-outline text-on-surface-muted hover:text-on-surface'
+                    }`}>
+                    <Zap size={10} /> Action required
+                    {actionUnread > 0 && (
+                      <span className="num-mono text-[9px] px-1 rounded-full bg-warning text-white">{actionUnread}</span>
+                    )}
+                  </button>
+                  <span className="text-[10px] text-on-surface-subtle">
+                    {notifActionOnly ? `${visibleNotifs.length} needing action` : `${notifications.length} total`}
+                  </span>
+                </div>
+              )}
 
               {/* List */}
               <div className="overflow-y-auto" style={{ maxHeight: '380px' }}>
-                {notifications.length === 0 ? (
+                {visibleNotifs.length === 0 ? (
                   <div className="flex flex-col items-center justify-center py-12 gap-2">
                     <Bell size={28} className="text-on-surface-subtle" />
-                    <p className="text-sm text-on-surface-muted">You're all caught up!</p>
+                    <p className="text-sm text-on-surface-muted">
+                      {notifActionOnly
+                        ? notifications.length > 0 ? 'Nothing needs your action right now.' : "You're all caught up!"
+                        : "You're all caught up!"}
+                    </p>
                   </div>
                 ) : (
-                  notifications.map(n => {
+                  visibleNotifs.map(n => {
                     const cfg = TYPE_CONFIG[n.type] ?? { icon: Bell, color: '#6b7280', bg: '#f3f4f6' };
                     const Icon = cfg.icon;
                     return (

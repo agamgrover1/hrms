@@ -12784,12 +12784,19 @@ app.post('/api/wfh/requests', async (req, res) => {
     }
     const id = `wfh_${Date.now()}`;
     const rows = await sql`INSERT INTO wfh_requests (id,employee_id,employee_name,date,type,reason) VALUES (${id},${employee_id},${employee_name??null},${date},${type},${reason??null}) RETURNING *`;
-    // Notify manager that their report applied for WFH
-    notifyManagerOfEmployee(employee_id,'wfh_applied','WFH Request',
-      `${employee_name??'Employee'} applied for ${type==='half_day'?'Half Day':'Full Day'} Work From Home.`).catch(()=>{});
-    // Also notify HR/Admin
-    notifyAdminsAndHR('wfh_applied','WFH Request Submitted',
-      `${employee_name??'An employee'} has applied for ${type==='half_day'?'Half Day':'Full Day'} WFH — awaiting manager approval.`).catch(()=>{});
+    // Two-stage approval: manager reviews first, HR gets a second
+    // notification when the manager approves. So the initial submission
+    // only needs to reach the manager — admin doesn't need a "for your
+    // info, awaiting manager" ping. Falls back to HR/Admin only if the
+    // employee has no reporting manager on file.
+    const empRow = (await sql`SELECT reporting_manager_id FROM employees WHERE id=${employee_id}` as any[])[0];
+    if (empRow?.reporting_manager_id) {
+      notifyManagerOfEmployee(employee_id,'wfh_applied','WFH Request',
+        `${employee_name??'Employee'} applied for ${type==='half_day'?'Half Day':'Full Day'} Work From Home.`).catch(()=>{});
+    } else {
+      notifyAdminsAndHR('wfh_applied','WFH Request Submitted',
+        `${employee_name??'An employee'} has applied for ${type==='half_day'?'Half Day':'Full Day'} WFH (no manager on file — needs HR approval).`).catch(()=>{});
+    }
     res.status(201).json(rows[0]);
   } catch (e: any) { res.status(500).json({ error: e.message }); }
 });

@@ -1,9 +1,10 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Bell, Check, Search, Trash2, Filter, ChevronDown } from 'lucide-react';
+import { Bell, Check, Search, Trash2, Filter, ChevronDown, Zap } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import { api } from '../services/api';
 import { TYPE_CONFIG, getNotifRoute } from '../components/layout/TopBar';
+import { isActionRequired } from '../lib/notificationTypes';
 
 interface Notif {
   id: number;
@@ -52,6 +53,7 @@ export default function Notifications() {
   const [err, setErr] = useState('');
   const [readFilter, setReadFilter] = useState<ReadFilter>('all');
   const [categoryFilter, setCategoryFilter] = useState<string>('');
+  const [actionOnly, setActionOnly] = useState(false);
   const [search, setSearch] = useState('');
   const [selected, setSelected] = useState<Set<number>>(new Set());
 
@@ -69,6 +71,9 @@ export default function Notifications() {
     all: items.length,
     unread: items.filter(n => !n.is_read).length,
     read: items.filter(n => n.is_read).length,
+    // Action-required + unread — headline number the toggle promises to
+    // surface, so admin sees the real work backlog at a glance.
+    actionUnread: items.filter(n => !n.is_read && isActionRequired(n.type)).length,
   }), [items]);
 
   const filtered = useMemo(() => {
@@ -78,6 +83,7 @@ export default function Notifications() {
       if (readFilter === 'unread' && n.is_read) return false;
       if (readFilter === 'read' && !n.is_read) return false;
       if (cat && !cat.match(n.type)) return false;
+      if (actionOnly && !isActionRequired(n.type)) return false;
       if (!term) return true;
       return (
         n.title.toLowerCase().includes(term) ||
@@ -85,7 +91,7 @@ export default function Notifications() {
         n.type.toLowerCase().includes(term)
       );
     });
-  }, [items, readFilter, categoryFilter, search]);
+  }, [items, readFilter, categoryFilter, actionOnly, search]);
 
   const allSelected = filtered.length > 0 && filtered.every(n => selected.has(n.id));
   const toggleAll = () => {
@@ -182,6 +188,21 @@ export default function Notifications() {
             </button>
           ))}
         </div>
+        {/* "Action required" toggle — hides FYI notifications and shows
+            only items still waiting on the viewer (approvals, review
+            requests, submissions). Number is unread + action-required. */}
+        <button onClick={() => setActionOnly(v => !v)}
+          title="Show only notifications that need you to review or approve something"
+          className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold border transition-colors ${
+            actionOnly
+              ? 'bg-warning-container/60 border-warning/40 text-warning'
+              : 'bg-surface border-outline text-on-surface-muted hover:text-on-surface hover:bg-surface-2'
+          }`}>
+          <Zap size={12} /> Action required
+          {counts.actionUnread > 0 && (
+            <span className="num-mono text-[10px] px-1.5 py-0.5 rounded-full bg-warning text-white">{counts.actionUnread}</span>
+          )}
+        </button>
         <div className="relative">
           <Filter size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-on-surface-subtle" />
           <select value={categoryFilter} onChange={e => setCategoryFilter(e.target.value)}
