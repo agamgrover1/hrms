@@ -11831,10 +11831,13 @@ app.post('/api/warnings', async (req, res) => {
     const warn = rows[0] as any;
     const sevLabel = (severity??'warning').charAt(0).toUpperCase()+(severity??'warning').slice(1);
 
-    // 1. Notify the employee
+    // 1. Notify the employee — explicit link so clicking the bell always
+    // deep-links to their Performance tab where warnings render, even if
+    // the client-side role-based route resolver in TopBar changes later.
     notifyEmployeeUser(employee_id, 'warning_issued',
       `${sevLabel} Warning Issued`,
-      `A ${severity??'warning'} warning has been issued by ${issued_by??'HR/Admin'}. Reason: ${reason.trim()}`
+      `A ${severity??'warning'} warning has been issued by ${issued_by??'HR/Admin'}. Reason: ${reason.trim()}`,
+      '/my?tab=performance'
     ).catch(()=>{});
     // 2. Manager issued → notify HR/Admin
     if (issued_by_role==='manager'||issued_by_role==='employee') {
