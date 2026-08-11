@@ -402,10 +402,40 @@ function EmployeeDetail({ emp, onClose, onEdit, onDelete }: { emp: any; onClose:
   );
 }
 
-const SHIFT_OPTIONS = [
+// Fallback list — used only until the config fetch resolves (or if the
+// tenant has zero config_shifts rows for some reason). Real shift list
+// comes from /config/shifts (Configuration → Shifts), fetched by
+// useShiftOptions() below.
+const SHIFT_OPTIONS_FALLBACK = [
   { value: 'day',   label: 'Day Shift',   time: '9:00 AM – 6:00 PM' },
   { value: 'night', label: 'Night Shift', time: '6:30 PM – 3:30 AM' },
 ];
+
+function formatTimeRange(startISO: string | null | undefined, endISO: string | null | undefined): string {
+  const fmt = (t: string) => {
+    const [h, m] = t.split(':').map(Number);
+    const hr12 = ((h + 11) % 12) + 1;
+    const ampm = h < 12 ? 'AM' : 'PM';
+    return `${hr12}:${m.toString().padStart(2, '0')} ${ampm}`;
+  };
+  if (!startISO || !endISO) return '';
+  try { return `${fmt(startISO)} – ${fmt(endISO)}`; } catch { return ''; }
+}
+
+function useShiftOptions(): Array<{ value: string; label: string; time: string }> {
+  const [opts, setOpts] = useState<Array<{ value: string; label: string; time: string }>>(SHIFT_OPTIONS_FALLBACK);
+  useEffect(() => {
+    api.getConfigShifts().then((rows: any[]) => {
+      if (!Array.isArray(rows) || rows.length === 0) return; // keep fallback
+      setOpts(rows.map(s => ({
+        value: s.id,
+        label: s.name,
+        time: formatTimeRange(s.start_time, s.end_time),
+      })));
+    }).catch(() => { /* keep fallback */ });
+  }, []);
+  return opts;
+}
 
 const emptyForm = {
   employee_id: '',
@@ -445,6 +475,7 @@ function AddEmployeeModal({ onClose, onSaved, existingEmployees, departments = [
 
   const [form, setForm] = useState({ ...emptyForm, employee_id: nextCode });
   const [error, setError] = useState('');
+  const shiftOptions = useShiftOptions();
   const [saving, setSaving] = useState(false);
   const [showPass, setShowPass] = useState(false);
 
@@ -591,8 +622,15 @@ function AddEmployeeModal({ onClose, onSaved, existingEmployees, departments = [
             <div>
               <label className={labelCls}>Shift</label>
               <select value={form.shift} onChange={e => set('shift', e.target.value)} className={inputCls}>
-                {SHIFT_OPTIONS.map(s => (
-                  <option key={s.value} value={s.value}>{s.label} ({s.time})</option>
+                {/* If the employee is currently on a shift that's been
+                    deleted from config, still list it so the dropdown
+                    doesn't silently show the first option and swallow
+                    their assignment on save. */}
+                {shiftOptions.some(s => s.value === form.shift) ? null : (
+                  <option value={form.shift}>{form.shift} (removed from config)</option>
+                )}
+                {shiftOptions.map(s => (
+                  <option key={s.value} value={s.value}>{s.time ? `${s.label} (${s.time})` : s.label}</option>
                 ))}
               </select>
             </div>
@@ -723,6 +761,7 @@ export function EditEmployeeModal({ emp, onClose, onSaved, allEmployees, departm
   });
   const [error, setError] = useState('');
   const [saving, setSaving] = useState(false);
+  const shiftOptions = useShiftOptions();
 
   const set = (k: string, v: string) => setForm(f => ({ ...f, [k]: v }));
 
@@ -844,8 +883,15 @@ export function EditEmployeeModal({ emp, onClose, onSaved, allEmployees, departm
             <div>
               <label className={labelCls}>Shift</label>
               <select value={form.shift} onChange={e => set('shift', e.target.value)} className={inputCls}>
-                {SHIFT_OPTIONS.map(s => (
-                  <option key={s.value} value={s.value}>{s.label} ({s.time})</option>
+                {/* If the employee is currently on a shift that's been
+                    deleted from config, still list it so the dropdown
+                    doesn't silently show the first option and swallow
+                    their assignment on save. */}
+                {shiftOptions.some(s => s.value === form.shift) ? null : (
+                  <option value={form.shift}>{form.shift} (removed from config)</option>
+                )}
+                {shiftOptions.map(s => (
+                  <option key={s.value} value={s.value}>{s.time ? `${s.label} (${s.time})` : s.label}</option>
                 ))}
               </select>
             </div>
