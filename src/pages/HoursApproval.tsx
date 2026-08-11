@@ -514,7 +514,13 @@ function DayReasonModal({ title, subtitle, placeholder, confirmLabel, tone, onCl
 export default function HoursApproval() {
   const { user } = useAuth();
   const role = user?.role ?? 'employee';
-  const isAdmin = role === 'admin' || role === 'hr_manager' || role === 'project_coordinator';
+  // "isAdmin" here really means "org-wide viewer" — enables the All
+  // scope toggle + defaults to the org-wide queue. HR is intentionally
+  // OUT: they don't approve project delivery hours (that's on the
+  // project reporter/lead), and showing them every other team's logs
+  // is noise. Their queue is scoped to whatever projects they DO
+  // review (usually none) via the reporter/lead filter on the backend.
+  const isAdmin = role === 'admin' || role === 'project_coordinator';
   // Internal-activities review is scoped to the reporting chain + PC +
   // admin. HR is intentionally out: they don't approve training /
   // recruiting / ops time, and surfacing the queue for a role that

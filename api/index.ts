@@ -14093,6 +14093,18 @@ app.get('/api/hour-log-days/queue', async (req, res) => {
     const employee_id = (req.query.employee_id as string) || null;
     const month = req.query.month ? Number(req.query.month) : null;
     const year  = req.query.year  ? Number(req.query.year)  : null;
+    // HR does NOT approve project delivery hours (that's on the project
+    // reporter/lead). Block hr_manager / hr_intern from calling this
+    // endpoint without a reviewer_id — otherwise they'd see the whole
+    // org's logs. The frontend already scopes them to reviewer_id='mine'
+    // via HoursApproval.tsx, but a direct API call would bypass that.
+    const uid = req.header('x-user-id');
+    if (uid && !reviewer_id) {
+      const u = (await sql`SELECT role FROM app_users WHERE id=${uid}` as any[])[0];
+      if (u && (u.role === 'hr_manager' || u.role === 'hr_intern')) {
+        return res.status(403).json({ error: 'Not permitted — HR does not review project delivery hours' });
+      }
+    }
     const cacheKey = `hlDaysQueue:${status ?? ''}:${reviewer_id ?? ''}:${employee_id ?? ''}:${month ?? ''}:${year ?? ''}`;
     const rows = await memoTtl(cacheKey, 60_000, async () => sql`
       SELECT d.id, d.log_date, d.hours, d.notes, d.status,
