@@ -7968,8 +7968,11 @@ app.post('/api/leave/requests', async (req, res) => {
       if (emp.reporting_manager_id) {
         notifyEmployeeUser(emp.reporting_manager_id,'leave_applied','Optional Leave Request', notifMsg).catch(()=>{});
       }
-      // Always notify HR/Admin — optional leave is quota-limited and always needs HR visibility
-      notifyAdminsAndHR('leave_applied','Optional Leave Request', notifMsg).catch(()=>{});
+      // Always notify HR/Admin — optional leave is quota-limited and always
+      // needs HR visibility. Uses 'leave_submitted' (FYI) not 'leave_applied'
+      // so admin's bell doesn't tag this as action-required — the manager
+      // reviews first; admin only reads.
+      notifyAdminsAndHR('leave_submitted','Optional Leave Request', notifMsg).catch(()=>{});
       return res.status(201).json(rows[0]);
     }
 
@@ -8006,7 +8009,9 @@ app.post('/api/leave/requests', async (req, res) => {
     if (emp.reporting_manager_id) {
       notifyEmployeeUser(emp.reporting_manager_id, 'leave_applied', 'New Leave Request', `${employee_name} applied for ${typeLabel} leave (${from} – ${to})`).catch(()=>{});
     } else {
-      notifyAdminsAndHR('leave_applied', 'New Leave Request', `${employee_name} applied for ${typeLabel} leave (${from} – ${to})`).catch(()=>{});
+      // No manager on file → admin/HR IS the reviewer. Distinct type so
+      // the bell tags it as action-required, unlike the FYI 'leave_submitted'.
+      notifyAdminsAndHR('leave_needs_hr_approval', 'New Leave Request', `${employee_name} applied for ${typeLabel} leave (${from} – ${to}) — no manager on file, needs HR approval`).catch(()=>{});
     }
     res.status(201).json(rows[0]);
   } catch (err) { res.status(500).json({ error: 'Server error' }); }
@@ -8050,7 +8055,9 @@ app.patch('/api/leave/requests/:id/manager-approve', async (req, res) => {
     const leave = rows[0] as any;
     const from = new Date(leave.from_date).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' });
     const to   = new Date(leave.to_date).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' });
-    notifyAdminsAndHR('leave_applied', 'Leave Needs HR Approval',
+    // Manager approved → admin/HR final review. Distinct type so this
+    // shows up under Action required on admin's bell.
+    notifyAdminsAndHR('leave_needs_hr_approval', 'Leave Needs HR Approval',
       `${leave.employee_name}'s ${formatLeaveLabel(leave.type, leave.slot)} leave (${from} – ${to}) approved by manager — awaiting your final approval.`);
     res.json(leave);
   } catch (err) { res.status(500).json({ error: 'Server error' }); }

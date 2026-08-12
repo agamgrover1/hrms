@@ -12,7 +12,13 @@
 // be added here so the filter surfaces it.
 export const ACTION_REQUIRED_TYPES: readonly string[] = [
   // Leave / attendance
+  // `leave_applied` is sent to the MANAGER (they must approve). Admin gets
+  // either `leave_submitted` (FYI on optional-leave submissions — NOT in
+  // this list, keeps admin's action badge honest) or `leave_needs_hr_approval`
+  // (fallback when no manager exists, and post-manager final signoff — IS
+  // in this list so admin sees action badge for it).
   'leave_applied',
+  'leave_needs_hr_approval',
   'wfh_applied',
   // Expenses / incentives
   'expense_submitted',

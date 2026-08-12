@@ -18,6 +18,16 @@ export function getNotifRoute(type: string, role: string): string {
       // Manager (employee role) gets this → My Team pending leaves
       return isHR ? '/leave' : '/my-team?tab=leaves';
 
+    case 'leave_submitted':
+      // Admin/HR FYI copy on optional-leave submissions (manager is
+      // the primary reviewer). Land on the same leaves page.
+      return '/leave';
+
+    case 'leave_needs_hr_approval':
+      // Admin/HR — either fallback (no manager) OR post-manager final
+      // approval. Always their action queue.
+      return '/leave';
+
     case 'leave_approved':
       // Employee gets this (their own leave was approved)
       return isHR ? '/leave' : '/my?tab=leave';
@@ -190,6 +200,8 @@ interface Props {
 export const TYPE_CONFIG: Record<string, { icon: any; color: string; bg: string }> = {
   // Leave
   leave_applied:           { icon: Calendar,       color: '#d97706', bg: '#fffbeb' },
+  leave_submitted:         { icon: Calendar,       color: '#64748b', bg: '#f1f5f9' },
+  leave_needs_hr_approval: { icon: Calendar,       color: '#d97706', bg: '#fffbeb' },
   leave_approved:          { icon: CheckCircle,    color: '#15803d', bg: '#f0fdf4' },
   leave_rejected:          { icon: XCircle,        color: '#dc2626', bg: '#fef2f2' },
   // WFH
