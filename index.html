@@ -6,6 +6,13 @@
     <link rel="apple-touch-icon" href="/favicon.png" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="description" content="Digital Leap Marketing Solutions — HR Management System" />
+    <!-- Private internal tool — do NOT surface in search results. Kept in
+         sync with public/robots.txt and the X-Robots-Tag header in
+         vercel.json. All three together so honest crawlers respect it
+         (meta + robots.txt) AND the header applies even when robots.txt
+         is missed or the crawler ignores meta tags (e.g. some LLM
+         crawlers only honor the header). -->
+    <meta name="robots" content="noindex, nofollow, noarchive, nosnippet" />
     <title>Digital Leap HRMS</title>
   </head>
   <body>
