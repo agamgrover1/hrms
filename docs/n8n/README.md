@@ -43,6 +43,19 @@ Expected shape (empty arrays on quiet days):
 
 ### 3. Import the workflow into n8n
 
+Two workflow files ship in this folder:
+
+- `hrms-celebrations-to-slack.json` — uses **n8n Variables**
+  (`$env.HRMS_BASE_URL`, `$env.HRMS_WEBHOOK_TOKEN`).
+  **Requires Enterprise / self-hosted with `.env` access.**
+- `hrms-celebrations-to-slack-no-vars.json` — hardcoded URL + a
+  placeholder token in the node. **Works on every n8n plan
+  (Free / Starter / Pro / self-hosted).**
+
+Pick the one that fits your plan.
+
+**With Variables (Enterprise / self-hosted):**
+
 1. n8n → **Workflows → Import from File** → pick
    `hrms-celebrations-to-slack.json`
 2. Set two n8n environment variables (Settings → Variables, or on your
@@ -53,6 +66,30 @@ Expected shape (empty arrays on quiet days):
    (OAuth or bot token). Confirm the channel name matches your
    workspace — the default is `general`.
 4. Toggle the workflow **Active** in the top-right.
+
+**Without Variables (any n8n plan):**
+
+1. Import `hrms-celebrations-to-slack-no-vars.json`
+2. Open the **Fetch today's celebrations** node → replace
+   `PASTE_YOUR_WEBHOOK_TOKEN_HERE` in the token field with your real
+   token. If HRMS is deployed at a different URL, update the URL too.
+3. Open the **Post to #general** node → connect your Slack credential.
+4. Save the workflow. Toggle **Active**.
+
+The token now lives inside the workflow JSON. That's acceptable for a
+private internal tool — n8n workflows aren't exposed to end users and
+the token only grants read access to today's birthday/anniversary
+list (no PII beyond names + departments). If you ever export /
+share the workflow, blank out the token first.
+
+**Alternative — n8n Credentials (cleanest, still no Enterprise):**
+Instead of pasting into the URL field, create an **HTTP Query Auth**
+credential in n8n named "HRMS webhook token" with parameter name
+`token` and paste the token as the value. In the HTTP Request node,
+switch **Authentication** to **Generic Credential Type → Query Auth**
+and pick the credential. Same result, token lives in the credentials
+store instead of the workflow body — encrypted at rest, and doesn't
+show up in workflow JSON exports.
 
 ### 4. Test it
 

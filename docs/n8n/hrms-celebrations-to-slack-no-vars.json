@@ -1,0 +1,114 @@
+{
+  "name": "HRMS · Daily Birthdays & Anniversaries → Slack (no vars)",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "0 30 3 * * *"
+            }
+          ]
+        }
+      },
+      "id": "cron-daily",
+      "name": "Daily 9:00 AM IST",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [200, 300],
+      "notes": "Runs every day at 09:00 IST (03:30 UTC). Adjust the cron expression if you want a different time."
+    },
+    {
+      "parameters": {
+        "url": "https://hr.digitalleapmarketing.com/api/webhooks/celebrations",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "token",
+              "value": "PASTE_YOUR_WEBHOOK_TOKEN_HERE"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 15000
+        }
+      },
+      "id": "http-fetch",
+      "name": "Fetch today's celebrations",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [440, 300],
+      "notes": "Replace PASTE_YOUR_WEBHOOK_TOKEN_HERE with the token Agam sent you. If HRMS is deployed at a different URL, update the `url` field too."
+    },
+    {
+      "parameters": {
+        "jsCode": "// Skip Slack post entirely on days with nothing to celebrate — keeps\n// the #general channel quiet on ordinary days. Also formats the\n// human-readable Slack message from the API payload.\nconst body = $input.first().json;\nconst birthdays = body.birthdays ?? [];\nconst anniversaries = body.anniversaries ?? [];\nif (birthdays.length === 0 && anniversaries.length === 0) {\n  return [];\n}\nconst lines = [];\nif (birthdays.length > 0) {\n  lines.push('*🎂 Birthdays today*');\n  for (const b of birthdays) {\n    const role = b.designation ? ` — ${b.designation}` : '';\n    lines.push(`• *${b.name}*${role}. Wishing you a wonderful day! 🎉`);\n  }\n}\nif (anniversaries.length > 0) {\n  if (lines.length > 0) lines.push('');\n  lines.push('*🎯 Work anniversaries today*');\n  for (const a of anniversaries) {\n    const yrs = a.years === 1 ? '1 year' : `${a.years} years`;\n    const role = a.designation ? ` — ${a.designation}` : '';\n    lines.push(`• *${a.name}*${role} completes *${yrs}* at Digital Leap. Cheers to the journey 🥂`);\n  }\n}\nreturn [{ json: { text: lines.join('\\n'), count: birthdays.length + anniversaries.length } }];"
+      },
+      "id": "format",
+      "name": "Format Slack message",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [680, 300]
+    },
+    {
+      "parameters": {
+        "resource": "message",
+        "select": "channel",
+        "channelId": {
+          "__rl": true,
+          "mode": "name",
+          "value": "general"
+        },
+        "text": "={{ $json.text }}",
+        "otherOptions": {}
+      },
+      "id": "slack-post",
+      "name": "Post to #general",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.3,
+      "position": [920, 300],
+      "notes": "Configure your Slack OAuth credential in n8n and confirm the channel name / ID matches your workspace."
+    }
+  ],
+  "connections": {
+    "Daily 9:00 AM IST": {
+      "main": [
+        [
+          {
+            "node": "Fetch today's celebrations",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch today's celebrations": {
+      "main": [
+        [
+          {
+            "node": "Format Slack message",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Format Slack message": {
+      "main": [
+        [
+          {
+            "node": "Post to #general",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "timezone": "Asia/Kolkata"
+  }
+}
