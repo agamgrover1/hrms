@@ -10086,6 +10086,75 @@ app.put('/api/performance/appraisal-goals/admin', async (req, res) => {
   } catch (err) { res.status(500).json({ error: 'Server error' }); }
 });
 
+// ── Webhooks (token-gated, no session) ────────────────────────────────────
+// Public webhooks for external automation (n8n, Zapier, cron jobs).
+// Auth is a shared secret via ?token=... query param, matched against
+// env WEBHOOK_TOKEN. Set that env var in Vercel Project Settings; leave
+// blank to disable all webhooks (returns 503).
+function requireWebhookToken(req: any, res: any): boolean {
+  const expected = process.env.WEBHOOK_TOKEN;
+  if (!expected) { res.status(503).json({ error: 'Webhooks disabled — set WEBHOOK_TOKEN env var to enable' }); return false; }
+  const got = String(req.query?.token ?? req.header('x-webhook-token') ?? '');
+  if (got !== expected) { res.status(401).json({ error: 'Invalid or missing token' }); return false; }
+  return true;
+}
+
+// GET /api/webhooks/celebrations?token=XXX
+// Returns today's birthdays + work anniversaries as JSON. Meant for a
+// daily n8n cron that fans out to Slack / Teams / email. No side effects —
+// pure read. Empty arrays are valid responses (most days have neither).
+app.get('/api/webhooks/celebrations', async (req, res) => {
+  try {
+    if (!requireWebhookToken(req, res)) return;
+    await runStartupMigrations();
+    // Same predicates as the in-app auto-post at :6236 so this endpoint
+    // and the Dashboard announcements agree on who's celebrating.
+    const birthdays = await sql`
+      SELECT id, name, employee_id, designation, department,
+             date_of_birth::text AS date_of_birth,
+             EXTRACT(YEAR FROM AGE(CURRENT_DATE, date_of_birth))::int AS turning_age
+      FROM employees
+      WHERE status = 'active'
+        AND date_of_birth IS NOT NULL
+        AND EXTRACT(MONTH FROM date_of_birth) = EXTRACT(MONTH FROM CURRENT_DATE)
+        AND EXTRACT(DAY   FROM date_of_birth) = EXTRACT(DAY   FROM CURRENT_DATE)
+      ORDER BY name` as any[];
+    // Anniversaries — first year excluded ("0 years" reads weird on the
+    // joining day). Same guard as the auto-post at :6256.
+    const anniversaries = await sql`
+      SELECT id, name, employee_id, designation, department,
+             join_date::text AS join_date,
+             (EXTRACT(YEAR FROM CURRENT_DATE) - EXTRACT(YEAR FROM join_date))::int AS years
+      FROM employees
+      WHERE status = 'active'
+        AND join_date IS NOT NULL
+        AND EXTRACT(MONTH FROM join_date) = EXTRACT(MONTH FROM CURRENT_DATE)
+        AND EXTRACT(DAY   FROM join_date) = EXTRACT(DAY   FROM CURRENT_DATE)
+        AND EXTRACT(YEAR  FROM CURRENT_DATE) > EXTRACT(YEAR FROM join_date)
+      ORDER BY name` as any[];
+    res.json({
+      date: new Date().toISOString().slice(0, 10),
+      birthdays: birthdays.map(b => ({
+        name: b.name,
+        first_name: (b.name ?? '').split(' ')[0],
+        employee_id: b.employee_id,
+        designation: b.designation,
+        department: b.department,
+        turning_age: b.turning_age,
+      })),
+      anniversaries: anniversaries.map(a => ({
+        name: a.name,
+        first_name: (a.name ?? '').split(' ')[0],
+        employee_id: a.employee_id,
+        designation: a.designation,
+        department: a.department,
+        join_date: a.join_date,
+        years: a.years,
+      })),
+    });
+  } catch (err: any) { res.status(500).json({ error: err.message || 'Server error' }); }
+});
+
 // ── Notifications ─────────────────────────────────────────────────────────
 // Drop EVERY cache entry for a given user. We can't selectively invalidate
 // because mark-read mutations change the payload silently. Cheap to do
