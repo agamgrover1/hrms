@@ -69,6 +69,8 @@ export interface FinProjectRow {
   billing_source?: 'upwork' | 'direct' | null;
   billing_status?: 'pending' | 'cleared_pending' | 'cleared' | null;
   billing_received_inr?: number | null;
+  billing_revenue_inr?: number;
+  billing_upwork_fee_pct?: number | null;
 }
 
 export interface FinInvoice {
@@ -269,8 +271,12 @@ export const financeApi = {
     amount_received?: number | null; received_inr?: number | null; received_fx_rate?: number | null;
     cleared_at?: string | null; cleared_by?: string | null; cleared_by_name?: string | null;
     clearance_note?: string | null;
+    // Upwork platform fee (default 10%). Nets the accrual revenue —
+    // pre-fee number is `revenue_inr`, post-fee expected is
+    // `revenue_inr * (1 - upwork_fee_pct/100)`.
+    upwork_fee_pct?: number | string | null;
   }>>(`/revenue?month=${month}&year=${year}`),
-  saveRevenue: (data: { project_id: string; month: number; year: number; billing_type: string; fixed_amount: number; hourly_rate: number; billable_hours: number; currency?: string; fx_rate?: number }) =>
+  saveRevenue: (data: { project_id: string; month: number; year: number; billing_type: string; fixed_amount: number; hourly_rate: number; billable_hours: number; currency?: string; fx_rate?: number; upwork_fee_pct?: number }) =>
     request<any>('/revenue', { method: 'PUT', body: JSON.stringify(data) }),
   clearRevenue: (project_id: string, month: number, year: number, data: { amount_received?: number; clearance_note?: string; fx_rate?: number }) =>
     request<any>(`/revenue/${encodeURIComponent(project_id)}/${month}/${year}/clear`, { method: 'PATCH', body: JSON.stringify(data) }),

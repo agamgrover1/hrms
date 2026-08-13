@@ -914,6 +914,16 @@ function ProjectDrilldownModal({ project: p, model, month, year, onClose }: {
                     {(p as any).billing_currency && (p as any).billing_currency !== 'INR' && (
                       <tr><td className="px-3 py-2 text-on-surface-muted">FX rate</td><td className="px-3 py-2 text-right font-semibold text-on-surface num-mono">1 {(p as any).billing_currency} = ₹{Number((p as any).billing_fx_rate || 1).toFixed(4)}</td></tr>
                     )}
+                    {/* Contract → Upwork fee → Effective. Shows only when
+                        there IS a fee configured (default 10) so the
+                        breakdown always renders for Upwork projects, and
+                        collapses gracefully for zero-fee edge cases. */}
+                    {(p as any).billing_upwork_fee_pct != null && Number((p as any).billing_upwork_fee_pct) > 0 && (p as any).billing_status !== 'cleared' && (
+                      <>
+                        <tr><td className="px-3 py-2 text-on-surface-muted">Contract (gross)</td><td className="px-3 py-2 text-right font-semibold text-on-surface num-mono">{money((p as any).billing_revenue_inr || 0, c)}</td></tr>
+                        <tr><td className="px-3 py-2 text-on-surface-muted">Upwork fee ({Number((p as any).billing_upwork_fee_pct)}%)</td><td className="px-3 py-2 text-right font-semibold text-warning num-mono">− {money(Number((p as any).billing_revenue_inr || 0) * Number((p as any).billing_upwork_fee_pct) / 100, c)}</td></tr>
+                      </>
+                    )}
                     <tr><td className="px-3 py-2 text-on-surface-muted">Status</td><td className="px-3 py-2 text-right font-semibold capitalize">
                       <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider ${
                         (p as any).billing_status === 'cleared' ? 'bg-success-container text-success'
@@ -937,7 +947,8 @@ function ProjectDrilldownModal({ project: p, model, month, year, onClose }: {
                 </table>
                 {(p as any).billing_status !== 'cleared' && (
                   <p className="px-3 pt-3 text-[11px] text-on-surface-muted italic">
-                    Counted at the configured (expected) amount. Once admin marks this row Cleared with the actual received Upwork payout, the variance (Upwork fees, FX swing) flows through to net profit.
+                    Counted at the <b>effective</b> amount (contract minus the {Number((p as any).billing_upwork_fee_pct ?? 10)}% Upwork fee).
+                    Once admin marks this row Cleared with the actual received Upwork payout, the leftover variance (FX swing, partial pay) flows through to net profit.
                   </p>
                 )}
                 {p.invoiceCount === 0 && (p as any).billing_status === 'cleared' && (

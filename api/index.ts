@@ -870,18 +870,18 @@ async function runStartupMigrations() {
   // full migration block.
   //
   // KEEP THIS PROBE POINTED AT THE MOST RECENT MIGRATION when you add one.
-  // Right now: leave_balances.probation_last_reset_month (added Aug 2026
-  // to track monthly reset of the probation short-leave counter
-  // independently of the full-day-accrual guard). If you add a newer
-  // column / table, update this SELECT to reference it so cold starts
-  // re-run migrations once after each deploy.
+  // Right now: fin_project_revenue.upwork_fee_pct (added Aug 2026 so
+  // Upwork billing rows carry the platform fee % — accrual revenue is
+  // netted by it while the invoiced/contract number stays gross). If
+  // you add a newer column / table, update this SELECT to reference it
+  // so cold starts re-run migrations once after each deploy.
   try {
     // Bump this probe whenever a new migration lands; existing warm
     // Lambdas will fail the SELECT and re-run runStartupMigrations().
     // For a *seed* (rows, not columns), we probe with EXISTS-style: an
     // empty result set means "still needs to run", so we don't set the
     // flag and fall through.
-    await sql`SELECT probation_last_reset_month FROM leave_balances LIMIT 0`;
+    await sql`SELECT upwork_fee_pct FROM fin_project_revenue LIMIT 0`;
     _migrated = true;
     return;
   } catch {
@@ -1642,6 +1642,14 @@ async function runStartupMigrations() {
     await sql`ALTER TABLE fin_project_revenue ADD COLUMN IF NOT EXISTS cleared_by_name TEXT`;
     await sql`ALTER TABLE fin_project_revenue ADD COLUMN IF NOT EXISTS clearance_note TEXT`;
     await sql`UPDATE fin_project_revenue SET status='pending' WHERE status IS NULL`;
+    // Upwork freelancer fee — deducted from the contract amount BEFORE
+    // the money hits the Upwork wallet. Default 10% (Upwork's standard
+    // freelancer fee across most tiers). Stored per row so we can adapt
+    // if a specific project has a different rate. Applied to the accrual
+    // number (revenueOf when pending) so P&L reflects true expected
+    // revenue, not the pre-fee contract amount. `received_inr` is untouched
+    // since that's actual bank money — already net of fee AND FX slippage.
+    await sql`ALTER TABLE fin_project_revenue ADD COLUMN IF NOT EXISTS upwork_fee_pct NUMERIC NOT NULL DEFAULT 10`.catch(()=>{});
   } catch { /* idempotent */ }
 
   // Audit log for billing setup (Upwork projects in fin_project_revenue).
@@ -15711,13 +15719,22 @@ async function _finComputeMonthUncached(month: number, year: number) {
     // Billing Setup (Upwork): same accrual rule as invoices — the
     // configured monthly amount counts as expected revenue from the
     // moment it's set up. Clearance converts expected → actual.
-    //   cleared    → received_inr  (real INR that landed in the bank)
-    //   anything   → revenue_inr   (expected INR for the period)
-    // The variance between expected and received (Upwork fees, FX swing,
-    // withdrawal timing) flows through to net profit on clearance.
+    //   cleared    → received_inr  (real INR that landed in the bank,
+    //                               already net of Upwork fee + FX)
+    //   anything   → revenue_inr × (1 - fee_pct/100)
+    //                               (accrual: contract amount minus the
+    //                               known Upwork freelancer cut. Only FX
+    //                               slippage still flows through as
+    //                               variance on clearance — the fee is
+    //                               not a surprise anymore.)
     if (r.status === 'cleared' && r.received_inr != null) return Number(r.received_inr);
-    if (r.revenue_inr != null) return Number(r.revenue_inr);
-    return r.billing_type === 'hourly' ? Number(r.hourly_rate) * Number(r.billable_hours) : Number(r.fixed_amount);
+    const feePct = Number(r.upwork_fee_pct ?? 10);
+    const feeMult = Math.max(0, 1 - feePct / 100);
+    if (r.revenue_inr != null) return Number(r.revenue_inr) * feeMult;
+    const contractNative = r.billing_type === 'hourly'
+      ? Number(r.hourly_rate) * Number(r.billable_hours)
+      : Number(r.fixed_amount);
+    return contractNative * feeMult;
   };
 
   const activeAllocs = assignments.filter(
@@ -15872,14 +15889,20 @@ async function _finComputeMonthUncached(month: number, year: number) {
       if (!upworkProjIds.has(pid)) continue;     // active Upwork only — matches revenueOf
       const invoicedInr = Number((r as any).revenue_inr || 0);
       if (invoicedInr <= 0) continue;
-      totalInvoiced += invoicedInr;
+      totalInvoiced += invoicedInr;                                              // Contract (gross, client-facing)
       if ((r as any).status === 'cleared') {
         const recInr = Number((r as any).received_inr || 0);
-        totalRevenue  += recInr;       // realized = received (post-fee/FX truth)
+        totalRevenue  += recInr;                                                 // Realized = received (already post-fee/FX)
         totalReceived += recInr;
         clearedInvoiceCount += 1;
       } else {
-        totalRevenue += invoicedInr;   // realized = invoiced for pending rows
+        // Pending: contract × (1 - fee%) — matches revenueOf's netting so
+        // the headline Revenue tile shows the true expected income, not
+        // the gross contract. Fee defaults to 10% for legacy rows via the
+        // column DEFAULT; per-row overrides are honored.
+        const feePct = Number((r as any).upwork_fee_pct ?? 10);
+        const feeMult = Math.max(0, 1 - feePct / 100);
+        totalRevenue += invoicedInr * feeMult;
         pendingInvoiceCount += 1;
       }
     }
@@ -15944,6 +15967,10 @@ async function _finComputeMonthUncached(month: number, year: number) {
       billing_currency: r?.currency || 'INR',
       billing_fx_rate: Number(r?.fx_rate || 1),
       billing_revenue_inr: Number(r?.revenue_inr || 0),
+      // Upwork platform fee % (default 10). Exposed so the Dashboard's
+      // Billing setup drilldown can show "contract × (1 - fee%) =
+      // expected" and admin can sanity-check the accrual number.
+      billing_upwork_fee_pct: r ? Number(r.upwork_fee_pct ?? 10) : null,
       billing_type: r?.billing_type || 'fixed', hourly_rate: Number(r?.hourly_rate || 0),
       billable_hours: Number(r?.billable_hours || 0), fixed_amount: Number(r?.fixed_amount || 0),
       revenue, directCost, directHours, projectExpenses,
@@ -16550,7 +16577,7 @@ app.put('/api/finance/revenue', async (req, res) => {
   const gate = await requireAdminOrCoord(req, res);
   if (!gate.ok) return;
   try {
-    const { project_id, month, year, billing_type, fixed_amount, hourly_rate, billable_hours, currency, fx_rate } = req.body;
+    const { project_id, month, year, billing_type, fixed_amount, hourly_rate, billable_hours, currency, fx_rate, upwork_fee_pct } = req.body;
     if (!project_id || !month || !year) return res.status(400).json({ error: 'project_id, month, year are required' });
     const ccy = (currency || 'INR').toUpperCase();
     // FX rate: if client passes one (it shows the live preview to the user),
@@ -16580,14 +16607,21 @@ app.put('/api/finance/revenue', async (req, res) => {
       return res.status(409).json({ error: 'This billing entry is awaiting admin approval. Withdraw the clearance request first to edit.' });
     }
     const beforeRow = (await sql`SELECT * FROM fin_project_revenue WHERE project_id=${project_id} AND month=${Number(month)} AND year=${Number(year)}`)[0] as any;
+    // Normalize fee: default 10 if omitted; clamp to [0, 100]. Legacy
+    // rows without a value fall through to the column DEFAULT (10) at
+    // INSERT time, so per-row edits can drop the field entirely.
+    const feePct = upwork_fee_pct == null || upwork_fee_pct === ''
+      ? 10
+      : Math.min(100, Math.max(0, Number(upwork_fee_pct)));
     const afterRow = (await sql`
-      INSERT INTO fin_project_revenue (project_id, month, year, billing_type, fixed_amount, hourly_rate, billable_hours, currency, fx_rate, revenue_inr, status)
+      INSERT INTO fin_project_revenue (project_id, month, year, billing_type, fixed_amount, hourly_rate, billable_hours, currency, fx_rate, revenue_inr, status, upwork_fee_pct)
       VALUES (${project_id}, ${Number(month)}, ${Number(year)}, ${billing_type || 'fixed'},
-              ${fa}, ${hr}, ${bh}, ${ccy}, ${rate}, ${revenueInr}, 'pending')
+              ${fa}, ${hr}, ${bh}, ${ccy}, ${rate}, ${revenueInr}, 'pending', ${feePct})
       ON CONFLICT (project_id, month, year) DO UPDATE SET
         billing_type = EXCLUDED.billing_type, fixed_amount = EXCLUDED.fixed_amount,
         hourly_rate = EXCLUDED.hourly_rate, billable_hours = EXCLUDED.billable_hours,
         currency = EXCLUDED.currency, fx_rate = EXCLUDED.fx_rate, revenue_inr = EXCLUDED.revenue_inr,
+        upwork_fee_pct = EXCLUDED.upwork_fee_pct,
         status = COALESCE(fin_project_revenue.status, 'pending')
       RETURNING *`)[0];
     // Only log if anything actually moved. Re-saving the same row with

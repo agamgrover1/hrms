@@ -33,6 +33,7 @@ type Row = {
   status: 'pending' | 'cleared_pending' | 'cleared';
   amount_received: number | null; received_inr: number | null; received_fx_rate: number | null;
   cleared_at: string | null; cleared_by: string | null; cleared_by_name: string | null; clearance_note: string | null;
+  upwork_fee_pct: number;
 };
 
 export default function RevenueTab({ month, year, onChanged }: { month: number; year: number; onChanged: () => void }) {
@@ -77,6 +78,7 @@ export default function RevenueTab({ month, year, onChanged }: { month: number; 
           cleared_by: r.cleared_by ?? null,
           cleared_by_name: r.cleared_by_name ?? null,
           clearance_note: r.clearance_note ?? null,
+          upwork_fee_pct: r.upwork_fee_pct != null ? Number(r.upwork_fee_pct) : 10,
         })));
       })
       .catch((e) => setErr(e.message))
@@ -127,6 +129,7 @@ export default function RevenueTab({ month, year, onChanged }: { month: number; 
         billing_type: r.billing_type,
         fixed_amount: r.fixed_amount, hourly_rate: r.hourly_rate, billable_hours: r.billable_hours,
         currency: r.currency, fx_rate: r.currency === 'INR' ? 1 : (rate ?? undefined),
+        upwork_fee_pct: r.upwork_fee_pct,
       });
       onChanged();
     } catch (e: any) { setErr(e.message); } finally { setSaving(null); }
@@ -224,6 +227,13 @@ export default function RevenueTab({ month, year, onChanged }: { month: number; 
     const v = r.fx_rate ? (r.billing_type === 'hourly' ? r.hourly_rate * r.billable_hours : r.fixed_amount) * r.fx_rate : 0;
     return s + (r.status === 'cleared' ? 0 : v);
   }, 0);
+  // Effective total = pending contracts × (1 - fee%). Matches the P&L
+  // accrual on the Dashboard, so admin can reconcile the two views.
+  const effectiveTotal = upworkRows.reduce((s, r) => {
+    if (r.status === 'cleared') return s;
+    const v = r.fx_rate ? (r.billing_type === 'hourly' ? r.hourly_rate * r.billable_hours : r.fixed_amount) * r.fx_rate : 0;
+    return s + v * Math.max(0, 1 - (r.upwork_fee_pct || 0) / 100);
+  }, 0);
   const receivedTotal = upworkRows.reduce((s, r) => s + (r.status === 'cleared' ? (r.received_inr ?? 0) : 0), 0);
 
   return (
@@ -233,7 +243,7 @@ export default function RevenueTab({ month, year, onChanged }: { month: number; 
       <div className="rounded-xl-2 border border-outline bg-surface-2/60 p-4 text-xs text-on-surface-muted">
         <p className="text-on-surface font-semibold text-sm mb-1">Billing setup · Upwork projects</p>
         <p>
-          For Upwork projects, coordinator enters the contract amount here (USD by default). Once admin marks it <b className="text-on-surface">Cleared</b> with the actual amount that landed in the bank, the variance (Upwork fee, FX) flows through to net profit — same way <b className="text-on-surface">Invoices</b> work for direct clients.
+          For Upwork projects, coordinator enters the contract amount here (USD by default). The <b className="text-on-surface">Upwork fee %</b> (default 10%) is deducted before the money reaches your wallet — accrual revenue on the Dashboard uses the post-fee <b className="text-on-surface">Effective</b> number so P&L doesn't over-count. Once admin marks it <b className="text-on-surface">Cleared</b> with the actual amount that landed in the bank, any leftover variance (FX swing) flows through to net profit — same way <b className="text-on-surface">Invoices</b> work for direct clients.
         </p>
       </div>
 
@@ -256,6 +266,9 @@ export default function RevenueTab({ month, year, onChanged }: { month: number; 
           <div className="rounded-xl-2 border border-outline bg-surface p-4">
             <p className="text-[10px] uppercase tracking-wide text-on-surface-subtle font-semibold">Pending (invoiced)</p>
             <p className="num-mono text-2xl font-bold text-warning mt-1">{money(invoicedTotal)}</p>
+            {effectiveTotal > 0 && effectiveTotal !== invoicedTotal && (
+              <p className="text-[10px] text-on-surface-muted mt-0.5">eff <span className="num-mono font-semibold text-on-surface">{money(effectiveTotal)}</span> after Upwork fee</p>
+            )}
           </div>
           <div className="rounded-xl-2 border border-outline bg-surface p-4">
             <p className="text-[10px] uppercase tracking-wide text-on-surface-subtle font-semibold">Cleared (received)</p>
@@ -371,7 +384,8 @@ export default function RevenueTab({ month, year, onChanged }: { month: number; 
               <th className="text-right font-semibold px-3 py-2.5">Fixed /mo</th>
               <th className="text-right font-semibold px-3 py-2.5">Rate/h</th>
               <th className="text-right font-semibold px-3 py-2.5">Hours</th>
-              <th className="text-right font-semibold px-3 py-2.5">Invoiced</th>
+              <th className="text-right font-semibold px-3 py-2.5" title="Upwork's platform fee, deducted before the money hits your wallet. Default 10%.">Upwork fee %</th>
+              <th className="text-right font-semibold px-3 py-2.5" title="Contract amount (gross). See Effective for what you actually expect after Upwork's cut.">Invoiced</th>
               <th className="text-right font-semibold px-3 py-2.5">Received</th>
               <th className="text-center font-semibold px-3 py-2.5">Status</th>
               <th className="px-3 py-2.5"></th>
@@ -442,14 +456,37 @@ export default function RevenueTab({ month, year, onChanged }: { month: number; 
                       onChange={(e) => set(r.id, { billable_hours: Number(e.target.value) })}
                       className="w-24 rounded-lg border border-outline bg-surface px-2 py-1.5 text-right text-sm text-on-surface outline-none focus:border-brand disabled:opacity-40" />
                   </td>
-                  <td className="px-3 py-2 text-right tabular-nums text-on-surface">
-                    <div>{fmtCcy(invoicedNative, r.currency)}</div>
-                    {r.currency !== 'INR' && invoicedNative > 0 && r.fx_rate && (
-                      <div className="text-[10px] text-on-surface-subtle font-normal">
-                        ≈ {money(invoicedInr)}
-                      </div>
-                    )}
+                  <td className="px-3 py-2 text-right">
+                    <div className="relative inline-block">
+                      <input type="number" value={r.upwork_fee_pct} disabled={readOnly}
+                        min="0" max="100" step="0.5"
+                        onChange={(e) => set(r.id, { upwork_fee_pct: Math.min(100, Math.max(0, Number(e.target.value) || 0)) })}
+                        className="w-16 rounded-lg border border-outline bg-surface pl-2 pr-5 py-1.5 text-right text-sm text-on-surface outline-none focus:border-brand disabled:opacity-40" />
+                      <span className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 text-[11px] text-on-surface-subtle">%</span>
+                    </div>
                   </td>
+                  {(() => {
+                    // Effective revenue = contract × (1 - fee%). This is the
+                    // number that lands in P&L / Profitability. The contract
+                    // amount stays visible for cross-checking with Upwork.
+                    const feeMult = Math.max(0, 1 - (r.upwork_fee_pct || 0) / 100);
+                    const effectiveInr = invoicedInr * feeMult;
+                    return (
+                      <td className="px-3 py-2 text-right tabular-nums text-on-surface">
+                        <div>{fmtCcy(invoicedNative, r.currency)}</div>
+                        {r.currency !== 'INR' && invoicedNative > 0 && r.fx_rate && (
+                          <div className="text-[10px] text-on-surface-subtle font-normal">
+                            ≈ {money(invoicedInr)}
+                          </div>
+                        )}
+                        {invoicedInr > 0 && r.upwork_fee_pct > 0 && (
+                          <div className="text-[10px] text-warning font-semibold mt-0.5" title={`After ${r.upwork_fee_pct}% Upwork fee`}>
+                            eff {money(effectiveInr)}
+                          </div>
+                        )}
+                      </td>
+                    );
+                  })()}
                   <td className="px-3 py-2 text-right tabular-nums">
                     {(isCleared || isClearPending) && r.amount_received != null ? (
                       <>
