@@ -137,9 +137,16 @@ export default function RevenueTab({ month, year, onChanged }: { month: number; 
 
   // ── Clearance dialog ────────────────────────────────────────────────────
   const openClear = async (r: Row) => {
+    // Pre-fill with the EXPECTED post-fee amount so admin doesn't have
+    // to do the 10% math by hand. Only override if reality diverges (FX
+    // slippage, partial pay, Upwork Business tier with a different fee).
     const invoicedNative = r.billing_type === 'hourly' ? r.hourly_rate * r.billable_hours : r.fixed_amount;
+    const feeMult = Math.max(0, 1 - (r.upwork_fee_pct || 0) / 100);
+    const expectedNative = invoicedNative * feeMult;
+    // Round to 2 decimals so USD amounts don't look like $899.9999996
+    const expectedRounded = Math.round(expectedNative * 100) / 100;
     setClearing(r);
-    setClearForm({ amount_received: String(invoicedNative), clearance_note: '' });
+    setClearForm({ amount_received: String(expectedRounded), clearance_note: '' });
     if (r.currency === 'INR') setClearFxRate(1);
     else {
       try {
@@ -402,7 +409,13 @@ export default function RevenueTab({ month, year, onChanged }: { month: number; 
               // locked until admin decides; once admin clears, the row
               // is fully read-only.
               const readOnly = isCleared || isClearPending;
-              const variance = (isCleared || isClearPending) && r.received_inr != null ? r.received_inr - invoicedInr : null;
+              // Expected received (post-fee) — the reasonable-ish baseline
+              // to compare actual receipts against. Variance vs THIS is
+              // FX slippage / short pay, not the (known) fee. Both
+              // numbers surface below the received amount.
+              const feeMult = Math.max(0, 1 - (r.upwork_fee_pct || 0) / 100);
+              const expectedInr = invoicedInr * feeMult;
+              const fxVariance = (isCleared || isClearPending) && r.received_inr != null ? r.received_inr - expectedInr : null;
               const isOwnClearRequest = isClearPending && r.cleared_by === user?.id;
               return (
                 <tr key={r.id} className={`hover:bg-surface-2/50 ${isCleared ? 'bg-success-container/15' : isClearPending ? 'bg-accent/5' : ''}`}>
@@ -494,9 +507,14 @@ export default function RevenueTab({ month, year, onChanged }: { month: number; 
                         {r.currency !== 'INR' && r.received_inr != null && (
                           <div className="text-[10px] text-on-surface-subtle font-normal">≈ {money(r.received_inr)}</div>
                         )}
-                        {variance != null && Math.abs(variance) >= 1 && (
-                          <div className={`text-[10px] font-semibold ${variance < 0 ? 'text-danger' : 'text-success'}`}>
-                            Δ {variance < 0 ? '-' : '+'}{money(Math.abs(variance))}
+                        {/* Δ vs EXPECTED (post-fee), not vs contract, so
+                            it only reflects FX slippage / short pay /
+                            non-standard fee tier — the known 10% fee is
+                            already baked into the "expected" baseline. */}
+                        {fxVariance != null && Math.abs(fxVariance) >= 1 && (
+                          <div className={`text-[10px] font-semibold ${fxVariance < 0 ? 'text-danger' : 'text-success'}`}
+                            title={`vs expected ${money(expectedInr)} (contract ${money(invoicedInr)} − ${r.upwork_fee_pct}% fee)`}>
+                            Δ {fxVariance < 0 ? '-' : '+'}{money(Math.abs(fxVariance))} <span className="text-on-surface-subtle font-normal">vs eff</span>
                           </div>
                         )}
                       </>
@@ -583,6 +601,37 @@ export default function RevenueTab({ month, year, onChanged }: { month: number; 
               <button onClick={() => setClearing(null)}><X size={16} className="text-on-surface-subtle" /></button>
             </div>
             <div className="p-6 space-y-4">
+              {/* Contract → Fee → Expected breakdown. Auto-fills the
+                  Amount field below; admin only edits if reality
+                  diverges (FX slippage, short pay, non-standard tier). */}
+              {(() => {
+                const invoicedNative = clearing.billing_type === 'hourly'
+                  ? clearing.hourly_rate * clearing.billable_hours
+                  : clearing.fixed_amount;
+                const feePct = clearing.upwork_fee_pct || 0;
+                const feeMult = Math.max(0, 1 - feePct / 100);
+                const feeAmt = invoicedNative * feePct / 100;
+                const expected = invoicedNative * feeMult;
+                if (invoicedNative <= 0) return null;
+                return (
+                  <div className="rounded-lg border border-outline bg-surface-2/60 p-3 text-xs space-y-1">
+                    <div className="flex justify-between text-on-surface-muted">
+                      <span>Contract</span>
+                      <span className="num-mono">{fmtCcy(invoicedNative, clearing.currency)}</span>
+                    </div>
+                    {feePct > 0 && (
+                      <div className="flex justify-between text-warning">
+                        <span>Upwork fee ({feePct}%)</span>
+                        <span className="num-mono">− {fmtCcy(feeAmt, clearing.currency)}</span>
+                      </div>
+                    )}
+                    <div className="flex justify-between font-semibold text-on-surface border-t border-outline pt-1 mt-1">
+                      <span>Expected in wallet</span>
+                      <span className="num-mono">{fmtCcy(expected, clearing.currency)}</span>
+                    </div>
+                  </div>
+                );
+              })()}
               <div>
                 <label className="text-xs font-medium text-on-surface-muted mb-1 block">Amount actually received ({clearing.currency}) <span className="text-danger">*</span></label>
                 <input type="number" min="0" step="0.01" value={clearForm.amount_received}
@@ -595,7 +644,7 @@ export default function RevenueTab({ month, year, onChanged }: { month: number; 
                   </p>
                 )}
                 <p className="text-xs text-on-surface-subtle mt-1">
-                  Lower than invoiced is fine — Upwork fee, FX swing, or short pay. The variance flows through to net profit.
+                  Pre-filled with the expected post-fee amount. Edit only if actual differs (FX swing, short pay, non-standard fee tier).
                 </p>
               </div>
               <div>
