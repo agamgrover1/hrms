@@ -511,6 +511,69 @@ const leaveStatusConfig = {
   cancelled: { color: 'bg-surface-2 text-on-surface-subtle border-outline',    icon: XCircle },
 };
 
+// Employee-facing withdraw dialog. Pending is a "cancel your request",
+// approved is a "restore my balance and clear my attendance for those
+// days". Copy adapts to which case we're in so the consequences are
+// obvious BEFORE they click Withdraw.
+function WithdrawLeaveModal({ leave, onClose, onConfirmed }: {
+  leave: any;
+  onClose: () => void;
+  onConfirmed: (reason: string) => Promise<void> | void;
+}) {
+  const [reason, setReason] = useState('');
+  const [busy, setBusy] = useState(false);
+  const isPending = leave.status === 'pending';
+  const from = new Date(leave.from_date + 'T12:00:00Z').toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' });
+  const to   = new Date(leave.to_date   + 'T12:00:00Z').toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' });
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm p-4" onClick={onClose}>
+      <div className="bg-surface rounded-2xl shadow-2xl w-full max-w-md overflow-hidden" onClick={e => e.stopPropagation()}>
+        <div className="flex items-center justify-between px-6 py-4 border-b border-outline">
+          <div>
+            <h2 className="font-bold text-base text-on-surface">Withdraw leave request</h2>
+            <p className="text-xs text-on-surface-subtle mt-0.5 capitalize">
+              {leave.type?.replace(/_/g, ' ')} · {leave.from_date === leave.to_date ? from : `${from} – ${to}`} · {leave.days}d
+            </p>
+          </div>
+          <button onClick={onClose}><X size={16} className="text-on-surface-subtle" /></button>
+        </div>
+        <div className="p-6 space-y-4">
+          <div className={`rounded-lg border p-3 text-xs ${isPending ? 'border-warning/30 bg-warning-container/40 text-warning' : 'border-info/30 bg-info-container/40 text-info'}`}>
+            <p className="font-semibold mb-0.5">{isPending ? 'This request is still pending approval.' : 'This leave was already approved.'}</p>
+            <p className="opacity-90">
+              {isPending
+                ? 'Withdrawing it removes the request from your reviewers\' queue. Your leave balance is unaffected (nothing was deducted yet).'
+                : 'Withdrawing it will restore your leave balance and remove the attendance stamps for these days. Your manager and HR will be notified.'}
+            </p>
+          </div>
+          <div>
+            <label className="text-xs font-medium text-on-surface-muted mb-1 block">
+              Reason {isPending ? <span className="text-on-surface-subtle">(optional)</span> : <span className="text-danger">*</span>}
+            </label>
+            <textarea value={reason} onChange={e => setReason(e.target.value)} rows={3}
+              placeholder={isPending ? 'e.g. plans changed' : 'e.g. no longer need the day off — will be at work'}
+              className="w-full border border-outline rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary-200 resize-none" />
+          </div>
+          <div className="flex gap-3 pt-1">
+            <button onClick={onClose} disabled={busy}
+              className="flex-1 py-2.5 border border-outline rounded-lg text-sm font-medium text-on-surface-muted hover:bg-surface-2">Keep it</button>
+            <button
+              onClick={async () => {
+                if (!isPending && !reason.trim()) return;
+                setBusy(true);
+                try { await onConfirmed(reason.trim()); } finally { setBusy(false); }
+              }}
+              disabled={busy || (!isPending && !reason.trim())}
+              className="flex-1 py-2.5 bg-warning text-white rounded-lg text-sm font-semibold disabled:opacity-50">
+              {busy ? 'Withdrawing…' : 'Withdraw leave'}
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function ApplyLeaveModal({ onClose, onSubmit, balance, reportingManager }: { onClose: () => void; onSubmit: (d: any) => void; balance: any; reportingManager?: { id: string; name: string; designation?: string | null } | null }) {
   const onProbation = balance?.on_probation ?? false;
   const availableTypes = onProbation
@@ -875,6 +938,11 @@ export default function MyPortal() {
   const [teamMemberBalance, setTeamMemberBalance] = useState<any | null>(null);
   const [loadingMemberLeaves, setLoadingMemberLeaves] = useState(false);
   const [cancelLeaveTarget, setCancelLeaveTarget] = useState<string | null>(null);
+  // Employee-initiated withdrawal on their own leaves (My Leaves tab).
+  // Distinct from `cancelLeaveTarget` above which is manager-scoped and
+  // takes a leave id string; this one carries the whole row so the modal
+  // can show contextual info + gate the reason as required for approved.
+  const [withdrawTarget, setWithdrawTarget] = useState<any | null>(null);
   const [showTeamReview, setShowTeamReview] = useState<any | null>(null); // employee record
   const [teamReviewScores, setTeamReviewScores] = useState<Record<string, number>>(
     Object.fromEntries(SCORE_CATEGORIES.map(c => [c.key, 75])) as Record<string, number>
@@ -1783,7 +1851,7 @@ export default function MyPortal() {
                 <table className="w-full">
                   <thead>
                     <tr className="bg-surface-2 border-b border-outline">
-                      {['Type', 'Duration', 'Days', 'Reason', 'Applied On', 'Status', 'Action Trail'].map(h => (
+                      {['Type', 'Duration', 'Days', 'Reason', 'Applied On', 'Status', 'Action Trail', ''].map(h => (
                         <th key={h} className="text-left text-xs font-semibold text-on-surface-subtle px-4 py-3 uppercase tracking-wide whitespace-nowrap">{h}</th>
                       ))}
                     </tr>
@@ -1846,6 +1914,29 @@ export default function MyPortal() {
                               {!l.manager_approved_at && !l.hr_actioned_at && <span className="text-xs text-on-surface-subtle">Pending</span>}
                             </div>
                           </td>
+                          <td className="px-4 py-3">
+                            {/* Withdraw is enabled for pending leaves
+                                and for approved leaves whose START DATE
+                                is still in the future. Past-dated
+                                approved leaves are admin/HR-only because
+                                withdrawing them means reversing
+                                already-stamped attendance. */}
+                            {(() => {
+                              const today = new Date().toISOString().slice(0, 10);
+                              const canWithdraw = l.status === 'pending'
+                                || (l.status === 'approved' && String(l.from_date).slice(0, 10) >= today);
+                              if (!canWithdraw) return <span className="text-[11px] text-on-surface-subtle">—</span>;
+                              return (
+                                <button onClick={() => setWithdrawTarget(l)}
+                                  title={l.status === 'pending'
+                                    ? 'Withdraw this pending request (no balance change)'
+                                    : 'Withdraw this approved leave — balance is restored'}
+                                  className="inline-flex items-center gap-1 px-2.5 py-1 rounded-md text-[11px] font-semibold text-warning border border-warning/30 hover:bg-warning-container/40">
+                                  <XCircle size={11} /> Withdraw
+                                </button>
+                              );
+                            })()}
+                          </td>
                         </tr>
                       );
                     })}
@@ -1855,6 +1946,26 @@ export default function MyPortal() {
             )}
           </div>
           {applyLeave && <ApplyLeaveModal onClose={() => setApplyLeave(false)} onSubmit={handleApplyLeave} balance={balance} reportingManager={reportingManager} />}
+          {withdrawTarget && (
+            <WithdrawLeaveModal
+              leave={withdrawTarget}
+              onClose={() => setWithdrawTarget(null)}
+              onConfirmed={async (reason) => {
+                try {
+                  await api.cancelLeave(withdrawTarget.id, user?.name ?? 'Self', reason);
+                  toast.success('Leave withdrawn', withdrawTarget.status === 'approved'
+                    ? 'Balance has been restored.'
+                    : 'The pending request has been cancelled.');
+                  setWithdrawTarget(null);
+                  // Refresh the leaves list + balance so numbers update.
+                  api.getLeaveRequests({ employee_id: empDbId }).then(setLeaves).catch(() => {});
+                  api.getLeaveBalance(empDbId).then(setBalance).catch(() => {});
+                } catch (e: any) {
+                  toast.error('Withdraw failed', e?.message ?? 'Please try again.');
+                }
+              }}
+            />
+          )}
 
           {/* ── Optional Leaves ── */}
           {optionalLeaveLoaded && optionalLeaveData && (

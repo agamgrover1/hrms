@@ -8106,7 +8106,22 @@ app.patch('/api/leave/requests/:id', async (req, res) => {
   } catch (err) { res.status(500).json({ error: 'Server error' }); }
 });
 
-// Cancel an approved leave — restores balance and clears attendance
+// Withdraw / cancel a leave request. Supports both statuses:
+//   pending  → mark cancelled. Restore probation short-leave counter if
+//              this was a probation short/half consumption (creditMonthlyLeave
+//              tracks probation_short_used at apply time). Full-day/short-
+//              leave for post-probation employees don't decrement anything
+//              at apply time (balances are recomputed from approved rows),
+//              so nothing extra to reverse.
+//   approved → restore balance + clear attendance stamp. (Existing behavior.)
+//
+// Auth model:
+//   - Employee can withdraw their OWN leave, whether pending or an approved
+//     leave that hasn't started yet. Past-dated approved leaves are
+//     admin/HR-only (rewriting attendance retroactively is a decision they
+//     should own).
+//   - Manager can cancel a report's leave (any date).
+//   - Admin / HR can cancel anyone's leave, any date.
 app.patch('/api/leave/requests/:id/cancel', async (req, res) => {
   try {
     invalidateLeaveCaches();
@@ -8114,18 +8129,74 @@ app.patch('/api/leave/requests/:id/cancel', async (req, res) => {
     const existing = await sql`SELECT * FROM leave_requests WHERE id=${req.params.id}`;
     if (!existing.length) return res.status(404).json({ error: 'Not found' });
     const leave = existing[0] as any;
-    if (leave.status !== 'approved') return res.status(400).json({ error: 'Only approved leaves can be cancelled.' });
+    if (!['pending', 'approved'].includes(leave.status)) {
+      return res.status(400).json({ error: `Cannot withdraw a ${leave.status} leave.` });
+    }
+    // Auth guard — resolve caller, then enforce ownership / role.
+    const uid = req.header('x-user-id');
+    if (uid) {
+      const u = (await sql`SELECT id, role, employee_id_ref FROM app_users WHERE id=${uid}` as any[])[0];
+      if (u) {
+        const isAdminLike = u.role === 'admin' || u.role === 'hr_manager' || u.role === 'hr_intern';
+        if (!isAdminLike) {
+          // Must be either the leave-owner or the owner's reporting manager.
+          const empSelf = (await sql`SELECT id, reporting_manager_id FROM employees WHERE employee_id=${u.employee_id_ref} OR id=${u.employee_id_ref} LIMIT 1` as any[])[0];
+          const isOwner = empSelf?.id === leave.employee_id;
+          const empTarget = (await sql`SELECT reporting_manager_id FROM employees WHERE id=${leave.employee_id} LIMIT 1` as any[])[0];
+          const isManager = !!empSelf?.id && empTarget?.reporting_manager_id === empSelf.id;
+          if (!isOwner && !isManager) return res.status(403).json({ error: 'You can only withdraw your own leaves.' });
+          // Owner can't cancel a past-dated approved leave — attendance has
+          // already been stamped. Ask admin/HR to handle those.
+          if (isOwner && leave.status === 'approved') {
+            const today = new Date().toISOString().slice(0, 10);
+            if (String(leave.from_date).slice(0, 10) < today) {
+              return res.status(400).json({ error: 'This leave has already started or passed. Ask HR/admin to withdraw it — attendance for those days may need to be adjusted manually.' });
+            }
+          }
+        }
+      }
+    }
     const rows = await sql`
       UPDATE leave_requests
       SET status='cancelled', cancelled_by=${cancelled_by ?? null},
           cancelled_at=NOW(), cancellation_reason=${cancellation_reason ?? null}
       WHERE id=${req.params.id} RETURNING *`;
-    await restoreLeaveBalance(leave.employee_id, leave.type, leave.days);
-    await clearLeaveAttendance(leave.employee_id, leave.from_date, leave.to_date);
+    // Balance + attendance only need reversing for approved leaves. Pending
+    // leaves never touched the balance store or attendance table.
+    if (leave.status === 'approved') {
+      await restoreLeaveBalance(leave.employee_id, leave.type, leave.days);
+      await clearLeaveAttendance(leave.employee_id, leave.from_date, leave.to_date);
+    } else {
+      // For probation employees, apply-time deducted from probation_short_used.
+      // Reverse it here so their monthly cap reflects reality.
+      if (leave.type === 'short_leave' || leave.type === 'half_day') {
+        const cost = leave.type === 'half_day' ? 2 : 1;
+        await sql`UPDATE leave_balances SET probation_short_used = GREATEST(0, probation_short_used - ${cost})
+                  WHERE employee_id=${leave.employee_id}`.catch(() => {});
+      }
+    }
     const from = new Date(leave.from_date).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' });
     const to   = new Date(leave.to_date).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' });
-    notifyEmployeeUser(leave.employee_id, 'leave_rejected', 'Leave Cancelled',
-      `Your approved ${formatLeaveLabel(leave.type, leave.slot)} leave (${from} – ${to}) was cancelled by ${cancelled_by ?? 'admin'}.${cancellation_reason ? ' Reason: ' + cancellation_reason : ''}`);
+    const wasPending = leave.status === 'pending';
+    // If the employee withdrew their own leave, notify their manager + HR so
+    // the queue reflects it. If someone else cancelled the employee's leave,
+    // notify the employee instead. `cancelled_by` distinguishes these.
+    if (leave.employee_id && cancelled_by && cancelled_by !== leave.employee_name) {
+      notifyEmployeeUser(leave.employee_id, 'leave_rejected', 'Leave Withdrawn',
+        `Your ${wasPending ? 'pending' : 'approved'} ${formatLeaveLabel(leave.type, leave.slot)} leave (${from} – ${to}) was withdrawn by ${cancelled_by ?? 'admin'}.${cancellation_reason ? ' Reason: ' + cancellation_reason : ''}`);
+    } else {
+      // Employee self-withdrew → tell the reviewers so the pending queue
+      // is accurate. Manager if there's one, HR otherwise.
+      const emp = (await sql`SELECT reporting_manager_id FROM employees WHERE id=${leave.employee_id}` as any[])[0];
+      const msg = `${leave.employee_name ?? 'Employee'} withdrew their ${wasPending ? 'pending' : 'approved'} ${formatLeaveLabel(leave.type, leave.slot)} leave (${from} – ${to}).`;
+      if (emp?.reporting_manager_id) {
+        notifyEmployeeUser(emp.reporting_manager_id, 'leave_rejected', 'Leave Withdrawn', msg).catch(() => {});
+      }
+      // Also notify HR only if the leave was already approved (so HR knows
+      // the balance was restored + attendance cleared). Pending withdrawals
+      // never reached HR's queue anyway.
+      if (!wasPending) notifyAdminsAndHR('leave_rejected', 'Leave Withdrawn', msg).catch(() => {});
+    }
     res.json(rows[0]);
   } catch (err) { res.status(500).json({ error: 'Server error' }); }
 });
