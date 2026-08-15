@@ -426,6 +426,51 @@ export default function InvoicesTab({ month, year, onChanged }: { month: number;
                   );
                 })}
               </tbody>
+              {/* Totals row — sums whatever is currently visible (status
+                  chip + search text). Runs off `filtered`, not the raw
+                  invoice list, so narrowing the view updates the sums
+                  live. Received / Δ columns only render for admin so
+                  the footer respects the same visibility as the header. */}
+              {filtered.length > 0 && (() => {
+                let totalInv = 0, totalRecv = 0, pendingInv = 0;
+                for (const inv of filtered) {
+                  const invInr = Number(inv.amount_invoiced_inr ?? inv.amount_invoiced ?? 0);
+                  totalInv += invInr;
+                  if (inv.status === 'cleared') totalRecv += Number(inv.amount_received ?? 0);
+                  else pendingInv += invInr;
+                }
+                const totalVariance = totalRecv - totalInv;
+                return (
+                  <tfoot>
+                    <tr className="border-t-2 border-outline bg-surface-2/60 text-sm">
+                      <td className="px-4 py-2.5 font-bold text-on-surface" colSpan={3}>
+                        Total <span className="text-xs font-normal text-on-surface-subtle">· {filtered.length} {filtered.length === 1 ? 'invoice' : 'invoices'}{search ? ' matching search' : ''}</span>
+                      </td>
+                      <td className="px-3 py-2.5 text-right num-mono font-bold text-on-surface">
+                        {money(totalInv)}
+                        {pendingInv > 0 && pendingInv !== totalInv && (
+                          <div className="text-[10px] text-warning font-normal">{money(pendingInv)} pending</div>
+                        )}
+                      </td>
+                      {isAdmin && (
+                        <td className="px-3 py-2.5 text-right num-mono font-bold text-success">{money(totalRecv)}</td>
+                      )}
+                      {isAdmin && (
+                        <td className="px-3 py-2.5 text-right num-mono font-bold text-xs">
+                          {totalRecv > 0 ? (
+                            <span className={totalVariance === 0 ? 'text-on-surface-subtle' : totalVariance < 0 ? 'text-danger' : 'text-success'}>
+                              {totalVariance > 0 ? '+' : ''}{money(totalVariance)}
+                            </span>
+                          ) : (
+                            <span className="text-on-surface-subtle">—</span>
+                          )}
+                        </td>
+                      )}
+                      <td colSpan={3} />
+                    </tr>
+                  </tfoot>
+                );
+              })()}
             </table>
           </div>
         )}
