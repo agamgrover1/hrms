@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { Plus, X, CheckCircle2, Clock, RotateCcw, Pencil, Trash2, MoreVertical, AlertTriangle, FileText, Ban, Briefcase, Copy } from 'lucide-react';
+import { Plus, X, CheckCircle2, Clock, RotateCcw, Pencil, Trash2, MoreVertical, AlertTriangle, FileText, Ban, Briefcase, Copy, Search } from 'lucide-react';
 import { financeApi, type FinInvoice } from '../../services/financeApi';
 import { api } from '../../services/api';
 import { useAuth } from '../../context/AuthContext';
@@ -44,6 +44,11 @@ export default function InvoicesTab({ month, year, onChanged }: { month: number;
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState('');
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('all');
+  // Free-text search — matches on invoice #, project name, client name,
+  // notes, and both native + INR amounts. Applied after the status
+  // chip filter so admin can drill down "pending → INV-042" or "all →
+  // ABC Ltd" without switching tabs.
+  const [search, setSearch] = useState('');
 
   const [showAdd, setShowAdd] = useState(false);
   const [np, setNp] = useState({ ...BLANK_NEW });
@@ -95,15 +100,38 @@ export default function InvoicesTab({ month, year, onChanged }: { month: number;
   }, [np.project_id, showAdd, projects]);
 
   const filtered = useMemo(() => {
-    if (statusFilter === 'all') return invoices.filter(i => i.status !== 'cancelled');
-    // 'pending' filter shows both fresh pending invoices AND coord-submitted
-    // clearances still awaiting admin approval — they're both "open work"
-    // from the workflow POV, just at different stages.
-    if (statusFilter === 'pending') {
-      return invoices.filter(i => i.status === 'pending' || i.status === 'cleared_pending');
+    // 1. Status pass — same rules as before. 'all' hides cancelled;
+    //    'pending' folds cleared_pending in with fresh pending.
+    let rows = invoices;
+    if (statusFilter === 'all') {
+      rows = invoices.filter(i => i.status !== 'cancelled');
+    } else if (statusFilter === 'pending') {
+      rows = invoices.filter(i => i.status === 'pending' || i.status === 'cleared_pending');
+    } else {
+      rows = invoices.filter(i => i.status === statusFilter);
     }
-    return invoices.filter(i => i.status === statusFilter);
-  }, [invoices, statusFilter]);
+    // 2. Search pass — case-insensitive substring on the fields admin
+    //    is actually likely to type. Numeric amounts (native + INR) are
+    //    stringified so "5000" matches an invoice for ₹5,000 even
+    //    though the display formats it with commas. `q.trim()` short-
+    //    circuits the whole pass when nothing was typed.
+    const q = search.trim().toLowerCase();
+    if (!q) return rows;
+    return rows.filter(i => {
+      const fields: string[] = [
+        i.invoice_number ?? '',
+        i.project_name ?? '',
+        i.project_client_name ?? '',
+        i.notes ?? '',
+        i.created_by_name ?? '',
+        i.currency ?? '',
+        String(i.amount_invoiced ?? ''),
+        String(i.amount_invoiced_inr ?? ''),
+        String(i.amount_received ?? ''),
+      ];
+      return fields.some(f => f.toLowerCase().includes(q));
+    });
+  }, [invoices, statusFilter, search]);
 
   const totals = useMemo(() => {
     // All tiles roll up in INR — the company's home currency. For invoices in
@@ -259,17 +287,48 @@ export default function InvoicesTab({ month, year, onChanged }: { month: number;
       {/* Invoice table */}
       {statusFilter !== 'activity' && (
       <div className="rounded-xl-2 border border-outline bg-surface overflow-hidden">
-        <div className="px-5 py-3 border-b border-outline flex items-center justify-between">
+        <div className="px-5 py-3 border-b border-outline flex items-center justify-between gap-3 flex-wrap">
           <h3 className="text-sm font-semibold text-on-surface">Invoices · {MONTHS[month - 1]} {year}</h3>
-          <span className="text-xs text-on-surface-muted">{filtered.length} {filtered.length === 1 ? 'invoice' : 'invoices'}</span>
+          <div className="flex items-center gap-3 flex-1 justify-end min-w-0">
+            <div className="relative flex-1 max-w-xs">
+              <Search size={13} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-on-surface-subtle pointer-events-none" />
+              <input
+                value={search}
+                onChange={e => setSearch(e.target.value)}
+                placeholder="Search invoice #, project, client, notes, amount…"
+                className="w-full pl-8 pr-8 py-1.5 rounded-lg border border-outline bg-surface text-xs text-on-surface placeholder:text-on-surface-subtle focus:outline-none focus:ring-2 focus:ring-accent/30" />
+              {search && (
+                <button onClick={() => setSearch('')}
+                  title="Clear search"
+                  className="absolute right-2 top-1/2 -translate-y-1/2 text-on-surface-subtle hover:text-on-surface">
+                  <X size={13} />
+                </button>
+              )}
+            </div>
+            <span className="text-xs text-on-surface-muted whitespace-nowrap">
+              {filtered.length} {filtered.length === 1 ? 'invoice' : 'invoices'}
+              {search && invoices.length > filtered.length && (
+                <span className="text-on-surface-subtle"> of {invoices.filter(i => i.status !== 'cancelled').length}</span>
+              )}
+            </span>
+          </div>
         </div>
         {loading ? (
           <div className="p-12 text-center text-sm text-on-surface-muted">Loading…</div>
         ) : filtered.length === 0 ? (
           <div className="p-12 text-center">
             <FileText size={28} className="mx-auto text-on-surface-subtle mb-2" />
-            <p className="text-sm text-on-surface-muted">No {statusFilter === 'all' ? '' : statusFilter} invoices for {MONTHS[month - 1]} {year}.</p>
-            <p className="text-xs text-on-surface-subtle mt-1">Click <b>New Invoice</b> to raise one.</p>
+            {search ? (
+              <>
+                <p className="text-sm text-on-surface-muted">No invoices match "<b className="text-on-surface">{search}</b>" in {MONTHS[month - 1]} {year}.</p>
+                <button onClick={() => setSearch('')} className="text-xs text-accent hover:underline mt-1">Clear search</button>
+              </>
+            ) : (
+              <>
+                <p className="text-sm text-on-surface-muted">No {statusFilter === 'all' ? '' : statusFilter} invoices for {MONTHS[month - 1]} {year}.</p>
+                <p className="text-xs text-on-surface-subtle mt-1">Click <b>New Invoice</b> to raise one.</p>
+              </>
+            )}
           </div>
         ) : (
           <div className="overflow-x-auto">
