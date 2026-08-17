@@ -948,6 +948,28 @@ export default function MyPortal() {
   // (source='manual'); nothing new on the backend. Busy flag prevents
   // double-clicks from firing two sessions.
   const [clockBusy, setClockBusy] = useState<'in' | 'out' | null>(null);
+  // 1-second tick that drives the live "you've been clocked in for X"
+  // timer in the hero. Only runs while the user is actually on the hub
+  // tab (otherwise it re-renders MyPortal every second for no reason).
+  const [nowTick, setNowTick] = useState(Date.now());
+  useEffect(() => {
+    if (tab !== 'hub') return;
+    const t = setInterval(() => setNowTick(Date.now()), 1000);
+    return () => clearInterval(t);
+  }, [tab]);
+  // Auto-refresh attendance every 30 seconds while on the hub so the
+  // pill flips state without a manual reload (e.g. after a peer opens
+  // the office biometric during your session, or an admin edits your
+  // record). Not needed on other tabs — they have their own refresh
+  // triggers on tab-switch.
+  useEffect(() => {
+    if (tab !== 'hub' || !empDbId) return;
+    const t = setInterval(() => {
+      api.getAttendance({ employee_id: empDbId, month: attMonth, year: attYear })
+        .then(setAttendance).catch(() => {});
+    }, 30_000);
+    return () => clearInterval(t);
+  }, [tab, empDbId, attMonth, attYear]);
   const handleClockIn = async () => {
     if (!empDbId || clockBusy) return;
     setClockBusy('in');
@@ -1486,7 +1508,24 @@ export default function MyPortal() {
         const todayStr = today.toLocaleDateString('en-IN', { weekday: 'long', day: 'numeric', month: 'long' });
         const hour = today.getHours();
         const greeting = hour < 12 ? 'Good morning' : hour < 17 ? 'Good afternoon' : 'Good evening';
-        const todayRec = attendance.find((a: any) => (a.date ?? '').slice(0, 10) === today.toISOString().slice(0, 10));
+        // IST-anchored date string ("YYYY-MM-DD") so the today match doesn't
+        // roll over at UTC midnight (which is 5:30 AM IST). Backend stores
+        // attendance rows keyed by IST date, so matching by UTC-ISO would
+        // silently miss "today" between 00:00 and 05:30 IST. Also
+        // normalizes the record's `date` — which may come back as an ISO
+        // string OR a Date-serialized string — to the same YYYY-MM-DD.
+        const istTodayStr = new Date(today.getTime() + (5.5 * 3600 * 1000)).toISOString().slice(0, 10);
+        const dayKey = (v: any) => {
+          if (!v) return '';
+          const s = typeof v === 'string' ? v : String(v);
+          // Already YYYY-MM-DD → return as-is; otherwise let the browser
+          // parse whatever shape and re-format IST-adjusted.
+          if (/^\d{4}-\d{2}-\d{2}/.test(s)) return s.slice(0, 10);
+          const d = new Date(s);
+          if (isNaN(d.getTime())) return s.slice(0, 10);
+          return new Date(d.getTime() + (5.5 * 3600 * 1000)).toISOString().slice(0, 10);
+        };
+        const todayRec = attendance.find((a: any) => dayKey(a.date) === istTodayStr);
         const pendingLeaves = leaves.filter((l: any) => l.status === 'pending').length;
         const pendingWfh = wfhRequests.filter((w: any) => w.status === 'pending').length;
         const fullDay = (balance as any).full_day ?? 0;
@@ -1506,18 +1545,45 @@ export default function MyPortal() {
                   {(() => {
                     // Three states:
                     // - no record → offer Clock In
-                    // - record with no check_out → in-session, offer Clock Out
+                    // - record with no check_out → in-session, offer Clock Out + live timer
                     // - record with check_out → day sealed, status only
                     const hasSession = !!todayRec;
                     const stillOpen = hasSession && !todayRec.check_out && !todayRec.clock_out;
+                    const checkIn = todayRec?.clock_in ?? todayRec?.check_in ?? '';
+                    const checkOut = todayRec?.clock_out ?? todayRec?.check_out ?? '';
+                    // Live elapsed timer while the session is open. Parse
+                    // "HH:MM" or "HH:MM:SS" against IST midnight; nowTick
+                    // is set by the 1s interval so this recomputes every
+                    // second. Guards against a bad string returning NaN.
+                    let elapsed = '';
+                    if (stillOpen && checkIn) {
+                      const [h, m, s] = String(checkIn).split(':').map(Number);
+                      if (Number.isFinite(h) && Number.isFinite(m)) {
+                        const nowIst = new Date(nowTick + (5.5 * 3600 * 1000));
+                        const nowSecs = nowIst.getUTCHours() * 3600 + nowIst.getUTCMinutes() * 60 + nowIst.getUTCSeconds();
+                        const inSecs = h * 3600 + m * 60 + (s || 0);
+                        const diff = Math.max(0, nowSecs - inSecs);
+                        const hh = Math.floor(diff / 3600);
+                        const mm = Math.floor((diff % 3600) / 60);
+                        const ss = diff % 60;
+                        elapsed = hh > 0
+                          ? `${hh}h ${String(mm).padStart(2, '0')}m ${String(ss).padStart(2, '0')}s`
+                          : `${mm}m ${String(ss).padStart(2, '0')}s`;
+                      }
+                    }
                     return (
                       <>
                         {hasSession ? (
                           <span className="inline-flex items-center gap-2 px-3 py-1.5 rounded-full bg-white/15 backdrop-blur">
                             <span className={`w-2 h-2 rounded-full ${stillOpen ? 'bg-success animate-pulse' : 'bg-white/60'}`} />
-                            {stillOpen ? 'Clocked in' : 'Day sealed'} {todayRec.clock_in ?? todayRec.check_in ?? ''}
-                            {(todayRec.clock_out || todayRec.check_out) && <span className="opacity-80"> → {todayRec.clock_out ?? todayRec.check_out}</span>}
-                            {todayRec.total_hours != null && <span className="opacity-80">· {Math.round(Number(todayRec.total_hours) * 10) / 10}h today</span>}
+                            {stillOpen ? 'Clocked in' : 'Day sealed'} {checkIn}
+                            {checkOut && <span className="opacity-80"> → {checkOut}</span>}
+                            {stillOpen && elapsed && (
+                              <span className="num-mono font-semibold text-white tabular-nums">· {elapsed}</span>
+                            )}
+                            {!stillOpen && todayRec.total_hours != null && (
+                              <span className="opacity-80">· {Math.round(Number(todayRec.total_hours) * 10) / 10}h today</span>
+                            )}
                           </span>
                         ) : (
                           <span className="inline-flex items-center gap-2 px-3 py-1.5 rounded-full bg-white/15 backdrop-blur">
