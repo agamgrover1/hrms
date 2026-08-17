@@ -943,6 +943,34 @@ export default function MyPortal() {
   // takes a leave id string; this one carries the whole row so the modal
   // can show contextual info + gate the reason as required for approved.
   const [withdrawTarget, setWithdrawTarget] = useState<any | null>(null);
+  // Manual clock-in/out — enabled while the biometric machine is down.
+  // Uses the existing /api/attendance/clock-in and /clock-out endpoints
+  // (source='manual'); nothing new on the backend. Busy flag prevents
+  // double-clicks from firing two sessions.
+  const [clockBusy, setClockBusy] = useState<'in' | 'out' | null>(null);
+  const handleClockIn = async () => {
+    if (!empDbId || clockBusy) return;
+    setClockBusy('in');
+    try {
+      const res: any = await api.clockIn(empDbId);
+      toast.success('Clocked in', `Marked ${res?.status ?? 'present'} at ${res?.time ?? 'now'}.`);
+      api.getAttendance({ employee_id: empDbId, month: attMonth, year: attYear }).then(setAttendance).catch(() => {});
+    } catch (e: any) {
+      toast.error('Clock-in failed', e?.message ?? 'Please try again.');
+    } finally { setClockBusy(null); }
+  };
+  const handleClockOut = async () => {
+    if (!empDbId || clockBusy) return;
+    setClockBusy('out');
+    try {
+      const res: any = await api.clockOut(empDbId);
+      const hours = res?.total_hours ?? res?.duration_hours;
+      toast.success('Clocked out', hours ? `Total: ${Math.round(Number(hours) * 10) / 10}h today.` : 'Have a good one!');
+      api.getAttendance({ employee_id: empDbId, month: attMonth, year: attYear }).then(setAttendance).catch(() => {});
+    } catch (e: any) {
+      toast.error('Clock-out failed', e?.message ?? 'Please try again.');
+    } finally { setClockBusy(null); }
+  };
   const [showTeamReview, setShowTeamReview] = useState<any | null>(null); // employee record
   const [teamReviewScores, setTeamReviewScores] = useState<Record<string, number>>(
     Object.fromEntries(SCORE_CATEGORIES.map(c => [c.key, 75])) as Record<string, number>
@@ -1475,18 +1503,43 @@ export default function MyPortal() {
                 <p className="text-sm opacity-80">{todayStr}</p>
                 <h2 className="font-display text-2xl font-bold mt-1">{greeting}, {user?.name?.split(' ')[0] ?? 'there'}.</h2>
                 <div className="mt-4 flex flex-wrap items-center gap-4 text-sm">
-                  {todayRec ? (
-                    <span className="inline-flex items-center gap-2 px-3 py-1.5 rounded-full bg-white/15 backdrop-blur">
-                      <span className="w-2 h-2 rounded-full bg-success animate-pulse" />
-                      Clocked in {todayRec.clock_in ?? ''}
-                      {todayRec.total_hours != null && <span className="opacity-80">· {Math.round(Number(todayRec.total_hours) * 10) / 10}h today</span>}
-                    </span>
-                  ) : (
-                    <span className="inline-flex items-center gap-2 px-3 py-1.5 rounded-full bg-white/15 backdrop-blur">
-                      <span className="w-2 h-2 rounded-full bg-warning" />
-                      Not clocked in yet
-                    </span>
-                  )}
+                  {(() => {
+                    // Three states:
+                    // - no record → offer Clock In
+                    // - record with no check_out → in-session, offer Clock Out
+                    // - record with check_out → day sealed, status only
+                    const hasSession = !!todayRec;
+                    const stillOpen = hasSession && !todayRec.check_out && !todayRec.clock_out;
+                    return (
+                      <>
+                        {hasSession ? (
+                          <span className="inline-flex items-center gap-2 px-3 py-1.5 rounded-full bg-white/15 backdrop-blur">
+                            <span className={`w-2 h-2 rounded-full ${stillOpen ? 'bg-success animate-pulse' : 'bg-white/60'}`} />
+                            {stillOpen ? 'Clocked in' : 'Day sealed'} {todayRec.clock_in ?? todayRec.check_in ?? ''}
+                            {(todayRec.clock_out || todayRec.check_out) && <span className="opacity-80"> → {todayRec.clock_out ?? todayRec.check_out}</span>}
+                            {todayRec.total_hours != null && <span className="opacity-80">· {Math.round(Number(todayRec.total_hours) * 10) / 10}h today</span>}
+                          </span>
+                        ) : (
+                          <span className="inline-flex items-center gap-2 px-3 py-1.5 rounded-full bg-white/15 backdrop-blur">
+                            <span className="w-2 h-2 rounded-full bg-warning" />
+                            Not clocked in yet
+                          </span>
+                        )}
+                        {!hasSession && (
+                          <button onClick={handleClockIn} disabled={clockBusy === 'in'}
+                            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-success/80 hover:bg-success text-white font-semibold text-xs disabled:opacity-60 transition-colors">
+                            <Clock size={12} /> {clockBusy === 'in' ? 'Clocking in…' : 'Clock In'}
+                          </button>
+                        )}
+                        {stillOpen && (
+                          <button onClick={handleClockOut} disabled={clockBusy === 'out'}
+                            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-warning/80 hover:bg-warning text-white font-semibold text-xs disabled:opacity-60 transition-colors">
+                            <Clock size={12} /> {clockBusy === 'out' ? 'Clocking out…' : 'Clock Out'}
+                          </button>
+                        )}
+                      </>
+                    );
+                  })()}
                   <span className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-white/15 backdrop-blur">
                     {fullDay} full + {shortLeave} short leave left
                   </span>
