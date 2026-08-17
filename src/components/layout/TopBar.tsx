@@ -491,8 +491,13 @@ export default function TopBar({ title, onMenuClick }: Props) {
           </button>
 
           {showNotifs && (
-            <div className="absolute right-0 top-full mt-2 w-80 bg-surface rounded-2xl shadow-elev-3 border border-outline z-30 overflow-hidden"
-              style={{ maxHeight: '480px' }}>
+            // Flex column so the footer (View all → link) always stays
+            // pinned to the bottom and the list gets the leftover space.
+            // Previous fixed maxHeights added up to more than the outer
+            // 480px cap once the Action-required toggle row was added,
+            // so the footer was getting clipped by overflow-hidden.
+            <div className="absolute right-0 top-full mt-2 w-80 bg-surface rounded-2xl shadow-elev-3 border border-outline z-30 overflow-hidden flex flex-col"
+              style={{ maxHeight: '520px' }}>
               {/* Header */}
               <div className="flex items-center justify-between px-4 py-3 border-b border-outline">
                 <div className="flex items-center gap-2">
@@ -541,7 +546,7 @@ export default function TopBar({ title, onMenuClick }: Props) {
               )}
 
               {/* List */}
-              <div className="overflow-y-auto" style={{ maxHeight: '380px' }}>
+              <div className="overflow-y-auto flex-1 min-h-0">
                 {visibleNotifs.length === 0 ? (
                   <div className="flex flex-col items-center justify-center py-12 gap-2">
                     <Bell size={28} className="text-on-surface-subtle" />
