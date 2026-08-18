@@ -900,15 +900,26 @@ function BulkClearModal({ invoices, onClose, onSaved }: {
   onClose: () => void;
   onSaved: () => void;
 }) {
-  // Multi-currency safety: splitting a total across mixed currencies
-  // is confusing (USD vs INR at what rate?). Force single-currency
-  // bulk clears; anything else and we downgrade to per-row entry only.
+  // Multi-currency safety: splitting a native total across mixed
+  // currencies is confusing. Force single-currency for "One total"
+  // in native mode; INR-total mode is fine across any mix (since INR
+  // is the common denominator via each row's fx_rate).
   const currencies = Array.from(new Set(invoices.map(i => (i.currency || 'INR').toUpperCase())));
   const singleCurrency = currencies.length === 1 ? currencies[0] : null;
   const totalContract = invoices.reduce((s, i) => s + Number(i.amount_invoiced ?? 0), 0);
+  const totalContractInr = invoices.reduce((s, i) =>
+    s + Number(i.amount_invoiced_inr ?? i.amount_invoiced ?? 0), 0);
 
   const [mode, setMode] = useState<'total' | 'each'>(singleCurrency ? 'total' : 'each');
-  const [totalReceived, setTotalReceived] = useState<string>(String(totalContract));
+  // Currency of the "Total received" input in `total` mode. Native
+  // means the invoice's own currency (USD, etc.). INR means the actual
+  // bank landing amount — usually what admin knows post-Upwork-payout.
+  // When invoices span multiple currencies we force INR since native
+  // wouldn't be well-defined.
+  const [totalCcy, setTotalCcy] = useState<'native' | 'inr'>(singleCurrency && singleCurrency !== 'INR' ? 'native' : 'inr');
+  const [totalReceived, setTotalReceived] = useState<string>(
+    String(singleCurrency && singleCurrency !== 'INR' && totalCcy === 'native' ? totalContract : Math.round(totalContractInr))
+  );
   // Per-invoice inputs, keyed by id. Default each to the row's contract
   // amount — admin edits if actual received differs.
   const [amounts, setAmounts] = useState<Record<number, string>>(() =>
@@ -918,10 +929,22 @@ function BulkClearModal({ invoices, onClose, onSaved }: {
   const [busy, setBusy] = useState(false);
   const [errors, setErrors] = useState<string[]>([]);
 
-  // Auto-split preview: when mode='total', split proportional to each
-  // invoice's contract amount, rounded to 2 decimals. Rounding drift
-  // (paise-scale) is absorbed by the largest invoice so the sum matches
-  // totalReceived exactly.
+  // When toggling native ↔ INR, reset the input to the sensible default
+  // in the newly-selected currency so admin isn't left with a stale
+  // value in the wrong scale.
+  useEffect(() => {
+    if (mode !== 'total') return;
+    if (totalCcy === 'inr') setTotalReceived(String(Math.round(totalContractInr)));
+    else if (singleCurrency) setTotalReceived(String(totalContract));
+  }, [totalCcy, mode, totalContract, totalContractInr, singleCurrency]);
+
+  // Auto-split preview: rounded to 2 decimals. Split proportional to
+  // each invoice's contract in the SAME currency as the input — native
+  // split when totalCcy='native', INR split when totalCcy='inr'.
+  // Backend receives amount_received in the invoice's NATIVE currency,
+  // so INR-mode splits divide each row's INR share by its fx_rate to
+  // get back to native. Rounding drift lands on the largest row so
+  // the sum matches the entered total exactly.
   const split: Record<number, number> = useMemo(() => {
     if (mode !== 'total') {
       const out: Record<number, number> = {};
@@ -929,24 +952,32 @@ function BulkClearModal({ invoices, onClose, onSaved }: {
       return out;
     }
     const total = Number(totalReceived) || 0;
-    if (totalContract <= 0 || total <= 0) {
+    const useInr = totalCcy === 'inr';
+    const totalBase = useInr ? totalContractInr : totalContract;
+    if (totalBase <= 0 || total <= 0) {
       return Object.fromEntries(invoices.map(i => [i.id, 0]));
     }
-    const raw = invoices.map(i => ({
-      id: i.id,
-      contract: Number(i.amount_invoiced ?? 0),
-      share: (Number(i.amount_invoiced ?? 0) / totalContract) * total,
-    }));
+    const raw = invoices.map(i => {
+      const contract = useInr
+        ? Number(i.amount_invoiced_inr ?? i.amount_invoiced ?? 0)
+        : Number(i.amount_invoiced ?? 0);
+      return { id: i.id, contract, share: (contract / totalBase) * total, fx: Number(i.fx_rate ?? 1) };
+    });
     const rounded = raw.map(r => ({ ...r, amt: Math.round(r.share * 100) / 100 }));
     const sum = rounded.reduce((s, r) => s + r.amt, 0);
     const drift = Math.round((total - sum) * 100) / 100;
     if (Math.abs(drift) >= 0.01) {
-      // Push the drift onto the largest-contract row so sum matches.
       const biggest = rounded.reduce((a, b) => (a.contract >= b.contract ? a : b));
       biggest.amt = Math.round((biggest.amt + drift) * 100) / 100;
     }
-    return Object.fromEntries(rounded.map(r => [r.id, r.amt]));
-  }, [mode, totalReceived, amounts, invoices, totalContract]);
+    // Convert INR-mode splits back to native for the API. Zero fx_rate
+    // (shouldn't happen but be safe) falls back to the INR share so the
+    // number isn't silently swallowed.
+    return Object.fromEntries(rounded.map(r => {
+      const nativeAmt = useInr && r.fx > 0 ? Math.round((r.amt / r.fx) * 100) / 100 : r.amt;
+      return [r.id, nativeAmt];
+    }));
+  }, [mode, totalReceived, totalCcy, amounts, invoices, totalContract, totalContractInr]);
 
   const submit = async () => {
     setErrors([]);
@@ -1002,21 +1033,44 @@ function BulkClearModal({ invoices, onClose, onSaved }: {
             </div>
           )}
           {!singleCurrency && (
-            <div className="rounded-lg border border-warning/30 bg-warning-container/40 p-3 text-xs text-warning">
-              Selected invoices span multiple currencies ({currencies.join(', ')}). Auto-split isn't available — enter each amount in its own currency.
+            <div className="rounded-lg border border-info/30 bg-info-container/40 p-3 text-xs text-info">
+              Selected invoices span multiple currencies ({currencies.join(', ')}). Auto-split only works in INR mode (common denominator via each row's FX rate). Switch to "Set each" for per-row native entry.
             </div>
           )}
 
-          {mode === 'total' && singleCurrency && (
+          {mode === 'total' && (
             <div>
-              <label className="text-xs font-medium text-on-surface-muted mb-1 block">
-                Total received ({singleCurrency}) <span className="text-danger">*</span>
-              </label>
+              <div className="flex items-center justify-between mb-1">
+                <label className="text-xs font-medium text-on-surface-muted">
+                  Total received <span className="text-danger">*</span>
+                </label>
+                {/* Currency toggle — native (invoice's own currency) vs
+                    INR (what actually hits the bank after Upwork fees +
+                    FX). Native is disabled when currencies are mixed
+                    since "native" wouldn't be well-defined. */}
+                <div className="inline-flex items-center gap-0.5 bg-surface-2 border border-outline rounded-md p-0.5 text-[10px]">
+                  <button
+                    onClick={() => setTotalCcy('native')}
+                    disabled={!singleCurrency || singleCurrency === 'INR'}
+                    className={`px-2 py-0.5 rounded font-bold ${totalCcy === 'native' ? 'bg-accent text-on-accent' : 'text-on-surface-muted hover:text-on-surface'} disabled:opacity-30 disabled:cursor-not-allowed`}>
+                    {singleCurrency && singleCurrency !== 'INR' ? singleCurrency : (currencies[0] ?? 'USD')}
+                  </button>
+                  <button
+                    onClick={() => setTotalCcy('inr')}
+                    className={`px-2 py-0.5 rounded font-bold ${totalCcy === 'inr' ? 'bg-accent text-on-accent' : 'text-on-surface-muted hover:text-on-surface'}`}>
+                    ₹ INR
+                  </button>
+                </div>
+              </div>
               <input type="number" min="0" step="0.01" value={totalReceived}
                 onChange={e => setTotalReceived(e.target.value)}
                 className="w-full text-sm border border-outline rounded-lg px-3 py-2.5 num-mono focus:outline-none focus:ring-2 focus:ring-primary-200" />
               <p className="text-[11px] text-on-surface-subtle mt-1">
-                Split proportionally to each invoice's contract amount. Rounding drift is absorbed by the largest invoice so the sum matches this total exactly.
+                {totalCcy === 'inr' ? (
+                  <>Split proportionally to each invoice's INR value. Each row's native amount is derived using its own FX rate — no fresh conversion at clearance time.</>
+                ) : (
+                  <>Split proportionally to each invoice's contract amount. Rounding drift is absorbed by the largest invoice so the sum matches this total exactly.</>
+                )}
               </p>
             </div>
           )}
@@ -1033,16 +1087,29 @@ function BulkClearModal({ invoices, onClose, onSaved }: {
               <tbody className="divide-y divide-outline">
                 {invoices.map(i => {
                   const ccy = (i.currency || 'INR').toUpperCase();
+                  const fx = Number(i.fx_rate ?? 1);
+                  const nativeAmt = split[i.id] ?? 0;
+                  const inrAmt = Math.round(nativeAmt * fx);
                   return (
                     <tr key={i.id} className="hover:bg-surface-2/40">
                       <td className="px-3 py-2">
                         <p className="font-semibold text-on-surface">{i.project_name ?? '—'}</p>
                         <p className="text-[10px] text-on-surface-subtle">{i.invoice_number ?? '—'}{i.project_client_name ? ` · ${i.project_client_name}` : ''}</p>
                       </td>
-                      <td className="px-3 py-2 text-right num-mono text-on-surface-muted">{fmtCcy(Number(i.amount_invoiced ?? 0), ccy)}</td>
+                      <td className="px-3 py-2 text-right num-mono text-on-surface-muted">
+                        <div>{fmtCcy(Number(i.amount_invoiced ?? 0), ccy)}</div>
+                        {ccy !== 'INR' && (
+                          <div className="text-[10px] text-on-surface-subtle">≈ {money(Number(i.amount_invoiced_inr ?? 0))}</div>
+                        )}
+                      </td>
                       <td className="px-3 py-2 text-right">
                         {mode === 'total' ? (
-                          <span className="num-mono font-semibold text-success">{fmtCcy(split[i.id] ?? 0, ccy)}</span>
+                          <div>
+                            <div className="num-mono font-semibold text-success">{fmtCcy(nativeAmt, ccy)}</div>
+                            {ccy !== 'INR' && (
+                              <div className="text-[10px] text-on-surface-subtle">≈ {money(inrAmt)}</div>
+                            )}
+                          </div>
                         ) : (
                           <input type="number" min="0" step="0.01" value={amounts[i.id] ?? ''}
                             onChange={e => setAmounts(a => ({ ...a, [i.id]: e.target.value }))}
@@ -1053,13 +1120,29 @@ function BulkClearModal({ invoices, onClose, onSaved }: {
                   );
                 })}
               </tbody>
-              {mode === 'total' && singleCurrency && (
+              {mode === 'total' && (
                 <tfoot>
                   <tr className="bg-surface-2/60 text-[11px] font-bold">
                     <td className="px-3 py-2 text-on-surface">Sum</td>
-                    <td className="px-3 py-2 text-right num-mono text-on-surface">{fmtCcy(totalContract, singleCurrency)}</td>
+                    <td className="px-3 py-2 text-right num-mono text-on-surface">
+                      <div>{singleCurrency ? fmtCcy(totalContract, singleCurrency) : money(totalContractInr)}</div>
+                      {singleCurrency && singleCurrency !== 'INR' && (
+                        <div className="text-[10px] font-normal text-on-surface-subtle">≈ {money(totalContractInr)}</div>
+                      )}
+                    </td>
                     <td className="px-3 py-2 text-right num-mono text-success">
-                      {fmtCcy(Object.values(split).reduce((s, v) => s + Number(v), 0), singleCurrency)}
+                      {(() => {
+                        const nativeSum = Object.values(split).reduce((s, v) => s + Number(v), 0);
+                        const inrSum = Math.round(invoices.reduce((s, i) => s + Number(split[i.id] ?? 0) * Number(i.fx_rate ?? 1), 0));
+                        return (
+                          <>
+                            <div>{singleCurrency ? fmtCcy(nativeSum, singleCurrency) : money(inrSum)}</div>
+                            {singleCurrency && singleCurrency !== 'INR' && (
+                              <div className="text-[10px] font-normal text-on-surface-muted">≈ {money(inrSum)}</div>
+                            )}
+                          </>
+                        );
+                      })()}
                     </td>
                   </tr>
                 </tfoot>
