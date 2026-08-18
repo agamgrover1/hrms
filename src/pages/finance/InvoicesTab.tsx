@@ -190,7 +190,14 @@ export default function InvoicesTab({ month, year, onChanged }: { month: number;
     const invoiced = active.reduce((s, i) => s + inrOf(i), 0);
     // 'received' only counts FINAL cleared invoices — admin-approved cash
     // in the bank. cleared_pending entries aren't real cash yet.
-    const received = active.filter(i => i.status === 'cleared').reduce((s, i) => s + Number(i.amount_received || 0), 0);
+    // amount_received is native currency — convert to INR via fx_rate for
+    // foreign invoices; INR-billed invoices already sum correctly at rate=1.
+    const receivedInrOf = (i: FinInvoice) => {
+      const native = Number(i.amount_received ?? 0);
+      const isForeign = i.currency && i.currency !== 'INR';
+      return isForeign ? native * Number(i.fx_rate ?? 1) : native;
+    };
+    const received = active.filter(i => i.status === 'cleared').reduce((s, i) => s + receivedInrOf(i), 0);
     // 'pending' = unsettled work, includes both raw pending AND awaiting-
     // approval clearances. Count is the badge admin sees on the chip.
     const pendingRows = active.filter(i => i.status === 'pending' || i.status === 'cleared_pending');
@@ -447,12 +454,18 @@ export default function InvoicesTab({ month, year, onChanged }: { month: number;
                   // see + cancel the request but not edit the amounts.
                   const canEditAsCoord = !isAdmin && inv.status === 'pending' && inv.created_by === userId;
                   const canDeleteAsCoord = canEditAsCoord;
-                  // For variance: compare apples-to-apples in INR — amount_received
-                  // is INR, amount_invoiced_inr is the INR equivalent at billing rate.
-                  const invInr = Number(inv.amount_invoiced_inr ?? inv.amount_invoiced ?? 0);
-                  const recvInr = Number(inv.amount_received ?? 0);
-                  const inrVariance = recvInr - invInr;
+                  // For variance: compare apples-to-apples in INR.
+                  // amount_received is stored in the invoice's NATIVE currency
+                  // (USD for Upwork projects) — convert via the invoice's own
+                  // fx_rate. Prior code treated $600 as ₹600 and produced
+                  // absurd ₹-56k variances on foreign-currency invoices.
                   const isForeign = inv.currency && inv.currency !== 'INR';
+                  const invInr = Number(inv.amount_invoiced_inr ?? inv.amount_invoiced ?? 0);
+                  const recvNative = Number(inv.amount_received ?? 0);
+                  const recvInr = isForeign
+                    ? recvNative * Number(inv.fx_rate ?? 1)
+                    : recvNative;
+                  const inrVariance = recvInr - invInr;
                   const isSelectable = inv.status === 'pending' || inv.status === 'cleared_pending';
                   return (
                     <tr key={inv.id} className={`hover:bg-surface-2/50 ${isCancelled ? 'opacity-50 line-through' : ''} ${selected.has(inv.id) ? 'bg-accent/5' : ''}`}>
@@ -539,8 +552,15 @@ export default function InvoicesTab({ month, year, onChanged }: { month: number;
                 for (const inv of filtered) {
                   const invInr = Number(inv.amount_invoiced_inr ?? inv.amount_invoiced ?? 0);
                   totalInv += invInr;
-                  if (inv.status === 'cleared') totalRecv += Number(inv.amount_received ?? 0);
-                  else pendingInv += invInr;
+                  if (inv.status === 'cleared') {
+                    // Match the per-row calc: amount_received is native,
+                    // convert to INR via fx_rate for foreign invoices.
+                    const isForeign = inv.currency && inv.currency !== 'INR';
+                    const recvInr = isForeign
+                      ? Number(inv.amount_received ?? 0) * Number(inv.fx_rate ?? 1)
+                      : Number(inv.amount_received ?? 0);
+                    totalRecv += recvInr;
+                  } else pendingInv += invInr;
                 }
                 const totalVariance = totalRecv - totalInv;
                 return (
