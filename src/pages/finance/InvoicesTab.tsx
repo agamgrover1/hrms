@@ -61,6 +61,12 @@ export default function InvoicesTab({ month, year, onChanged }: { month: number;
 
   const [clearTarget, setClearTarget] = useState<FinInvoice | null>(null);
   const [editTarget, setEditTarget] = useState<FinInvoice | null>(null);
+  // Bulk-clear selection — pending / cleared_pending only. Keyed by
+  // invoice id. Related derived values (selectableRows, selectedInvoices,
+  // allVisibleSelected) are computed further down after `filtered` is
+  // defined, since they depend on it.
+  const [selected, setSelected] = useState<Set<number>>(new Set());
+  const [showBulkClear, setShowBulkClear] = useState(false);
 
   const load = () => {
     setLoading(true); setErr('');
@@ -132,6 +138,49 @@ export default function InvoicesTab({ month, year, onChanged }: { month: number;
       return fields.some(f => f.toLowerCase().includes(q));
     });
   }, [invoices, statusFilter, search]);
+
+  // ── Bulk selection derived values (need `filtered` above) ────────────
+  const toggleSelected = (id: number) => {
+    setSelected(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  };
+  // Drop any selected id that isn't visible anymore (filter changed).
+  useEffect(() => {
+    setSelected(prev => {
+      const visible = new Set(filtered.map(i => i.id));
+      let mutated = false;
+      const next = new Set<number>();
+      for (const id of prev) {
+        if (visible.has(id)) next.add(id);
+        else mutated = true;
+      }
+      return mutated ? next : prev;
+    });
+  }, [filtered]);
+  const selectableRows = useMemo(
+    () => filtered.filter(i => i.status === 'pending' || i.status === 'cleared_pending'),
+    [filtered]
+  );
+  const allVisibleSelected = selectableRows.length > 0 && selectableRows.every(i => selected.has(i.id));
+  const toggleAllVisible = () => {
+    setSelected(prev => {
+      if (allVisibleSelected) {
+        const next = new Set(prev);
+        for (const i of selectableRows) next.delete(i.id);
+        return next;
+      }
+      const next = new Set(prev);
+      for (const i of selectableRows) next.add(i.id);
+      return next;
+    });
+  };
+  const selectedInvoices = useMemo(
+    () => filtered.filter(i => selected.has(i.id)),
+    [filtered, selected]
+  );
 
   const totals = useMemo(() => {
     // All tiles roll up in INR — the company's home currency. For invoices in
@@ -284,6 +333,34 @@ export default function InvoicesTab({ month, year, onChanged }: { month: number;
         <InvoiceActivityLog month={month} year={year} />
       )}
 
+      {/* Bulk selection bar — appears when admin has selected pending
+          invoices. One click clears the whole selection in a single
+          modal (auto-split a total received, or type each amount). */}
+      {isAdmin && statusFilter !== 'activity' && selected.size > 0 && (
+        <div className="rounded-xl-2 border border-accent/40 bg-accent-container/40 px-5 py-3 flex items-center justify-between gap-3 flex-wrap">
+          <p className="text-sm text-on-surface">
+            <b className="num-mono">{selected.size}</b> invoice{selected.size === 1 ? '' : 's'} selected
+            <span className="text-on-surface-muted"> · {(() => {
+              const currs = Array.from(new Set(selectedInvoices.map(i => i.currency || 'INR')));
+              if (currs.length === 1) {
+                const total = selectedInvoices.reduce((s, i) => s + Number(i.amount_invoiced ?? 0), 0);
+                return `${fmtCcy(total, currs[0])} total`;
+              }
+              const inrTotal = selectedInvoices.reduce((s, i) => s + Number(i.amount_invoiced_inr ?? i.amount_invoiced ?? 0), 0);
+              return `mixed currency · ≈ ${money(inrTotal)}`;
+            })()}</span>
+          </p>
+          <div className="flex items-center gap-2">
+            <button onClick={() => setShowBulkClear(true)}
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold bg-success text-white hover:opacity-90">
+              <CheckCircle2 size={13} /> Clear {selected.size}
+            </button>
+            <button onClick={() => setSelected(new Set())}
+              className="text-xs text-on-surface-muted hover:text-on-surface font-semibold">Cancel</button>
+          </div>
+        </div>
+      )}
+
       {/* Invoice table */}
       {statusFilter !== 'activity' && (
       <div className="rounded-xl-2 border border-outline bg-surface overflow-hidden">
@@ -335,6 +412,19 @@ export default function InvoicesTab({ month, year, onChanged }: { month: number;
             <table className="w-full text-sm">
               <thead>
                 <tr className="text-[11px] uppercase tracking-wide text-on-surface-subtle border-b border-outline bg-surface-2">
+                  {isAdmin && (
+                    <th className="px-3 py-2.5 w-8">
+                      {selectableRows.length > 0 && (
+                        <input
+                          type="checkbox"
+                          checked={allVisibleSelected}
+                          onChange={toggleAllVisible}
+                          title="Select all pending invoices in view"
+                          className="rounded border-outline cursor-pointer"
+                        />
+                      )}
+                    </th>
+                  )}
                   <th className="text-left font-semibold px-4 py-2.5">Project</th>
                   <th className="text-left font-semibold px-3 py-2.5">Invoice #</th>
                   <th className="text-left font-semibold px-3 py-2.5">Date</th>
@@ -363,8 +453,21 @@ export default function InvoicesTab({ month, year, onChanged }: { month: number;
                   const recvInr = Number(inv.amount_received ?? 0);
                   const inrVariance = recvInr - invInr;
                   const isForeign = inv.currency && inv.currency !== 'INR';
+                  const isSelectable = inv.status === 'pending' || inv.status === 'cleared_pending';
                   return (
-                    <tr key={inv.id} className={`hover:bg-surface-2/50 ${isCancelled ? 'opacity-50 line-through' : ''}`}>
+                    <tr key={inv.id} className={`hover:bg-surface-2/50 ${isCancelled ? 'opacity-50 line-through' : ''} ${selected.has(inv.id) ? 'bg-accent/5' : ''}`}>
+                      {isAdmin && (
+                        <td className="px-3 py-2.5 w-8">
+                          {isSelectable ? (
+                            <input
+                              type="checkbox"
+                              checked={selected.has(inv.id)}
+                              onChange={() => toggleSelected(inv.id)}
+                              className="rounded border-outline cursor-pointer"
+                            />
+                          ) : null}
+                        </td>
+                      )}
                       <td className="px-4 py-2.5">
                         <div className="font-medium text-on-surface inline-flex items-center gap-1.5">
                           {inv.project_name || '—'}
@@ -443,7 +546,8 @@ export default function InvoicesTab({ month, year, onChanged }: { month: number;
                 return (
                   <tfoot>
                     <tr className="border-t-2 border-outline bg-surface-2/60 text-sm">
-                      <td className="px-4 py-2.5 font-bold text-on-surface" colSpan={3}>
+                      {/* +1 col when admin (the checkbox column at the left). */}
+                      <td className="px-4 py-2.5 font-bold text-on-surface" colSpan={isAdmin ? 4 : 3}>
                         Total <span className="text-xs font-normal text-on-surface-subtle">· {filtered.length} {filtered.length === 1 ? 'invoice' : 'invoices'}{search ? ' matching search' : ''}</span>
                       </td>
                       <td className="px-3 py-2.5 text-right num-mono font-bold text-on-surface">
@@ -572,6 +676,19 @@ export default function InvoicesTab({ month, year, onChanged }: { month: number;
           isAdmin={isAdmin}
           onClose={() => setEditTarget(null)}
           onSaved={() => { setEditTarget(null); load(); onChanged(); }}
+        />
+      )}
+
+      {/* Bulk-clear modal */}
+      {showBulkClear && selectedInvoices.length > 0 && (
+        <BulkClearModal
+          invoices={selectedInvoices}
+          onClose={() => setShowBulkClear(false)}
+          onSaved={() => {
+            setShowBulkClear(false);
+            setSelected(new Set());
+            load(); onChanged();
+          }}
         />
       )}
     </div>
@@ -770,6 +887,212 @@ function ClearModal({ inv, onClose, onSaved }: { inv: FinInvoice; onClose: () =>
         </div>
       </div>
     </Modal>
+  );
+}
+
+// Bulk-clear multiple invoices in one go. Primary use case: one Upwork
+// payout covering N project invoices for the same client, currently
+// requires N separate Mark Cleared clicks. This flow lets admin type
+// one total and auto-split it (proportional to each invoice's amount),
+// or set amounts per row when the split isn't clean.
+function BulkClearModal({ invoices, onClose, onSaved }: {
+  invoices: FinInvoice[];
+  onClose: () => void;
+  onSaved: () => void;
+}) {
+  // Multi-currency safety: splitting a total across mixed currencies
+  // is confusing (USD vs INR at what rate?). Force single-currency
+  // bulk clears; anything else and we downgrade to per-row entry only.
+  const currencies = Array.from(new Set(invoices.map(i => (i.currency || 'INR').toUpperCase())));
+  const singleCurrency = currencies.length === 1 ? currencies[0] : null;
+  const totalContract = invoices.reduce((s, i) => s + Number(i.amount_invoiced ?? 0), 0);
+
+  const [mode, setMode] = useState<'total' | 'each'>(singleCurrency ? 'total' : 'each');
+  const [totalReceived, setTotalReceived] = useState<string>(String(totalContract));
+  // Per-invoice inputs, keyed by id. Default each to the row's contract
+  // amount — admin edits if actual received differs.
+  const [amounts, setAmounts] = useState<Record<number, string>>(() =>
+    Object.fromEntries(invoices.map(i => [i.id, String(i.amount_invoiced ?? 0)]))
+  );
+  const [note, setNote] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [errors, setErrors] = useState<string[]>([]);
+
+  // Auto-split preview: when mode='total', split proportional to each
+  // invoice's contract amount, rounded to 2 decimals. Rounding drift
+  // (paise-scale) is absorbed by the largest invoice so the sum matches
+  // totalReceived exactly.
+  const split: Record<number, number> = useMemo(() => {
+    if (mode !== 'total') {
+      const out: Record<number, number> = {};
+      for (const i of invoices) out[i.id] = Number(amounts[i.id] || 0);
+      return out;
+    }
+    const total = Number(totalReceived) || 0;
+    if (totalContract <= 0 || total <= 0) {
+      return Object.fromEntries(invoices.map(i => [i.id, 0]));
+    }
+    const raw = invoices.map(i => ({
+      id: i.id,
+      contract: Number(i.amount_invoiced ?? 0),
+      share: (Number(i.amount_invoiced ?? 0) / totalContract) * total,
+    }));
+    const rounded = raw.map(r => ({ ...r, amt: Math.round(r.share * 100) / 100 }));
+    const sum = rounded.reduce((s, r) => s + r.amt, 0);
+    const drift = Math.round((total - sum) * 100) / 100;
+    if (Math.abs(drift) >= 0.01) {
+      // Push the drift onto the largest-contract row so sum matches.
+      const biggest = rounded.reduce((a, b) => (a.contract >= b.contract ? a : b));
+      biggest.amt = Math.round((biggest.amt + drift) * 100) / 100;
+    }
+    return Object.fromEntries(rounded.map(r => [r.id, r.amt]));
+  }, [mode, totalReceived, amounts, invoices, totalContract]);
+
+  const submit = async () => {
+    setErrors([]);
+    setBusy(true);
+    // Fire each clear in parallel — backend already handles concurrency.
+    // Track failures per invoice so admin sees which rows didn't stick
+    // and can retry (successes are already persisted).
+    const results = await Promise.allSettled(
+      invoices.map(i => financeApi.clearInvoice(i.id, {
+        amount_received: Number(split[i.id] || 0),
+        cleared_date: new Date().toISOString().slice(0, 10),
+        notes: note.trim() || undefined,
+      }))
+    );
+    const failed: string[] = [];
+    results.forEach((r, idx) => {
+      if (r.status === 'rejected') {
+        const inv = invoices[idx];
+        failed.push(`${inv.project_name ?? inv.invoice_number ?? inv.id}: ${(r.reason as any)?.message ?? 'failed'}`);
+      }
+    });
+    setBusy(false);
+    if (failed.length === 0) { onSaved(); return; }
+    setErrors(failed);
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm p-4" onClick={onClose}>
+      <div className="bg-surface rounded-2xl shadow-2xl w-full max-w-2xl flex flex-col max-h-[90vh]" onClick={e => e.stopPropagation()}>
+        <div className="flex items-center justify-between px-6 py-4 border-b border-outline">
+          <div>
+            <h2 className="font-bold text-base text-on-surface">Bulk clear · {invoices.length} invoice{invoices.length === 1 ? '' : 's'}</h2>
+            <p className="text-xs text-on-surface-subtle mt-0.5">
+              Total contract: <span className="num-mono font-semibold text-on-surface">
+                {singleCurrency ? fmtCcy(totalContract, singleCurrency) : `mixed currency · ≈ ${money(invoices.reduce((s, i) => s + Number(i.amount_invoiced_inr ?? i.amount_invoiced ?? 0), 0))}`}
+              </span>
+            </p>
+          </div>
+          <button onClick={onClose}><X size={16} className="text-on-surface-subtle" /></button>
+        </div>
+
+        <div className="p-6 space-y-4 overflow-y-auto flex-1">
+          {singleCurrency && (
+            <div className="inline-flex items-center gap-1 bg-surface-2 border border-outline rounded-lg p-0.5 text-xs">
+              <button onClick={() => setMode('total')}
+                className={`px-3 py-1.5 rounded-md font-semibold ${mode === 'total' ? 'bg-accent text-on-accent' : 'text-on-surface-muted hover:text-on-surface'}`}>
+                One total (auto-split)
+              </button>
+              <button onClick={() => setMode('each')}
+                className={`px-3 py-1.5 rounded-md font-semibold ${mode === 'each' ? 'bg-accent text-on-accent' : 'text-on-surface-muted hover:text-on-surface'}`}>
+                Set each
+              </button>
+            </div>
+          )}
+          {!singleCurrency && (
+            <div className="rounded-lg border border-warning/30 bg-warning-container/40 p-3 text-xs text-warning">
+              Selected invoices span multiple currencies ({currencies.join(', ')}). Auto-split isn't available — enter each amount in its own currency.
+            </div>
+          )}
+
+          {mode === 'total' && singleCurrency && (
+            <div>
+              <label className="text-xs font-medium text-on-surface-muted mb-1 block">
+                Total received ({singleCurrency}) <span className="text-danger">*</span>
+              </label>
+              <input type="number" min="0" step="0.01" value={totalReceived}
+                onChange={e => setTotalReceived(e.target.value)}
+                className="w-full text-sm border border-outline rounded-lg px-3 py-2.5 num-mono focus:outline-none focus:ring-2 focus:ring-primary-200" />
+              <p className="text-[11px] text-on-surface-subtle mt-1">
+                Split proportionally to each invoice's contract amount. Rounding drift is absorbed by the largest invoice so the sum matches this total exactly.
+              </p>
+            </div>
+          )}
+
+          <div className="rounded-lg border border-outline overflow-hidden">
+            <table className="w-full text-xs">
+              <thead className="bg-surface-2/60 text-[10px] uppercase tracking-wider text-on-surface-subtle">
+                <tr>
+                  <th className="px-3 py-2 text-left">Invoice</th>
+                  <th className="px-3 py-2 text-right">Contract</th>
+                  <th className="px-3 py-2 text-right">{mode === 'total' ? 'Will clear as' : 'Received'}</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-outline">
+                {invoices.map(i => {
+                  const ccy = (i.currency || 'INR').toUpperCase();
+                  return (
+                    <tr key={i.id} className="hover:bg-surface-2/40">
+                      <td className="px-3 py-2">
+                        <p className="font-semibold text-on-surface">{i.project_name ?? '—'}</p>
+                        <p className="text-[10px] text-on-surface-subtle">{i.invoice_number ?? '—'}{i.project_client_name ? ` · ${i.project_client_name}` : ''}</p>
+                      </td>
+                      <td className="px-3 py-2 text-right num-mono text-on-surface-muted">{fmtCcy(Number(i.amount_invoiced ?? 0), ccy)}</td>
+                      <td className="px-3 py-2 text-right">
+                        {mode === 'total' ? (
+                          <span className="num-mono font-semibold text-success">{fmtCcy(split[i.id] ?? 0, ccy)}</span>
+                        ) : (
+                          <input type="number" min="0" step="0.01" value={amounts[i.id] ?? ''}
+                            onChange={e => setAmounts(a => ({ ...a, [i.id]: e.target.value }))}
+                            className="w-28 text-right text-xs border border-outline rounded-md px-2 py-1 num-mono focus:outline-none focus:ring-2 focus:ring-primary-200" />
+                        )}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+              {mode === 'total' && singleCurrency && (
+                <tfoot>
+                  <tr className="bg-surface-2/60 text-[11px] font-bold">
+                    <td className="px-3 py-2 text-on-surface">Sum</td>
+                    <td className="px-3 py-2 text-right num-mono text-on-surface">{fmtCcy(totalContract, singleCurrency)}</td>
+                    <td className="px-3 py-2 text-right num-mono text-success">
+                      {fmtCcy(Object.values(split).reduce((s, v) => s + Number(v), 0), singleCurrency)}
+                    </td>
+                  </tr>
+                </tfoot>
+              )}
+            </table>
+          </div>
+
+          <div>
+            <label className="text-xs font-medium text-on-surface-muted mb-1 block">Note (optional, applied to all)</label>
+            <textarea value={note} onChange={e => setNote(e.target.value)} rows={2}
+              placeholder="e.g. Upwork payout for RH017 batch, 18 Aug"
+              className="w-full text-xs border border-outline rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-primary-200 resize-none" />
+          </div>
+
+          {errors.length > 0 && (
+            <div className="rounded-lg border border-danger/40 bg-danger-container/40 p-3 text-xs text-danger space-y-1">
+              <p className="font-semibold">{errors.length} invoice{errors.length === 1 ? '' : 's'} failed:</p>
+              <ul className="list-disc ml-5">{errors.map((e, i) => <li key={i}>{e}</li>)}</ul>
+              <p className="mt-2 text-[11px] opacity-90">Successful clears are already saved. Close and retry only the failed rows.</p>
+            </div>
+          )}
+        </div>
+
+        <div className="flex gap-3 px-6 py-3 border-t border-outline">
+          <button onClick={onClose} disabled={busy}
+            className="flex-1 py-2 border border-outline rounded-lg text-sm font-medium text-on-surface-muted hover:bg-surface-2">Cancel</button>
+          <button onClick={submit} disabled={busy}
+            className="flex-1 py-2 bg-success text-white rounded-lg text-sm font-semibold disabled:opacity-50">
+            {busy ? `Clearing…` : `Mark ${invoices.length} cleared`}
+          </button>
+        </div>
+      </div>
+    </div>
   );
 }
 
