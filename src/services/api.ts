@@ -147,12 +147,15 @@ export const api = {
   // Admin recovery — lists deleted employees still reconstructable from
   // orphaned finance/HR history, and re-creates them with the original id
   // so all orphaned rows relink automatically.
+  // URL is hyphenated (not /employees/deleted-orphans) so it doesn't
+  // collide with the earlier GET /employees/:id wildcard, which would
+  // otherwise treat "deleted-orphans" as an id lookup and 404.
   getDeletedOrphans: () => request<Array<{
     id: string; name: string; employee_code?: string; designation?: string;
     ctc?: number; salary?: number; source: string; last_seen?: string;
     needs_name?: boolean;
     activity: { payslips?: number; hour_logs?: number; assignments?: number; attendance?: number; leaves?: number; warnings?: number };
-  }>>('/employees/deleted-orphans'),
+  }>>('/employees-deleted-orphans'),
   recoverEmployee: (id: string, data: {
     name: string; employee_id: string; email?: string;
     department?: string; designation?: string; join_date?: string;

@@ -1372,7 +1372,13 @@ function RecoverDeletedModal({ onClose, onRecovered }: {
         }
         setEdits(initial);
       })
-      .catch(e => setErr(e?.message ?? 'Failed to load recoverable employees'));
+      .catch(e => {
+        setErr(e?.message ?? 'Failed to load recoverable employees');
+        // Kick out of the loading state so the modal stops showing
+        // "Scanning…" underneath the error banner. Empty list + error
+        // is the "actually done, nothing worked" terminal state.
+        setRows([]);
+      });
   }, []);
 
   const recover = async (orphan: any) => {

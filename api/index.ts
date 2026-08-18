@@ -3507,14 +3507,17 @@ app.delete('/api/employees/:id', async (req, res) => {
   }
 });
 
-// GET /api/employees/deleted-orphans (admin only)
-// Scans finance-relevant tables for employee_ids that no longer exist
-// in the employees table. Groups by orphan id and reconstructs the
-// most-complete snapshot from whatever tables still hold denormalized
-// name / code / department / designation / salary. Answers "who did I
-// delete recently and can I bring them back?" — the payload becomes
-// the pre-fill for the recovery form.
-app.get('/api/employees/deleted-orphans', async (req, res) => {
+// GET /api/employees-deleted-orphans (admin only)
+// URL intentionally hyphenated to avoid colliding with the earlier
+// GET /api/employees/:id wildcard — otherwise "deleted-orphans" gets
+// interpreted as an id and the request 404s with "Not found" before
+// ever reaching this handler. Scans finance-relevant tables for
+// employee_ids that no longer exist in the employees table, groups by
+// orphan id, and reconstructs the most-complete snapshot from whatever
+// tables still hold denormalized name / code / department / designation
+// / salary. Answers "who did I delete recently and can I bring them
+// back?" — the payload becomes the pre-fill for the recovery form.
+app.get('/api/employees-deleted-orphans', async (req, res) => {
   try {
     if (!(await requireAdmin(req, res))) return;
     // Payslips are the richest source: they carry a full snapshot of
