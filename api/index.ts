@@ -16023,16 +16023,42 @@ async function _finComputeMonthUncached(month: number, year: number) {
   // Per-project invoice totals — always in INR (home currency). USD/foreign
   // amounts were converted at the invoice's fx_rate when raised, then stored
   // in amount_invoiced_inr. `realized` is the hybrid revenue figure that
-  // drives the P&L: cleared invoices count at amount_received (which is also
-  // INR), pending invoices count at amount_invoiced_inr (expected revenue).
-  // Variance between billed-INR and received-INR (Upwork fees, TDS, FX swing)
-  // immediately hits net profit on clearance.
+  // drives the P&L: cleared invoices count at received-in-INR, pending
+  // invoices count at amount_invoiced_inr (expected revenue).
+  //
+  // amount_received storage on foreign-currency invoices is INCONSISTENT
+  // in production: newer clears store the native amount, legacy manual
+  // clears stored the INR-equivalent directly. Applying fx_rate
+  // unconditionally would double-convert the legacy rows. Heuristic
+  // (matches receivedInrOf on the frontend): if amount_received is
+  // more than 5× amount_invoiced on a foreign invoice, it's already
+  // INR — no realistic overpayment ratio exceeds 5× and the smallest
+  // India-relevant fx rate (GBP/INR ≈ 128) far exceeds 5, so no
+  // legit native amount could ever pass the threshold by coincidence.
   const invoiceAgg = (await sql`
     SELECT project_id,
       SUM(COALESCE(amount_invoiced_inr, amount_invoiced))::numeric AS invoiced,
-      SUM(CASE WHEN status='cleared' THEN COALESCE(amount_received, 0) ELSE 0 END)::numeric AS received,
-      SUM(CASE WHEN status='cleared' THEN COALESCE(amount_received, 0)
-                ELSE COALESCE(amount_invoiced_inr, amount_invoiced) END)::numeric AS realized,
+      SUM(
+        CASE
+          WHEN status <> 'cleared' THEN 0
+          WHEN currency IS NULL OR currency = 'INR' THEN COALESCE(amount_received, 0)
+          WHEN COALESCE(amount_received, 0) > COALESCE(amount_invoiced, 0) * 5
+            THEN COALESCE(amount_received, 0)
+          ELSE COALESCE(amount_received, 0) * COALESCE(fx_rate, 1)
+        END
+      )::numeric AS received,
+      SUM(
+        CASE
+          WHEN status = 'cleared' THEN
+            CASE
+              WHEN currency IS NULL OR currency = 'INR' THEN COALESCE(amount_received, 0)
+              WHEN COALESCE(amount_received, 0) > COALESCE(amount_invoiced, 0) * 5
+                THEN COALESCE(amount_received, 0)
+              ELSE COALESCE(amount_received, 0) * COALESCE(fx_rate, 1)
+            END
+          ELSE COALESCE(amount_invoiced_inr, amount_invoiced)
+        END
+      )::numeric AS realized,
       COUNT(*) FILTER (WHERE status='pending')::int AS pending_count,
       COUNT(*) FILTER (WHERE status='cleared')::int AS cleared_count,
       COUNT(*)::int AS invoice_count
