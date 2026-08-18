@@ -3635,6 +3635,31 @@ app.get('/api/employees-deleted-orphans', async (req, res) => {
         byId[a.employee_id] = { id: a.employee_id, name: '', source: 'attendance', last_seen: 'attendance only' };
       }
     }
+    // Infer a suggested exit_date from the LATEST activity per orphan.
+    // Order of preference: last attendance day (most granular) > last
+    // payslip's month-end > last hour log date. This becomes the pre-
+    // fill for the recovery modal so admin sets an exit_date they can
+    // just confirm (or override). Without it, the finance calc excludes
+    // the recovered employee from every month because both the active
+    // branch (status='active' required) and the exit branch (exit_date
+    // within period required) fail — see finComputeMonth's WHERE.
+    const lastAttendance = await sql`
+      SELECT ar.employee_id, MAX(ar.date)::text AS last_date
+      FROM attendance_records ar LEFT JOIN employees e ON e.id = ar.employee_id
+      WHERE e.id IS NULL GROUP BY ar.employee_id`.catch(() => [] as any[]) as any[];
+    for (const r of lastAttendance) {
+      const row = byId[r.employee_id];
+      if (row && r.last_date && !row.suggested_exit_date) row.suggested_exit_date = String(r.last_date).slice(0, 10);
+    }
+    // Fall back to last payslip's month-end when attendance isn't
+    // available.
+    for (const p of payslipSnapshots) {
+      const row = byId[p.employee_id];
+      if (row && !row.suggested_exit_date && p.year && p.month) {
+        const lastDay = new Date(Date.UTC(Number(p.year), Number(p.month), 0)).toISOString().slice(0, 10);
+        row.suggested_exit_date = lastDay;
+      }
+    }
     // Salary structures give us CTC/basic even without a name — but
     // only useful when merged with a name from elsewhere.
     for (const s of salarySnapshots) {
@@ -3711,28 +3736,31 @@ app.post('/api/employees/:id/recover', async (req, res) => {
     if (existing) return res.status(409).json({ error: 'An employee with this id already exists — nothing to recover.' });
     const {
       name, email, employee_id, department, designation,
-      join_date, salary, ctc, shift,
+      join_date, exit_date, salary, ctc, shift,
     } = req.body ?? {};
     if (!name || !employee_id) return res.status(400).json({ error: 'name and employee_id are required to recover.' });
-    // Production DBs made from an older migration have email NOT NULL
-    // (the current CREATE TABLE doesn't, but IF NOT EXISTS didn't
-    // relax the older constraint). Provide a deterministic placeholder
-    // when the caller doesn't supply an email so the INSERT never
-    // fails on that column. Admin can edit the real email later.
-    // Placeholder is unique-per-id so the UNIQUE(email) constraint
-    // also passes for multiple recoveries.
+    // Production DBs from an older migration have email NOT NULL —
+    // provide a deterministic placeholder when the caller doesn't
+    // supply one so the INSERT never fails on that column. Uniqueness
+    // is guaranteed via the (unique) employee_id.
     const safeEmail = (email && String(email).trim())
       ? String(email).trim()
       : `recovered-${String(employee_id).toLowerCase().replace(/[^a-z0-9]/g, '')}@placeholder.local`;
-    // Recovered employees come back Inactive so admin can review + set
-    // exit_date + reactivate deliberately. Prevents a "surprise, they're
-    // billable again" moment on the next finance roll-up.
+    // Status defaults to 'active' when an exit_date is provided —
+    // that's the correct combo for the finance calc to include them
+    // in historical months (active branch requires status='active';
+    // exit branch requires exit_date within the period; you need
+    // both correctly set to have June-through-exit-month included).
+    // Without exit_date we fall back to 'inactive' so we don't
+    // silently re-bill an employee whose actual last day is unknown.
+    const status = exit_date ? 'active' : 'inactive';
     const rows = await sql`
       INSERT INTO employees (id, name, email, department, designation, employee_id, join_date,
-        status, salary, ctc, shift, avatar)
+        exit_date, status, salary, ctc, shift, avatar)
       VALUES (${id}, ${name}, ${safeEmail}, ${department ?? null}, ${designation ?? null},
         ${employee_id}, ${join_date ?? null},
-        'inactive', ${Number(salary) || 0}, ${Number(ctc) || 0}, ${shift ?? 'day'},
+        ${exit_date ?? null},
+        ${status}, ${Number(salary) || 0}, ${Number(ctc) || 0}, ${shift ?? 'day'},
         ${(name as string).slice(0, 2).toUpperCase()})
       RETURNING *`;
     res.status(201).json({ ok: true, employee: (rows as any[])[0] });

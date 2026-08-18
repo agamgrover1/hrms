@@ -1357,9 +1357,11 @@ function RecoverDeletedModal({ onClose, onRecovered }: {
       .then(list => {
         setRows(list as any[]);
         // Prefill each editable row from the scan's reconstruction.
-        // For name-less orphans (needs_name), leave the input blank
-        // instead of pre-filling the "Unknown (…)" placeholder — admin
-        // has to type the real name, and blank keeps that obvious.
+        // For name-less orphans, leave the input blank so admin can't
+        // accidentally save "Unknown (…)" as the real name.
+        // exit_date pre-fills from the scan's inference (last
+        // attendance day > latest payslip's month-end). Required —
+        // without it the finance calc excludes them from history.
         const initial: Record<string, any> = {};
         for (const r of list as any[]) {
           initial[r.id] = {
@@ -1368,6 +1370,7 @@ function RecoverDeletedModal({ onClose, onRecovered }: {
             designation: r.designation ?? '',
             salary: r.salary ?? 0,
             ctc: r.ctc ?? 0,
+            exit_date: r.suggested_exit_date ?? '',
           };
         }
         setEdits(initial);
@@ -1387,6 +1390,10 @@ function RecoverDeletedModal({ onClose, onRecovered }: {
       setErr(`${orphan.id}: name and employee code are required to recover.`);
       return;
     }
+    if (!patch.exit_date) {
+      setErr(`${orphan.id}: exit date is required — without it the finance calc will exclude them from every historical month.`);
+      return;
+    }
     setBusyId(orphan.id);
     setErr('');
     try {
@@ -1396,10 +1403,11 @@ function RecoverDeletedModal({ onClose, onRecovered }: {
         designation: patch.designation || undefined,
         salary: Number(patch.salary) || 0,
         ctc: Number(patch.ctc) || 0,
+        exit_date: patch.exit_date,
       });
       onRecovered(r.employee);
       setRows(prev => (prev ?? []).filter(x => x.id !== orphan.id));
-      toast.success(`${patch.name} recovered`, 'They\'re back as Inactive — review Exit Date + Status when ready.');
+      toast.success(`${patch.name} recovered`, `Set to Active with exit date ${patch.exit_date}. Finance for months up to exit will include them.`);
     } catch (e: any) {
       setErr(e?.message ?? 'Recovery failed');
     } finally { setBusyId(null); }
@@ -1479,6 +1487,15 @@ function RecoverDeletedModal({ onClose, onRecovered }: {
                     <span className="text-on-surface-muted">Monthly salary (₹)</span>
                     <input type="number" value={patch.salary ?? 0} onChange={e => set('salary', e.target.value)}
                       className="mt-1 w-full px-2 py-1.5 rounded border border-outline bg-surface text-sm num-mono" />
+                  </label>
+                  <label className="block col-span-2">
+                    <span className="text-on-surface-muted">Exit date <span className="text-danger">*</span></span>
+                    <input type="date" value={patch.exit_date ?? ''} onChange={e => set('exit_date', e.target.value)}
+                      className="mt-1 w-full px-2 py-1.5 rounded border border-outline bg-surface text-sm" />
+                    <span className="block text-[10px] text-on-surface-subtle mt-1">
+                      Pre-filled from their latest attendance / payslip. Must be set so finance includes them for months up to their exit.
+                      They'll be recovered as <b className="text-on-surface">Active</b> with this exit date — matches how a currently-employed leaver is handled.
+                    </span>
                   </label>
                 </div>
               </div>

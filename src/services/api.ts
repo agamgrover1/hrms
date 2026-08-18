@@ -154,11 +154,13 @@ export const api = {
     id: string; name: string; employee_code?: string; designation?: string;
     ctc?: number; salary?: number; source: string; last_seen?: string;
     needs_name?: boolean;
+    suggested_exit_date?: string;
     activity: { payslips?: number; hour_logs?: number; assignments?: number; attendance?: number; leaves?: number; warnings?: number };
   }>>('/employees-deleted-orphans'),
   recoverEmployee: (id: string, data: {
     name: string; employee_id: string; email?: string;
     department?: string; designation?: string; join_date?: string;
+    exit_date?: string;
     salary?: number; ctc?: number; shift?: string;
   }) => request<any>(`/employees/${encodeURIComponent(id)}/recover`, { method: 'POST', body: JSON.stringify(data) }),
   updateEmployeeProbation: (id: string, probation_end_date: string | null) =>
