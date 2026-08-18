@@ -150,7 +150,8 @@ export const api = {
   getDeletedOrphans: () => request<Array<{
     id: string; name: string; employee_code?: string; designation?: string;
     ctc?: number; salary?: number; source: string; last_seen?: string;
-    activity: { payslips?: number; hour_logs?: number; assignments?: number };
+    needs_name?: boolean;
+    activity: { payslips?: number; hour_logs?: number; assignments?: number; attendance?: number; leaves?: number; warnings?: number };
   }>>('/employees/deleted-orphans'),
   recoverEmployee: (id: string, data: {
     name: string; employee_id: string; email?: string;

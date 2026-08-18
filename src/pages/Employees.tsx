@@ -1357,10 +1357,13 @@ function RecoverDeletedModal({ onClose, onRecovered }: {
       .then(list => {
         setRows(list as any[]);
         // Prefill each editable row from the scan's reconstruction.
+        // For name-less orphans (needs_name), leave the input blank
+        // instead of pre-filling the "Unknown (…)" placeholder — admin
+        // has to type the real name, and blank keeps that obvious.
         const initial: Record<string, any> = {};
         for (const r of list as any[]) {
           initial[r.id] = {
-            name: r.name ?? '',
+            name: r.needs_name ? '' : (r.name ?? ''),
             employee_id: r.employee_code ?? '',
             designation: r.designation ?? '',
             salary: r.salary ?? 0,
@@ -1430,11 +1433,19 @@ function RecoverDeletedModal({ onClose, onRecovered }: {
                     <p className="text-[11px] text-on-surface-subtle">
                       id <span className="num-mono">{r.id}</span> · last seen: {r.last_seen ?? r.source}
                     </p>
-                    <p className="text-[11px] text-on-surface-muted mt-1">
-                      Activity: <span className="num-mono">{r.activity?.payslips ?? 0}</span> payslip(s) ·
-                      <span className="num-mono ml-1">{r.activity?.hour_logs ?? 0}</span> hour log(s) ·
-                      <span className="num-mono ml-1">{r.activity?.assignments ?? 0}</span> allocation(s)
+                    <p className="text-[11px] text-on-surface-muted mt-1 flex flex-wrap gap-x-2 gap-y-0.5">
+                      {r.activity?.payslips > 0 && <span><span className="num-mono">{r.activity.payslips}</span> payslip(s)</span>}
+                      {r.activity?.hour_logs > 0 && <span><span className="num-mono">{r.activity.hour_logs}</span> hour log(s)</span>}
+                      {r.activity?.assignments > 0 && <span><span className="num-mono">{r.activity.assignments}</span> allocation(s)</span>}
+                      {r.activity?.attendance > 0 && <span><span className="num-mono">{r.activity.attendance}</span> attendance day(s)</span>}
+                      {r.activity?.leaves > 0 && <span><span className="num-mono">{r.activity.leaves}</span> leave(s)</span>}
+                      {r.activity?.warnings > 0 && <span><span className="num-mono">{r.activity.warnings}</span> warning(s)</span>}
                     </p>
+                    {r.needs_name && (
+                      <p className="text-[10px] text-warning mt-1">
+                        Name not stored in surviving tables — type the actual name below before recovering.
+                      </p>
+                    )}
                   </div>
                   <button onClick={() => recover(r)} disabled={busyId === r.id}
                     className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-semibold bg-success text-white hover:opacity-90 disabled:opacity-50 whitespace-nowrap">

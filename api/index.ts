@@ -3555,6 +3555,40 @@ app.get('/api/employees/deleted-orphans', async (req, res) => {
       LEFT JOIN employees e ON e.id = s.employee_id
       WHERE e.id IS NULL
       ORDER BY s.employee_id, s.effective_from DESC` as any[];
+    // Leave / warnings / PIP — also carry employee_name, catch orphans
+    // who never made it into payroll (e.g. left before the first
+    // finalized run). Ordered by most-recent activity so the reconstructed
+    // name is as fresh as possible.
+    const leaveSnapshots = await sql`
+      SELECT DISTINCT ON (lr.employee_id)
+        lr.employee_id, lr.employee_name, MAX(lr.applied_on) AS last_activity
+      FROM leave_requests lr
+      LEFT JOIN employees e ON e.id = lr.employee_id
+      WHERE e.id IS NULL AND lr.employee_name IS NOT NULL
+      GROUP BY lr.employee_id, lr.employee_name
+      ORDER BY lr.employee_id, last_activity DESC`.catch(() => [] as any[]) as any[];
+    const warnSnapshots = await sql`
+      SELECT DISTINCT ON (w.employee_id)
+        w.employee_id, w.employee_name
+      FROM employee_warnings w
+      LEFT JOIN employees e ON e.id = w.employee_id
+      WHERE e.id IS NULL AND w.employee_name IS NOT NULL
+      ORDER BY w.employee_id, w.created_at DESC`.catch(() => [] as any[]) as any[];
+    const pipSnapshots = await sql`
+      SELECT DISTINCT ON (p.employee_id)
+        p.employee_id, p.employee_name
+      FROM employee_pips p
+      LEFT JOIN employees e ON e.id = p.employee_id
+      WHERE e.id IS NULL AND p.employee_name IS NOT NULL
+      ORDER BY p.employee_id, p.created_at DESC`.catch(() => [] as any[]) as any[];
+    // Attendance has no employee_name — just gives us an id + activity
+    // window. Useful for surfacing "yes this person existed" even when
+    // no other table has their name. Backfilled name comes as their id.
+    const attendanceIds = await sql`
+      SELECT DISTINCT a.employee_id
+      FROM attendance_records a
+      LEFT JOIN employees e ON e.id = a.employee_id
+      WHERE e.id IS NULL`.catch(() => [] as any[]) as any[];
 
     // Merge — payslip data is the base, others fill gaps.
     const byId: Record<string, any> = {};
@@ -3578,38 +3612,81 @@ app.get('/api/employees/deleted-orphans', async (req, res) => {
       if (!byId[a.employee_id]) byId[a.employee_id] = { id: a.employee_id, name: a.employee_name, source: 'assignment', last_seen: 'allocation' };
       else if (!byId[a.employee_id].name) byId[a.employee_id].name = a.employee_name;
     }
-    // Salary structures give us CTC/basic when payslip is missing.
+    for (const l of leaveSnapshots) {
+      if (!byId[l.employee_id]) byId[l.employee_id] = { id: l.employee_id, name: l.employee_name, source: 'leave', last_seen: 'leave request' };
+      else if (!byId[l.employee_id].name) byId[l.employee_id].name = l.employee_name;
+    }
+    for (const w of warnSnapshots) {
+      if (!byId[w.employee_id]) byId[w.employee_id] = { id: w.employee_id, name: w.employee_name, source: 'warning', last_seen: 'warning' };
+      else if (!byId[w.employee_id].name) byId[w.employee_id].name = w.employee_name;
+    }
+    for (const p of pipSnapshots) {
+      if (!byId[p.employee_id]) byId[p.employee_id] = { id: p.employee_id, name: p.employee_name, source: 'pip', last_seen: 'PIP' };
+      else if (!byId[p.employee_id].name) byId[p.employee_id].name = p.employee_name;
+    }
+    // Attendance is name-less but still evidence they existed. Adds
+    // orphans without a name so admin sees them and can fill the name
+    // in manually before recovering.
+    for (const a of attendanceIds) {
+      if (!byId[a.employee_id]) {
+        byId[a.employee_id] = { id: a.employee_id, name: '', source: 'attendance', last_seen: 'attendance only' };
+      }
+    }
+    // Salary structures give us CTC/basic even without a name — but
+    // only useful when merged with a name from elsewhere.
     for (const s of salarySnapshots) {
       const row = byId[s.employee_id];
-      if (!row) continue; // no name — can't reconstruct anything useful
-      if (!row.ctc && s.ctc_annual) row.ctc = Number(s.ctc_annual);
-      if (!row.salary && s.basic) row.salary = Number(s.basic || 0) + Number(s.hra || 0) + Number(s.special_allowance || 0);
+      if (!row) {
+        // Structure-only orphan (rare — someone with salary history but
+        // no other trace). Surface without a name so admin can decide.
+        byId[s.employee_id] = { id: s.employee_id, name: '', source: 'salary', last_seen: 'salary history' };
+      }
+      const target = byId[s.employee_id];
+      if (!target.ctc && s.ctc_annual) target.ctc = Number(s.ctc_annual);
+      if (!target.salary && s.basic) target.salary = Number(s.basic || 0) + Number(s.hra || 0) + Number(s.special_allowance || 0);
     }
 
     // Count activity per orphan so admin can gauge which are worth
-    // recovering (Jai with 3 payslips + 40 hour logs = high value;
-    // some placeholder with 1 assignment and no name = probably skip).
+    // recovering. Includes attendance + leave + warnings alongside
+    // payroll/logs/allocations so someone who only has attendance
+    // history still shows a non-zero count.
     const activityCounts: Record<string, any> = {};
-    const payC = await sql`SELECT employee_id, COUNT(*)::int AS n FROM payslips WHERE employee_id IN (SELECT DISTINCT employee_id FROM payslips LEFT JOIN employees e ON e.id = payslips.employee_id WHERE e.id IS NULL) GROUP BY employee_id` as any[];
-    for (const r of payC) activityCounts[r.employee_id] = { ...(activityCounts[r.employee_id] || {}), payslips: Number(r.n) };
-    const hlC = await sql`SELECT employee_id, COUNT(*)::int AS n FROM hour_logs WHERE employee_id IN (SELECT DISTINCT employee_id FROM hour_logs LEFT JOIN employees e ON e.id = hour_logs.employee_id WHERE e.id IS NULL) GROUP BY employee_id` as any[];
-    for (const r of hlC) activityCounts[r.employee_id] = { ...(activityCounts[r.employee_id] || {}), hour_logs: Number(r.n) };
-    const aC = await sql`SELECT employee_id, COUNT(*)::int AS n FROM project_assignments WHERE employee_id IN (SELECT DISTINCT employee_id FROM project_assignments LEFT JOIN employees e ON e.id = project_assignments.employee_id WHERE e.id IS NULL) GROUP BY employee_id` as any[];
-    for (const r of aC) activityCounts[r.employee_id] = { ...(activityCounts[r.employee_id] || {}), assignments: Number(r.n) };
+    const bump = (id: string, key: string, n: number) => {
+      if (!activityCounts[id]) activityCounts[id] = { payslips: 0, hour_logs: 0, assignments: 0, attendance: 0, leaves: 0, warnings: 0 };
+      activityCounts[id][key] = Number(n);
+    };
+    const payC = await sql`SELECT p.employee_id, COUNT(*)::int AS n FROM payslips p LEFT JOIN employees e ON e.id = p.employee_id WHERE e.id IS NULL GROUP BY p.employee_id` as any[];
+    for (const r of payC) bump(r.employee_id, 'payslips', r.n);
+    const hlC = await sql`SELECT hl.employee_id, COUNT(*)::int AS n FROM hour_logs hl LEFT JOIN employees e ON e.id = hl.employee_id WHERE e.id IS NULL GROUP BY hl.employee_id` as any[];
+    for (const r of hlC) bump(r.employee_id, 'hour_logs', r.n);
+    const aC = await sql`SELECT pa.employee_id, COUNT(*)::int AS n FROM project_assignments pa LEFT JOIN employees e ON e.id = pa.employee_id WHERE e.id IS NULL GROUP BY pa.employee_id` as any[];
+    for (const r of aC) bump(r.employee_id, 'assignments', r.n);
+    const attC = await sql`SELECT ar.employee_id, COUNT(*)::int AS n FROM attendance_records ar LEFT JOIN employees e ON e.id = ar.employee_id WHERE e.id IS NULL GROUP BY ar.employee_id`.catch(() => [] as any[]) as any[];
+    for (const r of attC) bump(r.employee_id, 'attendance', r.n);
+    const lvC = await sql`SELECT lr.employee_id, COUNT(*)::int AS n FROM leave_requests lr LEFT JOIN employees e ON e.id = lr.employee_id WHERE e.id IS NULL GROUP BY lr.employee_id`.catch(() => [] as any[]) as any[];
+    for (const r of lvC) bump(r.employee_id, 'leaves', r.n);
+    const wC = await sql`SELECT w.employee_id, COUNT(*)::int AS n FROM employee_warnings w LEFT JOIN employees e ON e.id = w.employee_id WHERE e.id IS NULL GROUP BY w.employee_id`.catch(() => [] as any[]) as any[];
+    for (const r of wC) bump(r.employee_id, 'warnings', r.n);
     for (const id of Object.keys(byId)) {
-      byId[id].activity = activityCounts[id] || { payslips: 0, hour_logs: 0, assignments: 0 };
+      byId[id].activity = activityCounts[id] || { payslips: 0, hour_logs: 0, assignments: 0, attendance: 0, leaves: 0, warnings: 0 };
     }
 
-    // Filter out orphans with no reconstructable name — those are
-    // dead ends (probably ghosts from imports / test data). Sort by
-    // activity so the meatiest recoveries surface first.
+    // Sort by total activity — most-active orphans first so admin sees
+    // meaningful recoveries above ghosts. No name filter: name-less
+    // orphans surface too (their name is a placeholder — "Unknown
+    // (id)") so admin can fill it in manually and still recover the id.
     const out = Object.values(byId)
-      .filter((r: any) => r.name)
       .sort((a: any, b: any) => {
-        const totalA = (a.activity?.payslips ?? 0) + (a.activity?.hour_logs ?? 0);
-        const totalB = (b.activity?.payslips ?? 0) + (b.activity?.hour_logs ?? 0);
-        return totalB - totalA;
-      });
+        const total = (r: any) => Object.values(r.activity ?? {}).reduce((s: number, v: any) => s + Number(v || 0), 0);
+        return total(b) - total(a);
+      })
+      .map((r: any) => ({
+        ...r,
+        // Empty name → surface as "Unknown (id-suffix)" so the row is
+        // still visible + admin knows they need to type a real name.
+        name: r.name || `Unknown (${String(r.id).slice(-6)})`,
+        needs_name: !r.name,
+      }));
     res.json(out);
   } catch (err: any) { res.status(500).json({ error: err?.message || 'Server error' }); }
 });
