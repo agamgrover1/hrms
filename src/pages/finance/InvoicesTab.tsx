@@ -34,6 +34,25 @@ interface ProjectLite {
   billing_source?: string | null;
 }
 
+// The DB has inconsistent storage for amount_received on foreign-
+// currency invoices: newer clears store the NATIVE amount (USD/GBP/etc),
+// but legacy manual entries stored the INR-equivalent directly. Applying
+// fx_rate unconditionally double-converts the legacy rows (a £30 invoice
+// with amount_received=3843 turns into ₹4.9L).
+//
+// Heuristic: for foreign currency, if amount_received exceeds
+// amount_invoiced × 5, it's already-INR (no realistic overpayment goes
+// beyond 5x — GBP/INR fx alone is ~128). Otherwise treat as native and
+// multiply. INR-billed invoices are always native.
+function receivedInrOf(inv: FinInvoice): number {
+  const native = Number(inv.amount_received ?? 0);
+  const isForeign = inv.currency && inv.currency !== 'INR';
+  if (!isForeign) return native;
+  const invNative = Number(inv.amount_invoiced ?? 0);
+  const looksLikeAlreadyInr = invNative > 0 && native > invNative * 5;
+  return looksLikeAlreadyInr ? native : native * Number(inv.fx_rate ?? 1);
+}
+
 export default function InvoicesTab({ month, year, onChanged }: { month: number; year: number; onChanged: () => void }) {
   const { user } = useAuth();
   const isAdmin = user?.role === 'admin';
@@ -190,13 +209,8 @@ export default function InvoicesTab({ month, year, onChanged }: { month: number;
     const invoiced = active.reduce((s, i) => s + inrOf(i), 0);
     // 'received' only counts FINAL cleared invoices — admin-approved cash
     // in the bank. cleared_pending entries aren't real cash yet.
-    // amount_received is native currency — convert to INR via fx_rate for
-    // foreign invoices; INR-billed invoices already sum correctly at rate=1.
-    const receivedInrOf = (i: FinInvoice) => {
-      const native = Number(i.amount_received ?? 0);
-      const isForeign = i.currency && i.currency !== 'INR';
-      return isForeign ? native * Number(i.fx_rate ?? 1) : native;
-    };
+    // Uses the receivedInrOf helper at file top — it distinguishes
+    // native vs already-INR storage on foreign-currency rows.
     const received = active.filter(i => i.status === 'cleared').reduce((s, i) => s + receivedInrOf(i), 0);
     // 'pending' = unsettled work, includes both raw pending AND awaiting-
     // approval clearances. Count is the badge admin sees on the chip.
@@ -454,17 +468,12 @@ export default function InvoicesTab({ month, year, onChanged }: { month: number;
                   // see + cancel the request but not edit the amounts.
                   const canEditAsCoord = !isAdmin && inv.status === 'pending' && inv.created_by === userId;
                   const canDeleteAsCoord = canEditAsCoord;
-                  // For variance: compare apples-to-apples in INR.
-                  // amount_received is stored in the invoice's NATIVE currency
-                  // (USD for Upwork projects) — convert via the invoice's own
-                  // fx_rate. Prior code treated $600 as ₹600 and produced
-                  // absurd ₹-56k variances on foreign-currency invoices.
+                  // Variance in INR. Uses receivedInrOf helper so mixed
+                  // legacy vs new storage of amount_received both display
+                  // correctly (see helper at file top for the heuristic).
                   const isForeign = inv.currency && inv.currency !== 'INR';
                   const invInr = Number(inv.amount_invoiced_inr ?? inv.amount_invoiced ?? 0);
-                  const recvNative = Number(inv.amount_received ?? 0);
-                  const recvInr = isForeign
-                    ? recvNative * Number(inv.fx_rate ?? 1)
-                    : recvNative;
+                  const recvInr = receivedInrOf(inv);
                   const inrVariance = recvInr - invInr;
                   const isSelectable = inv.status === 'pending' || inv.status === 'cleared_pending';
                   return (
@@ -552,15 +561,8 @@ export default function InvoicesTab({ month, year, onChanged }: { month: number;
                 for (const inv of filtered) {
                   const invInr = Number(inv.amount_invoiced_inr ?? inv.amount_invoiced ?? 0);
                   totalInv += invInr;
-                  if (inv.status === 'cleared') {
-                    // Match the per-row calc: amount_received is native,
-                    // convert to INR via fx_rate for foreign invoices.
-                    const isForeign = inv.currency && inv.currency !== 'INR';
-                    const recvInr = isForeign
-                      ? Number(inv.amount_received ?? 0) * Number(inv.fx_rate ?? 1)
-                      : Number(inv.amount_received ?? 0);
-                    totalRecv += recvInr;
-                  } else pendingInv += invInr;
+                  if (inv.status === 'cleared') totalRecv += receivedInrOf(inv);
+                  else pendingInv += invInr;
                 }
                 const totalVariance = totalRecv - totalInv;
                 return (
