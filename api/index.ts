@@ -3714,13 +3714,23 @@ app.post('/api/employees/:id/recover', async (req, res) => {
       join_date, salary, ctc, shift,
     } = req.body ?? {};
     if (!name || !employee_id) return res.status(400).json({ error: 'name and employee_id are required to recover.' });
+    // Production DBs made from an older migration have email NOT NULL
+    // (the current CREATE TABLE doesn't, but IF NOT EXISTS didn't
+    // relax the older constraint). Provide a deterministic placeholder
+    // when the caller doesn't supply an email so the INSERT never
+    // fails on that column. Admin can edit the real email later.
+    // Placeholder is unique-per-id so the UNIQUE(email) constraint
+    // also passes for multiple recoveries.
+    const safeEmail = (email && String(email).trim())
+      ? String(email).trim()
+      : `recovered-${String(employee_id).toLowerCase().replace(/[^a-z0-9]/g, '')}@placeholder.local`;
     // Recovered employees come back Inactive so admin can review + set
     // exit_date + reactivate deliberately. Prevents a "surprise, they're
     // billable again" moment on the next finance roll-up.
     const rows = await sql`
       INSERT INTO employees (id, name, email, department, designation, employee_id, join_date,
         status, salary, ctc, shift, avatar)
-      VALUES (${id}, ${name}, ${email ?? null}, ${department ?? null}, ${designation ?? null},
+      VALUES (${id}, ${name}, ${safeEmail}, ${department ?? null}, ${designation ?? null},
         ${employee_id}, ${join_date ?? null},
         'inactive', ${Number(salary) || 0}, ${Number(ctc) || 0}, ${shift ?? 'day'},
         ${(name as string).slice(0, 2).toUpperCase()})
