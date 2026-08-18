@@ -3451,16 +3451,18 @@ function invalidateEmployeesCache() {
 
 app.delete('/api/employees/:id', async (req, res) => {
   try {
-    if (!(await requireFullHR(req, res)).ok) return;
+    // Admin-only. HR (hr_manager / hr_intern) used to be able to delete,
+    // but hard-deleting an employee retroactively rewrites finance
+    // history — the finance calc joins on employees.id, so the deleted
+    // person disappears from every historical month's salary bill and
+    // direct-cost roll-up. Restricting to admin + hard-blocking anyone
+    // who has real activity (payslips / logs / assignments) forces the
+    // right pattern: mark them Exited on the profile edit form and let
+    // the exit_date guard exclude them from future months.
+    if (!(await requireAdmin(req, res))) return;
     invalidateEmployeesCache();
-    // Look up the employee FIRST so we can find their linked app_users
-    // row (the link lives on app_users.employee_id_ref, which holds
-    // either the human code DL0076 or the legacy internal id e_xxx —
-    // we match either form). Without this cascade the login account
-    // outlived the employee record and the ex-employee could keep
-    // signing in.
     const emp = (await sql`
-      SELECT id, employee_id FROM employees
+      SELECT id, employee_id, name FROM employees
       WHERE id=${req.params.id} OR employee_id=${req.params.id}
       LIMIT 1`)[0] as any;
     if (!emp) {
@@ -3468,10 +3470,28 @@ app.delete('/api/employees/:id', async (req, res) => {
       // Delete doesn't 404 the UI.
       return res.json({ success: true, deleted: 0 });
     }
-    // Delete the linked user account(s) first. We also clean up any
-    // notifications addressed to those user ids so the queue doesn't
-    // hold dangling rows. Each table is best-effort so a missing one
-    // (fresh schema, partial deploy) doesn't fail the whole delete.
+    // Finance-activity guard. If any of these tables have rows for
+    // this employee, hard-delete would silently mutate historical
+    // reports. Force admin to Exit-and-Inactive instead. Force-flag
+    // stays available for the accidental-add case (no activity yet).
+    const force = req.query.force === '1' || req.body?.force === true;
+    if (!force) {
+      const [{ n: payslipCount }] = await sql`SELECT COUNT(*)::int AS n FROM payslips WHERE employee_id=${emp.id}` as any[];
+      const [{ n: hourLogCount }] = await sql`SELECT COUNT(*)::int AS n FROM hour_logs WHERE employee_id=${emp.id}` as any[];
+      const [{ n: assignmentCount }] = await sql`SELECT COUNT(*)::int AS n FROM project_assignments WHERE employee_id=${emp.id}` as any[];
+      const leaveRows = await sql`SELECT COUNT(*)::int AS n FROM leave_requests WHERE employee_id=${emp.id} AND status='approved'`.catch(() => [{ n: 0 }] as any[]);
+      const leaveCount = Number((leaveRows as any[])[0]?.n ?? 0);
+      const total = payslipCount + hourLogCount + assignmentCount + leaveCount;
+      if (total > 0) {
+        return res.status(409).json({
+          error: 'Cannot delete: employee has finance history',
+          detail: `${emp.name ?? 'This employee'} has ${payslipCount} payslip(s), ${hourLogCount} hour log(s), ${assignmentCount} project allocation(s), ${leaveCount} approved leave(s). Deleting would rewrite past finance numbers. Mark them Exited on the profile Edit form instead (set Exit Date + Status=Inactive).`,
+          counts: { payslips: payslipCount, hour_logs: hourLogCount, assignments: assignmentCount, approved_leaves: leaveCount },
+        });
+      }
+    }
+    // Delete the linked user account(s) first so login stops working
+    // (they'd otherwise outlive the employee record).
     const userIds = (await sql`
       SELECT id FROM app_users
       WHERE employee_id_ref = ${emp.id} OR employee_id_ref = ${emp.employee_id}` as any[])
@@ -3483,6 +3503,153 @@ app.delete('/api/employees/:id', async (req, res) => {
     await sql`DELETE FROM employees WHERE id=${emp.id}`;
     res.json({ success: true, deleted: 1, users_removed: userIds.length });
   } catch (err: any) {
+    res.status(500).json({ error: err?.message || 'Server error' });
+  }
+});
+
+// GET /api/employees/deleted-orphans (admin only)
+// Scans finance-relevant tables for employee_ids that no longer exist
+// in the employees table. Groups by orphan id and reconstructs the
+// most-complete snapshot from whatever tables still hold denormalized
+// name / code / department / designation / salary. Answers "who did I
+// delete recently and can I bring them back?" — the payload becomes
+// the pre-fill for the recovery form.
+app.get('/api/employees/deleted-orphans', async (req, res) => {
+  try {
+    if (!(await requireAdmin(req, res))) return;
+    // Payslips are the richest source: they carry a full snapshot of
+    // employee_name, employee_code, designation, ctc, basic, hra, sa
+    // as of the payroll run. Newest payslip per orphan wins.
+    const payslipSnapshots = await sql`
+      SELECT DISTINCT ON (p.employee_id)
+        p.employee_id, p.employee_name, p.employee_code, p.designation,
+        p.ctc_annual, p.basic, p.hra, p.special_allowance,
+        p.year, p.month, p.updated_at
+      FROM payslips p
+      LEFT JOIN employees e ON e.id = p.employee_id
+      WHERE e.id IS NULL
+      ORDER BY p.employee_id, p.year DESC, p.month DESC, p.updated_at DESC` as any[];
+    // Hour logs fill in name/dept when there's no payslip. project_
+    // assignments and warnings same. Merged after payslip snapshots so
+    // payslip wins on conflicts.
+    const hourLogSnapshots = await sql`
+      SELECT DISTINCT ON (hl.employee_id)
+        hl.employee_id, hl.employee_name, MAX(hl.updated_at) AS last_activity
+      FROM hour_logs hl
+      LEFT JOIN employees e ON e.id = hl.employee_id
+      WHERE e.id IS NULL
+      GROUP BY hl.employee_id, hl.employee_name
+      ORDER BY hl.employee_id, last_activity DESC` as any[];
+    const assignSnapshots = await sql`
+      SELECT DISTINCT ON (a.employee_id)
+        a.employee_id, a.employee_name
+      FROM project_assignments a
+      LEFT JOIN employees e ON e.id = a.employee_id
+      WHERE e.id IS NULL
+      ORDER BY a.employee_id, a.updated_at DESC NULLS LAST` as any[];
+    const salarySnapshots = await sql`
+      SELECT DISTINCT ON (s.employee_id)
+        s.employee_id, s.ctc_annual, s.basic, s.hra, s.special_allowance,
+        s.effective_from
+      FROM salary_structures s
+      LEFT JOIN employees e ON e.id = s.employee_id
+      WHERE e.id IS NULL
+      ORDER BY s.employee_id, s.effective_from DESC` as any[];
+
+    // Merge — payslip data is the base, others fill gaps.
+    const byId: Record<string, any> = {};
+    for (const p of payslipSnapshots) {
+      byId[p.employee_id] = {
+        id: p.employee_id,
+        name: p.employee_name,
+        employee_code: p.employee_code,
+        designation: p.designation,
+        ctc: Number(p.ctc_annual || 0),
+        salary: Number(p.basic || 0) + Number(p.hra || 0) + Number(p.special_allowance || 0),
+        last_seen: `payslip ${p.year}-${String(p.month).padStart(2, '0')}`,
+        source: 'payslip',
+      };
+    }
+    for (const h of hourLogSnapshots) {
+      if (!byId[h.employee_id]) byId[h.employee_id] = { id: h.employee_id, name: h.employee_name, source: 'hour_log', last_seen: 'hour log' };
+      else if (!byId[h.employee_id].name) byId[h.employee_id].name = h.employee_name;
+    }
+    for (const a of assignSnapshots) {
+      if (!byId[a.employee_id]) byId[a.employee_id] = { id: a.employee_id, name: a.employee_name, source: 'assignment', last_seen: 'allocation' };
+      else if (!byId[a.employee_id].name) byId[a.employee_id].name = a.employee_name;
+    }
+    // Salary structures give us CTC/basic when payslip is missing.
+    for (const s of salarySnapshots) {
+      const row = byId[s.employee_id];
+      if (!row) continue; // no name — can't reconstruct anything useful
+      if (!row.ctc && s.ctc_annual) row.ctc = Number(s.ctc_annual);
+      if (!row.salary && s.basic) row.salary = Number(s.basic || 0) + Number(s.hra || 0) + Number(s.special_allowance || 0);
+    }
+
+    // Count activity per orphan so admin can gauge which are worth
+    // recovering (Jai with 3 payslips + 40 hour logs = high value;
+    // some placeholder with 1 assignment and no name = probably skip).
+    const activityCounts: Record<string, any> = {};
+    const payC = await sql`SELECT employee_id, COUNT(*)::int AS n FROM payslips WHERE employee_id IN (SELECT DISTINCT employee_id FROM payslips LEFT JOIN employees e ON e.id = payslips.employee_id WHERE e.id IS NULL) GROUP BY employee_id` as any[];
+    for (const r of payC) activityCounts[r.employee_id] = { ...(activityCounts[r.employee_id] || {}), payslips: Number(r.n) };
+    const hlC = await sql`SELECT employee_id, COUNT(*)::int AS n FROM hour_logs WHERE employee_id IN (SELECT DISTINCT employee_id FROM hour_logs LEFT JOIN employees e ON e.id = hour_logs.employee_id WHERE e.id IS NULL) GROUP BY employee_id` as any[];
+    for (const r of hlC) activityCounts[r.employee_id] = { ...(activityCounts[r.employee_id] || {}), hour_logs: Number(r.n) };
+    const aC = await sql`SELECT employee_id, COUNT(*)::int AS n FROM project_assignments WHERE employee_id IN (SELECT DISTINCT employee_id FROM project_assignments LEFT JOIN employees e ON e.id = project_assignments.employee_id WHERE e.id IS NULL) GROUP BY employee_id` as any[];
+    for (const r of aC) activityCounts[r.employee_id] = { ...(activityCounts[r.employee_id] || {}), assignments: Number(r.n) };
+    for (const id of Object.keys(byId)) {
+      byId[id].activity = activityCounts[id] || { payslips: 0, hour_logs: 0, assignments: 0 };
+    }
+
+    // Filter out orphans with no reconstructable name — those are
+    // dead ends (probably ghosts from imports / test data). Sort by
+    // activity so the meatiest recoveries surface first.
+    const out = Object.values(byId)
+      .filter((r: any) => r.name)
+      .sort((a: any, b: any) => {
+        const totalA = (a.activity?.payslips ?? 0) + (a.activity?.hour_logs ?? 0);
+        const totalB = (b.activity?.payslips ?? 0) + (b.activity?.hour_logs ?? 0);
+        return totalB - totalA;
+      });
+    res.json(out);
+  } catch (err: any) { res.status(500).json({ error: err?.message || 'Server error' }); }
+});
+
+// POST /api/employees/:id/recover (admin only)
+// Recreates an employees row for a previously-deleted id using data
+// supplied by the recovery UI (which pre-filled from the orphan scan).
+// Because we reuse the SAME id, every orphaned row across the DB
+// (payslips, hour_logs, assignments, warnings, salary_structures)
+// instantly relinks — no update needed. Status is forced to 'inactive'
+// with a marker in the name / notes so admin can review before making
+// them active again.
+app.post('/api/employees/:id/recover', async (req, res) => {
+  try {
+    if (!(await requireAdmin(req, res))) return;
+    invalidateEmployeesCache();
+    const id = req.params.id;
+    const existing = (await sql`SELECT id FROM employees WHERE id=${id} LIMIT 1` as any[])[0];
+    if (existing) return res.status(409).json({ error: 'An employee with this id already exists — nothing to recover.' });
+    const {
+      name, email, employee_id, department, designation,
+      join_date, salary, ctc, shift,
+    } = req.body ?? {};
+    if (!name || !employee_id) return res.status(400).json({ error: 'name and employee_id are required to recover.' });
+    // Recovered employees come back Inactive so admin can review + set
+    // exit_date + reactivate deliberately. Prevents a "surprise, they're
+    // billable again" moment on the next finance roll-up.
+    const rows = await sql`
+      INSERT INTO employees (id, name, email, department, designation, employee_id, join_date,
+        status, salary, ctc, shift, avatar)
+      VALUES (${id}, ${name}, ${email ?? null}, ${department ?? null}, ${designation ?? null},
+        ${employee_id}, ${join_date ?? null},
+        'inactive', ${Number(salary) || 0}, ${Number(ctc) || 0}, ${shift ?? 'day'},
+        ${(name as string).slice(0, 2).toUpperCase()})
+      RETURNING *`;
+    res.status(201).json({ ok: true, employee: (rows as any[])[0] });
+  } catch (err: any) {
+    if (String(err?.message).includes('unique')) {
+      return res.status(409).json({ error: 'Employee ID or email conflicts with an existing record.' });
+    }
     res.status(500).json({ error: err?.message || 'Server error' });
   }
 });

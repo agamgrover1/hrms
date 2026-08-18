@@ -545,10 +545,13 @@ export default function EmployeeProfile() {
               className="flex items-center gap-1.5 px-3 py-1.5 bg-white/15 hover:bg-white/25 border border-white/15 backdrop-blur-sm rounded-lg text-white text-xs font-semibold transition-colors">
               <Pencil size={12}/> Edit
             </button>
-            <button onClick={() => setShowDelete(true)}
-              className="flex items-center gap-1.5 px-3 py-1.5 bg-danger/70 hover:bg-danger/90 rounded-lg text-white text-xs font-semibold transition-colors">
-              <Trash2 size={12}/> Delete
-            </button>
+            {me?.role === 'admin' && (
+              <button onClick={() => setShowDelete(true)}
+                title="Admin only. HR can Exit + Inactive from the Edit form instead — preserves finance history."
+                className="flex items-center gap-1.5 px-3 py-1.5 bg-danger/70 hover:bg-danger/90 rounded-lg text-white text-xs font-semibold transition-colors">
+                <Trash2 size={12}/> Delete
+              </button>
+            )}
           </div>
 
           <div className="relative px-6 sm:px-8 pt-8 pb-6">

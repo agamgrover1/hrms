@@ -1,6 +1,6 @@
 import { useState, useEffect, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Search, Filter, Plus, Mail, Phone, MapPin, ChevronRight, X, User, Pencil, Trash2, Eye, EyeOff, AlertTriangle, Shield, LayoutGrid, List as ListIcon, ArrowUpDown, ChevronUp, ChevronDown, ShieldCheck, Clock } from 'lucide-react';
+import { Search, Filter, Plus, Mail, Phone, MapPin, ChevronRight, X, User, Pencil, Trash2, Eye, EyeOff, AlertTriangle, Shield, LayoutGrid, List as ListIcon, ArrowUpDown, ChevronUp, ChevronDown, ShieldCheck, Clock, RotateCcw } from 'lucide-react';
 import { api } from '../services/api';
 import { useAuth } from '../context/AuthContext';
 import { toast } from '../components/Toaster';
@@ -87,6 +87,11 @@ function EmployeeCard({ emp, index, onClick, warningCount = 0, onPip = false }: 
 }
 
 function EmployeeDetail({ emp, onClose, onEdit, onDelete }: { emp: any; onClose: () => void; onEdit: () => void; onDelete: () => void }) {
+  // Delete is admin-only. HR can still Exit + Inactive via the Edit
+  // form; hard-delete rewrites historical finance numbers so it's
+  // gated tighter than the rest of HR actions.
+  const { user: currentUserForDelete } = useAuth();
+  const canDelete = currentUserForDelete?.role === 'admin';
   const defaultProbationEnd = emp.join_date
     ? (() => { const d = new Date(emp.join_date); d.setDate(d.getDate() + 90); return d.toISOString().split('T')[0]; })()
     : '';
@@ -181,10 +186,12 @@ function EmployeeDetail({ emp, onClose, onEdit, onDelete }: { emp: any; onClose:
               className="flex items-center gap-1.5 px-3 py-1.5 bg-white/20 hover:bg-white/30 rounded-lg transition-colors text-white text-xs font-medium">
               <Pencil size={13} /> Edit
             </button>
-            <button onClick={onDelete}
-              className="flex items-center gap-1.5 px-3 py-1.5 bg-danger/80 hover:bg-danger rounded-lg transition-colors text-white text-xs font-medium">
-              <Trash2 size={13} /> Delete
-            </button>
+            {canDelete && (
+              <button onClick={onDelete}
+                className="flex items-center gap-1.5 px-3 py-1.5 bg-danger/80 hover:bg-danger rounded-lg transition-colors text-white text-xs font-medium">
+                <Trash2 size={13} /> Delete
+              </button>
+            )}
             <button onClick={onClose} className="p-1.5 bg-white/20 hover:bg-white/30 rounded-lg transition-colors">
               <X size={16} className="text-white" />
             </button>
@@ -1124,8 +1131,10 @@ export default function Employees() {
     });
   };
   const [showAdd, setShowAdd] = useState(false);
+  const [showRecover, setShowRecover] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState<any | null>(null);
   const [deleting, setDeleting] = useState(false);
+  const { user: currentUser } = useAuth();
 
   const handleDelete = async (emp: any) => {
     setDeleting(true);
@@ -1247,8 +1256,15 @@ export default function Employees() {
             <ListIcon size={12} /> List
           </button>
         </div>
+        {currentUser?.role === 'admin' && (
+          <button onClick={() => setShowRecover(true)}
+            title="See deleted employees still reconstructable from payslips / hour logs / assignments"
+            className="ml-auto flex items-center gap-2 px-3 py-2.5 border border-outline hover:bg-surface-2 text-on-surface text-sm font-medium rounded-lg transition-all">
+            <RotateCcw size={14} /> Recover deleted
+          </button>
+        )}
         <button onClick={() => setShowAdd(true)}
-          className="ml-auto flex items-center gap-2 px-4 py-2.5 bg-accent hover:opacity-90 text-on-accent text-sm font-medium rounded-lg transition-all shadow-elev-1 hover:shadow-elev-2">
+          className={`${currentUser?.role === 'admin' ? '' : 'ml-auto'} flex items-center gap-2 px-4 py-2.5 bg-accent hover:opacity-90 text-on-accent text-sm font-medium rounded-lg transition-all shadow-elev-1 hover:shadow-elev-2`}>
           <Plus size={15} /> Add Employee
         </button>
       </div>
@@ -1309,6 +1325,154 @@ export default function Employees() {
           }}
         />
       )}
+
+      {showRecover && (
+        <RecoverDeletedModal
+          onClose={() => setShowRecover(false)}
+          onRecovered={emp => setEmployees(prev => [...prev, emp])}
+        />
+      )}
+    </div>
+  );
+}
+
+// Admin-only recovery flow for hard-deleted employees. The backend scan
+// crawls payslips / hour_logs / project_assignments / salary_structures
+// for employee_ids that no longer resolve — those are "orphans" whose
+// data still exists but whose employee row was deleted. Reusing the
+// SAME id on recovery instantly relinks every orphaned row across the
+// DB (no updates needed). Recovered employees come back Inactive so
+// admin can confirm details before reactivating.
+function RecoverDeletedModal({ onClose, onRecovered }: {
+  onClose: () => void;
+  onRecovered: (emp: any) => void;
+}) {
+  const [rows, setRows] = useState<any[] | null>(null);
+  const [err, setErr] = useState('');
+  const [busyId, setBusyId] = useState<string | null>(null);
+  const [edits, setEdits] = useState<Record<string, any>>({});
+
+  useEffect(() => {
+    api.getDeletedOrphans()
+      .then(list => {
+        setRows(list as any[]);
+        // Prefill each editable row from the scan's reconstruction.
+        const initial: Record<string, any> = {};
+        for (const r of list as any[]) {
+          initial[r.id] = {
+            name: r.name ?? '',
+            employee_id: r.employee_code ?? '',
+            designation: r.designation ?? '',
+            salary: r.salary ?? 0,
+            ctc: r.ctc ?? 0,
+          };
+        }
+        setEdits(initial);
+      })
+      .catch(e => setErr(e?.message ?? 'Failed to load recoverable employees'));
+  }, []);
+
+  const recover = async (orphan: any) => {
+    const patch = edits[orphan.id] || {};
+    if (!patch.name || !patch.employee_id) {
+      setErr(`${orphan.id}: name and employee code are required to recover.`);
+      return;
+    }
+    setBusyId(orphan.id);
+    setErr('');
+    try {
+      const r: any = await api.recoverEmployee(orphan.id, {
+        name: patch.name,
+        employee_id: patch.employee_id,
+        designation: patch.designation || undefined,
+        salary: Number(patch.salary) || 0,
+        ctc: Number(patch.ctc) || 0,
+      });
+      onRecovered(r.employee);
+      setRows(prev => (prev ?? []).filter(x => x.id !== orphan.id));
+      toast.success(`${patch.name} recovered`, 'They\'re back as Inactive — review Exit Date + Status when ready.');
+    } catch (e: any) {
+      setErr(e?.message ?? 'Recovery failed');
+    } finally { setBusyId(null); }
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm p-4" onClick={onClose}>
+      <div className="bg-surface rounded-2xl shadow-2xl w-full max-w-3xl flex flex-col max-h-[90vh]" onClick={e => e.stopPropagation()}>
+        <div className="flex items-center justify-between px-6 py-4 border-b border-outline">
+          <div>
+            <h2 className="font-bold text-base text-on-surface">Recover deleted employees</h2>
+            <p className="text-xs text-on-surface-subtle mt-0.5">
+              Rebuilt from surviving payslips / hour logs / assignments. Reusing the same id relinks all historical rows automatically.
+              Recovered records come back as <b className="text-on-surface">Inactive</b> for review.
+            </p>
+          </div>
+          <button onClick={onClose}><X size={16} className="text-on-surface-subtle" /></button>
+        </div>
+
+        <div className="p-6 overflow-y-auto flex-1 space-y-3">
+          {err && <div className="rounded-lg border border-danger/30 bg-danger-container/40 p-3 text-xs text-danger">{err}</div>}
+          {rows === null ? (
+            <p className="text-sm text-on-surface-muted text-center py-8">Scanning…</p>
+          ) : rows.length === 0 ? (
+            <div className="text-center py-8">
+              <p className="text-sm text-on-surface-muted">Nothing to recover.</p>
+              <p className="text-xs text-on-surface-subtle mt-1">No orphaned employee data found in payslips / logs / assignments.</p>
+            </div>
+          ) : rows.map((r: any) => {
+            const patch = edits[r.id] || {};
+            const set = (k: string, v: any) => setEdits(prev => ({ ...prev, [r.id]: { ...(prev[r.id] || {}), [k]: v } }));
+            return (
+              <div key={r.id} className="rounded-lg border border-outline bg-surface-2/40 p-4">
+                <div className="flex items-start justify-between gap-3">
+                  <div className="min-w-0">
+                    <p className="font-bold text-on-surface">{r.name}</p>
+                    <p className="text-[11px] text-on-surface-subtle">
+                      id <span className="num-mono">{r.id}</span> · last seen: {r.last_seen ?? r.source}
+                    </p>
+                    <p className="text-[11px] text-on-surface-muted mt-1">
+                      Activity: <span className="num-mono">{r.activity?.payslips ?? 0}</span> payslip(s) ·
+                      <span className="num-mono ml-1">{r.activity?.hour_logs ?? 0}</span> hour log(s) ·
+                      <span className="num-mono ml-1">{r.activity?.assignments ?? 0}</span> allocation(s)
+                    </p>
+                  </div>
+                  <button onClick={() => recover(r)} disabled={busyId === r.id}
+                    className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-semibold bg-success text-white hover:opacity-90 disabled:opacity-50 whitespace-nowrap">
+                    {busyId === r.id ? 'Recovering…' : 'Recover'}
+                  </button>
+                </div>
+                <div className="grid grid-cols-2 gap-3 mt-3 text-xs">
+                  <label className="block">
+                    <span className="text-on-surface-muted">Name</span>
+                    <input value={patch.name ?? ''} onChange={e => set('name', e.target.value)}
+                      className="mt-1 w-full px-2 py-1.5 rounded border border-outline bg-surface text-sm" />
+                  </label>
+                  <label className="block">
+                    <span className="text-on-surface-muted">Employee code</span>
+                    <input value={patch.employee_id ?? ''} onChange={e => set('employee_id', e.target.value)}
+                      placeholder="e.g. DL0067"
+                      className="mt-1 w-full px-2 py-1.5 rounded border border-outline bg-surface text-sm num-mono" />
+                  </label>
+                  <label className="block">
+                    <span className="text-on-surface-muted">Designation</span>
+                    <input value={patch.designation ?? ''} onChange={e => set('designation', e.target.value)}
+                      className="mt-1 w-full px-2 py-1.5 rounded border border-outline bg-surface text-sm" />
+                  </label>
+                  <label className="block">
+                    <span className="text-on-surface-muted">Monthly salary (₹)</span>
+                    <input type="number" value={patch.salary ?? 0} onChange={e => set('salary', e.target.value)}
+                      className="mt-1 w-full px-2 py-1.5 rounded border border-outline bg-surface text-sm num-mono" />
+                  </label>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+
+        <div className="px-6 py-3 border-t border-outline bg-surface-2/40 flex items-center justify-end">
+          <button onClick={onClose} className="px-4 py-2 text-sm text-on-surface-muted hover:bg-surface-2 rounded-lg">Close</button>
+        </div>
+      </div>
     </div>
   );
 }

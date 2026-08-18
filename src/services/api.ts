@@ -143,7 +143,20 @@ export const api = {
     request<any[]>(`/employees?reporting_manager_id=${reporting_manager_id}${includeDescendants ? '&descendants=true' : ''}`),
   createEmployee: (data: any) => request<any>('/employees', { method: 'POST', body: JSON.stringify(data) }),
   updateEmployee: (id: string, data: any) => request<any>(`/employees/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
-  deleteEmployee: (id: string) => request<any>(`/employees/${id}`, { method: 'DELETE' }),
+  deleteEmployee: (id: string, force = false) => request<any>(`/employees/${id}${force ? '?force=1' : ''}`, { method: 'DELETE' }),
+  // Admin recovery — lists deleted employees still reconstructable from
+  // orphaned finance/HR history, and re-creates them with the original id
+  // so all orphaned rows relink automatically.
+  getDeletedOrphans: () => request<Array<{
+    id: string; name: string; employee_code?: string; designation?: string;
+    ctc?: number; salary?: number; source: string; last_seen?: string;
+    activity: { payslips?: number; hour_logs?: number; assignments?: number };
+  }>>('/employees/deleted-orphans'),
+  recoverEmployee: (id: string, data: {
+    name: string; employee_id: string; email?: string;
+    department?: string; designation?: string; join_date?: string;
+    salary?: number; ctc?: number; shift?: string;
+  }) => request<any>(`/employees/${encodeURIComponent(id)}/recover`, { method: 'POST', body: JSON.stringify(data) }),
   updateEmployeeProbation: (id: string, probation_end_date: string | null) =>
     request<any>(`/employees/${id}/probation`, { method: 'PATCH', body: JSON.stringify({ probation_end_date }) }),
 
