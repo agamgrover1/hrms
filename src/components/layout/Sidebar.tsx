@@ -286,10 +286,13 @@ export default function Sidebar({ mobileOpen = false, onMobileClose }: { mobileO
       ...(isManager ? [{ to: '/hours/utilization', icon: Activity, label: 'Team utilization' } as NavItem] : []),
       // Approvals surface covers BOTH project-hour reviews (project reviewers)
       // AND internal-activity reviews (reporting managers via the chain
-      // walk). Any employee with direct reports OR a project-reviewer / lead
-      // slot sees it — a manager who's not a project reviewer still needs
-      // to approve their team's internal-activity hours.
-      ...(isEmployee && (isProjectReviewer || isManager) ? [{ to: '/hours/approvals', icon: ClipboardCheck, label: 'Approvals', end: true } as NavItem] : []),
+      // walk). Any user with direct reports OR a project-reviewer / lead
+      // slot sees it. HR managers who happen to manage a team (e.g.
+      // Dalwinder → Ishita) count too — they still need to approve
+      // their reports' hours, even though HR as a role doesn't do
+      // org-wide project-hours review. Employees stay gated on
+      // isProjectReviewer OR isManager as before.
+      ...((isEmployee || role === 'hr_manager' || role === 'hr_intern') && (isProjectReviewer || isManager) ? [{ to: '/hours/approvals', icon: ClipboardCheck, label: 'Approvals', end: true } as NavItem] : []),
     ],
   } : null;
   if (personalGroup) groups.push(personalGroup);

@@ -14284,8 +14284,17 @@ app.get('/api/hour-log-days/queue', async (req, res) => {
         AND (${month}::int IS NULL OR d.month = ${month})
         AND (${year}::int IS NULL OR d.year = ${year})
         AND (${reviewer_id}::text IS NULL
+             -- Project-level review: reviewer is set as the project's
+             -- reporting owner or lead. This is the historic path — used
+             -- by project coordinators / reviewers to approve delivery hours.
              OR p.project_reporting_id = ${reviewer_id}
-             OR p.project_lead_id = ${reviewer_id})
+             OR p.project_lead_id = ${reviewer_id}
+             -- Reporting-chain path: reviewer is the log author's direct
+             -- manager. Lets a manager (including HR-manager-with-reports
+             -- like Dalwinder) see her team's logs even when she isn't on
+             -- the project. Without this, hr_manager scope='mine' resolved
+             -- to zero rows because HR typically isn't a project reviewer.
+             OR e.reporting_manager_id = ${reviewer_id})
       ORDER BY d.log_date DESC, d.employee_id, d.project_id`);
     res.json(rows);
   } catch (err: any) { res.status(500).json({ error: err.message || 'Server error' }); }
@@ -14306,12 +14315,16 @@ app.get('/api/hour-log-days/counts', async (req, res) => {
       SELECT d.status, COUNT(*)::int AS n
       FROM hour_log_days d
       JOIN projects p ON p.id = d.project_id
+      JOIN employees e ON e.id = d.employee_id
       WHERE (${employee_id}::text IS NULL OR d.employee_id = ${employee_id})
         AND (${month}::int IS NULL OR d.month = ${month})
         AND (${year}::int IS NULL OR d.year = ${year})
         AND (${reviewer_id}::text IS NULL
              OR p.project_reporting_id = ${reviewer_id}
-             OR p.project_lead_id = ${reviewer_id})
+             OR p.project_lead_id = ${reviewer_id}
+             -- Match the queue endpoint: manager-of-employee path so KPI
+             -- tiles reflect the actual queue count for HR-with-reports.
+             OR e.reporting_manager_id = ${reviewer_id})
       GROUP BY d.status`);
     const out = { pending: 0, on_hold: 0, approved: 0, rejected: 0 };
     for (const r of rows as any[]) if (r.status in out) (out as any)[r.status] = Number(r.n) || 0;
