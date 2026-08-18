@@ -37,3 +37,4 @@ dist-ssr
 # Binary artefacts — don't commit
 *.zip
 *.tar.gz
+.env*
