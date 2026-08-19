@@ -10,6 +10,8 @@ import KpiTemplatesTab from '../components/admin/KpiTemplatesTab';
 
 type Tab = 'departments' | 'designations' | 'shifts' | 'optional_leave' | 'roles' | 'holidays' | 'activities' | 'lifecycle_templates' | 'hr_doc_types' | 'kpi_templates' | 'geofence';
 
+const inputCls = 'text-sm bg-surface border border-outline focus:border-accent focus:ring-2 focus:ring-accent/20 rounded-lg px-3 py-2 focus:outline-none text-on-surface placeholder:text-on-surface-subtle w-full transition-colors';
+
 function fmt12(t: string) {
   if (!t) return '';
   const [h, m] = t.split(':').map(Number);
@@ -152,8 +154,6 @@ export default function Config() {
     await api.deleteOptionalLeaveDate(id).catch(() => {});
     setOlDates(prev => prev.filter(d => d.id !== id));
   };
-
-  const inputCls = 'text-sm bg-surface border border-outline focus:border-accent focus:ring-2 focus:ring-accent/20 rounded-lg px-3 py-2 focus:outline-none text-on-surface placeholder:text-on-surface-subtle w-full transition-colors';
 
   const TABS: { key: Tab; label: string; icon: any }[] = [
     { key: 'departments',   label: 'Departments',    icon: Building2   },
