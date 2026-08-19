@@ -5,6 +5,7 @@ import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../../context/AuthContext';
 import { api } from '../../services/api';
 import ThemeToggle from '../ThemeToggle';
+import ClockWidget from './ClockWidget';
 
 // Map notification type + user role → destination route
 export function getNotifRoute(type: string, role: string): string {
@@ -486,6 +487,11 @@ export default function TopBar({ title, onMenuClick }: Props) {
       </button>
 
       <div className="ml-auto flex items-center gap-2">
+        {/* Persistent clock-in / clock-out control — visible on every
+            page for any user with an underlying employee record. Hides
+            itself gracefully for admin-only users. */}
+        <ClockWidget />
+
         {/* Theme toggle */}
         <ThemeToggle />
 

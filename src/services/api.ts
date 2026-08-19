@@ -201,6 +201,8 @@ export const api = {
     request<any>('/config/attendance-geofence', { method: 'PUT', body: JSON.stringify(data) }),
   clockOut: (employee_id: string, geo?: { lat?: number; lng?: number }) =>
     request<any>('/attendance/clock-out', { method: 'POST', body: JSON.stringify({ employee_id, ...(geo ?? {}) }) }),
+  getAttendanceSessions: (employee_id: string, date: string) =>
+    request<any[]>(`/attendance/sessions?employee_id=${encodeURIComponent(employee_id)}&date=${encodeURIComponent(date)}`),
   markAttendance: (data: { employee_id: string; date: string; status: string; check_in?: string; check_out?: string }) =>
     request<any>('/attendance/mark', { method: 'POST', body: JSON.stringify(data) }),
   getAttendanceSessions: (employeeId: string, date: string) =>
