@@ -1114,7 +1114,11 @@ export default function Employees() {
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
   const [deptFilter, setDeptFilter] = useState('All');
-  const [statusFilter, setStatusFilter] = useState('All');
+  // Default to 'active' so exited/inactive employees don't clutter the
+  // list. Admin can flip the dropdown to see inactive or All when they
+  // specifically need to (e.g. checking on someone who left, or
+  // browsing the recovery pool).
+  const [statusFilter, setStatusFilter] = useState('active');
   // Stage = employment lifecycle stage: confirmed / probation / notice. Pulled
   // out as its own filter because HR commonly asks "who's still on probation?"
   // or "who's serving notice this month?" — independent of department / status.
