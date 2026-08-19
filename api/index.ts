@@ -870,18 +870,18 @@ async function runStartupMigrations() {
   // full migration block.
   //
   // KEEP THIS PROBE POINTED AT THE MOST RECENT MIGRATION when you add one.
-  // Right now: candidates.stage (added Aug 2026 for the Hiring module —
-  // 10-stage candidate funnel with bespoke candidates + candidate_stage_events
-  // + candidate_interviews + config_sources tables). If you add a newer
-  // column / table, update this SELECT to reference it so cold starts
-  // re-run migrations once after each deploy.
+  // Right now: attendance_sessions.geo_status (added Aug 2026 for the
+  // clock-in geofence — attendance_geo_config table + per-session geo
+  // audit columns). If you add a newer column / table, update this
+  // SELECT to reference it so cold starts re-run migrations once after
+  // each deploy.
   try {
     // Bump this probe whenever a new migration lands; existing warm
     // Lambdas will fail the SELECT and re-run runStartupMigrations().
     // For a *seed* (rows, not columns), we probe with EXISTS-style: an
     // empty result set means "still needs to run", so we don't set the
     // flag and fall through.
-    await sql`SELECT stage FROM candidates LIMIT 0`;
+    await sql`SELECT geo_status FROM attendance_sessions LIMIT 0`;
     _migrated = true;
     return;
   } catch {
@@ -3019,6 +3019,35 @@ async function runStartupMigrations() {
     )`;
   await sql`CREATE INDEX IF NOT EXISTS idx_candidate_interviews_cand ON candidate_interviews(candidate_id, round_no)`.catch(()=>{});
 
+  // ── Attendance geofence (Aug 2026) ─────────────────────────────────
+  // Single-office fence. Warn-but-allow enforcement: if enabled + the
+  // employee's clock-in coords are outside the radius, we return a
+  // 409-style hint asking the client to confirm — after confirmation
+  // the row is stamped geo_status='outside' + geo_confirmed=true for
+  // HR audit. WFH-approved days auto-exempt (checked via wfh_requests
+  // in the clock-in handler).
+  await sql`
+    CREATE TABLE IF NOT EXISTS attendance_geo_config (
+      id TEXT PRIMARY KEY DEFAULT 'default',
+      enabled BOOLEAN NOT NULL DEFAULT FALSE,
+      latitude NUMERIC,
+      longitude NUMERIC,
+      radius_meters INTEGER NOT NULL DEFAULT 100,
+      office_label TEXT,
+      updated_at TIMESTAMPTZ DEFAULT NOW(),
+      updated_by TEXT
+    )`;
+  await sql`INSERT INTO attendance_geo_config (id, enabled, radius_meters) VALUES ('default', FALSE, 100) ON CONFLICT (id) DO NOTHING`.catch(()=>{});
+  // Per-session geo audit. Nullable so pre-geofence rows and
+  // WFH-exempt sessions coexist. `geo_status` is the single-lookup
+  // field for the attendance page's Location pill.
+  await sql`ALTER TABLE attendance_sessions ADD COLUMN IF NOT EXISTS lat NUMERIC`.catch(()=>{});
+  await sql`ALTER TABLE attendance_sessions ADD COLUMN IF NOT EXISTS lng NUMERIC`.catch(()=>{});
+  await sql`ALTER TABLE attendance_sessions ADD COLUMN IF NOT EXISTS accuracy_m NUMERIC`.catch(()=>{});
+  await sql`ALTER TABLE attendance_sessions ADD COLUMN IF NOT EXISTS distance_from_office_m NUMERIC`.catch(()=>{});
+  await sql`ALTER TABLE attendance_sessions ADD COLUMN IF NOT EXISTS geo_status TEXT`.catch(()=>{});
+  await sql`ALTER TABLE attendance_sessions ADD COLUMN IF NOT EXISTS geo_confirmed BOOLEAN NOT NULL DEFAULT FALSE`.catch(()=>{});
+
   // Source dropdown for the Candidate Entry form. Same shape as
   // config_designations — the config surface (Configuration → Sources)
   // reuses the same CRUD pattern. Seeded once with sensible defaults.
@@ -4076,10 +4105,23 @@ app.get('/api/attendance/today', async (req, res) => {
   } catch (e: any) { res.status(500).json({ error: e.message }); }
 });
 
+// Great-circle distance in metres between two lat/lng points. Standard
+// haversine; enough precision for a 100m fence check (much smaller than
+// GPS accuracy anyway).
+function haversineMeters(lat1: number, lng1: number, lat2: number, lng2: number): number {
+  const R = 6_371_000; // Earth radius in metres
+  const toRad = (d: number) => d * Math.PI / 180;
+  const dLat = toRad(lat2 - lat1);
+  const dLng = toRad(lng2 - lng1);
+  const a = Math.sin(dLat / 2) ** 2
+    + Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLng / 2) ** 2;
+  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+}
+
 app.post('/api/attendance/clock-in', async (req, res) => {
   try {
     await runStartupMigrations(); // idempotent; fast-path after cold start
-    const { employee_id, source } = req.body;
+    const { employee_id, source, lat, lng, accuracy, confirmed_outside } = req.body;
     const { date: today, time } = istNow();
     if (isWeekendV(today)) return res.status(400).json({ error: 'Weekends are non-working days' });
 
@@ -4109,11 +4151,69 @@ app.post('/api/attendance/clock-in', async (req, res) => {
     const status      = isLateByTime(time, lateAfter) ? 'late' : 'present';
     const clockSource = source ?? 'manual';
 
-    // Create session
+    // ── Geofence check ────────────────────────────────────────────────
+    // Resolve the fence once. If disabled → skip entirely + stamp
+    // geo_status='not_enforced'. Otherwise compute distance from
+    // office (haversine) and decide: inside / outside / no_data.
+    // Warn-but-allow mode: outside without confirmation → 409 with a
+    // hint the client can convert into a confirm dialog.
+    let geoStatus: string = 'not_enforced';
+    let distance: number | null = null;
+    let latNum: number | null = lat != null ? Number(lat) : null;
+    let lngNum: number | null = lng != null ? Number(lng) : null;
+    let accNum: number | null = accuracy != null ? Number(accuracy) : null;
+    const geoCfgRows = await sql`SELECT enabled, latitude, longitude, radius_meters, office_label FROM attendance_geo_config WHERE id='default' LIMIT 1` as any[];
+    const geoCfg = geoCfgRows[0];
+    if (geoCfg?.enabled && geoCfg.latitude != null && geoCfg.longitude != null) {
+      // WFH auto-exempt: any approved WFH request for the employee today
+      // (full-day or half-day) skips the fence entirely. Attendance still
+      // records the (missing / off-office) coords for audit.
+      const wfhToday = await sql`SELECT id FROM wfh_requests WHERE employee_id=${employee_id} AND date::date=${today}::date AND status='approved' LIMIT 1`.catch(() => [] as any[]) as any[];
+      if (wfhToday.length) {
+        geoStatus = 'wfh_exempt';
+      } else if (latNum == null || lngNum == null) {
+        // No GPS reading. Treated like "outside" for confirmation
+        // purposes so the client can prompt the employee to acknowledge.
+        if (!confirmed_outside) {
+          return res.status(409).json({
+            requires_confirmation: true,
+            reason: 'no_gps',
+            office_label: geoCfg.office_label ?? 'Office',
+            radius_m: Number(geoCfg.radius_meters),
+            message: 'We could not read your location. Confirm you want to clock in without a location check?',
+          });
+        }
+        geoStatus = 'no_data';
+      } else {
+        distance = haversineMeters(Number(geoCfg.latitude), Number(geoCfg.longitude), latNum, lngNum);
+        const inside = distance <= Number(geoCfg.radius_meters);
+        if (inside) {
+          geoStatus = 'inside';
+        } else {
+          if (!confirmed_outside) {
+            return res.status(409).json({
+              requires_confirmation: true,
+              reason: 'outside_fence',
+              distance_m: Math.round(distance),
+              office_label: geoCfg.office_label ?? 'Office',
+              radius_m: Number(geoCfg.radius_meters),
+              message: `You're about ${Math.round(distance)}m from ${geoCfg.office_label ?? 'the office'} (allowed radius ${geoCfg.radius_meters}m). Clock in from here anyway?`,
+            });
+          }
+          geoStatus = 'outside';
+        }
+      }
+    }
+
+    // Create session with geo audit stamped in.
     const sessionId = `sess_${Date.now()}`;
     const session = await sql`
-      INSERT INTO attendance_sessions (id, employee_id, date, clock_in, source)
-      VALUES (${sessionId}, ${employee_id}, ${today}, ${time}, ${clockSource})
+      INSERT INTO attendance_sessions (id, employee_id, date, clock_in, source, lat, lng, accuracy_m, distance_from_office_m, geo_status, geo_confirmed)
+      VALUES (${sessionId}, ${employee_id}, ${today}, ${time}, ${clockSource},
+        ${latNum}, ${lngNum}, ${accNum},
+        ${distance != null ? Math.round(distance) : null},
+        ${geoStatus},
+        ${!!confirmed_outside})
       RETURNING *
     `;
 
@@ -4125,7 +4225,46 @@ app.post('/api/attendance/clock-in', async (req, res) => {
       ON CONFLICT (employee_id, date) DO NOTHING
     `.catch(() => {});
 
-    res.json({ session: (session as any[])[0], time, status });
+    res.json({ session: (session as any[])[0], time, status, geo_status: geoStatus });
+  } catch (err: any) { res.status(500).json({ error: err.message || 'Server error' }); }
+});
+
+// GET /api/config/attendance-geofence — public to any authenticated user
+// so the clock-in UI knows whether to request location up front.
+app.get('/api/config/attendance-geofence', async (_req, res) => {
+  try {
+    await runStartupMigrations();
+    const rows = await sql`SELECT enabled, latitude, longitude, radius_meters, office_label FROM attendance_geo_config WHERE id='default' LIMIT 1` as any[];
+    res.json(rows[0] ?? { enabled: false, latitude: null, longitude: null, radius_meters: 100, office_label: null });
+  } catch (err: any) { res.status(500).json({ error: err.message || 'Server error' }); }
+});
+
+// PUT /api/config/attendance-geofence — admin only. Sets the office
+// coords + radius + enforcement toggle. `office_label` is a display
+// name (e.g. "Sector 80 Mohali") used in the clock-in confirmation prompt.
+app.put('/api/config/attendance-geofence', async (req, res) => {
+  try {
+    if (!(await requireAdmin(req, res))) return;
+    const { enabled, latitude, longitude, radius_meters, office_label } = req.body ?? {};
+    const lat = latitude == null || latitude === '' ? null : Number(latitude);
+    const lng = longitude == null || longitude === '' ? null : Number(longitude);
+    const radius = Math.max(10, Math.min(5000, Number(radius_meters) || 100));
+    if (enabled && (lat == null || lng == null)) {
+      return res.status(400).json({ error: 'Latitude and longitude are required to enable the geofence.' });
+    }
+    await sql`
+      INSERT INTO attendance_geo_config (id, enabled, latitude, longitude, radius_meters, office_label, updated_at, updated_by)
+      VALUES ('default', ${!!enabled}, ${lat}, ${lng}, ${radius}, ${office_label ?? null}, NOW(), ${req.header('x-user-id') ?? null})
+      ON CONFLICT (id) DO UPDATE SET
+        enabled = EXCLUDED.enabled,
+        latitude = EXCLUDED.latitude,
+        longitude = EXCLUDED.longitude,
+        radius_meters = EXCLUDED.radius_meters,
+        office_label = EXCLUDED.office_label,
+        updated_at = NOW(),
+        updated_by = EXCLUDED.updated_by`;
+    const rows = await sql`SELECT * FROM attendance_geo_config WHERE id='default'` as any[];
+    res.json(rows[0]);
   } catch (err: any) { res.status(500).json({ error: err.message || 'Server error' }); }
 });
 

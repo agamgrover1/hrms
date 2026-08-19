@@ -191,7 +191,16 @@ export const api = {
     request<any>(`/attendance-notes/approve`, { method: 'PATCH', body: JSON.stringify(data) }),
   rejectAttendanceNote: (data: { employee_id: string; date: string; rejection_reason: string }) =>
     request<any>(`/attendance-notes/reject`, { method: 'PATCH', body: JSON.stringify(data) }),
-  clockIn: (employee_id: string) => request<any>('/attendance/clock-in', { method: 'POST', body: JSON.stringify({ employee_id }) }),
+  // Payload includes optional geofence fields: lat/lng/accuracy from
+  // navigator.geolocation, and confirmed_outside=true on the RETRY after
+  // the user acknowledges the "outside fence" prompt. Server returns
+  // 409 with { requires_confirmation: true, ... } on the first call
+  // when GPS is missing or the reading is outside the fence.
+  clockIn: (employee_id: string, geo?: { lat?: number; lng?: number; accuracy?: number; confirmed_outside?: boolean }) =>
+    request<any>('/attendance/clock-in', { method: 'POST', body: JSON.stringify({ employee_id, ...(geo ?? {}) }) }),
+  getAttendanceGeofence: () => request<{ enabled: boolean; latitude: number | null; longitude: number | null; radius_meters: number; office_label: string | null }>('/config/attendance-geofence'),
+  saveAttendanceGeofence: (data: { enabled: boolean; latitude: number | null; longitude: number | null; radius_meters: number; office_label?: string }) =>
+    request<any>('/config/attendance-geofence', { method: 'PUT', body: JSON.stringify(data) }),
   clockOut: (employee_id: string) => request<any>('/attendance/clock-out', { method: 'POST', body: JSON.stringify({ employee_id }) }),
   markAttendance: (data: { employee_id: string; date: string; status: string; check_in?: string; check_out?: string }) =>
     request<any>('/attendance/mark', { method: 'POST', body: JSON.stringify(data) }),

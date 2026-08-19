@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { Settings, Plus, Trash2, Edit3, Check, X, Clock, Briefcase, Building2, CalendarDays, BookOpen, PartyPopper, ListChecks, UserPlus, FileText, Target } from 'lucide-react';
+import { Settings, Plus, Trash2, Edit3, Check, X, Clock, Briefcase, Building2, CalendarDays, BookOpen, PartyPopper, ListChecks, UserPlus, FileText, Target, MapPin } from 'lucide-react';
 import { api } from '../services/api';
 import RoleResponsibilitiesTab from '../components/admin/RoleResponsibilitiesTab';
 import HolidaysTab from '../components/admin/HolidaysTab';
@@ -8,7 +8,7 @@ import ChecklistTemplatesTab from '../components/admin/ChecklistTemplatesTab';
 import HrDocumentTypesTab from '../components/admin/HrDocumentTypesTab';
 import KpiTemplatesTab from '../components/admin/KpiTemplatesTab';
 
-type Tab = 'departments' | 'designations' | 'shifts' | 'optional_leave' | 'roles' | 'holidays' | 'activities' | 'lifecycle_templates' | 'hr_doc_types' | 'kpi_templates';
+type Tab = 'departments' | 'designations' | 'shifts' | 'optional_leave' | 'roles' | 'holidays' | 'activities' | 'lifecycle_templates' | 'hr_doc_types' | 'kpi_templates' | 'geofence';
 
 function fmt12(t: string) {
   if (!t) return '';
@@ -166,6 +166,7 @@ export default function Config() {
     { key: 'lifecycle_templates', label: 'Lifecycle Templates', icon: UserPlus  },
     { key: 'hr_doc_types',        label: 'HR Doc Types',        icon: FileText  },
     { key: 'kpi_templates',       label: 'KPI Templates',       icon: Target    },
+    { key: 'geofence',            label: 'Attendance Geofence', icon: MapPin    },
   ];
 
   return (
@@ -449,6 +450,134 @@ export default function Config() {
       {tab === 'lifecycle_templates' && <ChecklistTemplatesTab />}
       {tab === 'hr_doc_types' && <HrDocumentTypesTab />}
       {tab === 'kpi_templates' && <KpiTemplatesTab />}
+      {tab === 'geofence' && <GeofenceTab />}
+    </div>
+  );
+}
+
+// Admin config for the attendance geofence. Warn-but-allow mode: even
+// when enabled, employees outside the fence get a confirmation prompt
+// instead of a hard block. Approved WFH days auto-exempt via the
+// backend clock-in handler.
+function GeofenceTab() {
+  const [cfg, setCfg] = useState<{ enabled: boolean; latitude: string; longitude: string; radius_meters: number; office_label: string }>({
+    enabled: false, latitude: '', longitude: '', radius_meters: 100, office_label: '',
+  });
+  const [loading, setLoading] = useState(true);
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState('');
+  const [err, setErr] = useState('');
+
+  useEffect(() => {
+    api.getAttendanceGeofence().then((r: any) => {
+      setCfg({
+        enabled: !!r?.enabled,
+        latitude: r?.latitude != null ? String(r.latitude) : '',
+        longitude: r?.longitude != null ? String(r.longitude) : '',
+        radius_meters: Number(r?.radius_meters ?? 100),
+        office_label: r?.office_label ?? '',
+      });
+    }).catch((e: any) => setErr(e?.message ?? 'Failed to load config'))
+      .finally(() => setLoading(false));
+  }, []);
+
+  const useCurrentLocation = () => {
+    setMsg(''); setErr('');
+    if (!('geolocation' in navigator)) { setErr('Browser does not support geolocation.'); return; }
+    navigator.geolocation.getCurrentPosition(
+      (pos) => setCfg(c => ({ ...c, latitude: String(pos.coords.latitude), longitude: String(pos.coords.longitude) })),
+      (e) => setErr('Could not read location: ' + e.message),
+      { enableHighAccuracy: true, timeout: 8000 }
+    );
+  };
+
+  const save = async () => {
+    setBusy(true); setMsg(''); setErr('');
+    try {
+      await api.saveAttendanceGeofence({
+        enabled: cfg.enabled,
+        latitude: cfg.latitude === '' ? null : Number(cfg.latitude),
+        longitude: cfg.longitude === '' ? null : Number(cfg.longitude),
+        radius_meters: cfg.radius_meters,
+        office_label: cfg.office_label || undefined,
+      });
+      setMsg('Saved. Changes take effect on the next clock-in attempt.');
+    } catch (e: any) { setErr(e?.message ?? 'Save failed'); }
+    finally { setBusy(false); }
+  };
+
+  if (loading) return <div className="p-8 text-sm text-on-surface-muted">Loading…</div>;
+
+  return (
+    <div className="max-w-2xl space-y-4">
+      <div className="rounded-xl-2 border border-outline bg-surface-2/60 p-4 text-xs text-on-surface-muted">
+        <p className="font-semibold text-on-surface text-sm mb-1">Attendance geofence</p>
+        <p>
+          Restricts portal clock-in to a lat/lng radius around the office. This is <b className="text-on-surface">warn-but-allow</b> — an employee
+          outside the fence gets a confirmation prompt and can still clock in; the row is flagged for HR audit.
+          Employees with an approved WFH request for the day are auto-exempt.
+        </p>
+      </div>
+
+      {err && <div className="rounded-lg border border-danger/30 bg-danger-container/40 p-3 text-xs text-danger">{err}</div>}
+      {msg && <div className="rounded-lg border border-success/30 bg-success-container/40 p-3 text-xs text-success">{msg}</div>}
+
+      <div className="rounded-xl-2 border border-outline bg-surface p-5 space-y-4">
+        <label className="flex items-center gap-2 text-sm text-on-surface font-semibold">
+          <input type="checkbox" checked={cfg.enabled} onChange={e => setCfg(c => ({ ...c, enabled: e.target.checked }))}
+            className="rounded border-outline" />
+          Enable geofence on clock-in
+        </label>
+
+        <div>
+          <label className="text-xs font-semibold text-on-surface-muted block mb-1">Office label</label>
+          <input value={cfg.office_label} onChange={e => setCfg(c => ({ ...c, office_label: e.target.value }))}
+            placeholder="e.g. Sector 80 Mohali"
+            className={inputCls} />
+        </div>
+
+        <div className="grid grid-cols-2 gap-3">
+          <div>
+            <label className="text-xs font-semibold text-on-surface-muted block mb-1">Latitude</label>
+            <input value={cfg.latitude} onChange={e => setCfg(c => ({ ...c, latitude: e.target.value }))}
+              placeholder="30.6858"
+              className={inputCls + ' num-mono'} />
+          </div>
+          <div>
+            <label className="text-xs font-semibold text-on-surface-muted block mb-1">Longitude</label>
+            <input value={cfg.longitude} onChange={e => setCfg(c => ({ ...c, longitude: e.target.value }))}
+              placeholder="76.7420"
+              className={inputCls + ' num-mono'} />
+          </div>
+        </div>
+
+        <button onClick={useCurrentLocation}
+          className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-semibold border border-outline hover:bg-surface-2">
+          <MapPin size={12} /> Use my current location
+        </button>
+        <p className="text-[10px] text-on-surface-subtle">
+          Or paste from Google Maps — right-click the office on the map, click the coordinates at the top to copy.
+        </p>
+
+        <div>
+          <label className="text-xs font-semibold text-on-surface-muted block mb-1">
+            Radius (metres) — how close an employee must be to skip the confirmation prompt
+          </label>
+          <input type="number" min="10" max="5000" step="10" value={cfg.radius_meters}
+            onChange={e => setCfg(c => ({ ...c, radius_meters: Number(e.target.value) || 100 }))}
+            className={inputCls + ' num-mono'} />
+          <p className="text-[10px] text-on-surface-subtle mt-1">
+            Default 100m. Indoor GPS drifts easily — 150-200m is a forgiving choice for city offices; 50m for a small clean-signal building.
+          </p>
+        </div>
+
+        <div className="flex justify-end pt-2">
+          <button onClick={save} disabled={busy}
+            className="px-4 py-2 rounded-lg text-sm font-semibold bg-accent text-on-accent hover:opacity-90 disabled:opacity-50">
+            {busy ? 'Saving…' : 'Save geofence config'}
+          </button>
+        </div>
+      </div>
     </div>
   );
 }
