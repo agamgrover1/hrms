@@ -13,6 +13,16 @@ export function getNotifRoute(type: string, role: string): string {
 
   switch (type) {
     // ── Leave ──────────────────────────────────────────────────────────────────
+    // ── Hiring ────────────────────────────────────────────────────────────
+    // Producer notifications carry an explicit `link` (/hiring/:id) so
+    // this fallback only kicks in for HR-fan-out types (recommendation
+    // ready, feedback submitted) that don't set one.
+    case 'candidate_review_requested':
+    case 'candidate_recommendation_ready':
+    case 'interview_scheduled':
+    case 'interview_feedback_submitted':
+      return '/hiring';
+
     case 'leave_applied':
       // HR/Admin gets this → Leave Management page
       // Manager (employee role) gets this → My Team pending leaves
@@ -199,6 +209,11 @@ interface Props {
 
 export const TYPE_CONFIG: Record<string, { icon: any; color: string; bg: string }> = {
   // Leave
+  // Hiring
+  candidate_review_requested:      { icon: FileText,   color: '#7c3aed', bg: '#f5f3ff' },
+  candidate_recommendation_ready:  { icon: CheckCircle, color: '#15803d', bg: '#f0fdf4' },
+  interview_scheduled:             { icon: Calendar,    color: '#2563eb', bg: '#eff6ff' },
+  interview_feedback_submitted:    { icon: FileText,    color: '#0891b2', bg: '#f0f9ff' },
   leave_applied:           { icon: Calendar,       color: '#d97706', bg: '#fffbeb' },
   leave_submitted:         { icon: Calendar,       color: '#64748b', bg: '#f1f5f9' },
   leave_needs_hr_approval: { icon: Calendar,       color: '#d97706', bg: '#fffbeb' },

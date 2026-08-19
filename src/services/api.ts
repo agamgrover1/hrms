@@ -683,6 +683,19 @@ export const api = {
     request<any>(`/candidates/${id}`, { method: 'PATCH', body: JSON.stringify(patch) }),
   deleteCandidate: (id: string) => request<any>(`/candidates/${id}`, { method: 'DELETE' }),
 
+  // Stage-specific actions (Phase 2). Thin wrappers that emit
+  // notifications + audit events beyond the plain PATCH.
+  requestTechReview: (id: string, data: { tech_reviewer_id: string; remarks?: string }) =>
+    request<any>(`/candidates/${id}/request-tech-review`, { method: 'POST', body: JSON.stringify(data) }),
+  submitTechReview: (id: string, data: { status: 'recommended' | 'not_recommended'; remarks?: string }) =>
+    request<any>(`/candidates/${id}/submit-tech-review`, { method: 'POST', body: JSON.stringify(data) }),
+  logScreeningCall: (id: string, data: { call_status: string; call_remarks?: string; follow_up_date?: string }) =>
+    request<any>(`/candidates/${id}/log-screening-call`, { method: 'POST', body: JSON.stringify(data) }),
+  scheduleInterview: (candidateId: string, data: { interviewer_id: string; scheduled_for: string; mode?: 'f2f' | 'virtual'; meeting_link?: string }) =>
+    request<any>(`/candidates/${candidateId}/interviews`, { method: 'POST', body: JSON.stringify(data) }),
+  patchInterview: (interviewId: string, data: Partial<{ status: string; feedback: string; decision: string; scheduled_for: string; mode: string; meeting_link: string }>) =>
+    request<any>(`/candidate-interviews/${interviewId}`, { method: 'PATCH', body: JSON.stringify(data) }),
+
   // Optional Leave
   getOptionalLeaveDates: (year: number) =>
     request<any[]>(`/optional-leave/dates?year=${year}`),

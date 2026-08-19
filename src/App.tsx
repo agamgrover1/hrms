@@ -84,9 +84,15 @@ function AppRoutes() {
         {/* HR document register — numbered letters across the org. */}
         <Route path="hr/documents" element={<ProtectedRoute roles={['admin', 'hr_manager', 'hr_intern']}><HRDocumentsRegister /></ProtectedRoute>} />
 
-        {/* Hiring — 10-stage candidate pipeline. HR-owned. */}
+        {/* Hiring — 10-stage candidate pipeline.
+            /hiring (list): HR-only (admin / hr_manager / hr_intern).
+            /hiring/:id (single candidate): open to any authenticated user
+            because tech reviewers + interviewers land here via notification
+            links. The API enforces per-candidate access — non-HR viewers
+            only pass the gate for candidates they're assigned to, and the
+            profile hides irrelevant tabs based on the returned viewer_role. */}
         <Route path="hiring" element={<ProtectedRoute roles={['admin', 'hr_manager', 'hr_intern']}><Hiring /></ProtectedRoute>} />
-        <Route path="hiring/:id" element={<ProtectedRoute roles={['admin', 'hr_manager', 'hr_intern']}><CandidateProfile /></ProtectedRoute>} />
+        <Route path="hiring/:id" element={<ProtectedRoute><CandidateProfile /></ProtectedRoute>} />
 
         {/* Finance / CFO — admin sees everything; project_coordinator only sees the Invoices tab. */}
         <Route path="finance" element={<ProtectedRoute roles={['admin', 'project_coordinator']}><Finance /></ProtectedRoute>} />

@@ -1,38 +1,44 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
-import { ArrowLeft, Mail, Phone, MapPin, ExternalLink, Pencil, ChevronDown, Clock } from 'lucide-react';
+import {
+  ArrowLeft, Mail, Phone, MapPin, ExternalLink, Pencil, ChevronDown, Clock,
+  UserCheck, Calendar, Send, CheckCircle2, XCircle, Plus, Video, Users as UsersIcon,
+} from 'lucide-react';
 import { api } from '../services/api';
 import { HIRING_STAGES, TERMINAL_STAGES, STAGE_COLOR, stageLabel } from '../lib/hiringStages';
 import { toast } from '../components/Toaster';
+import { useAuth } from '../context/AuthContext';
 
-// Candidate profile — Slice 1 covers the hero header (name, stage,
-// contact) + Overview tab (with inline edit for the resume-based fields)
-// + Activity tab (event log from candidate_stage_events). Slices 2/3
-// add Screening / Tech Review / Interviews / Offer / Hire tabs to the
-// same layout.
+// Candidate profile — Phase 2. Hero + Overview + Screening (call +
+// details capture) + Tech Review (conditional) + Interviews (multi-round)
+// + Activity. Non-HR viewers (assigned reviewer/interviewer) land here
+// via a bell notification and only see the tab relevant to their action.
 
-type Tab = 'overview' | 'activity';
-const TABS: { key: Tab; label: string }[] = [
-  { key: 'overview', label: 'Overview' },
-  { key: 'activity', label: 'Activity' },
-];
+type Tab = 'overview' | 'screening' | 'tech_review' | 'interviews' | 'activity';
 
 export default function CandidateProfile() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
+  const { user } = useAuth();
   const [candidate, setCandidate] = useState<any | null>(null);
+  const [interviews, setInterviews] = useState<any[]>([]);
   const [events, setEvents] = useState<any[]>([]);
+  const [viewerRole, setViewerRole] = useState<'hr' | 'reviewer' | 'interviewer' | undefined>();
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState('');
   const [tab, setTab] = useState<Tab>('overview');
-  const [editing, setEditing] = useState(false);
   const [stageMenuOpen, setStageMenuOpen] = useState(false);
 
   const load = useCallback(() => {
     if (!id) return;
     setLoading(true); setErr('');
     api.getCandidate(id)
-      .then(r => { setCandidate(r.candidate); setEvents(r.events); })
+      .then(r => {
+        setCandidate(r.candidate);
+        setInterviews(r.interviews || []);
+        setEvents(r.events || []);
+        setViewerRole((r as any).viewer_role);
+      })
       .catch((e: any) => setErr(e?.message ?? 'Failed to load candidate'))
       .finally(() => setLoading(false));
   }, [id]);
@@ -53,6 +59,33 @@ export default function CandidateProfile() {
     }
   };
 
+  // Compute which tabs to show based on viewer role. HR sees everything;
+  // reviewer sees only Tech Review; interviewer sees only Interviews.
+  const isHR = viewerRole === 'hr';
+  const availableTabs = useMemo<{ key: Tab; label: string }[]>(() => {
+    if (isHR) {
+      const tabs: { key: Tab; label: string }[] = [
+        { key: 'overview', label: 'Overview' },
+        { key: 'screening', label: 'Screening' },
+      ];
+      if (candidate?.tech_review_needed) tabs.push({ key: 'tech_review', label: 'Tech Review' });
+      tabs.push({ key: 'interviews', label: 'Interviews' });
+      tabs.push({ key: 'activity', label: 'Activity' });
+      return tabs;
+    }
+    if (viewerRole === 'reviewer') return [{ key: 'tech_review' as Tab, label: 'Tech Review' }];
+    if (viewerRole === 'interviewer') return [{ key: 'interviews' as Tab, label: 'Interviews' }];
+    return [{ key: 'overview' as Tab, label: 'Overview' }];
+  }, [isHR, viewerRole, candidate?.tech_review_needed]);
+
+  // Auto-switch tab if current one isn't in the available list (e.g.
+  // reviewer landing here from a notification — jump straight to Tech Review).
+  useEffect(() => {
+    if (availableTabs.length && !availableTabs.find(t => t.key === tab)) {
+      setTab(availableTabs[0].key);
+    }
+  }, [availableTabs, tab]);
+
   if (loading) return <div className="p-8 text-sm text-on-surface-muted">Loading…</div>;
   if (err) return <div className="p-8 text-sm text-danger">{err}</div>;
   if (!candidate) return null;
@@ -61,10 +94,17 @@ export default function CandidateProfile() {
 
   return (
     <div className="p-6 space-y-5 max-w-5xl">
-      <button onClick={() => navigate('/hiring')}
-        className="inline-flex items-center gap-1.5 text-xs text-on-surface-muted hover:text-on-surface">
-        <ArrowLeft size={13} /> Back to Hiring
-      </button>
+      {isHR && (
+        <button onClick={() => navigate('/hiring')}
+          className="inline-flex items-center gap-1.5 text-xs text-on-surface-muted hover:text-on-surface">
+          <ArrowLeft size={13} /> Back to Hiring
+        </button>
+      )}
+      {!isHR && (
+        <div className="rounded-lg border border-info/30 bg-info-container/40 px-4 py-2 text-xs text-info">
+          You're viewing this candidate as {viewerRole === 'reviewer' ? 'the assigned tech reviewer' : 'an assigned interviewer'}. Full pipeline is HR-only.
+        </div>
+      )}
 
       {/* Hero */}
       <div className="rounded-xl-3 border border-outline bg-surface shadow-elev-1 overflow-hidden">
@@ -92,14 +132,13 @@ export default function CandidateProfile() {
             </div>
           </div>
           <div className="flex flex-col items-end gap-2">
-            {/* Stage picker — click to change stage from anywhere on the
-                profile (not just the kanban). Same list as the board. */}
             <div className="relative">
               <button onClick={() => setStageMenuOpen(v => !v)}
-                className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-bold uppercase tracking-wider ${color.bg} ${color.text} ring-1 ${color.ring} hover:opacity-90`}>
-                {stageLabel(candidate.stage)} <ChevronDown size={12} />
+                disabled={!isHR}
+                className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-bold uppercase tracking-wider ${color.bg} ${color.text} ring-1 ${color.ring} ${isHR ? 'hover:opacity-90' : 'cursor-default'}`}>
+                {stageLabel(candidate.stage)} {isHR && <ChevronDown size={12} />}
               </button>
-              {stageMenuOpen && (
+              {stageMenuOpen && isHR && (
                 <div className="absolute right-0 top-full mt-1 z-10 min-w-52 rounded-lg border border-outline bg-surface shadow-elev-3 py-1 max-h-72 overflow-auto">
                   {HIRING_STAGES.map(s => (
                     <button key={s.key} onClick={() => setStage(s.key)}
@@ -121,36 +160,38 @@ export default function CandidateProfile() {
           </div>
         </div>
 
-        {/* Tabs */}
-        <div className="border-t border-outline px-6 py-2 bg-surface-2/40 flex items-center gap-1">
-          {TABS.map(t => (
+        <div className="border-t border-outline px-6 py-2 bg-surface-2/40 flex items-center gap-1 overflow-x-auto">
+          {availableTabs.map(t => (
             <button key={t.key} onClick={() => setTab(t.key)}
-              className={`px-3 py-1.5 rounded-md text-xs font-semibold ${tab === t.key ? 'bg-accent text-on-accent' : 'text-on-surface-muted hover:bg-surface-2'}`}>
+              className={`px-3 py-1.5 rounded-md text-xs font-semibold whitespace-nowrap ${tab === t.key ? 'bg-accent text-on-accent' : 'text-on-surface-muted hover:bg-surface-2'}`}>
               {t.label}
             </button>
           ))}
         </div>
       </div>
 
-      {tab === 'overview' && (
-        <OverviewTab candidate={candidate} onSaved={load} editing={editing} setEditing={setEditing} />
+      {tab === 'overview' && isHR && (
+        <OverviewTab candidate={candidate} onSaved={load} />
       )}
-      {tab === 'activity' && (
+      {tab === 'screening' && isHR && (
+        <ScreeningTab candidate={candidate} onSaved={load} />
+      )}
+      {tab === 'tech_review' && (
+        <TechReviewTab candidate={candidate} viewerRole={viewerRole} onSaved={load} />
+      )}
+      {tab === 'interviews' && (
+        <InterviewsTab candidate={candidate} interviews={interviews} viewerRole={viewerRole} currentUserEmpRefId={user?.employee_id_ref ?? undefined} onSaved={load} />
+      )}
+      {tab === 'activity' && isHR && (
         <ActivityTab events={events} />
       )}
     </div>
   );
 }
 
-// Overview — the Stage-A resume-based fields plus source. Everything is
-// editable inline; the field for "Applied for" / "Source" is a dropdown
-// pulled from Config so it stays in sync with the New Candidate modal.
-function OverviewTab({ candidate, onSaved, editing, setEditing }: {
-  candidate: any;
-  onSaved: () => void;
-  editing: boolean;
-  setEditing: (v: boolean) => void;
-}) {
+// ── Overview tab ────────────────────────────────────────────────────────
+function OverviewTab({ candidate, onSaved }: { candidate: any; onSaved: () => void }) {
+  const [editing, setEditing] = useState(false);
   const [form, setForm] = useState({
     name: candidate.name ?? '',
     email: candidate.email ?? '',
@@ -177,9 +218,8 @@ function OverviewTab({ candidate, onSaved, editing, setEditing }: {
       toast.success('Saved', 'Candidate details updated.');
       setEditing(false);
       onSaved();
-    } catch (e: any) {
-      toast.error('Save failed', e?.message ?? 'Please try again.');
-    } finally { setBusy(false); }
+    } catch (e: any) { toast.error('Save failed', e?.message ?? 'Please try again.'); }
+    finally { setBusy(false); }
   };
 
   const Field = ({ label, value, edit }: { label: string; value: React.ReactNode; edit?: React.ReactNode }) => (
@@ -195,72 +235,607 @@ function OverviewTab({ candidate, onSaved, editing, setEditing }: {
         <h3 className="font-display text-lg font-bold text-on-surface">Overview</h3>
         {editing ? (
           <div className="flex items-center gap-2">
-            <button onClick={() => setEditing(false)} disabled={busy}
-              className="text-xs text-on-surface-muted hover:text-on-surface font-semibold">Cancel</button>
-            <button onClick={save} disabled={busy}
-              className="px-3 py-1.5 rounded-md text-xs font-semibold bg-accent text-on-accent hover:opacity-90 disabled:opacity-50">
+            <button onClick={() => setEditing(false)} disabled={busy} className="text-xs text-on-surface-muted hover:text-on-surface font-semibold">Cancel</button>
+            <button onClick={save} disabled={busy} className="px-3 py-1.5 rounded-md text-xs font-semibold bg-accent text-on-accent hover:opacity-90 disabled:opacity-50">
               {busy ? 'Saving…' : 'Save'}
             </button>
           </div>
         ) : (
-          <button onClick={() => setEditing(true)}
-            className="inline-flex items-center gap-1 text-xs text-accent hover:underline font-semibold">
+          <button onClick={() => setEditing(true)} className="inline-flex items-center gap-1 text-xs text-accent hover:underline font-semibold">
             <Pencil size={11} /> Edit
           </button>
         )}
       </div>
-
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
         <Field label="Name" value={candidate.name}
-          edit={<input value={form.name} onChange={e => setForm(f => ({ ...f, name: e.target.value }))}
-            className="w-full px-2 py-1.5 rounded border border-outline bg-surface text-sm" />} />
+          edit={<input value={form.name} onChange={e => setForm(f => ({ ...f, name: e.target.value }))} className="w-full px-2 py-1.5 rounded border border-outline bg-surface text-sm" />} />
         <Field label="Email" value={candidate.email}
-          edit={<input type="email" value={form.email} onChange={e => setForm(f => ({ ...f, email: e.target.value }))}
-            className="w-full px-2 py-1.5 rounded border border-outline bg-surface text-sm" />} />
+          edit={<input type="email" value={form.email} onChange={e => setForm(f => ({ ...f, email: e.target.value }))} className="w-full px-2 py-1.5 rounded border border-outline bg-surface text-sm" />} />
         <Field label="Contact number" value={candidate.phone}
-          edit={<input value={form.phone} onChange={e => setForm(f => ({ ...f, phone: e.target.value }))}
-            className="w-full px-2 py-1.5 rounded border border-outline bg-surface text-sm num-mono" />} />
+          edit={<input value={form.phone} onChange={e => setForm(f => ({ ...f, phone: e.target.value }))} className="w-full px-2 py-1.5 rounded border border-outline bg-surface text-sm num-mono" />} />
         <Field label="Applied for" value={candidate.profile_applied_for}
-          edit={<select value={form.profile_applied_for} onChange={e => setForm(f => ({ ...f, profile_applied_for: e.target.value }))}
-            className="w-full px-2 py-1.5 rounded border border-outline bg-surface text-sm">
+          edit={<select value={form.profile_applied_for} onChange={e => setForm(f => ({ ...f, profile_applied_for: e.target.value }))} className="w-full px-2 py-1.5 rounded border border-outline bg-surface text-sm">
             <option value="">— pick —</option>
             {designations.map((d: any) => <option key={d.id} value={d.name}>{d.name}</option>)}
           </select>} />
         <Field label="Source" value={candidate.source === 'Other' && candidate.source_other ? `${candidate.source} · ${candidate.source_other}` : candidate.source}
           edit={<div className="space-y-1">
-            <select value={form.source} onChange={e => setForm(f => ({ ...f, source: e.target.value }))}
-              className="w-full px-2 py-1.5 rounded border border-outline bg-surface text-sm">
+            <select value={form.source} onChange={e => setForm(f => ({ ...f, source: e.target.value }))} className="w-full px-2 py-1.5 rounded border border-outline bg-surface text-sm">
               <option value="">— pick —</option>
               {sources.map((s: any) => <option key={s.id} value={s.name}>{s.name}</option>)}
             </select>
             {form.source === 'Other' && (
-              <input value={form.source_other} onChange={e => setForm(f => ({ ...f, source_other: e.target.value }))}
-                placeholder="Specify"
-                className="w-full px-2 py-1.5 rounded border border-outline bg-surface text-sm" />
+              <input value={form.source_other} onChange={e => setForm(f => ({ ...f, source_other: e.target.value }))} placeholder="Specify" className="w-full px-2 py-1.5 rounded border border-outline bg-surface text-sm" />
             )}
           </div>} />
         <Field label="Resume link" value={candidate.resume_url
-          ? <a href={candidate.resume_url} target="_blank" rel="noopener noreferrer"
-              className="text-accent hover:underline inline-flex items-center gap-1">
-              Open <ExternalLink size={11} />
-            </a>
+          ? <a href={candidate.resume_url} target="_blank" rel="noopener noreferrer" className="text-accent hover:underline inline-flex items-center gap-1">Open <ExternalLink size={11} /></a>
           : null}
-          edit={<input type="url" value={form.resume_url} onChange={e => setForm(f => ({ ...f, resume_url: e.target.value }))}
-            placeholder="https://drive.google.com/…"
-            className="w-full px-2 py-1.5 rounded border border-outline bg-surface text-sm" />} />
-      </div>
-
-      {/* Placeholder for Slice 2/3 tabs — surface progress hint */}
-      <div className="border-t border-outline pt-4 mt-2 text-xs text-on-surface-subtle">
-        Screening call, tech review, interviews, and offer capture will unlock in follow-up slices.
-        For now, use the stage picker in the header to move the candidate through the pipeline.
+          edit={<input type="url" value={form.resume_url} onChange={e => setForm(f => ({ ...f, resume_url: e.target.value }))} placeholder="https://drive.google.com/…" className="w-full px-2 py-1.5 rounded border border-outline bg-surface text-sm" />} />
       </div>
     </div>
   );
 }
 
-// Activity log — reverse-chronological event list from candidate_stage_events.
-// Same shape as the audit trail on employee warnings / project activity.
+// ── Screening tab — HR screening call + post-call details capture ─────
+function ScreeningTab({ candidate, onSaved }: { candidate: any; onSaved: () => void }) {
+  const [call, setCall] = useState({
+    call_status: candidate.call_status ?? '',
+    call_remarks: candidate.call_remarks ?? '',
+    follow_up_date: candidate.follow_up_date?.slice(0, 10) ?? '',
+  });
+  const [details, setDetails] = useState({
+    total_experience_years: candidate.total_experience_years ?? '',
+    relevant_experience_years: candidate.relevant_experience_years ?? '',
+    current_salary: candidate.current_salary ?? '',
+    current_ctc: candidate.current_ctc ?? '',
+    expected_salary: candidate.expected_salary ?? '',
+    expected_ctc: candidate.expected_ctc ?? '',
+    last_increment_date: candidate.last_increment_date?.slice(0, 10) ?? '',
+    last_increment_amount: candidate.last_increment_amount ?? '',
+    reason_for_change: candidate.reason_for_change ?? '',
+    current_location: candidate.current_location ?? '',
+    notice_period_days: candidate.notice_period_days ?? '',
+    face_to_face_available: candidate.face_to_face_available ?? false,
+    hr_screening_remarks: candidate.hr_screening_remarks ?? '',
+  });
+  const [busyCall, setBusyCall] = useState(false);
+  const [busyDetails, setBusyDetails] = useState(false);
+
+  const saveCall = async () => {
+    if (!call.call_status) { toast.error('Missing', 'Set a call status.'); return; }
+    setBusyCall(true);
+    try {
+      await api.logScreeningCall(candidate.id, {
+        call_status: call.call_status,
+        call_remarks: call.call_remarks || undefined,
+        follow_up_date: call.follow_up_date || undefined,
+      });
+      toast.success('Call logged', 'Screening call details saved.');
+      onSaved();
+    } catch (e: any) { toast.error('Save failed', e?.message ?? 'Please try again.'); }
+    finally { setBusyCall(false); }
+  };
+
+  const saveDetails = async () => {
+    setBusyDetails(true);
+    try {
+      await api.patchCandidate(candidate.id, details);
+      toast.success('Details saved', 'Post-call fields updated.');
+      onSaved();
+    } catch (e: any) { toast.error('Save failed', e?.message ?? 'Please try again.'); }
+    finally { setBusyDetails(false); }
+  };
+
+  return (
+    <div className="space-y-4">
+      {/* HR screening call */}
+      <div className="rounded-xl-2 border border-outline bg-surface p-5 space-y-3">
+        <div className="flex items-center justify-between">
+          <h3 className="font-display text-lg font-bold text-on-surface">Screening call</h3>
+          <span className="text-xs text-on-surface-muted">Called by · {candidate.called_by_id ? 'HR' : '—'}</span>
+        </div>
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+          <label className="block">
+            <span className="text-xs font-semibold text-on-surface-muted">Call status</span>
+            <select value={call.call_status} onChange={e => setCall(c => ({ ...c, call_status: e.target.value }))}
+              className="mt-1 w-full px-2 py-1.5 rounded border border-outline bg-surface text-sm">
+              <option value="">— pick —</option>
+              <option value="done">Done</option>
+              <option value="no_response">No response</option>
+              <option value="rescheduled">Rescheduled</option>
+            </select>
+          </label>
+          <label className="block">
+            <span className="text-xs font-semibold text-on-surface-muted">Follow-up date</span>
+            <input type="date" value={call.follow_up_date} onChange={e => setCall(c => ({ ...c, follow_up_date: e.target.value }))}
+              className="mt-1 w-full px-2 py-1.5 rounded border border-outline bg-surface text-sm" />
+          </label>
+          <div />
+          <label className="block md:col-span-3">
+            <span className="text-xs font-semibold text-on-surface-muted">Call remarks</span>
+            <textarea rows={2} value={call.call_remarks} onChange={e => setCall(c => ({ ...c, call_remarks: e.target.value }))}
+              placeholder="What did they say? Any red / green flags?"
+              className="mt-1 w-full px-2 py-1.5 rounded border border-outline bg-surface text-sm resize-none" />
+          </label>
+        </div>
+        <div className="flex justify-end">
+          <button onClick={saveCall} disabled={busyCall}
+            className="px-3 py-1.5 rounded-md text-xs font-semibold bg-accent text-on-accent hover:opacity-90 disabled:opacity-50">
+            {busyCall ? 'Saving…' : 'Save call'}
+          </button>
+        </div>
+      </div>
+
+      {/* Post-call details */}
+      <div className="rounded-xl-2 border border-outline bg-surface p-5 space-y-3">
+        <div className="flex items-center justify-between">
+          <h3 className="font-display text-lg font-bold text-on-surface">Post-call details</h3>
+          <span className="text-xs text-on-surface-subtle">Fill after the screening call</span>
+        </div>
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+          <NumInput label="Total experience (yrs)" value={details.total_experience_years} onChange={v => setDetails(d => ({ ...d, total_experience_years: v }))} />
+          <NumInput label="Relevant experience (yrs)" value={details.relevant_experience_years} onChange={v => setDetails(d => ({ ...d, relevant_experience_years: v }))} />
+          <NumInput label="Current salary (₹/mo)" value={details.current_salary} onChange={v => setDetails(d => ({ ...d, current_salary: v }))} />
+          <NumInput label="Current CTC (₹/yr)" value={details.current_ctc} onChange={v => setDetails(d => ({ ...d, current_ctc: v }))} />
+          <NumInput label="Expected salary (₹/mo)" value={details.expected_salary} onChange={v => setDetails(d => ({ ...d, expected_salary: v }))} />
+          <NumInput label="Expected CTC (₹/yr)" value={details.expected_ctc} onChange={v => setDetails(d => ({ ...d, expected_ctc: v }))} />
+          <label className="block">
+            <span className="text-xs font-semibold text-on-surface-muted">Last increment date</span>
+            <input type="date" value={details.last_increment_date} onChange={e => setDetails(d => ({ ...d, last_increment_date: e.target.value }))}
+              className="mt-1 w-full px-2 py-1.5 rounded border border-outline bg-surface text-sm" />
+          </label>
+          <NumInput label="Last increment amount (₹)" value={details.last_increment_amount} onChange={v => setDetails(d => ({ ...d, last_increment_amount: v }))} />
+          <label className="block">
+            <span className="text-xs font-semibold text-on-surface-muted">Current location</span>
+            <input value={details.current_location} onChange={e => setDetails(d => ({ ...d, current_location: e.target.value }))}
+              placeholder="City" className="mt-1 w-full px-2 py-1.5 rounded border border-outline bg-surface text-sm" />
+          </label>
+          <NumInput label="Notice period (days · 0 = immediate)" value={details.notice_period_days} onChange={v => setDetails(d => ({ ...d, notice_period_days: v }))} />
+          <label className="block md:col-span-2">
+            <span className="text-xs font-semibold text-on-surface-muted">Reason for change</span>
+            <textarea rows={2} value={details.reason_for_change} onChange={e => setDetails(d => ({ ...d, reason_for_change: e.target.value }))}
+              className="mt-1 w-full px-2 py-1.5 rounded border border-outline bg-surface text-sm resize-none" />
+          </label>
+          <label className="inline-flex items-center gap-2 md:col-span-2 text-sm text-on-surface">
+            <input type="checkbox" checked={!!details.face_to_face_available} onChange={e => setDetails(d => ({ ...d, face_to_face_available: e.target.checked }))} className="rounded border-outline" />
+            Available for face-to-face interview
+          </label>
+          <label className="block md:col-span-2">
+            <span className="text-xs font-semibold text-on-surface-muted">HR remarks (screening summary)</span>
+            <textarea rows={2} value={details.hr_screening_remarks} onChange={e => setDetails(d => ({ ...d, hr_screening_remarks: e.target.value }))}
+              className="mt-1 w-full px-2 py-1.5 rounded border border-outline bg-surface text-sm resize-none" />
+          </label>
+        </div>
+        <div className="flex justify-end">
+          <button onClick={saveDetails} disabled={busyDetails}
+            className="px-3 py-1.5 rounded-md text-xs font-semibold bg-accent text-on-accent hover:opacity-90 disabled:opacity-50">
+            {busyDetails ? 'Saving…' : 'Save details'}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+function NumInput({ label, value, onChange }: { label: string; value: any; onChange: (v: string) => void }) {
+  return (
+    <label className="block">
+      <span className="text-xs font-semibold text-on-surface-muted">{label}</span>
+      <input type="number" value={value ?? ''} onChange={e => onChange(e.target.value)}
+        className="mt-1 w-full px-2 py-1.5 rounded border border-outline bg-surface text-sm num-mono" />
+    </label>
+  );
+}
+
+// ── Tech Review tab ─────────────────────────────────────────────────────
+// Two modes:
+//   HR view — pick a reviewer + send. Once sent, shows status + reviewer.
+//   Reviewer view — sees the candidate's basic profile + Recommend / Not
+//     Recommended buttons + remarks textarea.
+function TechReviewTab({ candidate, viewerRole, onSaved }: { candidate: any; viewerRole?: string; onSaved: () => void }) {
+  const [employees, setEmployees] = useState<any[]>([]);
+  const [reviewerId, setReviewerId] = useState('');
+  const [remarks, setRemarks] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [submitStatus, setSubmitStatus] = useState<'recommended' | 'not_recommended' | ''>('');
+  const [submitRemarks, setSubmitRemarks] = useState('');
+  const isHR = viewerRole === 'hr';
+  const isReviewer = viewerRole === 'reviewer';
+  const submitted = !!candidate.tech_review_reviewed_at;
+
+  useEffect(() => { if (isHR) api.getEmployeesSlim().then(setEmployees).catch(() => {}); }, [isHR]);
+
+  const send = async () => {
+    if (!reviewerId) { toast.error('Missing', 'Pick a reviewer first.'); return; }
+    setBusy(true);
+    try {
+      await api.requestTechReview(candidate.id, { tech_reviewer_id: reviewerId, remarks: remarks || undefined });
+      toast.success('Sent for review', 'Reviewer has been notified.');
+      onSaved();
+    } catch (e: any) { toast.error('Failed', e?.message); }
+    finally { setBusy(false); }
+  };
+
+  const submit = async () => {
+    if (!submitStatus) { toast.error('Pick a verdict', 'Recommended or Not Recommended.'); return; }
+    setBusy(true);
+    try {
+      await api.submitTechReview(candidate.id, { status: submitStatus, remarks: submitRemarks || undefined });
+      toast.success('Review submitted', 'HR has been notified.');
+      onSaved();
+    } catch (e: any) { toast.error('Failed', e?.message); }
+    finally { setBusy(false); }
+  };
+
+  // Reviewer's submission form — either fresh, or "already submitted" state.
+  if (isReviewer) {
+    if (submitted) {
+      return (
+        <div className="rounded-xl-2 border border-outline bg-surface p-5 text-center">
+          <CheckCircle2 size={28} className="mx-auto text-success mb-2" />
+          <p className="text-sm text-on-surface">You've already submitted your review — <b>{candidate.tech_review_status === 'recommended' ? 'Recommended' : 'Not Recommended'}</b>.</p>
+          {candidate.tech_review_remarks && <p className="text-xs text-on-surface-muted italic mt-1">"{candidate.tech_review_remarks}"</p>}
+        </div>
+      );
+    }
+    return (
+      <div className="rounded-xl-2 border border-outline bg-surface p-5 space-y-4">
+        <div>
+          <h3 className="font-display text-lg font-bold text-on-surface">Tech review</h3>
+          <p className="text-xs text-on-surface-muted mt-0.5">HR asked you to review this candidate's fit. Take a look at their resume, then submit your verdict below.</p>
+        </div>
+        {candidate.tech_review_remarks && (
+          <div className="rounded-lg border border-outline bg-surface-2/60 p-3 text-xs">
+            <p className="font-semibold text-on-surface-muted mb-1">HR note</p>
+            <p className="text-on-surface italic">"{candidate.tech_review_remarks}"</p>
+          </div>
+        )}
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+          <button onClick={() => setSubmitStatus('recommended')}
+            className={`px-4 py-3 rounded-lg border-2 flex items-center gap-2 justify-center font-semibold ${submitStatus === 'recommended' ? 'border-success bg-success/10 text-success' : 'border-outline hover:border-success/40'}`}>
+            <CheckCircle2 size={16} /> Recommended
+          </button>
+          <button onClick={() => setSubmitStatus('not_recommended')}
+            className={`px-4 py-3 rounded-lg border-2 flex items-center gap-2 justify-center font-semibold ${submitStatus === 'not_recommended' ? 'border-danger bg-danger/10 text-danger' : 'border-outline hover:border-danger/40'}`}>
+            <XCircle size={16} /> Not Recommended
+          </button>
+        </div>
+        <label className="block">
+          <span className="text-xs font-semibold text-on-surface-muted">Remarks (why?)</span>
+          <textarea rows={3} value={submitRemarks} onChange={e => setSubmitRemarks(e.target.value)}
+            placeholder="What stood out? Any concerns HR should know?"
+            className="mt-1 w-full px-3 py-2 rounded border border-outline bg-surface text-sm resize-none" />
+        </label>
+        <div className="flex justify-end">
+          <button onClick={submit} disabled={busy || !submitStatus}
+            className="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg bg-accent text-on-accent text-sm font-semibold hover:opacity-90 disabled:opacity-50">
+            <Send size={13} /> {busy ? 'Submitting…' : 'Submit review'}
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  // HR view
+  return (
+    <div className="rounded-xl-2 border border-outline bg-surface p-5 space-y-4">
+      <div>
+        <h3 className="font-display text-lg font-bold text-on-surface">Tech review</h3>
+        <p className="text-xs text-on-surface-muted mt-0.5">Send this candidate's resume to a Team Lead for a domain check before the HR screening call.</p>
+      </div>
+      {candidate.tech_reviewer_id ? (
+        <div className="rounded-lg border border-outline bg-surface-2/40 p-4 space-y-2 text-sm">
+          <div className="flex items-center gap-2">
+            <UserCheck size={14} className="text-accent" />
+            <span className="text-on-surface">
+              Sent to reviewer · Status:{' '}
+              <span className={`font-bold ${candidate.tech_review_status === 'recommended' ? 'text-success' : candidate.tech_review_status === 'not_recommended' ? 'text-danger' : 'text-warning'}`}>
+                {candidate.tech_review_status === 'recommended' ? 'Recommended'
+                  : candidate.tech_review_status === 'not_recommended' ? 'Not Recommended'
+                  : 'Pending'}
+              </span>
+            </span>
+          </div>
+          {candidate.tech_review_sent_at && (
+            <p className="text-[11px] text-on-surface-subtle">Sent {new Date(candidate.tech_review_sent_at).toLocaleString('en-IN', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })}</p>
+          )}
+          {candidate.tech_review_reviewed_at && (
+            <p className="text-[11px] text-on-surface-subtle">Reviewed {new Date(candidate.tech_review_reviewed_at).toLocaleString('en-IN', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })}</p>
+          )}
+          {candidate.tech_review_remarks && (
+            <p className="text-xs text-on-surface-muted italic mt-2">"{candidate.tech_review_remarks}"</p>
+          )}
+        </div>
+      ) : (
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+          <label className="block">
+            <span className="text-xs font-semibold text-on-surface-muted">Reviewer (Team Lead)</span>
+            <select value={reviewerId} onChange={e => setReviewerId(e.target.value)}
+              className="mt-1 w-full px-2 py-1.5 rounded border border-outline bg-surface text-sm">
+              <option value="">— pick a Team Lead —</option>
+              {employees.filter((e: any) => e.status !== 'inactive').map((e: any) => (
+                <option key={e.id} value={e.id}>{e.name}{e.designation ? ` · ${e.designation}` : ''}</option>
+              ))}
+            </select>
+          </label>
+          <div />
+          <label className="block md:col-span-2">
+            <span className="text-xs font-semibold text-on-surface-muted">Note for the reviewer (optional)</span>
+            <textarea rows={2} value={remarks} onChange={e => setRemarks(e.target.value)}
+              placeholder="e.g. Please check depth on React + system design."
+              className="mt-1 w-full px-2 py-1.5 rounded border border-outline bg-surface text-sm resize-none" />
+          </label>
+          <div className="md:col-span-2 flex justify-end">
+            <button onClick={send} disabled={busy || !reviewerId}
+              className="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg bg-accent text-on-accent text-sm font-semibold hover:opacity-90 disabled:opacity-50">
+              <Send size={13} /> {busy ? 'Sending…' : 'Send for review'}
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── Interviews tab ──────────────────────────────────────────────────────
+function InterviewsTab({ candidate, interviews, viewerRole, currentUserEmpRefId, onSaved }: {
+  candidate: any; interviews: any[]; viewerRole?: string; currentUserEmpRefId?: string; onSaved: () => void;
+}) {
+  const [scheduling, setScheduling] = useState(false);
+  const [openFeedbackId, setOpenFeedbackId] = useState<string | null>(null);
+  const isHR = viewerRole === 'hr';
+
+  // Interviewer sees only the round they own. Everyone else sees all.
+  const visibleRounds = useMemo(() => {
+    if (viewerRole === 'interviewer' && currentUserEmpRefId) {
+      // employee_id_ref could be either DL#### code OR internal id — round row
+      // stores interviewer_id which is employees.id. Match by both forms.
+      return interviews.filter((r: any) => r.interviewer_id === currentUserEmpRefId
+        || String(r.interviewer_id).endsWith(currentUserEmpRefId));
+    }
+    return interviews;
+  }, [interviews, viewerRole, currentUserEmpRefId]);
+
+  return (
+    <div className="space-y-3">
+      <div className="rounded-xl-2 border border-outline bg-surface p-5">
+        <div className="flex items-center justify-between mb-3">
+          <div>
+            <h3 className="font-display text-lg font-bold text-on-surface">Interviews</h3>
+            <p className="text-xs text-on-surface-muted mt-0.5">
+              {visibleRounds.length === 0 ? 'No rounds scheduled yet.' : `${visibleRounds.length} round${visibleRounds.length === 1 ? '' : 's'}`}
+            </p>
+          </div>
+          {isHR && (
+            <button onClick={() => setScheduling(true)}
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-semibold bg-accent text-on-accent hover:opacity-90">
+              <Plus size={13} /> Schedule round
+            </button>
+          )}
+        </div>
+        {visibleRounds.length === 0 ? (
+          <p className="text-sm text-on-surface-muted text-center py-8">
+            {isHR ? 'Click Schedule round to add the first interview.' : 'No interviews assigned to you on this candidate.'}
+          </p>
+        ) : (
+          <ul className="divide-y divide-outline">
+            {visibleRounds.map((r: any) => (
+              <li key={r.id} className="py-3 first:pt-0 last:pb-0">
+                <InterviewRow round={r} isHR={isHR}
+                  isOwnRound={viewerRole === 'interviewer'}
+                  open={openFeedbackId === r.id}
+                  onToggle={() => setOpenFeedbackId(prev => prev === r.id ? null : r.id)}
+                  onSaved={() => { setOpenFeedbackId(null); onSaved(); }} />
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
+
+      {scheduling && (
+        <ScheduleInterviewModal candidateId={candidate.id} candidateName={candidate.name}
+          onClose={() => setScheduling(false)}
+          onSaved={() => { setScheduling(false); onSaved(); }} />
+      )}
+    </div>
+  );
+}
+
+function InterviewRow({ round, isHR, isOwnRound, open, onToggle, onSaved }: {
+  round: any; isHR: boolean; isOwnRound: boolean; open: boolean; onToggle: () => void; onSaved: () => void;
+}) {
+  const [feedback, setFeedback] = useState(round.feedback ?? '');
+  const [decision, setDecision] = useState(round.decision ?? '');
+  const [status, setStatus] = useState(round.status ?? 'scheduled');
+  const [busy, setBusy] = useState(false);
+
+  const canEdit = isHR || isOwnRound;
+
+  const save = async () => {
+    setBusy(true);
+    try {
+      await api.patchInterview(round.id, {
+        feedback: feedback || undefined,
+        decision: decision || undefined,
+        status: status || undefined,
+      });
+      toast.success('Saved', 'Interview updated.');
+      onSaved();
+    } catch (e: any) { toast.error('Failed', e?.message); }
+    finally { setBusy(false); }
+  };
+
+  const when = round.scheduled_for ? new Date(round.scheduled_for) : null;
+  const statusColor = round.status === 'completed' ? 'text-success' : round.status === 'no_show' || round.status === 'cancelled' ? 'text-danger' : 'text-warning';
+
+  return (
+    <div>
+      <button onClick={onToggle} className="w-full text-left flex items-start justify-between gap-3 hover:bg-surface-2/40 rounded-md p-2 -m-2">
+        <div className="flex-1 min-w-0">
+          <div className="flex items-center gap-2">
+            <span className="text-xs font-bold text-on-surface-subtle uppercase tracking-wider">Round {round.round_no}</span>
+            <span className={`text-[10px] font-bold uppercase ${statusColor}`}>{round.status}</span>
+            {round.decision && (
+              <span className={`text-[10px] font-bold uppercase px-1.5 py-0.5 rounded ${round.decision === 'selected' ? 'bg-success/15 text-success' : round.decision === 'rejected' ? 'bg-danger/15 text-danger' : round.decision === 'next_round' ? 'bg-accent/15 text-accent' : 'bg-warning/15 text-warning'}`}>
+                {round.decision.replace('_', ' ')}
+              </span>
+            )}
+          </div>
+          <p className="text-sm text-on-surface mt-1">
+            {round.interviewer_name ?? '—'}
+            {round.mode && <span className="text-on-surface-muted"> · {round.mode === 'f2f' ? 'F2F' : 'Virtual'}</span>}
+          </p>
+          {when && (
+            <p className="text-[11px] text-on-surface-muted">
+              <Clock size={10} className="inline mr-1" />
+              {when.toLocaleString('en-IN', { day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' })}
+              {round.meeting_link && <> · <a href={round.meeting_link} target="_blank" rel="noopener noreferrer" onClick={e => e.stopPropagation()} className="text-accent hover:underline inline-flex items-center gap-1"><Video size={10} /> Join</a></>}
+            </p>
+          )}
+          {round.feedback && !open && (
+            <p className="text-xs text-on-surface-muted italic mt-1 line-clamp-2">"{round.feedback}"</p>
+          )}
+        </div>
+        <ChevronDown size={14} className={`text-on-surface-subtle transition-transform ${open ? 'rotate-180' : ''}`} />
+      </button>
+      {open && canEdit && (
+        <div className="mt-3 space-y-3 pl-2 pt-3 border-t border-outline">
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+            <label className="block">
+              <span className="text-xs font-semibold text-on-surface-muted">Status</span>
+              <select value={status} onChange={e => setStatus(e.target.value)}
+                className="mt-1 w-full px-2 py-1.5 rounded border border-outline bg-surface text-sm">
+                <option value="scheduled">Scheduled</option>
+                <option value="completed">Completed</option>
+                <option value="no_show">No show</option>
+                <option value="rescheduled">Rescheduled</option>
+                <option value="cancelled">Cancelled</option>
+              </select>
+            </label>
+            <label className="block md:col-span-2">
+              <span className="text-xs font-semibold text-on-surface-muted">Decision</span>
+              <select value={decision} onChange={e => setDecision(e.target.value)}
+                className="mt-1 w-full px-2 py-1.5 rounded border border-outline bg-surface text-sm">
+                <option value="">— pick if this round is done —</option>
+                <option value="selected">Selected</option>
+                <option value="next_round">Next round</option>
+                <option value="hold">Hold</option>
+                <option value="rejected">Rejected</option>
+              </select>
+            </label>
+          </div>
+          <label className="block">
+            <span className="text-xs font-semibold text-on-surface-muted">Feedback</span>
+            <textarea rows={3} value={feedback} onChange={e => setFeedback(e.target.value)}
+              placeholder="Strengths, gaps, red flags…"
+              className="mt-1 w-full px-3 py-2 rounded border border-outline bg-surface text-sm resize-none" />
+          </label>
+          <div className="flex justify-end">
+            <button onClick={save} disabled={busy}
+              className="px-3 py-1.5 rounded-md text-xs font-semibold bg-accent text-on-accent hover:opacity-90 disabled:opacity-50">
+              {busy ? 'Saving…' : 'Save feedback'}
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ScheduleInterviewModal({ candidateId, candidateName, onClose, onSaved }: {
+  candidateId: string; candidateName: string; onClose: () => void; onSaved: () => void;
+}) {
+  const [employees, setEmployees] = useState<any[]>([]);
+  const [form, setForm] = useState({
+    interviewer_id: '',
+    scheduled_for: '',
+    mode: 'virtual' as 'virtual' | 'f2f',
+    meeting_link: '',
+  });
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => { api.getEmployeesSlim().then(setEmployees).catch(() => {}); }, []);
+
+  const submit = async () => {
+    if (!form.interviewer_id || !form.scheduled_for) { toast.error('Missing', 'Interviewer + date/time required.'); return; }
+    setBusy(true);
+    try {
+      await api.scheduleInterview(candidateId, {
+        interviewer_id: form.interviewer_id,
+        scheduled_for: new Date(form.scheduled_for).toISOString(),
+        mode: form.mode,
+        meeting_link: form.mode === 'virtual' ? (form.meeting_link || undefined) : undefined,
+      });
+      toast.success('Interview scheduled', 'The interviewer has been notified.');
+      onSaved();
+    } catch (e: any) { toast.error('Failed', e?.message); }
+    finally { setBusy(false); }
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm p-4" onClick={onClose}>
+      <div className="bg-surface rounded-2xl shadow-elev-4 border border-outline w-full max-w-md" onClick={e => e.stopPropagation()}>
+        <div className="px-6 py-4 border-b border-outline flex items-start justify-between gap-3">
+          <div className="flex items-start gap-3">
+            <div className="w-10 h-10 rounded-full bg-accent/15 text-accent flex items-center justify-center flex-shrink-0"><Calendar size={18} /></div>
+            <div>
+              <h3 className="font-display text-lg font-bold text-on-surface">Schedule interview</h3>
+              <p className="text-xs text-on-surface-muted mt-0.5">{candidateName}</p>
+            </div>
+          </div>
+          <button onClick={onClose} className="p-1.5 rounded hover:bg-surface-2"><XCircle size={16} className="text-on-surface-muted" /></button>
+        </div>
+        <div className="p-6 space-y-3">
+          <label className="block">
+            <span className="text-xs font-semibold text-on-surface-muted">Interviewer</span>
+            <select value={form.interviewer_id} onChange={e => setForm(f => ({ ...f, interviewer_id: e.target.value }))}
+              className="mt-1 w-full px-3 py-2 rounded-lg border border-outline bg-surface text-sm">
+              <option value="">— pick from your team —</option>
+              {employees.filter((e: any) => e.status !== 'inactive').map((e: any) => (
+                <option key={e.id} value={e.id}>{e.name}{e.designation ? ` · ${e.designation}` : ''}</option>
+              ))}
+            </select>
+          </label>
+          <label className="block">
+            <span className="text-xs font-semibold text-on-surface-muted">Date & time</span>
+            <input type="datetime-local" value={form.scheduled_for} onChange={e => setForm(f => ({ ...f, scheduled_for: e.target.value }))}
+              className="mt-1 w-full px-3 py-2 rounded-lg border border-outline bg-surface text-sm" />
+          </label>
+          <div>
+            <span className="text-xs font-semibold text-on-surface-muted block mb-1">Mode</span>
+            <div className="inline-flex items-center gap-1 bg-surface-2 border border-outline rounded-lg p-0.5 text-xs">
+              <button onClick={() => setForm(f => ({ ...f, mode: 'virtual' }))}
+                className={`px-3 py-1.5 rounded-md font-semibold inline-flex items-center gap-1.5 ${form.mode === 'virtual' ? 'bg-accent text-on-accent' : 'text-on-surface-muted hover:text-on-surface'}`}>
+                <Video size={11} /> Virtual
+              </button>
+              <button onClick={() => setForm(f => ({ ...f, mode: 'f2f' }))}
+                className={`px-3 py-1.5 rounded-md font-semibold inline-flex items-center gap-1.5 ${form.mode === 'f2f' ? 'bg-accent text-on-accent' : 'text-on-surface-muted hover:text-on-surface'}`}>
+                <UsersIcon size={11} /> Face-to-face
+              </button>
+            </div>
+          </div>
+          {form.mode === 'virtual' && (
+            <label className="block">
+              <span className="text-xs font-semibold text-on-surface-muted">Meeting link (optional)</span>
+              <input type="url" value={form.meeting_link} onChange={e => setForm(f => ({ ...f, meeting_link: e.target.value }))}
+                placeholder="https://meet.google.com/…"
+                className="mt-1 w-full px-3 py-2 rounded-lg border border-outline bg-surface text-sm" />
+            </label>
+          )}
+        </div>
+        <div className="px-6 py-3 border-t border-outline bg-surface-2/40 flex items-center justify-end gap-2">
+          <button onClick={onClose} disabled={busy} className="px-4 py-2 text-sm text-on-surface-muted hover:bg-surface-2 rounded-lg font-semibold">Cancel</button>
+          <button onClick={submit} disabled={busy || !form.interviewer_id || !form.scheduled_for}
+            className="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg bg-accent text-on-accent text-sm font-semibold hover:opacity-90 disabled:opacity-50">
+            <Calendar size={13} /> {busy ? 'Scheduling…' : 'Schedule'}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── Activity tab ────────────────────────────────────────────────────────
 function ActivityTab({ events }: { events: any[] }) {
   if (events.length === 0) {
     return <div className="rounded-xl-2 border border-outline bg-surface p-8 text-center text-sm text-on-surface-muted">No activity yet.</div>;
@@ -278,7 +853,12 @@ function ActivityTab({ events }: { events: any[] }) {
                 <b>{e.actor_name ?? 'System'}</b>{' '}
                 {e.action === 'stage_change' ? (
                   <>moved to <span className="font-semibold">{stageLabel(e.after_stage)}</span>{e.before_stage ? <> from <span className="font-semibold">{stageLabel(e.before_stage)}</span></> : ''}</>
-                ) : e.action}
+                ) : e.action === 'tech_review_sent' ? 'sent for tech review'
+                : e.action === 'tech_review_submitted' ? `submitted tech review${e.metadata?.status ? ` — ${e.metadata.status.replace('_', ' ')}` : ''}`
+                : e.action === 'call_logged' ? `logged screening call${e.metadata?.call_status ? ` — ${e.metadata.call_status.replace('_', ' ')}` : ''}`
+                : e.action === 'interview_scheduled' ? `scheduled a round${e.metadata?.round_no ? ` (round ${e.metadata.round_no})` : ''}`
+                : e.action === 'interview_feedback' ? `submitted feedback${e.metadata?.round_no ? ` (round ${e.metadata.round_no})` : ''}${e.metadata?.decision ? ` — ${e.metadata.decision.replace('_', ' ')}` : ''}`
+                : e.action}
               </p>
               {e.body && <p className="text-xs text-on-surface-muted italic mt-0.5">"{e.body}"</p>}
               <p className="text-[10px] text-on-surface-subtle mt-1">

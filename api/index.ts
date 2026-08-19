@@ -12818,6 +12818,33 @@ const CANDIDATE_MUTABLE_FIELDS = [
   'final_status', 'rejection_reason',
 ] as const;
 
+// Access helper — a candidate is reachable by (a) HR (any tier), (b) the
+// assigned tech reviewer, or (c) anyone slotted as an interviewer on ANY
+// of that candidate's rounds. Notification recipients (non-HR employees)
+// use this path — they land on the profile via a bell link and only see
+// their action items. Returns `{ok, user, role: 'hr'|'reviewer'|'interviewer'}`.
+async function requireCandidateAccess(req: any, res: any, candidateId: string): Promise<{ ok: boolean; user?: any; role?: string }> {
+  const userId = req.header('x-user-id') || req.query.__uid;
+  if (!userId) { res.status(401).json({ error: 'Not authenticated' }); return { ok: false }; }
+  const u = ((await sql`SELECT id, name, role, active, employee_id_ref FROM app_users WHERE id=${userId} LIMIT 1`) as any[])[0];
+  if (!u || u.active !== true) { res.status(403).json({ error: 'Not permitted' }); return { ok: false }; }
+  // HR tiers always win — full access, no per-candidate lookups needed.
+  if (['admin', 'hr_manager', 'hr_intern'].includes(u.role)) {
+    return { ok: true, user: u, role: 'hr' };
+  }
+  // Non-HR — resolve their employee id, then check they're on the
+  // reviewer or interviewer roster for THIS candidate.
+  const empRow = ((await sql`SELECT id FROM employees WHERE employee_id=${u.employee_id_ref} OR id=${u.employee_id_ref} LIMIT 1`) as any[])[0];
+  if (!empRow?.id) { res.status(403).json({ error: 'Not permitted' }); return { ok: false }; }
+  const cand = ((await sql`SELECT tech_reviewer_id FROM candidates WHERE id=${candidateId} LIMIT 1`) as any[])[0];
+  if (!cand) { res.status(404).json({ error: 'Candidate not found' }); return { ok: false }; }
+  if (cand.tech_reviewer_id === empRow.id) return { ok: true, user: u, role: 'reviewer' };
+  const asInterviewer = ((await sql`SELECT 1 FROM candidate_interviews WHERE candidate_id=${candidateId} AND interviewer_id=${empRow.id} LIMIT 1`) as any[])[0];
+  if (asInterviewer) return { ok: true, user: u, role: 'interviewer' };
+  res.status(403).json({ error: 'Not permitted' });
+  return { ok: false };
+}
+
 // Append an audit event. Non-fatal — a logging failure never blocks the
 // main mutation (candidate + downstream data is still saved).
 async function logCandidateEvent(candidateId: string, action: string, actor: any, extras: {
@@ -12839,7 +12866,10 @@ async function logCandidateEvent(candidateId: string, action: string, actor: any
 app.get('/api/candidates', async (req, res) => {
   try {
     await runStartupMigrations();
-    const gate = await requireFullHR(req, res);
+    // requireHROrAbove (not FullHR) so hr_intern — who owns day-to-day
+    // hiring ops — can list. FullHR blocks the intern; the sidebar +
+    // route allow her in, so the API must too or the page 403s.
+    const gate = await requireHROrAbove(req, res);
     if (!gate.ok) return;
     const stage = (req.query.stage as string) || null;
     const status = (req.query.status as string) || null;
@@ -12861,7 +12891,11 @@ app.get('/api/candidates', async (req, res) => {
 app.get('/api/candidates/:id', async (req, res) => {
   try {
     await runStartupMigrations();
-    const gate = await requireFullHR(req, res);
+    // Wider access than list: HR always, plus the assigned tech reviewer
+    // and any assigned interviewer for this specific candidate. Lets a
+    // non-HR employee land on the profile via a bell notification link
+    // and see the payload — the frontend hides irrelevant controls.
+    const gate = await requireCandidateAccess(req, res, req.params.id);
     if (!gate.ok) return;
     const rows = await sql`SELECT * FROM candidates WHERE id=${req.params.id}` as any[];
     if (!rows.length) return res.status(404).json({ error: 'Candidate not found' });
@@ -12869,7 +12903,7 @@ app.get('/api/candidates/:id', async (req, res) => {
       sql`SELECT * FROM candidate_interviews WHERE candidate_id=${req.params.id} ORDER BY round_no, scheduled_for`,
       sql`SELECT * FROM candidate_stage_events WHERE candidate_id=${req.params.id} ORDER BY created_at DESC LIMIT 200`,
     ]);
-    res.json({ candidate: rows[0], interviews, events });
+    res.json({ candidate: rows[0], interviews, events, viewer_role: gate.role });
   } catch (err: any) { res.status(500).json({ error: err.message ?? 'Server error' }); }
 });
 
@@ -12879,7 +12913,7 @@ app.get('/api/candidates/:id', async (req, res) => {
 app.post('/api/candidates', async (req, res) => {
   try {
     await runStartupMigrations();
-    const gate = await requireFullHR(req, res);
+    const gate = await requireHROrAbove(req, res);
     if (!gate.ok) return;
     const { name, email, phone, profile_applied_for, source, source_other, resume_url } = req.body ?? {};
     if (!name?.trim()) return res.status(400).json({ error: 'Candidate name is required' });
@@ -12904,7 +12938,7 @@ app.post('/api/candidates', async (req, res) => {
 app.patch('/api/candidates/:id', async (req, res) => {
   try {
     await runStartupMigrations();
-    const gate = await requireFullHR(req, res);
+    const gate = await requireHROrAbove(req, res);
     if (!gate.ok) return;
     const existing = (await sql`SELECT * FROM candidates WHERE id=${req.params.id}` as any[])[0];
     if (!existing) return res.status(404).json({ error: 'Candidate not found' });
@@ -12982,6 +13016,211 @@ app.delete('/api/candidates/:id', async (req, res) => {
     if (!(await requireAdmin(req, res))) return;
     await sql`DELETE FROM candidates WHERE id=${req.params.id}`;
     res.json({ success: true });
+  } catch (err: any) { res.status(500).json({ error: err.message ?? 'Server error' }); }
+});
+
+// ── Stage-specific action endpoints (Phase 2) ────────────────────────────
+// Thin wrappers on top of the candidates PATCH that add notification
+// fanout + event logging so the frontend doesn't have to know the wiring.
+
+// POST /api/candidates/:id/request-tech-review — HR sends the candidate
+// to a Team Lead for technical validation. Notifies the reviewer.
+app.post('/api/candidates/:id/request-tech-review', async (req, res) => {
+  try {
+    const gate = await requireHROrAbove(req, res);
+    if (!gate.ok) return;
+    const { tech_reviewer_id, remarks } = req.body ?? {};
+    if (!tech_reviewer_id) return res.status(400).json({ error: 'tech_reviewer_id is required' });
+    const cand = ((await sql`SELECT id, name FROM candidates WHERE id=${req.params.id}` as any[])[0]);
+    if (!cand) return res.status(404).json({ error: 'Candidate not found' });
+    await sql`
+      UPDATE candidates SET
+        tech_review_needed = TRUE,
+        tech_reviewer_id = ${tech_reviewer_id},
+        tech_review_status = 'pending',
+        tech_review_remarks = ${remarks ?? null},
+        tech_review_sent_at = NOW(),
+        stage = CASE WHEN stage IN ('sourced','screening_pending') THEN 'tech_review' ELSE stage END,
+        updated_at = NOW()
+      WHERE id = ${req.params.id}`;
+    await logCandidateEvent(req.params.id, 'tech_review_sent', gate.user, {
+      body: remarks || null,
+      metadata: { tech_reviewer_id },
+    });
+    notifyEmployeeUser(tech_reviewer_id, 'candidate_review_requested',
+      'Resume review requested',
+      `${gate.user?.name ?? 'HR'} asked you to review ${cand.name}'s profile.${remarks ? ' Note: ' + remarks : ''}`,
+      `/hiring/${req.params.id}`).catch(() => {});
+    res.json({ ok: true });
+  } catch (err: any) { res.status(500).json({ error: err.message ?? 'Server error' }); }
+});
+
+// POST /api/candidates/:id/submit-tech-review — the assigned reviewer
+// submits their verdict. Restricted to that reviewer (not HR — HR can
+// still change the record via PATCH). Notifies HR when done.
+app.post('/api/candidates/:id/submit-tech-review', async (req, res) => {
+  try {
+    const gate = await requireCandidateAccess(req, res, req.params.id);
+    if (!gate.ok) return;
+    if (gate.role !== 'reviewer' && gate.role !== 'hr') {
+      return res.status(403).json({ error: 'Only the assigned reviewer can submit this' });
+    }
+    const { status, remarks } = req.body ?? {};
+    if (!['recommended', 'not_recommended'].includes(status)) {
+      return res.status(400).json({ error: 'status must be recommended or not_recommended' });
+    }
+    const cand = ((await sql`SELECT id, name FROM candidates WHERE id=${req.params.id}` as any[])[0]);
+    if (!cand) return res.status(404).json({ error: 'Candidate not found' });
+    await sql`
+      UPDATE candidates SET
+        tech_review_status = ${status},
+        tech_review_remarks = ${remarks ?? null},
+        tech_review_reviewed_at = NOW(),
+        updated_at = NOW()
+      WHERE id = ${req.params.id}`;
+    await logCandidateEvent(req.params.id, 'tech_review_submitted', gate.user, {
+      body: remarks || null,
+      metadata: { status },
+    });
+    // Notify HR (all admins + HR) — they need to see the recommendation
+    // before moving to the HR screening call.
+    notifyAdminsAndHR('candidate_recommendation_ready',
+      `Tech review: ${status === 'recommended' ? 'Recommended' : 'Not recommended'}`,
+      `${gate.user?.name ?? 'Reviewer'} reviewed ${cand.name}: ${status === 'recommended' ? '✅ recommended' : '❌ not recommended'}.${remarks ? ' Note: ' + remarks : ''}`
+    ).catch(() => {});
+    res.json({ ok: true });
+  } catch (err: any) { res.status(500).json({ error: err.message ?? 'Server error' }); }
+});
+
+// POST /api/candidates/:id/log-screening-call — records the HR call. Not
+// a strict endpoint (HR could PATCH the fields directly) but exists to
+// emit a clean audit event + auto-advance stage.
+app.post('/api/candidates/:id/log-screening-call', async (req, res) => {
+  try {
+    const gate = await requireHROrAbove(req, res);
+    if (!gate.ok) return;
+    const { call_status, call_remarks, follow_up_date } = req.body ?? {};
+    if (!call_status) return res.status(400).json({ error: 'call_status is required' });
+    await sql`
+      UPDATE candidates SET
+        call_status = ${call_status},
+        called_by_id = ${gate.user?.id ?? null},
+        call_remarks = ${call_remarks ?? null},
+        follow_up_date = ${follow_up_date || null},
+        stage = CASE
+          WHEN stage IN ('sourced','screening_pending','tech_review') THEN 'screening_call'
+          ELSE stage
+        END,
+        updated_at = NOW()
+      WHERE id = ${req.params.id}`;
+    await logCandidateEvent(req.params.id, 'call_logged', gate.user, {
+      body: call_remarks || null,
+      metadata: { call_status, follow_up_date: follow_up_date || null },
+    });
+    res.json({ ok: true });
+  } catch (err: any) { res.status(500).json({ error: err.message ?? 'Server error' }); }
+});
+
+// POST /api/candidates/:id/interviews — schedule a new interview round.
+// round_no auto-computed as max(existing) + 1. Notifies the interviewer.
+app.post('/api/candidates/:id/interviews', async (req, res) => {
+  try {
+    const gate = await requireHROrAbove(req, res);
+    if (!gate.ok) return;
+    const { interviewer_id, scheduled_for, mode, meeting_link } = req.body ?? {};
+    if (!interviewer_id) return res.status(400).json({ error: 'interviewer_id is required' });
+    if (!scheduled_for) return res.status(400).json({ error: 'scheduled_for is required' });
+    const cand = ((await sql`SELECT id, name FROM candidates WHERE id=${req.params.id}` as any[])[0]);
+    if (!cand) return res.status(404).json({ error: 'Candidate not found' });
+    // interviewer's employee name snapshot so the round row is legible
+    // even if the employee is later renamed or deleted.
+    const interviewer = ((await sql`SELECT id, name FROM employees WHERE id=${interviewer_id} LIMIT 1` as any[])[0]);
+    if (!interviewer) return res.status(400).json({ error: 'Interviewer not found' });
+    const maxRoundRow = ((await sql`SELECT COALESCE(MAX(round_no), 0) AS max FROM candidate_interviews WHERE candidate_id=${req.params.id}` as any[])[0]);
+    const nextRound = Number(maxRoundRow?.max ?? 0) + 1;
+    const id = `intv_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
+    const rows = await sql`
+      INSERT INTO candidate_interviews (id, candidate_id, round_no, interviewer_id, interviewer_name,
+        scheduled_for, mode, meeting_link, status, created_by_id)
+      VALUES (${id}, ${req.params.id}, ${nextRound}, ${interviewer_id}, ${interviewer.name},
+        ${scheduled_for}, ${mode ?? null}, ${meeting_link ?? null}, 'scheduled', ${gate.user?.id ?? null})
+      RETURNING *`;
+    // Advance candidate stage if still in early buckets. Interview-set
+    // is the earliest stage that names "an interview exists"; anything
+    // past that should stay as-is (HR may schedule round 3 while the
+    // candidate is already in 'interviewing').
+    await sql`
+      UPDATE candidates SET
+        stage = CASE
+          WHEN stage IN ('sourced','screening_pending','tech_review','screening_call','details_captured')
+            THEN 'interview_scheduled'
+          ELSE stage
+        END,
+        updated_at = NOW()
+      WHERE id = ${req.params.id}`;
+    await logCandidateEvent(req.params.id, 'interview_scheduled', gate.user, {
+      body: `Round ${nextRound} with ${interviewer.name}`,
+      metadata: { interviewer_id, scheduled_for, mode, round_no: nextRound },
+    });
+    // Interviewer gets an action-required notification linking to the
+    // candidate — they'll only see the Interviews tab on the profile.
+    const whenStr = new Date(scheduled_for).toLocaleString('en-IN', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' });
+    notifyEmployeeUser(interviewer_id, 'interview_scheduled',
+      `Interview scheduled — ${cand.name}`,
+      `Round ${nextRound} with ${cand.name} on ${whenStr}${mode ? ` (${mode})` : ''}.${meeting_link ? ' Link: ' + meeting_link : ''}`,
+      `/hiring/${req.params.id}`).catch(() => {});
+    res.status(201).json(rows[0]);
+  } catch (err: any) { res.status(500).json({ error: err.message ?? 'Server error' }); }
+});
+
+// PATCH /api/candidate-interviews/:id — update an interview round. Used
+// by both the interviewer (feedback + decision) and HR (reschedule /
+// cancel). Also advances the candidate stage on decision.
+app.patch('/api/candidate-interviews/:id', async (req, res) => {
+  try {
+    const intv = ((await sql`SELECT * FROM candidate_interviews WHERE id=${req.params.id}` as any[])[0]);
+    if (!intv) return res.status(404).json({ error: 'Interview not found' });
+    const gate = await requireCandidateAccess(req, res, intv.candidate_id);
+    if (!gate.ok) return;
+    // Interviewers can update feedback/decision/status on THEIR round.
+    // HR can update anything. Anyone else blocks earlier at the access gate.
+    const { status, feedback, decision, scheduled_for, meeting_link, mode } = req.body ?? {};
+    let row = intv;
+    if (status !== undefined) row = (await sql`UPDATE candidate_interviews SET status=${status}, updated_at=NOW() WHERE id=${req.params.id} RETURNING *`)[0];
+    if (feedback !== undefined) row = (await sql`UPDATE candidate_interviews SET feedback=${feedback}, updated_at=NOW() WHERE id=${req.params.id} RETURNING *`)[0];
+    if (decision !== undefined) {
+      row = (await sql`UPDATE candidate_interviews SET decision=${decision}, decided_at=NOW(), status=CASE WHEN status='scheduled' THEN 'completed' ELSE status END, updated_at=NOW() WHERE id=${req.params.id} RETURNING *`)[0];
+    }
+    if (scheduled_for !== undefined && gate.role === 'hr') {
+      row = (await sql`UPDATE candidate_interviews SET scheduled_for=${scheduled_for}, status='rescheduled', updated_at=NOW() WHERE id=${req.params.id} RETURNING *`)[0];
+    }
+    if (meeting_link !== undefined && gate.role === 'hr') row = (await sql`UPDATE candidate_interviews SET meeting_link=${meeting_link}, updated_at=NOW() WHERE id=${req.params.id} RETURNING *`)[0];
+    if (mode !== undefined && gate.role === 'hr') row = (await sql`UPDATE candidate_interviews SET mode=${mode}, updated_at=NOW() WHERE id=${req.params.id} RETURNING *`)[0];
+    // On any completed round or decision, log an event + advance the
+    // candidate to 'interviewing' or 'decision_pending' as appropriate.
+    if (status === 'completed' || decision !== undefined) {
+      const cand = ((await sql`SELECT id, name FROM candidates WHERE id=${intv.candidate_id}` as any[])[0]);
+      await logCandidateEvent(intv.candidate_id, 'interview_feedback', gate.user, {
+        body: feedback || null,
+        metadata: { round_no: intv.round_no, decision, status: status ?? row.status },
+      });
+      // Auto-advance candidate stage based on decision. 'next_round' keeps
+      // them in 'interviewing'; anything else moves to 'decision_pending'.
+      let nextStage: string | null = null;
+      if (decision === 'next_round') nextStage = 'interviewing';
+      else if (decision) nextStage = 'decision_pending';
+      if (nextStage) {
+        await sql`UPDATE candidates SET stage=${nextStage}, updated_at=NOW() WHERE id=${intv.candidate_id}`;
+      }
+      // Ping HR — they need to know the round is done + the decision.
+      if (cand) {
+        notifyAdminsAndHR('interview_feedback_submitted',
+          `Interview feedback — ${cand.name} (round ${intv.round_no})`,
+          `${gate.user?.name ?? 'Interviewer'}: ${decision ?? 'feedback recorded'}.${feedback ? ' Note: ' + feedback : ''}`
+        ).catch(() => {});
+      }
+    }
+    res.json(row);
   } catch (err: any) { res.status(500).json({ error: err.message ?? 'Server error' }); }
 });
 

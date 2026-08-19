@@ -36,6 +36,12 @@ export const ACTION_REQUIRED_TYPES: readonly string[] = [
   'self_assessment_updated',
   // Feature flags (super-admin)
   'feature_draft',
+  // Hiring — Team Lead / interviewer handoffs. HR-side notifications
+  // ('recommendation_ready', 'interview_feedback_submitted') aren't
+  // action-required by themselves — they're FYI on someone else's
+  // action — so they stay off this list.
+  'candidate_review_requested',
+  'interview_scheduled',
 ];
 
 const ACTION_SET = new Set(ACTION_REQUIRED_TYPES);
