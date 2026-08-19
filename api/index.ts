@@ -6253,29 +6253,28 @@ app.get('/api/features/unseen', async (req, res) => {
     await runStartupMigrations();
     const uid = req.header('x-user-id');
     if (!uid) return res.status(401).json({ error: 'Sign in required' });
-    // 5-minute per-user memo. This endpoint is hit on every dashboard
-    // mount and tab focus — but its result only changes when a feature
-    // is published OR the user acks one. Acks invalidate via the POST
-    // /features/:id/ack handler below; publish doesn't auto-invalidate
-    // (acceptable 5-min lag for a banner that lives on the dashboard).
-    const result = await memoTtl(`featuresUnseen:${uid}`, 300_000, async () => {
-      const u = (await sql`SELECT id, role, employee_id_ref FROM app_users WHERE id=${uid}`)[0] as any;
-      if (!u) return { _err: 401 } as any;
-      const rows = await sql`
-        SELECT f.* FROM feature_announcements f
-        WHERE f.status = 'published'
-          AND NOT EXISTS (
-            SELECT 1 FROM feature_acks a
-            WHERE a.feature_id = f.id AND a.user_id = ${uid}
-          )
-        ORDER BY f.published_at ASC
-        LIMIT 20`;
-      for (const r of (rows as any[])) {
-        if (await userMatchesFeatureAudience(u, r.target_roles)) return r;
-      }
-      return null;
-    });
-    if (result && (result as any)._err === 401) return res.status(401).json({ error: 'Unknown user' });
+    // No memo here — Vercel Lambdas can multiplex across instances, so
+    // the per-instance _memoCache invalidation the /ack handler fires
+    // doesn't reliably clear a sibling instance. That produced a bug
+    // where dismissing the "What's new" popup kept re-serving the same
+    // feature from a stale sibling cache. The query is cheap (one small
+    // SELECT + up to 20 audience checks), so DB round-tripping every call
+    // is fine and gives us correctness.
+    const u = (await sql`SELECT id, role, employee_id_ref FROM app_users WHERE id=${uid}`)[0] as any;
+    if (!u) return res.status(401).json({ error: 'Unknown user' });
+    const rows = await sql`
+      SELECT f.* FROM feature_announcements f
+      WHERE f.status = 'published'
+        AND NOT EXISTS (
+          SELECT 1 FROM feature_acks a
+          WHERE a.feature_id = f.id AND a.user_id = ${uid}
+        )
+      ORDER BY f.published_at ASC
+      LIMIT 20`;
+    let result: any = null;
+    for (const r of (rows as any[])) {
+      if (await userMatchesFeatureAudience(u, r.target_roles)) { result = r; break; }
+    }
     res.json(result);
   } catch (err: any) { res.status(500).json({ error: err.message ?? 'Server error' }); }
 });

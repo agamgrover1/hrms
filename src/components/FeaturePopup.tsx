@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Sparkles, X } from 'lucide-react';
 import { api } from '../services/api';
 import type { FeatureAnnouncement } from '../services/api';
@@ -18,6 +18,18 @@ export default function FeaturePopup() {
   const { user } = useAuth();
   const [feature, setFeature] = useState<FeatureAnnouncement | null>(null);
   const [busy, setBusy] = useState(false);
+  // Guards against a stale unseen-feed re-showing an id the user just
+  // dismissed. The server DID invalidate its cache on ack, but if the
+  // ack POST failed silently (offline, transient 500) the next fetch
+  // will still return the same id — we treat those as already-handled
+  // and skip re-opening the popup.
+  const ackedIdsRef = useRef<Set<string>>(new Set());
+
+  const showIfNew = (f: FeatureAnnouncement | null) => {
+    if (!f) { setFeature(null); return; }
+    if (ackedIdsRef.current.has(f.id)) { setFeature(null); return; }
+    setFeature(f);
+  };
 
   const fetchNext = () => {
     if (!user) { setFeature(null); return; }
@@ -25,7 +37,7 @@ export default function FeaturePopup() {
     // poll that comes in during a popup would replace the title under
     // the user's nose.
     if (feature) return;
-    api.getUnseenFeature().then(setFeature).catch(() => setFeature(null));
+    api.getUnseenFeature().then(showIfNew).catch(() => setFeature(null));
   };
   useEffect(() => {
     // Mount fetch + focus refetch — no setInterval. Every poll counted
@@ -43,14 +55,23 @@ export default function FeaturePopup() {
   }, [user?.id, !!feature]);
 
   const dismiss = async () => {
-    if (!feature) return;
+    if (!feature || busy) return;
+    const current = feature;
+    // Optimistically close IMMEDIATELY so the popup can never look
+    // "stuck" if the ack POST takes a moment or a stale sibling
+    // Lambda re-serves the same feature. The ack + next-fetch happen
+    // in the background.
+    ackedIdsRef.current.add(current.id);
+    setFeature(null);
     setBusy(true);
+    try { await api.ackFeature(current.id); } catch { /* ignore — user already sees popup as dismissed */ }
     try {
-      await api.ackFeature(feature.id);
-      // Pull the next one immediately — chains multiple announcements
-      // without forcing a page reload between them.
-      api.getUnseenFeature().then(setFeature).catch(() => setFeature(null));
-    } catch { /* ignore — server-side ack failure shouldn't trap the user */ }
+      const next = await api.getUnseenFeature();
+      // Skip re-opening if the server hands us the id we just acked
+      // (stale sibling Lambda cache) or one we've dismissed earlier
+      // this session.
+      showIfNew(next);
+    } catch { /* ignore */ }
     finally { setBusy(false); }
   };
 
