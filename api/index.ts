@@ -10850,6 +10850,24 @@ async function ensureConfigTables() {
   // Only seeds if rows don't exist — never overrides HR-configured values
   await sql`INSERT INTO config_shifts (id,name,start_time,end_time,late_after) VALUES ('day','Day Shift','09:00','18:00','10:00') ON CONFLICT (id) DO NOTHING`;
   await sql`INSERT INTO config_shifts (id,name,start_time,end_time,late_after) VALUES ('night','Night Shift','18:30','03:30','19:30') ON CONFLICT (id) DO NOTHING`;
+
+  // Backfill config_designations from the DISTINCT designations already in
+  // use on employees. Runs once (guarded on empty table). Without this the
+  // Hiring "Profile applied for" dropdown starts empty even though every
+  // existing employee has a designation string set — HR would have to
+  // hand-add each one via Configuration to see them in the picker.
+  const desigCount = await sql`SELECT COUNT(*) FROM config_designations`.catch(() => [{ count: '0' }]);
+  if (String((desigCount[0] as any).count) === '0') {
+    const rows = await sql`
+      SELECT DISTINCT TRIM(designation) AS name
+      FROM employees
+      WHERE designation IS NOT NULL AND TRIM(designation) <> ''
+      ORDER BY name`.catch(() => [] as any[]) as any[];
+    for (const r of rows) {
+      const id = r.name.toLowerCase().replace(/\s+/g, '-').replace(/[^a-z0-9-]/g, '') || `desig-${Date.now().toString(36)}`;
+      await sql`INSERT INTO config_designations (id, name) VALUES (${id}, ${r.name}) ON CONFLICT (id) DO NOTHING`.catch(() => {});
+    }
+  }
 }
 
 app.get('/api/config/departments', async (_req, res) => {

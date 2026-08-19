@@ -107,11 +107,18 @@ export default function NewCandidateModal({ onClose, onSaved }: Props) {
           <div className="grid grid-cols-2 gap-3">
             <div>
               <label className="block text-xs font-semibold text-on-surface-muted mb-1">Profile applied for</label>
-              <select value={form.profile_applied_for} onChange={e => set('profile_applied_for', e.target.value)}
-                className="w-full px-3 py-2 rounded-lg border border-outline bg-surface focus:outline-none focus:ring-2 focus:ring-accent text-sm">
-                <option value="">— pick a designation —</option>
-                {designations.map((d: any) => <option key={d.id} value={d.name}>{d.name}</option>)}
-              </select>
+              <input list="candidate-designations" value={form.profile_applied_for}
+                onChange={e => set('profile_applied_for', e.target.value)}
+                placeholder={designations.length ? 'Pick or type a new one…' : 'e.g. Senior Software Engineer'}
+                className="w-full px-3 py-2 rounded-lg border border-outline bg-surface focus:outline-none focus:ring-2 focus:ring-accent text-sm" />
+              <datalist id="candidate-designations">
+                {designations.map((d: any) => <option key={d.id} value={d.name} />)}
+              </datalist>
+              {designations.length === 0 && (
+                <p className="text-[10px] text-on-surface-subtle mt-1">
+                  No configured designations yet — type any role name. Admin can seed the dropdown from Configuration → Job Designations.
+                </p>
+              )}
             </div>
             <div>
               <label className="block text-xs font-semibold text-on-surface-muted mb-1">Source</label>
