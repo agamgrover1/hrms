@@ -32,6 +32,8 @@ import HowItWorks from './pages/HowItWorks';
 import Finance from './pages/finance/Finance';
 import Lifecycle from './pages/Lifecycle';
 import HRDocumentsRegister from './pages/HRDocumentsRegister';
+import Hiring from './pages/Hiring';
+import CandidateProfile from './pages/CandidateProfile';
 
 function landingFor(_role: string): string {
   // Everyone lands on the unified dashboard. The page renders role-aware
@@ -81,6 +83,10 @@ function AppRoutes() {
 
         {/* HR document register — numbered letters across the org. */}
         <Route path="hr/documents" element={<ProtectedRoute roles={['admin', 'hr_manager', 'hr_intern']}><HRDocumentsRegister /></ProtectedRoute>} />
+
+        {/* Hiring — 10-stage candidate pipeline. HR-owned. */}
+        <Route path="hiring" element={<ProtectedRoute roles={['admin', 'hr_manager', 'hr_intern']}><Hiring /></ProtectedRoute>} />
+        <Route path="hiring/:id" element={<ProtectedRoute roles={['admin', 'hr_manager', 'hr_intern']}><CandidateProfile /></ProtectedRoute>} />
 
         {/* Finance / CFO — admin sees everything; project_coordinator only sees the Invoices tab. */}
         <Route path="finance" element={<ProtectedRoute roles={['admin', 'project_coordinator']}><Finance /></ProtectedRoute>} />

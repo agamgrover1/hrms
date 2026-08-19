@@ -656,6 +656,33 @@ export const api = {
     request<any>(`/config/shifts/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
   deleteConfigShift: (id: string) => request<any>(`/config/shifts/${id}`, { method: 'DELETE' }),
 
+  // Candidate source pool (LinkedIn / Indeed / Referral / etc.)
+  getConfigSources: () => request<Array<{ id: string; name: string; sort_order: number | null }>>('/config/sources'),
+  addConfigSource: (name: string) => request<any>('/config/sources', { method: 'POST', body: JSON.stringify({ name }) }),
+  deleteConfigSource: (id: string) => request<any>(`/config/sources/${id}`, { method: 'DELETE' }),
+
+  // ── Hiring / recruitment (Aug 2026) ──────────────────────────────────
+  listCandidates: (params?: { stage?: string; status?: string; q?: string }) => {
+    const qs = new URLSearchParams();
+    if (params?.stage) qs.set('stage', params.stage);
+    if (params?.status) qs.set('status', params.status);
+    if (params?.q) qs.set('q', params.q);
+    return request<any[]>(`/candidates${qs.toString() ? '?' + qs : ''}`);
+  },
+  getCandidate: (id: string) => request<{ candidate: any; interviews: any[]; events: any[] }>(`/candidates/${id}`),
+  createCandidate: (data: {
+    name: string;
+    email?: string;
+    phone?: string;
+    profile_applied_for?: string;
+    source?: string;
+    source_other?: string;
+    resume_url?: string;
+  }) => request<any>('/candidates', { method: 'POST', body: JSON.stringify(data) }),
+  patchCandidate: (id: string, patch: Record<string, any>) =>
+    request<any>(`/candidates/${id}`, { method: 'PATCH', body: JSON.stringify(patch) }),
+  deleteCandidate: (id: string) => request<any>(`/candidates/${id}`, { method: 'DELETE' }),
+
   // Optional Leave
   getOptionalLeaveDates: (year: number) =>
     request<any[]>(`/optional-leave/dates?year=${year}`),

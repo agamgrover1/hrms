@@ -870,18 +870,18 @@ async function runStartupMigrations() {
   // full migration block.
   //
   // KEEP THIS PROBE POINTED AT THE MOST RECENT MIGRATION when you add one.
-  // Right now: fin_project_revenue.upwork_fee_pct (added Aug 2026 so
-  // Upwork billing rows carry the platform fee % — accrual revenue is
-  // netted by it while the invoiced/contract number stays gross). If
-  // you add a newer column / table, update this SELECT to reference it
-  // so cold starts re-run migrations once after each deploy.
+  // Right now: candidates.stage (added Aug 2026 for the Hiring module —
+  // 10-stage candidate funnel with bespoke candidates + candidate_stage_events
+  // + candidate_interviews + config_sources tables). If you add a newer
+  // column / table, update this SELECT to reference it so cold starts
+  // re-run migrations once after each deploy.
   try {
     // Bump this probe whenever a new migration lands; existing warm
     // Lambdas will fail the SELECT and re-run runStartupMigrations().
     // For a *seed* (rows, not columns), we probe with EXISTS-style: an
     // empty result set means "still needs to run", so we don't set the
     // flag and fall through.
-    await sql`SELECT upwork_fee_pct FROM fin_project_revenue LIMIT 0`;
+    await sql`SELECT stage FROM candidates LIMIT 0`;
     _migrated = true;
     return;
   } catch {
@@ -2922,6 +2922,116 @@ async function runStartupMigrations() {
       WHERE u.employee_id_ref = e.id
         AND e.employee_id IS NOT NULL`;
   } catch { /* non-fatal */ }
+
+  // ── Hiring / recruitment module (Aug 2026) ──────────────────────────────
+  // Bespoke pipeline for the 10-stage candidate funnel. Not overloaded onto
+  // the checklist engine because that's employee-FK-locked. `candidates` is
+  // the one-row-per-candidate record that gets updated progressively through
+  // stages; `candidate_stage_events` mirrors project_activity's audit shape;
+  // `candidate_interviews` supports multiple rounds per candidate.
+  await sql`
+    CREATE TABLE IF NOT EXISTS candidates (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      email TEXT,
+      phone TEXT,
+      profile_applied_for TEXT,
+      source TEXT,
+      source_other TEXT,
+      resume_url TEXT,
+      stage TEXT NOT NULL DEFAULT 'sourced',
+      status TEXT NOT NULL DEFAULT 'active',
+      hr_screening_remarks TEXT,
+      screened_by_id TEXT,
+      screened_at TIMESTAMPTZ,
+      tech_review_needed BOOLEAN NOT NULL DEFAULT FALSE,
+      tech_reviewer_id TEXT,
+      tech_review_status TEXT,
+      tech_review_remarks TEXT,
+      tech_review_sent_at TIMESTAMPTZ,
+      tech_review_reviewed_at TIMESTAMPTZ,
+      call_status TEXT,
+      called_by_id TEXT,
+      call_remarks TEXT,
+      follow_up_date DATE,
+      total_experience_years NUMERIC,
+      relevant_experience_years NUMERIC,
+      current_salary NUMERIC,
+      current_ctc NUMERIC,
+      expected_salary NUMERIC,
+      expected_ctc NUMERIC,
+      last_increment_date DATE,
+      last_increment_amount NUMERIC,
+      reason_for_change TEXT,
+      current_location TEXT,
+      notice_period_days INTEGER,
+      face_to_face_available BOOLEAN,
+      offered_salary NUMERIC,
+      offered_ctc NUMERIC,
+      offer_date DATE,
+      offer_status TEXT,
+      offer_remarks TEXT,
+      final_status TEXT,
+      rejection_reason TEXT,
+      hired_employee_id TEXT,
+      created_by_id TEXT,
+      created_by_name TEXT,
+      created_at TIMESTAMPTZ DEFAULT NOW(),
+      updated_at TIMESTAMPTZ DEFAULT NOW()
+    )`;
+  await sql`CREATE INDEX IF NOT EXISTS idx_candidates_stage ON candidates(stage, created_at DESC)`.catch(()=>{});
+  await sql`CREATE INDEX IF NOT EXISTS idx_candidates_status ON candidates(status)`.catch(()=>{});
+  await sql`CREATE INDEX IF NOT EXISTS idx_candidates_reviewer ON candidates(tech_reviewer_id, tech_review_status)`.catch(()=>{});
+
+  await sql`
+    CREATE TABLE IF NOT EXISTS candidate_stage_events (
+      id SERIAL PRIMARY KEY,
+      candidate_id TEXT NOT NULL REFERENCES candidates(id) ON DELETE CASCADE,
+      action TEXT NOT NULL,
+      before_stage TEXT,
+      after_stage TEXT,
+      actor_id TEXT,
+      actor_name TEXT,
+      actor_role TEXT,
+      body TEXT,
+      metadata JSONB,
+      created_at TIMESTAMPTZ DEFAULT NOW()
+    )`;
+  await sql`CREATE INDEX IF NOT EXISTS idx_candidate_events_cand ON candidate_stage_events(candidate_id, created_at DESC)`.catch(()=>{});
+
+  await sql`
+    CREATE TABLE IF NOT EXISTS candidate_interviews (
+      id TEXT PRIMARY KEY,
+      candidate_id TEXT NOT NULL REFERENCES candidates(id) ON DELETE CASCADE,
+      round_no INTEGER NOT NULL DEFAULT 1,
+      interviewer_id TEXT,
+      interviewer_name TEXT,
+      scheduled_for TIMESTAMPTZ,
+      mode TEXT,
+      meeting_link TEXT,
+      status TEXT NOT NULL DEFAULT 'scheduled',
+      feedback TEXT,
+      decision TEXT,
+      decided_at TIMESTAMPTZ,
+      created_by_id TEXT,
+      created_at TIMESTAMPTZ DEFAULT NOW(),
+      updated_at TIMESTAMPTZ DEFAULT NOW()
+    )`;
+  await sql`CREATE INDEX IF NOT EXISTS idx_candidate_interviews_cand ON candidate_interviews(candidate_id, round_no)`.catch(()=>{});
+
+  // Source dropdown for the Candidate Entry form. Same shape as
+  // config_designations — the config surface (Configuration → Sources)
+  // reuses the same CRUD pattern. Seeded once with sensible defaults.
+  await sql`CREATE TABLE IF NOT EXISTS config_sources (id TEXT PRIMARY KEY, name TEXT NOT NULL UNIQUE, sort_order INTEGER, created_at TIMESTAMPTZ DEFAULT NOW())`;
+  const srcCount = await sql`SELECT COUNT(*) FROM config_sources`;
+  if (String((srcCount[0] as any).count) === '0') {
+    const defaults = ['LinkedIn','Indeed','Employee Referral','Naukri','Other'];
+    for (let i = 0; i < defaults.length; i++) {
+      const name = defaults[i];
+      const id = name.toLowerCase().replace(/\s+/g, '-').replace(/[^a-z0-9-]/g, '');
+      await sql`INSERT INTO config_sources (id, name, sort_order) VALUES (${id}, ${name}, ${i}) ON CONFLICT (id) DO NOTHING`;
+    }
+  }
 
   _migrated = true;
 }
@@ -10668,6 +10778,27 @@ app.delete('/api/config/shifts/:id', async (req, res) => {
   catch { res.status(500).json({ error: 'Server error' }); }
 });
 
+// Candidate sources (LinkedIn / Indeed / Referral / etc.). Same shape as
+// designations — admin/HR adds new ones from Configuration → Sources.
+app.get('/api/config/sources', async (_req, res) => {
+  try { await runStartupMigrations(); res.json(await sql`SELECT * FROM config_sources ORDER BY sort_order NULLS LAST, name`); }
+  catch { res.status(500).json({ error: 'Server error' }); }
+});
+app.post('/api/config/sources', async (req, res) => {
+  try {
+    await runStartupMigrations();
+    const { name } = req.body;
+    if (!name?.trim()) return res.status(400).json({ error: 'Name required' });
+    const id = name.trim().toLowerCase().replace(/\s+/g, '-').replace(/[^a-z0-9-]/g, '') + '-' + Date.now().toString(36);
+    const rows = await sql`INSERT INTO config_sources (id, name) VALUES (${id}, ${name.trim()}) RETURNING *`;
+    res.json(rows[0]);
+  } catch (e: any) { res.status(e.message?.includes('unique') ? 409 : 500).json({ error: e.message }); }
+});
+app.delete('/api/config/sources/:id', async (req, res) => {
+  try { await sql`DELETE FROM config_sources WHERE id=${req.params.id}`; res.json({ success: true }); }
+  catch { res.status(500).json({ error: 'Server error' }); }
+});
+
 // ── Role responsibilities (playbook per role) ─────────────────────────────
 // Read is open to any authenticated user — they need to see their own role's
 // playbook. Mutations require admin so only HR can rewrite expectations.
@@ -12656,6 +12787,201 @@ app.patch('/api/config/hr-document-types/reorder', async (req, res) => {
     }
     invalidateDocTypeMetaCache();
     res.json({ ok: true, updated: orderedIds.length });
+  } catch (err: any) { res.status(500).json({ error: err.message ?? 'Server error' }); }
+});
+
+// ── Hiring / recruitment ──────────────────────────────────────────────────
+// 10-stage candidate pipeline. Endpoints gated to admin/HR by default;
+// specific stage-transition endpoints will open to Team Lead / interviewer
+// in Slice 2 (this slice is HR-only CRUD + kanban).
+//
+// STAGES (canonical order): sourced → screening_pending → tech_review →
+// screening_call → details_captured → interview_scheduled → interviewing
+// → decision_pending → offer → final. Terminal branches: rejected, hold.
+const CANDIDATE_STAGES = [
+  'sourced', 'screening_pending', 'tech_review', 'screening_call',
+  'details_captured', 'interview_scheduled', 'interviewing',
+  'decision_pending', 'offer', 'final',
+  'rejected', 'hold',
+] as const;
+const CANDIDATE_MUTABLE_FIELDS = [
+  'name', 'email', 'phone', 'profile_applied_for', 'source', 'source_other', 'resume_url',
+  'stage', 'status',
+  'hr_screening_remarks',
+  'tech_review_needed', 'tech_reviewer_id', 'tech_review_status', 'tech_review_remarks',
+  'call_status', 'called_by_id', 'call_remarks', 'follow_up_date',
+  'total_experience_years', 'relevant_experience_years',
+  'current_salary', 'current_ctc', 'expected_salary', 'expected_ctc',
+  'last_increment_date', 'last_increment_amount',
+  'reason_for_change', 'current_location', 'notice_period_days', 'face_to_face_available',
+  'offered_salary', 'offered_ctc', 'offer_date', 'offer_status', 'offer_remarks',
+  'final_status', 'rejection_reason',
+] as const;
+
+// Append an audit event. Non-fatal — a logging failure never blocks the
+// main mutation (candidate + downstream data is still saved).
+async function logCandidateEvent(candidateId: string, action: string, actor: any, extras: {
+  before_stage?: string | null;
+  after_stage?: string | null;
+  body?: string | null;
+  metadata?: any;
+} = {}) {
+  try {
+    await sql`
+      INSERT INTO candidate_stage_events (candidate_id, action, before_stage, after_stage, actor_id, actor_name, actor_role, body, metadata)
+      VALUES (${candidateId}, ${action}, ${extras.before_stage ?? null}, ${extras.after_stage ?? null},
+        ${actor?.id ?? null}, ${actor?.name ?? null}, ${actor?.role ?? null},
+        ${extras.body ?? null}, ${extras.metadata ? JSON.stringify(extras.metadata) : null})`;
+  } catch { /* audit failure is non-fatal */ }
+}
+
+// GET /api/candidates — list with optional stage / status filters + name/email search.
+app.get('/api/candidates', async (req, res) => {
+  try {
+    await runStartupMigrations();
+    const gate = await requireFullHR(req, res);
+    if (!gate.ok) return;
+    const stage = (req.query.stage as string) || null;
+    const status = (req.query.status as string) || null;
+    const q = (req.query.q as string) || null;
+    const rows = await sql`
+      SELECT * FROM candidates
+      WHERE (${stage}::text IS NULL OR stage = ${stage})
+        AND (${status}::text IS NULL OR status = ${status})
+        AND (${q}::text IS NULL
+             OR LOWER(name) LIKE '%' || LOWER(${q}) || '%'
+             OR LOWER(COALESCE(email,'')) LIKE '%' || LOWER(${q}) || '%'
+             OR COALESCE(phone,'') LIKE '%' || ${q} || '%')
+      ORDER BY updated_at DESC`;
+    res.json(rows);
+  } catch (err: any) { res.status(500).json({ error: err.message ?? 'Server error' }); }
+});
+
+// GET /api/candidates/:id — full record + interviews + events for the profile page.
+app.get('/api/candidates/:id', async (req, res) => {
+  try {
+    await runStartupMigrations();
+    const gate = await requireFullHR(req, res);
+    if (!gate.ok) return;
+    const rows = await sql`SELECT * FROM candidates WHERE id=${req.params.id}` as any[];
+    if (!rows.length) return res.status(404).json({ error: 'Candidate not found' });
+    const [interviews, events] = await Promise.all([
+      sql`SELECT * FROM candidate_interviews WHERE candidate_id=${req.params.id} ORDER BY round_no, scheduled_for`,
+      sql`SELECT * FROM candidate_stage_events WHERE candidate_id=${req.params.id} ORDER BY created_at DESC LIMIT 200`,
+    ]);
+    res.json({ candidate: rows[0], interviews, events });
+  } catch (err: any) { res.status(500).json({ error: err.message ?? 'Server error' }); }
+});
+
+// POST /api/candidates — initial candidate entry (Stage A).
+// Only the resume-based fields are required; everything else fills in
+// progressively as the candidate moves through stages.
+app.post('/api/candidates', async (req, res) => {
+  try {
+    await runStartupMigrations();
+    const gate = await requireFullHR(req, res);
+    if (!gate.ok) return;
+    const { name, email, phone, profile_applied_for, source, source_other, resume_url } = req.body ?? {};
+    if (!name?.trim()) return res.status(400).json({ error: 'Candidate name is required' });
+    const id = `cand_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
+    const rows = await sql`
+      INSERT INTO candidates (id, name, email, phone, profile_applied_for, source, source_other, resume_url, stage, status, created_by_id, created_by_name)
+      VALUES (${id}, ${name.trim()}, ${email ?? null}, ${phone ?? null},
+        ${profile_applied_for ?? null}, ${source ?? null}, ${source_other ?? null}, ${resume_url ?? null},
+        'sourced', 'active', ${gate.user?.id ?? null}, ${gate.user?.name ?? null})
+      RETURNING *`;
+    const cand = rows[0] as any;
+    await logCandidateEvent(cand.id, 'stage_change', gate.user, {
+      before_stage: null, after_stage: 'sourced', body: 'Candidate added',
+    });
+    res.status(201).json(cand);
+  } catch (err: any) { res.status(500).json({ error: err.message ?? 'Server error' }); }
+});
+
+// PATCH /api/candidates/:id — partial update. Whitelisted fields only so a
+// stray payload can't overwrite hired_employee_id or created_by. When
+// stage changes, appends a stage_change event automatically.
+app.patch('/api/candidates/:id', async (req, res) => {
+  try {
+    await runStartupMigrations();
+    const gate = await requireFullHR(req, res);
+    if (!gate.ok) return;
+    const existing = (await sql`SELECT * FROM candidates WHERE id=${req.params.id}` as any[])[0];
+    if (!existing) return res.status(404).json({ error: 'Candidate not found' });
+    const patch = req.body ?? {};
+    // Build a SET clause from whitelisted keys only. Skip undefined so a
+    // partial payload doesn't null out unrelated columns.
+    const validKeys = CANDIDATE_MUTABLE_FIELDS.filter(k => patch[k] !== undefined);
+    if (validKeys.length === 0) return res.json(existing);
+    if ('stage' in patch && !CANDIDATE_STAGES.includes(patch.stage)) {
+      return res.status(400).json({ error: `Unknown stage: ${patch.stage}` });
+    }
+    // Neon's tagged template doesn't support dynamic column lists, so
+    // handroll a parameterized query via sequential UPDATE ... SET k = v
+    // clauses. Keeps injection risk zero because keys come from the
+    // hardcoded whitelist above; values pass through the driver's
+    // parameter binding.
+    let row = existing;
+    for (const key of validKeys) {
+      const value = patch[key];
+      switch (key) {
+        case 'name': row = (await sql`UPDATE candidates SET name=${value}, updated_at=NOW() WHERE id=${req.params.id} RETURNING *`)[0]; break;
+        case 'email': row = (await sql`UPDATE candidates SET email=${value}, updated_at=NOW() WHERE id=${req.params.id} RETURNING *`)[0]; break;
+        case 'phone': row = (await sql`UPDATE candidates SET phone=${value}, updated_at=NOW() WHERE id=${req.params.id} RETURNING *`)[0]; break;
+        case 'profile_applied_for': row = (await sql`UPDATE candidates SET profile_applied_for=${value}, updated_at=NOW() WHERE id=${req.params.id} RETURNING *`)[0]; break;
+        case 'source': row = (await sql`UPDATE candidates SET source=${value}, updated_at=NOW() WHERE id=${req.params.id} RETURNING *`)[0]; break;
+        case 'source_other': row = (await sql`UPDATE candidates SET source_other=${value}, updated_at=NOW() WHERE id=${req.params.id} RETURNING *`)[0]; break;
+        case 'resume_url': row = (await sql`UPDATE candidates SET resume_url=${value}, updated_at=NOW() WHERE id=${req.params.id} RETURNING *`)[0]; break;
+        case 'stage': row = (await sql`UPDATE candidates SET stage=${value}, updated_at=NOW() WHERE id=${req.params.id} RETURNING *`)[0]; break;
+        case 'status': row = (await sql`UPDATE candidates SET status=${value}, updated_at=NOW() WHERE id=${req.params.id} RETURNING *`)[0]; break;
+        case 'hr_screening_remarks': row = (await sql`UPDATE candidates SET hr_screening_remarks=${value}, updated_at=NOW() WHERE id=${req.params.id} RETURNING *`)[0]; break;
+        case 'tech_review_needed': row = (await sql`UPDATE candidates SET tech_review_needed=${value}, updated_at=NOW() WHERE id=${req.params.id} RETURNING *`)[0]; break;
+        case 'tech_reviewer_id': row = (await sql`UPDATE candidates SET tech_reviewer_id=${value}, updated_at=NOW() WHERE id=${req.params.id} RETURNING *`)[0]; break;
+        case 'tech_review_status': row = (await sql`UPDATE candidates SET tech_review_status=${value}, updated_at=NOW() WHERE id=${req.params.id} RETURNING *`)[0]; break;
+        case 'tech_review_remarks': row = (await sql`UPDATE candidates SET tech_review_remarks=${value}, updated_at=NOW() WHERE id=${req.params.id} RETURNING *`)[0]; break;
+        case 'call_status': row = (await sql`UPDATE candidates SET call_status=${value}, updated_at=NOW() WHERE id=${req.params.id} RETURNING *`)[0]; break;
+        case 'called_by_id': row = (await sql`UPDATE candidates SET called_by_id=${value}, updated_at=NOW() WHERE id=${req.params.id} RETURNING *`)[0]; break;
+        case 'call_remarks': row = (await sql`UPDATE candidates SET call_remarks=${value}, updated_at=NOW() WHERE id=${req.params.id} RETURNING *`)[0]; break;
+        case 'follow_up_date': row = (await sql`UPDATE candidates SET follow_up_date=${value || null}, updated_at=NOW() WHERE id=${req.params.id} RETURNING *`)[0]; break;
+        case 'total_experience_years': row = (await sql`UPDATE candidates SET total_experience_years=${value === '' ? null : value}, updated_at=NOW() WHERE id=${req.params.id} RETURNING *`)[0]; break;
+        case 'relevant_experience_years': row = (await sql`UPDATE candidates SET relevant_experience_years=${value === '' ? null : value}, updated_at=NOW() WHERE id=${req.params.id} RETURNING *`)[0]; break;
+        case 'current_salary': row = (await sql`UPDATE candidates SET current_salary=${value === '' ? null : value}, updated_at=NOW() WHERE id=${req.params.id} RETURNING *`)[0]; break;
+        case 'current_ctc': row = (await sql`UPDATE candidates SET current_ctc=${value === '' ? null : value}, updated_at=NOW() WHERE id=${req.params.id} RETURNING *`)[0]; break;
+        case 'expected_salary': row = (await sql`UPDATE candidates SET expected_salary=${value === '' ? null : value}, updated_at=NOW() WHERE id=${req.params.id} RETURNING *`)[0]; break;
+        case 'expected_ctc': row = (await sql`UPDATE candidates SET expected_ctc=${value === '' ? null : value}, updated_at=NOW() WHERE id=${req.params.id} RETURNING *`)[0]; break;
+        case 'last_increment_date': row = (await sql`UPDATE candidates SET last_increment_date=${value || null}, updated_at=NOW() WHERE id=${req.params.id} RETURNING *`)[0]; break;
+        case 'last_increment_amount': row = (await sql`UPDATE candidates SET last_increment_amount=${value === '' ? null : value}, updated_at=NOW() WHERE id=${req.params.id} RETURNING *`)[0]; break;
+        case 'reason_for_change': row = (await sql`UPDATE candidates SET reason_for_change=${value}, updated_at=NOW() WHERE id=${req.params.id} RETURNING *`)[0]; break;
+        case 'current_location': row = (await sql`UPDATE candidates SET current_location=${value}, updated_at=NOW() WHERE id=${req.params.id} RETURNING *`)[0]; break;
+        case 'notice_period_days': row = (await sql`UPDATE candidates SET notice_period_days=${value === '' ? null : value}, updated_at=NOW() WHERE id=${req.params.id} RETURNING *`)[0]; break;
+        case 'face_to_face_available': row = (await sql`UPDATE candidates SET face_to_face_available=${value}, updated_at=NOW() WHERE id=${req.params.id} RETURNING *`)[0]; break;
+        case 'offered_salary': row = (await sql`UPDATE candidates SET offered_salary=${value === '' ? null : value}, updated_at=NOW() WHERE id=${req.params.id} RETURNING *`)[0]; break;
+        case 'offered_ctc': row = (await sql`UPDATE candidates SET offered_ctc=${value === '' ? null : value}, updated_at=NOW() WHERE id=${req.params.id} RETURNING *`)[0]; break;
+        case 'offer_date': row = (await sql`UPDATE candidates SET offer_date=${value || null}, updated_at=NOW() WHERE id=${req.params.id} RETURNING *`)[0]; break;
+        case 'offer_status': row = (await sql`UPDATE candidates SET offer_status=${value}, updated_at=NOW() WHERE id=${req.params.id} RETURNING *`)[0]; break;
+        case 'offer_remarks': row = (await sql`UPDATE candidates SET offer_remarks=${value}, updated_at=NOW() WHERE id=${req.params.id} RETURNING *`)[0]; break;
+        case 'final_status': row = (await sql`UPDATE candidates SET final_status=${value}, updated_at=NOW() WHERE id=${req.params.id} RETURNING *`)[0]; break;
+        case 'rejection_reason': row = (await sql`UPDATE candidates SET rejection_reason=${value}, updated_at=NOW() WHERE id=${req.params.id} RETURNING *`)[0]; break;
+      }
+    }
+    // Log stage transitions so the Activity tab has a clean audit trail.
+    if ('stage' in patch && patch.stage !== existing.stage) {
+      await logCandidateEvent(req.params.id, 'stage_change', gate.user, {
+        before_stage: existing.stage, after_stage: patch.stage, body: patch.stage_change_note || null,
+      });
+    }
+    res.json(row);
+  } catch (err: any) { res.status(500).json({ error: err.message ?? 'Server error' }); }
+});
+
+// DELETE /api/candidates/:id — admin only. Candidates have no downstream
+// finance impact so hard delete is safe (unlike employees). Cascades to
+// candidate_stage_events + candidate_interviews via FK ON DELETE CASCADE.
+app.delete('/api/candidates/:id', async (req, res) => {
+  try {
+    if (!(await requireAdmin(req, res))) return;
+    await sql`DELETE FROM candidates WHERE id=${req.params.id}`;
+    res.json({ success: true });
   } catch (err: any) { res.status(500).json({ error: err.message ?? 'Server error' }); }
 });
 
