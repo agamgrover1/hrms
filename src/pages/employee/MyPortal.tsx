@@ -971,20 +971,20 @@ export default function MyPortal() {
     return () => clearInterval(t);
   }, [tab, empDbId, attMonth, attYear]);
   // Ask the browser for the current position; resolves with lat/lng or
-  // undefined if the user denies / times out. Never rejects — geofence
-  // is warn-but-allow, so a missing reading is a valid state the
-  // backend handles via a confirmation prompt.
+  // undefined if the user denies / times out. Never rejects — the backend
+  // hard-blocks with a clear 403 when the fence is enabled and the
+  // reading is missing, which surfaces here as a normal error toast.
   const readGeolocation = (): Promise<{ lat?: number; lng?: number; accuracy?: number }> => {
     return new Promise((resolve) => {
       if (!('geolocation' in navigator)) return resolve({});
-      const timer = setTimeout(() => resolve({}), 8000);
+      const timer = setTimeout(() => resolve({}), 10_000);
       navigator.geolocation.getCurrentPosition(
         (pos) => {
           clearTimeout(timer);
           resolve({ lat: pos.coords.latitude, lng: pos.coords.longitude, accuracy: pos.coords.accuracy });
         },
         () => { clearTimeout(timer); resolve({}); },
-        { enableHighAccuracy: true, timeout: 8000, maximumAge: 60_000 }
+        { enableHighAccuracy: true, timeout: 10_000, maximumAge: 60_000 }
       );
     });
   };
@@ -993,43 +993,27 @@ export default function MyPortal() {
     setClockBusy('in');
     try {
       const geo = await readGeolocation();
-      let res: any;
-      try {
-        res = await api.clockIn(empDbId, geo);
-      } catch (e: any) {
-        // Backend asks for confirmation when GPS is missing or the
-        // reading is outside the office fence. Show the message + let
-        // the employee decide whether to proceed. On confirm, retry
-        // with confirmed_outside=true so the server accepts + stamps
-        // the row for HR audit.
-        if (e?.body?.requires_confirmation) {
-          const proceed = window.confirm(e.body.message || 'Clock in from outside the office fence?');
-          if (!proceed) { setClockBusy(null); return; }
-          res = await api.clockIn(empDbId, { ...geo, confirmed_outside: true });
-        } else {
-          throw e;
-        }
-      }
-      const geoNote = res?.geo_status === 'outside' ? ' (marked off-site)'
-        : res?.geo_status === 'no_data' ? ' (no location)'
-        : res?.geo_status === 'wfh_exempt' ? ' (WFH day)'
+      const res: any = await api.clockIn(empDbId, geo);
+      const geoNote = res?.geo_status === 'wfh_exempt' ? ' (WFH day)'
+        : res?.geo_status === 'inside' ? ' (at office)'
         : '';
       toast.success('Clocked in', `Marked ${res?.status ?? 'present'} at ${res?.time ?? 'now'}${geoNote}.`);
       api.getAttendance({ employee_id: empDbId, month: attMonth, year: attYear }).then(setAttendance).catch(() => {});
     } catch (e: any) {
-      toast.error('Clock-in failed', e?.message ?? 'Please try again.');
+      toast.error('Clock-in blocked', e?.body?.error ?? e?.message ?? 'Please try again.');
     } finally { setClockBusy(null); }
   };
   const handleClockOut = async () => {
     if (!empDbId || clockBusy) return;
     setClockBusy('out');
     try {
-      const res: any = await api.clockOut(empDbId);
+      const geo = await readGeolocation();
+      const res: any = await api.clockOut(empDbId, { lat: geo.lat, lng: geo.lng });
       const hours = res?.total_hours ?? res?.duration_hours;
       toast.success('Clocked out', hours ? `Total: ${Math.round(Number(hours) * 10) / 10}h today.` : 'Have a good one!');
       api.getAttendance({ employee_id: empDbId, month: attMonth, year: attYear }).then(setAttendance).catch(() => {});
     } catch (e: any) {
-      toast.error('Clock-out failed', e?.message ?? 'Please try again.');
+      toast.error('Clock-out blocked', e?.body?.error ?? e?.message ?? 'Please try again.');
     } finally { setClockBusy(null); }
   };
   const [showTeamReview, setShowTeamReview] = useState<any | null>(null); // employee record

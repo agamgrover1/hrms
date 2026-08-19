@@ -455,10 +455,10 @@ export default function Config() {
   );
 }
 
-// Admin config for the attendance geofence. Warn-but-allow mode: even
-// when enabled, employees outside the fence get a confirmation prompt
-// instead of a hard block. Approved WFH days auto-exempt via the
-// backend clock-in handler.
+// Admin config for the attendance geofence. Hard-block mode: when
+// enabled, both clock-in and clock-out require the employee to be
+// physically inside the radius. Approved WFH days auto-exempt via the
+// backend handler.
 function GeofenceTab() {
   const [cfg, setCfg] = useState<{ enabled: boolean; latitude: string; longitude: string; radius_meters: number; office_label: string }>({
     enabled: false, latitude: '', longitude: '', radius_meters: 100, office_label: '',
@@ -513,9 +513,9 @@ function GeofenceTab() {
       <div className="rounded-xl-2 border border-outline bg-surface-2/60 p-4 text-xs text-on-surface-muted">
         <p className="font-semibold text-on-surface text-sm mb-1">Attendance geofence</p>
         <p>
-          Restricts portal clock-in to a lat/lng radius around the office. This is <b className="text-on-surface">warn-but-allow</b> — an employee
-          outside the fence gets a confirmation prompt and can still clock in; the row is flagged for HR audit.
-          Employees with an approved WFH request for the day are auto-exempt.
+          Restricts portal clock-in <b className="text-on-surface">and clock-out</b> to a lat/lng radius around the office.
+          When enabled, an employee outside the radius (or with location blocked) is <b className="text-on-surface">hard-blocked</b> from
+          punching — no override. Employees with an approved WFH request for the day are auto-exempt.
         </p>
       </div>
 
@@ -526,7 +526,7 @@ function GeofenceTab() {
         <label className="flex items-center gap-2 text-sm text-on-surface font-semibold">
           <input type="checkbox" checked={cfg.enabled} onChange={e => setCfg(c => ({ ...c, enabled: e.target.checked }))}
             className="rounded border-outline" />
-          Enable geofence on clock-in
+          Enable geofence on clock-in and clock-out
         </label>
 
         <div>

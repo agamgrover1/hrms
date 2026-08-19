@@ -4118,10 +4118,44 @@ function haversineMeters(lat1: number, lng1: number, lat2: number, lng2: number)
   return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
 }
 
+// Enforce the office geofence for a punch (clock-in or clock-out).
+// Hard-block mode: no GPS OR outside radius → blocked. Employee must be
+// physically inside the fence to punch. WFH-approved for the day → exempt.
+// Returns { ok, status, distance } on success, { ok:false, http, body } on block.
+async function evaluateGeofence(employee_id: string, today: string, latNum: number | null, lngNum: number | null): Promise<
+  | { ok: true; status: string; distance: number | null }
+  | { ok: false; http: number; body: { error: string; reason: string; office_label?: string; radius_m?: number; distance_m?: number } }
+> {
+  const rows = await sql`SELECT enabled, latitude, longitude, radius_meters, office_label FROM attendance_geo_config WHERE id='default' LIMIT 1` as any[];
+  const cfg = rows[0];
+  if (!cfg?.enabled || cfg.latitude == null || cfg.longitude == null) {
+    return { ok: true, status: 'not_enforced', distance: null };
+  }
+  const wfhToday = await sql`SELECT id FROM wfh_requests WHERE employee_id=${employee_id} AND date::date=${today}::date AND status='approved' LIMIT 1`.catch(() => [] as any[]) as any[];
+  if (wfhToday.length) return { ok: true, status: 'wfh_exempt', distance: null };
+
+  const label = cfg.office_label ?? 'the office';
+  const radius = Number(cfg.radius_meters);
+  if (latNum == null || lngNum == null) {
+    return {
+      ok: false, http: 403,
+      body: { error: `Location is required — enable location access and try again. You must be within ${radius}m of ${label}.`, reason: 'no_gps', office_label: cfg.office_label ?? 'Office', radius_m: radius },
+    };
+  }
+  const distance = haversineMeters(Number(cfg.latitude), Number(cfg.longitude), latNum, lngNum);
+  if (distance > radius) {
+    return {
+      ok: false, http: 403,
+      body: { error: `You are about ${Math.round(distance)}m from ${label} (allowed ${radius}m). Move within the radius and try again.`, reason: 'outside_fence', office_label: cfg.office_label ?? 'Office', radius_m: radius, distance_m: Math.round(distance) },
+    };
+  }
+  return { ok: true, status: 'inside', distance };
+}
+
 app.post('/api/attendance/clock-in', async (req, res) => {
   try {
     await runStartupMigrations(); // idempotent; fast-path after cold start
-    const { employee_id, source, lat, lng, accuracy, confirmed_outside } = req.body;
+    const { employee_id, source, lat, lng, accuracy } = req.body;
     const { date: today, time } = istNow();
     if (isWeekendV(today)) return res.status(400).json({ error: 'Weekends are non-working days' });
 
@@ -4152,58 +4186,16 @@ app.post('/api/attendance/clock-in', async (req, res) => {
     const clockSource = source ?? 'manual';
 
     // ── Geofence check ────────────────────────────────────────────────
-    // Resolve the fence once. If disabled → skip entirely + stamp
-    // geo_status='not_enforced'. Otherwise compute distance from
-    // office (haversine) and decide: inside / outside / no_data.
-    // Warn-but-allow mode: outside without confirmation → 409 with a
-    // hint the client can convert into a confirm dialog.
-    let geoStatus: string = 'not_enforced';
-    let distance: number | null = null;
-    let latNum: number | null = lat != null ? Number(lat) : null;
-    let lngNum: number | null = lng != null ? Number(lng) : null;
-    let accNum: number | null = accuracy != null ? Number(accuracy) : null;
-    const geoCfgRows = await sql`SELECT enabled, latitude, longitude, radius_meters, office_label FROM attendance_geo_config WHERE id='default' LIMIT 1` as any[];
-    const geoCfg = geoCfgRows[0];
-    if (geoCfg?.enabled && geoCfg.latitude != null && geoCfg.longitude != null) {
-      // WFH auto-exempt: any approved WFH request for the employee today
-      // (full-day or half-day) skips the fence entirely. Attendance still
-      // records the (missing / off-office) coords for audit.
-      const wfhToday = await sql`SELECT id FROM wfh_requests WHERE employee_id=${employee_id} AND date::date=${today}::date AND status='approved' LIMIT 1`.catch(() => [] as any[]) as any[];
-      if (wfhToday.length) {
-        geoStatus = 'wfh_exempt';
-      } else if (latNum == null || lngNum == null) {
-        // No GPS reading. Treated like "outside" for confirmation
-        // purposes so the client can prompt the employee to acknowledge.
-        if (!confirmed_outside) {
-          return res.status(409).json({
-            requires_confirmation: true,
-            reason: 'no_gps',
-            office_label: geoCfg.office_label ?? 'Office',
-            radius_m: Number(geoCfg.radius_meters),
-            message: 'We could not read your location. Confirm you want to clock in without a location check?',
-          });
-        }
-        geoStatus = 'no_data';
-      } else {
-        distance = haversineMeters(Number(geoCfg.latitude), Number(geoCfg.longitude), latNum, lngNum);
-        const inside = distance <= Number(geoCfg.radius_meters);
-        if (inside) {
-          geoStatus = 'inside';
-        } else {
-          if (!confirmed_outside) {
-            return res.status(409).json({
-              requires_confirmation: true,
-              reason: 'outside_fence',
-              distance_m: Math.round(distance),
-              office_label: geoCfg.office_label ?? 'Office',
-              radius_m: Number(geoCfg.radius_meters),
-              message: `You're about ${Math.round(distance)}m from ${geoCfg.office_label ?? 'the office'} (allowed radius ${geoCfg.radius_meters}m). Clock in from here anyway?`,
-            });
-          }
-          geoStatus = 'outside';
-        }
-      }
-    }
+    // Hard-block mode: if the fence is enabled, employee must be within
+    // radius of the office to punch. No GPS OR outside → 403, no override.
+    // WFH-approved for today → exempt.
+    const latNum: number | null = lat != null ? Number(lat) : null;
+    const lngNum: number | null = lng != null ? Number(lng) : null;
+    const accNum: number | null = accuracy != null ? Number(accuracy) : null;
+    const fence = await evaluateGeofence(employee_id, today, latNum, lngNum);
+    if (!fence.ok) return res.status(fence.http).json(fence.body);
+    const geoStatus = fence.status;
+    const distance = fence.distance;
 
     // Create session with geo audit stamped in.
     const sessionId = `sess_${Date.now()}`;
@@ -4213,7 +4205,7 @@ app.post('/api/attendance/clock-in', async (req, res) => {
         ${latNum}, ${lngNum}, ${accNum},
         ${distance != null ? Math.round(distance) : null},
         ${geoStatus},
-        ${!!confirmed_outside})
+        FALSE)
       RETURNING *
     `;
 
@@ -4294,7 +4286,7 @@ app.post('/api/attendance/mark', async (req, res) => {
 
 app.post('/api/attendance/clock-out', async (req, res) => {
   try {
-    const { employee_id } = req.body;
+    const { employee_id, lat, lng } = req.body;
     const { date: today, time } = istNow();
 
     // Find the open session
@@ -4304,6 +4296,15 @@ app.post('/api/attendance/clock-out', async (req, res) => {
     `;
     if (!(openRows as any[]).length) return res.status(400).json({ error: 'You are not clocked in.' });
     const open = (openRows[0] as any);
+
+    // Same geofence enforcement as clock-in — employee must be inside
+    // the radius to close their session. Prevents "clock in at office,
+    // wander off, clock out from home" from looking like a full day
+    // in the audit trail.
+    const latNum: number | null = lat != null ? Number(lat) : null;
+    const lngNum: number | null = lng != null ? Number(lng) : null;
+    const fence = await evaluateGeofence(employee_id, today, latNum, lngNum);
+    if (!fence.ok) return res.status(fence.http).json(fence.body);
 
     // Calculate session duration in minutes — handle midnight crossover for night shifts
     const [ih, im] = open.clock_in.split(':').map(Number);
