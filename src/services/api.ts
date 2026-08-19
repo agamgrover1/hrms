@@ -705,6 +705,15 @@ export const api = {
     request<any>(`/candidates/${candidateId}/interviews`, { method: 'POST', body: JSON.stringify(data) }),
   patchInterview: (interviewId: string, data: Partial<{ status: string; feedback: string; decision: string; scheduled_for: string; mode: string; meeting_link: string }>) =>
     request<any>(`/candidate-interviews/${interviewId}`, { method: 'PATCH', body: JSON.stringify(data) }),
+  draftOffer: (candidateId: string, data: { offered_salary?: number | null; offered_ctc?: number | null; offer_date?: string; offer_remarks?: string }) =>
+    request<any>(`/candidates/${candidateId}/draft-offer`, { method: 'POST', body: JSON.stringify(data) }),
+  releaseOffer: (candidateId: string) =>
+    request<any>(`/candidates/${candidateId}/release-offer`, { method: 'POST' }),
+  hireCandidate: (candidateId: string, data: {
+    employee_code: string; join_date: string; department: string; designation: string;
+    shift?: string; location?: string; reporting_manager_id?: string | null; role?: string;
+    avatar?: string; password?: string; biometric_id?: string;
+  }) => request<{ candidate_id: string; employee: any }>(`/candidates/${candidateId}/hire`, { method: 'POST', body: JSON.stringify(data) }),
 
   // Optional Leave
   getOptionalLeaveDates: (year: number) =>

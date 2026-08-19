@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { Settings, Plus, Trash2, Edit3, Check, X, Clock, Briefcase, Building2, CalendarDays, BookOpen, PartyPopper, ListChecks, UserPlus, FileText, Target, MapPin } from 'lucide-react';
+import { Settings, Plus, Trash2, Edit3, Check, X, Clock, Briefcase, Building2, CalendarDays, BookOpen, PartyPopper, ListChecks, UserPlus, FileText, Target, MapPin, Send } from 'lucide-react';
 import { api } from '../services/api';
 import RoleResponsibilitiesTab from '../components/admin/RoleResponsibilitiesTab';
 import HolidaysTab from '../components/admin/HolidaysTab';
@@ -8,7 +8,7 @@ import ChecklistTemplatesTab from '../components/admin/ChecklistTemplatesTab';
 import HrDocumentTypesTab from '../components/admin/HrDocumentTypesTab';
 import KpiTemplatesTab from '../components/admin/KpiTemplatesTab';
 
-type Tab = 'departments' | 'designations' | 'shifts' | 'optional_leave' | 'roles' | 'holidays' | 'activities' | 'lifecycle_templates' | 'hr_doc_types' | 'kpi_templates' | 'geofence';
+type Tab = 'departments' | 'designations' | 'shifts' | 'sources' | 'optional_leave' | 'roles' | 'holidays' | 'activities' | 'lifecycle_templates' | 'hr_doc_types' | 'kpi_templates' | 'geofence';
 
 const inputCls = 'text-sm bg-surface border border-outline focus:border-accent focus:ring-2 focus:ring-accent/20 rounded-lg px-3 py-2 focus:outline-none text-on-surface placeholder:text-on-surface-subtle w-full transition-colors';
 
@@ -41,6 +41,11 @@ export default function Config() {
   const [showAddShift, setShowAddShift] = useState(false);
   const [savingShift, setSavingShift] = useState(false);
 
+  // ── Candidate Sources (Hiring) ────────────────────────────────────────────
+  const [sources, setSources] = useState<any[]>([]);
+  const [newSource, setNewSource] = useState('');
+  const [addingSource, setAddingSource] = useState(false);
+
   // ── Optional Leave Dates ──────────────────────────────────────────────────
   const [olYear, setOlYear] = useState(now.getFullYear());
   const [olDates, setOlDates] = useState<any[]>([]);
@@ -56,7 +61,24 @@ export default function Config() {
     api.getConfigDepartments().then(setDepartments).catch(() => {});
     api.getConfigDesignations().then(setDesignations).catch(() => {});
     api.getConfigShifts().then(setShifts).catch(() => {});
+    api.getConfigSources().then(setSources).catch(() => {});
   }, []);
+
+  const handleAddSource = async () => {
+    if (!newSource.trim()) return;
+    setAddingSource(true); setError('');
+    try {
+      const s = await api.addConfigSource(newSource.trim());
+      setSources(prev => [...prev, s].sort((a, b) => (a.sort_order ?? 999) - (b.sort_order ?? 999) || a.name.localeCompare(b.name)));
+      setNewSource('');
+    } catch (e: any) { setError(e.message ?? 'Failed'); }
+    finally { setAddingSource(false); }
+  };
+  const handleDeleteSource = async (id: string) => {
+    if (!confirm('Delete this source? Existing candidates keep their source label — this only removes it from the dropdown for new entries.')) return;
+    await api.deleteConfigSource(id).catch(() => {});
+    setSources(prev => prev.filter(s => s.id !== id));
+  };
 
   // Load optional leave dates when tab or year changes
   useEffect(() => {
@@ -159,6 +181,7 @@ export default function Config() {
     { key: 'departments',   label: 'Departments',    icon: Building2   },
     { key: 'designations',  label: 'Designations',   icon: Briefcase   },
     { key: 'shifts',        label: 'Shifts',         icon: Clock       },
+    { key: 'sources',       label: 'Hiring Sources', icon: Send        },
     { key: 'optional_leave',label: 'Optional Leaves',icon: CalendarDays},
     { key: 'holidays',      label: 'Holidays',       icon: PartyPopper },
     { key: 'roles',         label: 'Roles & Responsibilities', icon: BookOpen },
@@ -330,6 +353,40 @@ export default function Config() {
               <Plus size={15} className="inline mr-1.5" /> Add New Shift
             </button>
           )}
+        </div>
+      )}
+
+      {/* ── Hiring Sources ── */}
+      {tab === 'sources' && (
+        <div className="group relative bg-surface rounded-xl-2 border border-outline shadow-elev-1 overflow-hidden max-w-lg">
+          <div className="absolute -top-8 -right-8 w-28 h-28 rounded-full bg-brand/15 blur-2xl opacity-50 pointer-events-none" />
+          <div className="relative px-5 py-4 border-b border-outline flex items-center justify-between">
+            <div>
+              <h3 className="font-display text-xl font-bold tracking-tight text-on-surface">Hiring Sources</h3>
+              <p className="text-xs text-on-surface-subtle mt-0.5">Where a candidate came from — shown in the New Candidate form on Hiring.</p>
+            </div>
+            <span className="num-mono text-xs font-semibold px-2.5 py-1 rounded-full bg-brand-container text-on-brand-container">{sources.length}</span>
+          </div>
+          <div className="relative divide-y divide-outline max-h-80 overflow-y-auto">
+            {sources.length === 0 && <p className="text-sm text-on-surface-subtle text-center py-8">No sources yet</p>}
+            {sources.map(s => (
+              <div key={s.id} className="flex items-center justify-between px-5 py-3 group/row hover:bg-surface-2">
+                <span className="text-sm font-medium text-on-surface">{s.name}</span>
+                <button onClick={() => handleDeleteSource(s.id)}
+                  className="opacity-0 group-hover/row:opacity-100 p-1.5 rounded-lg text-on-surface-subtle hover:text-danger hover:bg-danger-container transition-all">
+                  <Trash2 size={13} />
+                </button>
+              </div>
+            ))}
+          </div>
+          <div className="relative px-5 py-4 border-t border-outline flex gap-2 bg-surface-2">
+            <input value={newSource} onChange={e => setNewSource(e.target.value)} onKeyDown={e => e.key === 'Enter' && handleAddSource()}
+              placeholder="e.g. Instagram Ads…" className={inputCls}/>
+            <button onClick={handleAddSource} disabled={addingSource || !newSource.trim()}
+              className="flex items-center gap-1.5 px-3 py-2 text-xs font-semibold bg-accent text-on-accent rounded-lg disabled:opacity-50 hover:opacity-90 shadow-elev-1 transition-all flex-shrink-0">
+              <Plus size={13} /> {addingSource ? '…' : 'Add'}
+            </button>
+          </div>
         </div>
       )}
 

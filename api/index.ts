@@ -13363,6 +13363,193 @@ app.patch('/api/candidate-interviews/:id', async (req, res) => {
   } catch (err: any) { res.status(500).json({ error: err.message ?? 'Server error' }); }
 });
 
+// POST /api/candidates/:id/draft-offer — HR captures the offer numbers.
+// Sets offered_salary + offered_ctc + offer_date, flips offer_status to
+// 'draft', and advances the candidate stage to 'offer' (from anything
+// earlier). Idempotent: re-drafting overwrites the same fields.
+app.post('/api/candidates/:id/draft-offer', async (req, res) => {
+  try {
+    const gate = await requireHROrAbove(req, res);
+    if (!gate.ok) return;
+    const { offered_salary, offered_ctc, offer_date, offer_remarks } = req.body ?? {};
+    const cur = (await sql`SELECT id, name, stage, offer_status FROM candidates WHERE id=${req.params.id}` as any[])[0];
+    if (!cur) return res.status(404).json({ error: 'Candidate not found' });
+    if (cur.offer_status === 'released') {
+      return res.status(409).json({ error: 'Offer already released — unrelease from the offer tab before editing numbers.' });
+    }
+    const salaryNum = offered_salary == null || offered_salary === '' ? null : Number(offered_salary);
+    const ctcNum    = offered_ctc    == null || offered_ctc    === '' ? null : Number(offered_ctc);
+    const dateVal   = offer_date || new Date().toISOString().slice(0, 10);
+    const row = (await sql`
+      UPDATE candidates SET
+        offered_salary = ${salaryNum},
+        offered_ctc    = ${ctcNum},
+        offer_date     = ${dateVal},
+        offer_remarks  = ${offer_remarks ?? null},
+        offer_status   = 'draft',
+        stage          = CASE WHEN stage IN ('sourced','screening_pending','tech_review','screening_call','details_captured','interview_scheduled','interviewing','decision_pending') THEN 'offer' ELSE stage END,
+        updated_at     = NOW()
+      WHERE id = ${req.params.id}
+      RETURNING *`)[0];
+    await logCandidateEvent(req.params.id, 'offer_drafted', gate.user, {
+      body: `Offer drafted: ${salaryNum ? '₹' + salaryNum.toLocaleString('en-IN') + '/mo' : '(no salary)'}${ctcNum ? ', CTC ₹' + ctcNum.toLocaleString('en-IN') : ''}`,
+      metadata: { offered_salary: salaryNum, offered_ctc: ctcNum, offer_date: dateVal },
+    });
+    res.json(row);
+  } catch (err: any) { res.status(500).json({ error: err.message ?? 'Server error' }); }
+});
+
+// POST /api/candidates/:id/release-offer — flip draft → released. Rejects
+// if there's no draft yet (avoids releasing an empty offer by accident).
+// Admins get an FYI notification so leadership sees offers going out
+// (not action-required — HR has full authority per user decision).
+app.post('/api/candidates/:id/release-offer', async (req, res) => {
+  try {
+    const gate = await requireHROrAbove(req, res);
+    if (!gate.ok) return;
+    const cur = (await sql`SELECT * FROM candidates WHERE id=${req.params.id}` as any[])[0];
+    if (!cur) return res.status(404).json({ error: 'Candidate not found' });
+    if (cur.offer_status !== 'draft') {
+      return res.status(400).json({ error: 'Draft the offer first (Offer tab → save numbers) before releasing.' });
+    }
+    if (cur.offered_salary == null && cur.offered_ctc == null) {
+      return res.status(400).json({ error: 'Set at least an offered salary or CTC before releasing.' });
+    }
+    const row = (await sql`
+      UPDATE candidates SET offer_status='released', updated_at=NOW()
+      WHERE id=${req.params.id} RETURNING *`)[0];
+    await logCandidateEvent(req.params.id, 'offer_released', gate.user, {
+      body: `Offer released to ${cur.name} — ${cur.offered_salary ? '₹' + Number(cur.offered_salary).toLocaleString('en-IN') + '/mo' : ''}${cur.offered_ctc ? ' (CTC ₹' + Number(cur.offered_ctc).toLocaleString('en-IN') + ')' : ''}.`,
+      metadata: { offered_salary: cur.offered_salary, offered_ctc: cur.offered_ctc },
+    });
+    notifyAdminsAndHR('offer_released',
+      `Offer released — ${cur.name}`,
+      `${gate.user?.name ?? 'HR'} released an offer to ${cur.name} for ${cur.profile_applied_for ?? 'the open role'}.`
+    ).catch(() => {});
+    res.json(row);
+  } catch (err: any) { res.status(500).json({ error: err.message ?? 'Server error' }); }
+});
+
+// POST /api/candidates/:id/hire — one-click convert a candidate to an
+// employees row. Inlines the shared insert logic from POST /api/employees
+// (leave_balances seed + salary_structures baseline + optional app_users
+// row). Stamps candidates.hired_employee_id + status='joined' +
+// final_status='joined' + stage='final' so the kanban card moves.
+//
+// Body: { employee_code, join_date, department, designation, shift,
+//         reporting_manager_id?, role?, avatar?, password?, biometric_id? }
+// Reuses candidate.offered_salary / offered_ctc as the pay basis; server
+// enforces they exist (can't hire without an offer).
+app.post('/api/candidates/:id/hire', async (req, res) => {
+  try {
+    const gate = await requireFullHR(req, res);
+    if (!gate.ok) return;
+    const cand = (await sql`SELECT * FROM candidates WHERE id=${req.params.id}` as any[])[0];
+    if (!cand) return res.status(404).json({ error: 'Candidate not found' });
+    if (cand.hired_employee_id) {
+      return res.status(409).json({ error: 'This candidate has already been hired.', employee_id: cand.hired_employee_id });
+    }
+    if (cand.offered_salary == null && cand.offered_ctc == null) {
+      return res.status(400).json({ error: 'Draft + release an offer with a salary or CTC before hiring.' });
+    }
+    const {
+      employee_code, join_date, department, designation, shift, location,
+      reporting_manager_id, role, avatar, password, biometric_id,
+    } = req.body ?? {};
+    if (!employee_code?.trim()) return res.status(400).json({ error: 'Employee code is required.' });
+    if (!department?.trim())    return res.status(400).json({ error: 'Department is required.' });
+    if (!designation?.trim())   return res.status(400).json({ error: 'Designation is required.' });
+    if (!join_date)             return res.status(400).json({ error: 'Join date is required.' });
+
+    // Guard against a duplicate employee_code before we touch app_users so
+    // we don't create a half-provisioned auth row on failure.
+    const codeClash = (await sql`SELECT id FROM employees WHERE employee_id=${employee_code.trim()}` as any[])[0];
+    if (codeClash) return res.status(409).json({ error: `Employee code ${employee_code.trim()} is already in use.` });
+    if (cand.email) {
+      const emailClash = (await sql`SELECT id FROM employees WHERE LOWER(email)=LOWER(${cand.email})` as any[])[0];
+      if (emailClash) return res.status(409).json({ error: `An employee with email ${cand.email} already exists.` });
+    }
+
+    const salary = Number(cand.offered_salary ?? 0);
+    const ctc    = Number(cand.offered_ctc ?? (salary * 12));
+    const empId  = `emp_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
+
+    invalidateEmployeesCache();
+    const empRow = (await sql`
+      INSERT INTO employees (id, name, email, phone, department, designation, employee_id, join_date, location, reporting_manager_id, status, avatar, salary, ctc, biometric_id, shift)
+      VALUES (${empId}, ${cand.name}, ${cand.email ?? null}, ${cand.phone ?? null}, ${department.trim()}, ${designation.trim()}, ${employee_code.trim()}, ${join_date}, ${location ?? cand.current_location ?? null}, ${reporting_manager_id ?? null}, 'active', ${avatar ?? null}, ${salary}, ${ctc}, ${biometric_id ?? null}, ${shift ?? 'day'})
+      RETURNING *`)[0];
+
+    // Leave balance seed — same defaults as POST /api/employees so hires
+    // land with a working leave state day one.
+    await sql`
+      INSERT INTO leave_balances (employee_id, full_day, short_leave, casual, sick, earned,
+        last_credited_month, last_credited_year, probation_short_used)
+      VALUES (${empId}, 0, 2, 10, 7, 15,
+        ${new Date().getMonth() + 1}, ${new Date().getFullYear()}, 0)
+      ON CONFLICT (employee_id) DO NOTHING`.catch(() => {});
+
+    // Salary history baseline so future increments have something to
+    // diff against. Uses join_date so payslip math starts on day one.
+    if (salary > 0) {
+      await sql`
+        INSERT INTO salary_structures (
+          id, employee_id, effective_from, ctc_annual,
+          basic, hra, special_allowance, employer_pf,
+          other_components, notes, created_by,
+          change_type, previous_monthly, changed_by_name
+        )
+        VALUES (
+          ${'sal_init_' + empId}, ${empId}, ${join_date},
+          ${ctc > 0 ? ctc : salary * 12},
+          ${salary}, 0, 0, 0, '[]'::jsonb,
+          'Initial salary at hire', ${gate.user?.name ?? 'System'},
+          'initial', NULL, ${gate.user?.name ?? 'System'}
+        )
+        ON CONFLICT (employee_id, effective_from) DO NOTHING`.catch(() => {});
+    }
+
+    // Optional login provisioning. Skipped silently if either the caller
+    // didn't send a password or the email is missing — HR can invite the
+    // employee to log in later from Users → Add User.
+    if (password && cand.email) {
+      const existing = await sql`SELECT id FROM app_users WHERE LOWER(email)=LOWER(${cand.email})`;
+      if (!(existing as any[]).length) {
+        await sql`
+          INSERT INTO app_users (id, employee_id_ref, name, email, password, role, department, designation, avatar, active)
+          VALUES (${`u_${empId}`}, ${employee_code.trim()}, ${cand.name}, ${cand.email}, ${password}, ${role ?? 'employee'}, ${department.trim()}, ${designation.trim()}, ${avatar ?? null}, true)
+        `.catch(() => {});
+      }
+    }
+
+    // Close out the candidate record — stamp the link, mark joined,
+    // move the kanban card to Final.
+    await sql`
+      UPDATE candidates SET
+        hired_employee_id = ${empId},
+        status            = 'joined',
+        final_status      = 'joined',
+        stage             = 'final',
+        offer_status      = CASE WHEN offer_status IS NULL THEN 'accepted' ELSE offer_status END,
+        updated_at        = NOW()
+      WHERE id = ${req.params.id}`;
+    await logCandidateEvent(req.params.id, 'hired', gate.user, {
+      after_stage: 'final',
+      body: `Hired as ${employee_code.trim()} in ${department.trim()} / ${designation.trim()}.`,
+      metadata: { employee_id: empId, employee_code: employee_code.trim(), join_date, department, designation },
+    });
+    notifyAdminsAndHR('candidate_hired',
+      `Hired — ${cand.name} (${employee_code.trim()})`,
+      `${gate.user?.name ?? 'HR'} converted ${cand.name} into ${employee_code.trim()} joining ${new Date(join_date).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' })}.`
+    ).catch(() => {});
+
+    res.status(201).json({ candidate_id: req.params.id, employee: empRow });
+  } catch (err: any) {
+    if (err.message?.includes('unique')) return res.status(409).json({ error: 'Employee code or email already exists.' });
+    res.status(500).json({ error: err.message ?? 'Server error' });
+  }
+});
+
 // ── KPI system ────────────────────────────────────────────────────────────
 // Templates: catalog (org-wide or role-scoped). Assignments: which
 // employees have which templates. Measurements: actual value per period.

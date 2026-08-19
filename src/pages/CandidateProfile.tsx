@@ -3,6 +3,7 @@ import { useNavigate, useParams } from 'react-router-dom';
 import {
   ArrowLeft, Mail, Phone, MapPin, ExternalLink, Pencil, ChevronDown, Clock,
   UserCheck, Calendar, Send, CheckCircle2, XCircle, Plus, Video, Users as UsersIcon,
+  IndianRupee, UserPlus,
 } from 'lucide-react';
 import { api } from '../services/api';
 import { HIRING_STAGES, TERMINAL_STAGES, STAGE_COLOR, stageLabel } from '../lib/hiringStages';
@@ -14,7 +15,7 @@ import { useAuth } from '../context/AuthContext';
 // + Activity. Non-HR viewers (assigned reviewer/interviewer) land here
 // via a bell notification and only see the tab relevant to their action.
 
-type Tab = 'overview' | 'screening' | 'tech_review' | 'interviews' | 'activity';
+type Tab = 'overview' | 'screening' | 'tech_review' | 'interviews' | 'offer' | 'activity';
 
 export default function CandidateProfile() {
   const { id } = useParams<{ id: string }>();
@@ -70,6 +71,7 @@ export default function CandidateProfile() {
       ];
       if (candidate?.tech_review_needed) tabs.push({ key: 'tech_review', label: 'Tech Review' });
       tabs.push({ key: 'interviews', label: 'Interviews' });
+      tabs.push({ key: 'offer', label: 'Offer' });
       tabs.push({ key: 'activity', label: 'Activity' });
       return tabs;
     }
@@ -181,6 +183,9 @@ export default function CandidateProfile() {
       )}
       {tab === 'interviews' && (
         <InterviewsTab candidate={candidate} interviews={interviews} viewerRole={viewerRole} currentUserEmpRefId={user?.employee_id_ref ?? undefined} onSaved={load} />
+      )}
+      {tab === 'offer' && isHR && (
+        <OfferTab candidate={candidate} onSaved={load} />
       )}
       {tab === 'activity' && isHR && (
         <ActivityTab events={events} />
@@ -858,6 +863,9 @@ function ActivityTab({ events }: { events: any[] }) {
                 : e.action === 'call_logged' ? `logged screening call${e.metadata?.call_status ? ` — ${e.metadata.call_status.replace('_', ' ')}` : ''}`
                 : e.action === 'interview_scheduled' ? `scheduled a round${e.metadata?.round_no ? ` (round ${e.metadata.round_no})` : ''}`
                 : e.action === 'interview_feedback' ? `submitted feedback${e.metadata?.round_no ? ` (round ${e.metadata.round_no})` : ''}${e.metadata?.decision ? ` — ${e.metadata.decision.replace('_', ' ')}` : ''}`
+                : e.action === 'offer_drafted' ? 'drafted the offer'
+                : e.action === 'offer_released' ? 'released the offer'
+                : e.action === 'hired' ? <>marked <span className="font-semibold">Hired</span>{e.metadata?.employee_code ? <> as <span className="font-semibold">{e.metadata.employee_code}</span></> : ''}</>
                 : e.action}
               </p>
               {e.body && <p className="text-xs text-on-surface-muted italic mt-0.5">"{e.body}"</p>}
@@ -868,6 +876,334 @@ function ActivityTab({ events }: { events: any[] }) {
           </li>
         ))}
       </ul>
+    </div>
+  );
+}
+
+// ── Offer tab ──────────────────────────────────────────────────────────
+// Three states the tab progresses through:
+//   1. No offer yet — form to capture salary/CTC/date → Draft Offer.
+//   2. Draft on file — same form (editable) + Release button + status pill.
+//   3. Released — locked numbers, options: Mark Accepted / Mark Declined,
+//      and once accepted, the Hire → Employee button appears.
+function OfferTab({ candidate, onSaved }: { candidate: any; onSaved: () => void }) {
+  const [salary, setSalary] = useState<string>(candidate.offered_salary != null ? String(candidate.offered_salary) : '');
+  const [ctc, setCtc] = useState<string>(candidate.offered_ctc != null ? String(candidate.offered_ctc) : '');
+  const [offerDate, setOfferDate] = useState<string>(candidate.offer_date ? String(candidate.offer_date).slice(0, 10) : new Date().toISOString().slice(0, 10));
+  const [remarks, setRemarks] = useState<string>(candidate.offer_remarks ?? '');
+  const [busy, setBusy] = useState(false);
+  const [showHire, setShowHire] = useState(false);
+
+  const status = candidate.offer_status as string | null;
+  const released = status === 'released' || status === 'accepted' || candidate.final_status === 'accepted' || candidate.final_status === 'joined';
+  const accepted = candidate.final_status === 'accepted' || candidate.final_status === 'joined';
+  const alreadyHired = !!candidate.hired_employee_id;
+
+  const draftOffer = async () => {
+    setBusy(true);
+    try {
+      await api.draftOffer(candidate.id, {
+        offered_salary: salary === '' ? null : Number(salary),
+        offered_ctc: ctc === '' ? null : Number(ctc),
+        offer_date: offerDate,
+        offer_remarks: remarks || undefined,
+      });
+      toast.success('Offer saved', 'Draft is stored — release it when you\'re ready to send.');
+      onSaved();
+    } catch (e: any) {
+      toast.error('Save failed', e?.body?.error ?? e?.message ?? 'Please try again.');
+    } finally { setBusy(false); }
+  };
+
+  const releaseOffer = async () => {
+    if (!window.confirm('Release this offer to the candidate? The numbers get locked after this.')) return;
+    setBusy(true);
+    try {
+      await api.releaseOffer(candidate.id);
+      toast.success('Offer released', 'Admin has been notified.');
+      onSaved();
+    } catch (e: any) {
+      toast.error('Release failed', e?.body?.error ?? e?.message ?? 'Please try again.');
+    } finally { setBusy(false); }
+  };
+
+  const markFinal = async (final_status: 'accepted' | 'declined') => {
+    setBusy(true);
+    try {
+      await api.patchCandidate(candidate.id, { final_status, status: final_status === 'declined' ? 'withdrawn' : 'active' });
+      toast.success(final_status === 'accepted' ? 'Offer accepted' : 'Offer declined',
+        final_status === 'accepted' ? 'You can now convert them into an employee.' : 'Candidate moved to withdrawn.');
+      onSaved();
+    } catch (e: any) {
+      toast.error('Update failed', e?.body?.error ?? e?.message ?? 'Please try again.');
+    } finally { setBusy(false); }
+  };
+
+  return (
+    <div className="rounded-xl-2 border border-outline bg-surface overflow-hidden">
+      <div className="px-6 py-4 border-b border-outline flex items-center justify-between flex-wrap gap-3">
+        <div className="flex items-center gap-3">
+          <h3 className="font-display text-lg font-bold text-on-surface">Offer</h3>
+          {status && (
+            <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider ${
+              status === 'released' ? 'bg-orange-100 dark:bg-orange-900/40 text-orange-700 dark:text-orange-300' :
+              status === 'accepted' ? 'bg-green-100 dark:bg-green-900/40 text-green-700 dark:text-green-300' :
+              status === 'declined' ? 'bg-rose-100 dark:bg-rose-900/40 text-rose-700 dark:text-rose-300' :
+              'bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300'
+            }`}>{status.replace('_', ' ')}</span>
+          )}
+          {alreadyHired && (
+            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider bg-accent/15 text-accent">
+              <CheckCircle2 size={10} /> Hired
+            </span>
+          )}
+        </div>
+        {accepted && !alreadyHired && (
+          <button onClick={() => setShowHire(true)} disabled={busy}
+            className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg bg-accent text-on-accent text-sm font-semibold hover:opacity-90 disabled:opacity-50">
+            <UserPlus size={14} /> Hire → Employee
+          </button>
+        )}
+      </div>
+
+      <div className="p-6 space-y-4">
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+          <NumInput label="Offered salary (₹/month)" value={salary} onChange={setSalary} />
+          <NumInput label="Offered CTC (₹/year)" value={ctc} onChange={setCtc} />
+          <label className="block">
+            <span className="text-xs font-semibold text-on-surface-muted">Offer date</span>
+            <input type="date" value={offerDate} onChange={e => setOfferDate(e.target.value)}
+              disabled={released}
+              className="mt-1 w-full px-2 py-1.5 rounded border border-outline bg-surface text-sm disabled:opacity-60" />
+          </label>
+        </div>
+        <label className="block">
+          <span className="text-xs font-semibold text-on-surface-muted">Remarks (internal)</span>
+          <textarea value={remarks} onChange={e => setRemarks(e.target.value)} rows={2}
+            placeholder="Negotiation notes, joining bonus, notice buyout, etc."
+            className="mt-1 w-full px-2 py-1.5 rounded border border-outline bg-surface text-sm" />
+        </label>
+
+        {!released && (
+          <div className="flex flex-wrap items-center gap-2 pt-2 border-t border-outline">
+            <button onClick={draftOffer} disabled={busy}
+              className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg border border-outline text-sm font-semibold hover:bg-surface-2 disabled:opacity-50">
+              <Pencil size={13} /> {status === 'draft' ? 'Update draft' : 'Save draft'}
+            </button>
+            <button onClick={releaseOffer} disabled={busy || status !== 'draft'}
+              title={status === 'draft' ? '' : 'Save the draft first.'}
+              className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg bg-accent text-on-accent text-sm font-semibold hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed">
+              <Send size={13} /> Release offer
+            </button>
+          </div>
+        )}
+
+        {released && !accepted && !alreadyHired && (
+          <div className="flex flex-wrap items-center gap-2 pt-2 border-t border-outline">
+            <button onClick={() => markFinal('accepted')} disabled={busy}
+              className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg bg-success text-on-success text-sm font-semibold hover:opacity-90 disabled:opacity-50">
+              <CheckCircle2 size={13} /> Candidate accepted
+            </button>
+            <button onClick={() => markFinal('declined')} disabled={busy}
+              className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg border border-outline text-sm font-semibold text-danger hover:bg-danger-container/40 disabled:opacity-50">
+              <XCircle size={13} /> Candidate declined
+            </button>
+          </div>
+        )}
+      </div>
+
+      {showHire && (
+        <HireCandidateModal candidate={candidate} onClose={() => setShowHire(false)} onHired={() => { setShowHire(false); onSaved(); }} />
+      )}
+    </div>
+  );
+}
+
+// ── Hire → Employee modal ─────────────────────────────────────────────
+// Confirmation surface for POST /candidates/:id/hire. Pre-fills every
+// field that can be sourced from the candidate record + a suggested next
+// employee code, so HR can hire in ~10 seconds if the defaults are right.
+function HireCandidateModal({ candidate, onClose, onHired }: { candidate: any; onClose: () => void; onHired: () => void }) {
+  const [depts, setDepts] = useState<any[]>([]);
+  const [desigs, setDesigs] = useState<any[]>([]);
+  const [shifts, setShifts] = useState<any[]>([]);
+  const [managers, setManagers] = useState<any[]>([]);
+  const [suggestedCode, setSuggestedCode] = useState('');
+  const [form, setForm] = useState({
+    employee_code: '',
+    join_date: new Date().toISOString().slice(0, 10),
+    department: '',
+    designation: candidate.profile_applied_for ?? '',
+    shift: 'day',
+    location: candidate.current_location ?? '',
+    reporting_manager_id: '',
+    role: 'employee',
+    password: '',
+  });
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    api.getConfigDepartments().then(setDepts).catch(() => {});
+    api.getConfigDesignations().then(setDesigs).catch(() => {});
+    api.getConfigShifts().then(setShifts).catch(() => {});
+    api.getEmployeesSlim().then(rows => {
+      setManagers(rows ?? []);
+      // Auto-suggest the next DL#### code by looking at the highest
+      // existing numeric-suffix code. Falls back to DL0001 if there's
+      // nothing to base it on.
+      const codes: string[] = (rows ?? []).map((r: any) => r.employee_id).filter(Boolean);
+      const max = codes.reduce((acc, c) => {
+        const m = /^DL(\d+)$/i.exec(c || '');
+        return m ? Math.max(acc, Number(m[1])) : acc;
+      }, 0);
+      const next = 'DL' + String(max + 1).padStart(4, '0');
+      setSuggestedCode(next);
+      setForm(f => (f.employee_code ? f : { ...f, employee_code: next }));
+    }).catch(() => {});
+  }, []);
+
+  const submit = async () => {
+    if (!form.employee_code.trim() || !form.department.trim() || !form.designation.trim() || !form.join_date) {
+      toast.error('Missing fields', 'Employee code, department, designation, and join date are all required.');
+      return;
+    }
+    setBusy(true);
+    try {
+      const res = await api.hireCandidate(candidate.id, {
+        employee_code: form.employee_code.trim(),
+        join_date: form.join_date,
+        department: form.department.trim(),
+        designation: form.designation.trim(),
+        shift: form.shift,
+        location: form.location || undefined,
+        reporting_manager_id: form.reporting_manager_id || undefined,
+        role: form.role,
+        password: form.password || undefined,
+      });
+      toast.success('Hired', `${candidate.name} joined as ${res.employee.employee_id}.`);
+      onHired();
+    } catch (e: any) {
+      toast.error('Hire failed', e?.body?.error ?? e?.message ?? 'Please try again.');
+    } finally { setBusy(false); }
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4"
+         onClick={busy ? undefined : onClose}>
+      <div className="bg-surface rounded-2xl shadow-2xl w-full max-w-lg overflow-hidden border border-outline"
+           onClick={e => e.stopPropagation()}>
+        <div className="px-6 py-4 border-b border-outline flex items-start justify-between gap-3">
+          <div>
+            <h2 className="font-display text-lg font-bold text-on-surface">Hire {candidate.name}</h2>
+            <p className="text-xs text-on-surface-muted mt-0.5">
+              Creates an Employees record + seeds leave balance + logs the initial salary from the offer.
+            </p>
+          </div>
+          <button onClick={onClose} disabled={busy}
+            className="w-8 h-8 rounded-full hover:bg-surface-2 flex items-center justify-center text-on-surface-muted disabled:opacity-50">
+            <XCircle size={16} />
+          </button>
+        </div>
+
+        <div className="p-6 space-y-4 max-h-[70vh] overflow-y-auto">
+          <div className="rounded-lg border border-outline bg-surface-2/40 px-3 py-2 text-xs text-on-surface-muted flex items-center gap-2">
+            <IndianRupee size={12} />
+            <span>
+              Using offer pay:{' '}
+              <b className="text-on-surface">{candidate.offered_salary ? '₹' + Number(candidate.offered_salary).toLocaleString('en-IN') + '/mo' : '—'}</b>
+              {candidate.offered_ctc ? <>, CTC <b className="text-on-surface">₹{Number(candidate.offered_ctc).toLocaleString('en-IN')}</b></> : ''}
+            </span>
+          </div>
+
+          <div className="grid grid-cols-2 gap-3">
+            <label className="block">
+              <span className="text-xs font-semibold text-on-surface-muted">Employee code</span>
+              <input value={form.employee_code} onChange={e => setForm(f => ({ ...f, employee_code: e.target.value }))}
+                placeholder={suggestedCode || 'DL0001'}
+                className="mt-1 w-full px-2 py-1.5 rounded border border-outline bg-surface text-sm num-mono" />
+              {suggestedCode && form.employee_code !== suggestedCode && (
+                <button onClick={() => setForm(f => ({ ...f, employee_code: suggestedCode }))}
+                  className="mt-1 text-[10px] text-accent hover:underline">Use suggested {suggestedCode}</button>
+              )}
+            </label>
+            <label className="block">
+              <span className="text-xs font-semibold text-on-surface-muted">Join date</span>
+              <input type="date" value={form.join_date} onChange={e => setForm(f => ({ ...f, join_date: e.target.value }))}
+                className="mt-1 w-full px-2 py-1.5 rounded border border-outline bg-surface text-sm" />
+            </label>
+            <label className="block">
+              <span className="text-xs font-semibold text-on-surface-muted">Department</span>
+              <select value={form.department} onChange={e => setForm(f => ({ ...f, department: e.target.value }))}
+                className="mt-1 w-full px-2 py-1.5 rounded border border-outline bg-surface text-sm">
+                <option value="">Select…</option>
+                {depts.map((d: any) => <option key={d.id ?? d.name} value={d.name}>{d.name}</option>)}
+              </select>
+            </label>
+            <label className="block">
+              <span className="text-xs font-semibold text-on-surface-muted">Designation</span>
+              <select value={form.designation} onChange={e => setForm(f => ({ ...f, designation: e.target.value }))}
+                className="mt-1 w-full px-2 py-1.5 rounded border border-outline bg-surface text-sm">
+                <option value="">Select…</option>
+                {desigs.map((d: any) => <option key={d.id ?? d.name} value={d.name}>{d.name}</option>)}
+              </select>
+            </label>
+            <label className="block">
+              <span className="text-xs font-semibold text-on-surface-muted">Shift</span>
+              <select value={form.shift} onChange={e => setForm(f => ({ ...f, shift: e.target.value }))}
+                className="mt-1 w-full px-2 py-1.5 rounded border border-outline bg-surface text-sm">
+                {shifts.length === 0 && <option value="day">Day</option>}
+                {shifts.map((s: any) => <option key={s.id} value={s.id}>{s.name ?? s.id}</option>)}
+              </select>
+            </label>
+            <label className="block">
+              <span className="text-xs font-semibold text-on-surface-muted">Reporting manager</span>
+              <select value={form.reporting_manager_id} onChange={e => setForm(f => ({ ...f, reporting_manager_id: e.target.value }))}
+                className="mt-1 w-full px-2 py-1.5 rounded border border-outline bg-surface text-sm">
+                <option value="">— None —</option>
+                {managers.map((m: any) => <option key={m.id} value={m.id}>{m.name} ({m.employee_id})</option>)}
+              </select>
+            </label>
+            <label className="block">
+              <span className="text-xs font-semibold text-on-surface-muted">Location</span>
+              <input value={form.location} onChange={e => setForm(f => ({ ...f, location: e.target.value }))}
+                className="mt-1 w-full px-2 py-1.5 rounded border border-outline bg-surface text-sm" />
+            </label>
+            <label className="block">
+              <span className="text-xs font-semibold text-on-surface-muted">Portal role</span>
+              <select value={form.role} onChange={e => setForm(f => ({ ...f, role: e.target.value }))}
+                className="mt-1 w-full px-2 py-1.5 rounded border border-outline bg-surface text-sm">
+                <option value="employee">Employee</option>
+                <option value="project_coordinator">Project Coordinator</option>
+                <option value="hr_intern">HR Intern</option>
+                <option value="hr_manager">HR Manager</option>
+                <option value="admin">Admin</option>
+              </select>
+            </label>
+          </div>
+
+          <label className="block">
+            <span className="text-xs font-semibold text-on-surface-muted">Temporary portal password (optional)</span>
+            <input type="text" value={form.password} onChange={e => setForm(f => ({ ...f, password: e.target.value }))}
+              placeholder={candidate.email ? 'Leave blank to skip login provisioning' : 'Email missing — login setup skipped'}
+              disabled={!candidate.email}
+              className="mt-1 w-full px-2 py-1.5 rounded border border-outline bg-surface text-sm disabled:opacity-60" />
+            <span className="text-[10px] text-on-surface-subtle">
+              If set + email present, an app_users row is created so they can sign in on day one. Share it out-of-band.
+            </span>
+          </label>
+        </div>
+
+        <div className="px-6 py-3 border-t border-outline flex justify-end gap-2 bg-surface-2/40">
+          <button onClick={onClose} disabled={busy}
+            className="px-3 py-2 rounded-lg text-sm font-semibold border border-outline hover:bg-surface disabled:opacity-50">
+            Cancel
+          </button>
+          <button onClick={submit} disabled={busy}
+            className="px-4 py-2 rounded-lg text-sm font-semibold bg-accent text-on-accent hover:opacity-90 disabled:opacity-50 inline-flex items-center gap-1.5">
+            <UserPlus size={13} /> {busy ? 'Hiring…' : 'Confirm hire'}
+          </button>
+        </div>
+      </div>
     </div>
   );
 }

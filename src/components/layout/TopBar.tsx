@@ -1,4 +1,4 @@
-import { Bell, ChevronDown, LogOut, CheckCircle, Calendar, TrendingUp, FileText, Target, X, XCircle, Award, Check, Trash2, AlertTriangle, ShieldAlert, KeyRound, Eye, EyeOff, Wrench, Clock as ClockIcon, Search, Megaphone, Sparkles, Menu, AtSign, Zap } from 'lucide-react';
+import { Bell, ChevronDown, LogOut, CheckCircle, Calendar, TrendingUp, FileText, Target, X, XCircle, Award, Check, Trash2, AlertTriangle, ShieldAlert, KeyRound, Eye, EyeOff, Wrench, Clock as ClockIcon, Search, Megaphone, Sparkles, Menu, AtSign, Zap, Send, UserPlus } from 'lucide-react';
 import { isActionRequired } from '../../lib/notificationTypes';
 import { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
@@ -22,6 +22,8 @@ export function getNotifRoute(type: string, role: string): string {
     case 'candidate_recommendation_ready':
     case 'interview_scheduled':
     case 'interview_feedback_submitted':
+    case 'offer_released':
+    case 'candidate_hired':
       return '/hiring';
 
     case 'leave_applied':
@@ -215,6 +217,8 @@ export const TYPE_CONFIG: Record<string, { icon: any; color: string; bg: string 
   candidate_recommendation_ready:  { icon: CheckCircle, color: '#15803d', bg: '#f0fdf4' },
   interview_scheduled:             { icon: Calendar,    color: '#2563eb', bg: '#eff6ff' },
   interview_feedback_submitted:    { icon: FileText,    color: '#0891b2', bg: '#f0f9ff' },
+  offer_released:                  { icon: Send,        color: '#ea580c', bg: '#fff7ed' },
+  candidate_hired:                 { icon: UserPlus,    color: '#15803d', bg: '#f0fdf4' },
   leave_applied:           { icon: Calendar,       color: '#d97706', bg: '#fffbeb' },
   leave_submitted:         { icon: Calendar,       color: '#64748b', bg: '#f1f5f9' },
   leave_needs_hr_approval: { icon: Calendar,       color: '#d97706', bg: '#fffbeb' },
