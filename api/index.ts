@@ -13550,6 +13550,223 @@ app.post('/api/candidates/:id/hire', async (req, res) => {
   }
 });
 
+// GET /api/hiring/analytics?range=30|90|365|all
+// One-shot payload for the Hiring analytics dashboard. Groups everything
+// the page needs into a single Lambda invocation to keep the mount cheap.
+//
+// Metrics:
+//   funnel — for each pipeline stage, how many candidates EVER reached it
+//     within the window (from candidate_stage_events.action='stage_change')
+//     plus the total that entered the pipeline (candidates.created_at).
+//   pipeline — live count of active candidates in each stage right now
+//     (status='active', excludes hold/rejected/joined/withdrawn).
+//   source_of_hire — per source: applied vs hired vs conversion %.
+//   time_in_stage — median hours spent in each stage, computed from
+//     consecutive stage_change events per candidate.
+//   time_to_hire — median + p90 days from candidates.created_at →
+//     hired event for hires that landed in the window.
+//   recruiter_throughput — hires by actor_name from the 'hired' events.
+//   rejections — top rejection_reason values with counts.
+//   totals — headline numbers (candidates_in_window, hires_in_window,
+//     offers_released_in_window, active_pipeline).
+app.get('/api/hiring/analytics', async (req, res) => {
+  try {
+    const gate = await requireHROrAbove(req, res);
+    if (!gate.ok) return;
+    const rangeRaw = String(req.query.range ?? '90');
+    const days = rangeRaw === 'all' ? null : Math.max(1, Math.min(3650, Number(rangeRaw) || 90));
+    // Build the SQL fragment inline — parameterised interval avoids
+    // template-string interpolation into the query text. `all` skips
+    // the date filter entirely.
+    const sinceIso = days == null ? null : new Date(Date.now() - days * 86_400_000).toISOString();
+
+    // Pipeline snapshot — current active candidates by stage.
+    const pipelineRows = await sql`
+      SELECT stage, COUNT(*)::int AS n
+      FROM candidates
+      WHERE status='active'
+      GROUP BY stage`.catch(() => [] as any[]) as any[];
+
+    // Funnel — distinct candidates who EVER entered each stage in the window.
+    // 'sourced' is implicit at creation (no stage_change event fires with
+    // after_stage='sourced'), so we count it separately from candidates.
+    const funnelRows = sinceIso ? await sql`
+      SELECT after_stage AS stage, COUNT(DISTINCT candidate_id)::int AS n
+      FROM candidate_stage_events
+      WHERE action='stage_change' AND after_stage IS NOT NULL
+        AND created_at >= ${sinceIso}
+      GROUP BY after_stage`.catch(() => [] as any[]) as any[]
+    : await sql`
+      SELECT after_stage AS stage, COUNT(DISTINCT candidate_id)::int AS n
+      FROM candidate_stage_events
+      WHERE action='stage_change' AND after_stage IS NOT NULL
+      GROUP BY after_stage`.catch(() => [] as any[]) as any[];
+
+    const sourcedRow = sinceIso ? await sql`
+      SELECT COUNT(*)::int AS n FROM candidates WHERE created_at >= ${sinceIso}`
+    : await sql`SELECT COUNT(*)::int AS n FROM candidates`;
+    const sourcedCount = Number((sourcedRow as any[])[0]?.n ?? 0);
+
+    // Source-of-hire — applied vs hired per source label in the window.
+    const sourceRows = sinceIso ? await sql`
+      SELECT COALESCE(NULLIF(source, ''), 'Unspecified') AS source,
+             COUNT(*)::int AS applied,
+             COUNT(*) FILTER (WHERE hired_employee_id IS NOT NULL)::int AS hired
+      FROM candidates
+      WHERE created_at >= ${sinceIso}
+      GROUP BY 1
+      ORDER BY applied DESC` .catch(() => [] as any[]) as any[]
+    : await sql`
+      SELECT COALESCE(NULLIF(source, ''), 'Unspecified') AS source,
+             COUNT(*)::int AS applied,
+             COUNT(*) FILTER (WHERE hired_employee_id IS NOT NULL)::int AS hired
+      FROM candidates
+      GROUP BY 1
+      ORDER BY applied DESC`.catch(() => [] as any[]) as any[];
+
+    // Time-in-stage — for each candidate, take consecutive stage_change
+    // events, compute the gap between them, then group by before_stage
+    // and take the median hours. LAG() over the ordered events. Filters
+    // to events inside the window on the ARRIVING side so recent activity
+    // dominates the metric.
+    const timeInStage = sinceIso ? await sql`
+      WITH ordered AS (
+        SELECT candidate_id, before_stage, after_stage, created_at,
+               LEAD(created_at) OVER (PARTITION BY candidate_id ORDER BY created_at) AS next_ts
+        FROM candidate_stage_events
+        WHERE action='stage_change' AND created_at >= ${sinceIso}
+      )
+      SELECT after_stage AS stage,
+             ROUND(percentile_cont(0.5) WITHIN GROUP (ORDER BY EXTRACT(EPOCH FROM (next_ts - created_at))/3600)::numeric, 1) AS median_hours,
+             COUNT(*) FILTER (WHERE next_ts IS NOT NULL)::int AS n
+      FROM ordered
+      WHERE next_ts IS NOT NULL AND after_stage IS NOT NULL
+      GROUP BY after_stage`.catch(() => [] as any[]) as any[]
+    : await sql`
+      WITH ordered AS (
+        SELECT candidate_id, before_stage, after_stage, created_at,
+               LEAD(created_at) OVER (PARTITION BY candidate_id ORDER BY created_at) AS next_ts
+        FROM candidate_stage_events
+        WHERE action='stage_change'
+      )
+      SELECT after_stage AS stage,
+             ROUND(percentile_cont(0.5) WITHIN GROUP (ORDER BY EXTRACT(EPOCH FROM (next_ts - created_at))/3600)::numeric, 1) AS median_hours,
+             COUNT(*) FILTER (WHERE next_ts IS NOT NULL)::int AS n
+      FROM ordered
+      WHERE next_ts IS NOT NULL AND after_stage IS NOT NULL
+      GROUP BY after_stage`.catch(() => [] as any[]) as any[];
+
+    // Time-to-hire — median + p90 days from candidate creation → hired event.
+    const ttrRow = sinceIso ? await sql`
+      SELECT
+        ROUND(percentile_cont(0.5) WITHIN GROUP (ORDER BY EXTRACT(EPOCH FROM (h.created_at - c.created_at))/86400)::numeric, 1) AS median_days,
+        ROUND(percentile_cont(0.9) WITHIN GROUP (ORDER BY EXTRACT(EPOCH FROM (h.created_at - c.created_at))/86400)::numeric, 1) AS p90_days,
+        COUNT(*)::int AS n
+      FROM candidates c
+      JOIN candidate_stage_events h ON h.candidate_id=c.id AND h.action='hired'
+      WHERE h.created_at >= ${sinceIso}`.catch(() => [] as any[]) as any[]
+    : await sql`
+      SELECT
+        ROUND(percentile_cont(0.5) WITHIN GROUP (ORDER BY EXTRACT(EPOCH FROM (h.created_at - c.created_at))/86400)::numeric, 1) AS median_days,
+        ROUND(percentile_cont(0.9) WITHIN GROUP (ORDER BY EXTRACT(EPOCH FROM (h.created_at - c.created_at))/86400)::numeric, 1) AS p90_days,
+        COUNT(*)::int AS n
+      FROM candidates c
+      JOIN candidate_stage_events h ON h.candidate_id=c.id AND h.action='hired'`.catch(() => [] as any[]) as any[];
+    const ttr = (ttrRow as any[])[0] ?? { median_days: null, p90_days: null, n: 0 };
+
+    // Recruiter throughput — who's driving hires. Group by actor_name
+    // on 'hired' events. Falls back to 'System' when no actor was
+    // captured (shouldn't happen post-Slice 3, but legacy-safe).
+    const recruiterRows = sinceIso ? await sql`
+      SELECT COALESCE(NULLIF(actor_name, ''), 'System') AS actor,
+             COUNT(*)::int AS hires
+      FROM candidate_stage_events
+      WHERE action='hired' AND created_at >= ${sinceIso}
+      GROUP BY 1
+      ORDER BY hires DESC
+      LIMIT 10`.catch(() => [] as any[]) as any[]
+    : await sql`
+      SELECT COALESCE(NULLIF(actor_name, ''), 'System') AS actor,
+             COUNT(*)::int AS hires
+      FROM candidate_stage_events
+      WHERE action='hired'
+      GROUP BY 1
+      ORDER BY hires DESC
+      LIMIT 10`.catch(() => [] as any[]) as any[];
+
+    // Top rejection reasons in the window (based on candidates.updated_at
+    // — the rejection lands there when HR sets status='rejected').
+    const rejectionRows = sinceIso ? await sql`
+      SELECT COALESCE(NULLIF(TRIM(rejection_reason), ''), 'Not specified') AS reason,
+             COUNT(*)::int AS n
+      FROM candidates
+      WHERE status='rejected' AND updated_at >= ${sinceIso}
+      GROUP BY 1
+      ORDER BY n DESC
+      LIMIT 8`.catch(() => [] as any[]) as any[]
+    : await sql`
+      SELECT COALESCE(NULLIF(TRIM(rejection_reason), ''), 'Not specified') AS reason,
+             COUNT(*)::int AS n
+      FROM candidates
+      WHERE status='rejected'
+      GROUP BY 1
+      ORDER BY n DESC
+      LIMIT 8`.catch(() => [] as any[]) as any[];
+
+    // Headline counters.
+    const hiresInWindow = sinceIso ? await sql`
+      SELECT COUNT(*)::int AS n FROM candidate_stage_events WHERE action='hired' AND created_at >= ${sinceIso}`
+    : await sql`SELECT COUNT(*)::int AS n FROM candidate_stage_events WHERE action='hired'`;
+    const offersInWindow = sinceIso ? await sql`
+      SELECT COUNT(*)::int AS n FROM candidate_stage_events WHERE action='offer_released' AND created_at >= ${sinceIso}`
+    : await sql`SELECT COUNT(*)::int AS n FROM candidate_stage_events WHERE action='offer_released'`;
+    const activePipelineRow = await sql`SELECT COUNT(*)::int AS n FROM candidates WHERE status='active'`;
+    const rejectedInWindow = sinceIso ? await sql`
+      SELECT COUNT(*)::int AS n FROM candidates WHERE status='rejected' AND updated_at >= ${sinceIso}`
+    : await sql`SELECT COUNT(*)::int AS n FROM candidates WHERE status='rejected'`;
+
+    // Turn funnel rows into a stage → count lookup, with 'sourced' as
+    // the applied count (candidates.created_at within window).
+    const funnelMap: Record<string, number> = {};
+    for (const r of funnelRows) funnelMap[r.stage] = Number(r.n);
+    funnelMap.sourced = sourcedCount;
+
+    const pipelineMap: Record<string, number> = {};
+    for (const r of pipelineRows) pipelineMap[r.stage] = Number(r.n);
+
+    const timeMap: Record<string, { median_hours: number | null; n: number }> = {};
+    for (const r of timeInStage) timeMap[r.stage] = { median_hours: r.median_hours == null ? null : Number(r.median_hours), n: Number(r.n) };
+
+    res.json({
+      range: days == null ? 'all' : String(days),
+      generated_at: new Date().toISOString(),
+      totals: {
+        applied:    sourcedCount,
+        hires:      Number((hiresInWindow as any[])[0]?.n ?? 0),
+        offers_released: Number((offersInWindow as any[])[0]?.n ?? 0),
+        rejected:   Number((rejectedInWindow as any[])[0]?.n ?? 0),
+        active_pipeline: Number((activePipelineRow as any[])[0]?.n ?? 0),
+      },
+      time_to_hire: {
+        median_days: ttr.median_days == null ? null : Number(ttr.median_days),
+        p90_days:    ttr.p90_days == null ? null : Number(ttr.p90_days),
+        n:           Number(ttr.n ?? 0),
+      },
+      funnel: funnelMap,
+      pipeline: pipelineMap,
+      time_in_stage: timeMap,
+      source_of_hire: sourceRows.map(r => ({
+        source: r.source,
+        applied: Number(r.applied),
+        hired: Number(r.hired),
+        conversion: Number(r.applied) > 0 ? Math.round((Number(r.hired) / Number(r.applied)) * 1000) / 10 : 0,
+      })),
+      recruiters: recruiterRows.map(r => ({ actor: r.actor, hires: Number(r.hires) })),
+      rejections: rejectionRows.map(r => ({ reason: r.reason, n: Number(r.n) })),
+    });
+  } catch (err: any) { res.status(500).json({ error: err.message ?? 'Server error' }); }
+});
+
 // ── KPI system ────────────────────────────────────────────────────────────
 // Templates: catalog (org-wide or role-scoped). Assignments: which
 // employees have which templates. Measurements: actual value per period.

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Search, Plus, UserSearch, ExternalLink } from 'lucide-react';
+import { Search, Plus, UserSearch, ExternalLink, TrendingUp } from 'lucide-react';
 import { api } from '../services/api';
 import { HIRING_STAGES, TERMINAL_STAGES, STAGE_COLOR } from '../lib/hiringStages';
 import NewCandidateModal from '../components/hr/NewCandidateModal';
@@ -105,6 +105,11 @@ export default function Hiring() {
               placeholder="Search name, email, phone, role…"
               className="w-64 pl-8 pr-3 py-2 rounded-lg border border-outline bg-surface text-sm placeholder:text-on-surface-subtle focus:outline-none focus:ring-2 focus:ring-accent/30" />
           </div>
+          <button onClick={() => navigate('/hiring/analytics')}
+            className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg border border-outline text-sm font-semibold text-on-surface hover:bg-surface-2"
+            title="Funnel + source ROI + time-in-stage">
+            <TrendingUp size={14} /> Analytics
+          </button>
           <button onClick={() => setShowAdd(true)}
             className="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg bg-accent text-on-accent text-sm font-semibold hover:opacity-90">
             <Plus size={14} /> New candidate

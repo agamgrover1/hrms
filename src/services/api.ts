@@ -714,6 +714,19 @@ export const api = {
     shift?: string; location?: string; reporting_manager_id?: string | null; role?: string;
     avatar?: string; password?: string; biometric_id?: string;
   }) => request<{ candidate_id: string; employee: any }>(`/candidates/${candidateId}/hire`, { method: 'POST', body: JSON.stringify(data) }),
+  getHiringAnalytics: (range: '30' | '90' | '365' | 'all' = '90') =>
+    request<{
+      range: string;
+      generated_at: string;
+      totals: { applied: number; hires: number; offers_released: number; rejected: number; active_pipeline: number };
+      time_to_hire: { median_days: number | null; p90_days: number | null; n: number };
+      funnel: Record<string, number>;
+      pipeline: Record<string, number>;
+      time_in_stage: Record<string, { median_hours: number | null; n: number }>;
+      source_of_hire: Array<{ source: string; applied: number; hired: number; conversion: number }>;
+      recruiters: Array<{ actor: string; hires: number }>;
+      rejections: Array<{ reason: string; n: number }>;
+    }>(`/hiring/analytics?range=${range}`),
 
   // Optional Leave
   getOptionalLeaveDates: (year: number) =>

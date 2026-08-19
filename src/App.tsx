@@ -33,6 +33,7 @@ import Finance from './pages/finance/Finance';
 import Lifecycle from './pages/Lifecycle';
 import HRDocumentsRegister from './pages/HRDocumentsRegister';
 import Hiring from './pages/Hiring';
+import HiringAnalytics from './pages/HiringAnalytics';
 import CandidateProfile from './pages/CandidateProfile';
 
 function landingFor(_role: string): string {
@@ -92,6 +93,7 @@ function AppRoutes() {
             only pass the gate for candidates they're assigned to, and the
             profile hides irrelevant tabs based on the returned viewer_role. */}
         <Route path="hiring" element={<ProtectedRoute roles={['admin', 'hr_manager', 'hr_intern']}><Hiring /></ProtectedRoute>} />
+        <Route path="hiring/analytics" element={<ProtectedRoute roles={['admin', 'hr_manager', 'hr_intern']}><HiringAnalytics /></ProtectedRoute>} />
         <Route path="hiring/:id" element={<ProtectedRoute><CandidateProfile /></ProtectedRoute>} />
 
         {/* Finance / CFO — admin sees everything; project_coordinator only sees the Invoices tab. */}
