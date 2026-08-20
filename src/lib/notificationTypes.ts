@@ -20,6 +20,7 @@ export const ACTION_REQUIRED_TYPES: readonly string[] = [
   'leave_applied',
   'leave_needs_hr_approval',
   'wfh_applied',
+  'attendance_note_pending',
   // Expenses / incentives
   'expense_submitted',
   'upsell_submitted',

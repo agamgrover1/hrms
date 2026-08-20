@@ -31,6 +31,12 @@ export function getNotifRoute(type: string, role: string): string {
       // Manager (employee role) gets this → My Team pending leaves
       return isHR ? '/leave' : '/my-team?tab=leaves';
 
+    case 'attendance_note_pending':
+      // Fallback for old notifications that pre-date the notification.link
+      // deep-link (which points at /my-team?member=X&date=Y). HR fallbacks
+      // to /attendance where they can also approve; managers to /my-team.
+      return isHR ? '/attendance' : '/my-team';
+
     case 'leave_submitted':
       // Admin/HR FYI copy on optional-leave submissions (manager is
       // the primary reviewer). Land on the same leaves page.
@@ -219,6 +225,7 @@ export const TYPE_CONFIG: Record<string, { icon: any; color: string; bg: string 
   interview_feedback_submitted:    { icon: FileText,    color: '#0891b2', bg: '#f0f9ff' },
   offer_released:                  { icon: Send,        color: '#ea580c', bg: '#fff7ed' },
   candidate_hired:                 { icon: UserPlus,    color: '#15803d', bg: '#f0fdf4' },
+  attendance_note_pending: { icon: ClockIcon,      color: '#d97706', bg: '#fffbeb' },
   leave_applied:           { icon: Calendar,       color: '#d97706', bg: '#fffbeb' },
   leave_submitted:         { icon: Calendar,       color: '#64748b', bg: '#f1f5f9' },
   leave_needs_hr_approval: { icon: Calendar,       color: '#d97706', bg: '#fffbeb' },

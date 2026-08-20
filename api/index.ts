@@ -129,10 +129,10 @@ async function notifyUser(userId: string, type: string, title: string, body?: st
   } catch { /* non-fatal */ }
 }
 
-async function notifyAdminsAndHR(type: string, title: string, body?: string) {
+async function notifyAdminsAndHR(type: string, title: string, body?: string, link?: string) {
   try {
     const users = await sql`SELECT id FROM app_users WHERE role IN ('admin', 'hr_manager') AND active = TRUE`;
-    await Promise.all((users as any[]).map((u: any) => notifyUser(u.id, type, title, body)));
+    await Promise.all((users as any[]).map((u: any) => notifyUser(u.id, type, title, body, link)));
   } catch { /* non-fatal */ }
 }
 
@@ -266,14 +266,14 @@ async function notifyEmployeeUser(employeeDbId: string, type: string, title: str
   }
 }
 
-async function notifyManagerOfEmployee(employeeDbId: string, type: string, title: string, body?: string) {
+async function notifyManagerOfEmployee(employeeDbId: string, type: string, title: string, body?: string, link?: string) {
   try {
     const empRows = await sql`SELECT reporting_manager_id FROM employees WHERE id = ${employeeDbId}`;
     const managerId = (empRows as any[])[0]?.reporting_manager_id;
     if (managerId) {
-      await notifyEmployeeUser(managerId, type, title, body);
+      await notifyEmployeeUser(managerId, type, title, body, link);
     } else {
-      await notifyAdminsAndHR(type, title, body); // fallback to HR if no manager
+      await notifyAdminsAndHR(type, title, body, link); // fallback to HR if no manager
     }
   } catch { /* non-fatal */ }
 }
@@ -870,18 +870,17 @@ async function runStartupMigrations() {
   // full migration block.
   //
   // KEEP THIS PROBE POINTED AT THE MOST RECENT MIGRATION when you add one.
-  // Right now: attendance_sessions.geo_status (added Aug 2026 for the
-  // clock-in geofence — attendance_geo_config table + per-session geo
-  // audit columns). If you add a newer column / table, update this
-  // SELECT to reference it so cold starts re-run migrations once after
-  // each deploy.
+  // Right now: tasks.sort_order (added Aug 2026 for the Tasks module —
+  // task_lists / tasks / task_comments / task_activity). If you add a
+  // newer column / table, update this SELECT to reference it so cold
+  // starts re-run migrations once after each deploy.
   try {
     // Bump this probe whenever a new migration lands; existing warm
     // Lambdas will fail the SELECT and re-run runStartupMigrations().
     // For a *seed* (rows, not columns), we probe with EXISTS-style: an
     // empty result set means "still needs to run", so we don't set the
     // flag and fall through.
-    await sql`SELECT geo_status FROM attendance_sessions LIMIT 0`;
+    await sql`SELECT sort_order FROM tasks LIMIT 0`;
     _migrated = true;
     return;
   } catch {
@@ -2331,6 +2330,7 @@ async function runStartupMigrations() {
     { id: 'incentives',      label: 'Incentives',          group: 'Finance',   approve: true  },
     { id: 'assets',          label: 'Assets & Repairs',    group: 'IT',        approve: false },
     { id: 'features',        label: 'Feature Announcements', group: 'Admin',   approve: true  },
+    { id: 'tasks',           label: 'Tasks & Boards',      group: 'Projects',  approve: false },
     { id: 'todos',           label: 'To-Do',               group: 'Personal',  approve: false },
     { id: 'configuration',   label: 'Configuration',       group: 'Admin',     approve: false },
   ];
@@ -3061,6 +3061,96 @@ async function runStartupMigrations() {
       await sql`INSERT INTO config_sources (id, name, sort_order) VALUES (${id}, ${name}, ${i}) ON CONFLICT (id) DO NOTHING`;
     }
   }
+
+  // ─── Tasks module (ClickUp-style project task boards, Aug 2026) ────────
+  // Purely additive: nothing in HR / attendance / payroll / hours reads
+  // these tables. A "list" is a board that either hangs off an existing
+  // project (project_id set — the normal case, so tasks live where the
+  // agency already tracks hours + profitability) or is standalone
+  // (project_id NULL — internal work like Admin / Sales that isn't a
+  // client project).
+  //
+  // Statuses are per-list and stored as a JSONB array on the list rather
+  // than a table, because they're always read and written as one whole
+  // ordered set (that's also what makes the board's columns). Shape:
+  //   [{ id, label, color, type }]  type: 'open' | 'active' | 'done'
+  // `type` is what non-UI logic keys off — 'done' closes the task and
+  // stamps completed_at — so renaming a label never breaks reporting.
+  await sql`
+    CREATE TABLE IF NOT EXISTS task_lists (
+      id TEXT PRIMARY KEY,
+      project_id TEXT,
+      name TEXT NOT NULL,
+      description TEXT,
+      color TEXT,
+      statuses JSONB NOT NULL DEFAULT '[]'::jsonb,
+      archived BOOLEAN NOT NULL DEFAULT FALSE,
+      sort_order INTEGER NOT NULL DEFAULT 0,
+      created_at TIMESTAMPTZ DEFAULT NOW(),
+      updated_at TIMESTAMPTZ DEFAULT NOW(),
+      created_by_id TEXT,
+      created_by_name TEXT
+    )`;
+  await sql`CREATE INDEX IF NOT EXISTS idx_task_lists_project ON task_lists(project_id, archived, sort_order)`.catch(()=>{});
+
+  // One row per task AND per subtask — a subtask is just a task with
+  // parent_id set. That keeps assignee / due date / comments working on
+  // subtasks for free instead of needing a second, weaker table.
+  // sort_order is NUMERIC (not INTEGER) so a drag between two neighbours
+  // is a single UPDATE to the midpoint instead of renumbering the column.
+  await sql`
+    CREATE TABLE IF NOT EXISTS tasks (
+      id TEXT PRIMARY KEY,
+      list_id TEXT NOT NULL,
+      parent_id TEXT,
+      title TEXT NOT NULL,
+      description TEXT,
+      status TEXT NOT NULL,
+      priority TEXT NOT NULL DEFAULT 'none',
+      assignee_id TEXT,
+      assignee_name TEXT,
+      start_date DATE,
+      due_date DATE,
+      estimate_hours NUMERIC,
+      tags JSONB NOT NULL DEFAULT '[]'::jsonb,
+      sort_order NUMERIC NOT NULL DEFAULT 0,
+      completed_at TIMESTAMPTZ,
+      created_at TIMESTAMPTZ DEFAULT NOW(),
+      updated_at TIMESTAMPTZ DEFAULT NOW(),
+      created_by_id TEXT,
+      created_by_name TEXT
+    )`;
+  await sql`CREATE INDEX IF NOT EXISTS idx_tasks_list ON tasks(list_id, status, sort_order)`.catch(()=>{});
+  await sql`CREATE INDEX IF NOT EXISTS idx_tasks_assignee ON tasks(assignee_id, due_date)`.catch(()=>{});
+  await sql`CREATE INDEX IF NOT EXISTS idx_tasks_parent ON tasks(parent_id)`.catch(()=>{});
+
+  await sql`
+    CREATE TABLE IF NOT EXISTS task_comments (
+      id TEXT PRIMARY KEY,
+      task_id TEXT NOT NULL,
+      author_id TEXT,
+      author_name TEXT,
+      body TEXT NOT NULL,
+      created_at TIMESTAMPTZ DEFAULT NOW()
+    )`;
+  await sql`CREATE INDEX IF NOT EXISTS idx_task_comments_task ON task_comments(task_id, created_at)`.catch(()=>{});
+
+  // Append-only audit of every field change + comment, so a task detail
+  // shows "who moved this to Blocked on Tuesday" without diffing rows.
+  await sql`
+    CREATE TABLE IF NOT EXISTS task_activity (
+      id TEXT PRIMARY KEY,
+      task_id TEXT NOT NULL,
+      actor_id TEXT,
+      actor_name TEXT,
+      kind TEXT NOT NULL,
+      field TEXT,
+      before_val TEXT,
+      after_val TEXT,
+      body TEXT,
+      created_at TIMESTAMPTZ DEFAULT NOW()
+    )`;
+  await sql`CREATE INDEX IF NOT EXISTS idx_task_activity_task ON task_activity(task_id, created_at DESC)`.catch(()=>{});
 
   _migrated = true;
 }
@@ -7708,7 +7798,8 @@ app.put('/api/attendance-notes', async (req, res) => {
     if (isSelfEmployeeAuthor) {
       try {
         notifyManagerOfEmployee(employee_id, 'attendance_note_pending', 'Attendance note awaiting approval',
-          `${u.name} added a note on ${date} that needs your review: ${note.trim().slice(0, 140)}`).catch(()=>{});
+          `${u.name} added a note on ${date} that needs your review: ${note.trim().slice(0, 140)}`,
+          `/my-team?member=${employee_id}&date=${date}`).catch(()=>{});
       } catch {}
     }
     res.json(row);
@@ -19733,6 +19824,475 @@ app.get('/api/lifecycle-dashboard', async (_req, res) => {
     });
     res.json(payload);
   } catch (err: any) { res.status(500).json({ error: err.message || 'Server error' }); }
+});
+
+// ── Tasks module (ClickUp-style boards) ──────────────────────────────────
+// Additive feature — no HR / attendance / payroll / hours endpoint reads or
+// writes these tables. Deliberately NOT added to the Cache-Control block at
+// the top of this file: a board is edited by several people at once, so a
+// 30s browser cache would show a colleague a stale column.
+
+// Statuses a brand-new list starts with. Copied onto the list at creation
+// time (not referenced), so renaming these later never rewrites history.
+const DEFAULT_TASK_STATUSES = [
+  { id: 'todo',        label: 'To do',       color: '#94a3b8', type: 'open'   },
+  { id: 'in_progress', label: 'In progress', color: '#60a5fa', type: 'active' },
+  { id: 'review',      label: 'In review',   color: '#c084fc', type: 'active' },
+  { id: 'done',        label: 'Done',        color: '#34d399', type: 'done'   },
+];
+
+const TASK_PRIORITIES = ['urgent', 'high', 'normal', 'low', 'none'];
+
+// Who can create/rename/delete boards. Everyone signed in can still create
+// and work tasks inside them — that's the point of the module.
+const TASK_LIST_MANAGER_ROLES = ['admin', 'hr_manager', 'project_coordinator'];
+
+// Auth gate for every task endpoint: any signed-in user passes. Task-level
+// write rules are enforced per-endpoint below.
+//
+// TWO ID SPACES, and mixing them up is the classic bug in this codebase:
+//   • app_users.id  — who is signed in. Used for created_by_id and every
+//     permission check, because it always exists.
+//   • employees.id  — who the work belongs to. Used for assignee_id, because
+//     the assignee picker is fed by /api/employees and because that's what
+//     todo_tasks already stores.
+// They are NOT interchangeable (app_users.employee_id_ref links them, and it
+// holds either form). So `mine=1` filters on employeeId, and pings to an
+// assignee go through notifyEmployeeUser, which does the join.
+async function taskActor(req: any, res: any): Promise<{ ok: boolean; user?: any }> {
+  const uid = req.header('x-user-id') || req.query.__uid;
+  if (!uid) { res.status(401).json({ error: 'Not signed in' }); return { ok: false }; }
+  const u = (await sql`SELECT id, name, email, role, employee_id_ref FROM app_users WHERE id=${uid} LIMIT 1` as any[])[0];
+  if (!u) { res.status(401).json({ error: 'Not signed in' }); return { ok: false }; }
+  const employeeId = await resolveUserToEmployee(u).catch(() => null);
+  return { ok: true, user: { id: u.id, name: u.name, role: u.role, employeeId } };
+}
+
+function normalizeStatuses(input: any): Array<{ id: string; label: string; color: string; type: string }> | null {
+  if (!Array.isArray(input) || !input.length) return null;
+  const seen = new Set<string>();
+  const out: Array<{ id: string; label: string; color: string; type: string }> = [];
+  for (const raw of input) {
+    const label = String(raw?.label ?? '').trim();
+    if (!label) continue;
+    // Derive a stable slug when the client didn't send one, but never let
+    // two columns collapse onto the same id — that would silently merge
+    // every task in both columns.
+    let id = String(raw?.id ?? '').trim() || label.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, '');
+    if (!id) id = `s${out.length + 1}`;
+    while (seen.has(id)) id = `${id}_`;
+    seen.add(id);
+    const type = ['open', 'active', 'done'].includes(raw?.type) ? raw.type : 'open';
+    out.push({ id, label, color: String(raw?.color ?? '#94a3b8'), type });
+  }
+  if (!out.length) return null;
+  // A board with no 'done' column can never complete a task, so force the
+  // last column to be the closing one if the caller didn't mark any.
+  if (!out.some(s => s.type === 'done')) out[out.length - 1].type = 'done';
+  return out;
+}
+
+async function logTaskActivity(
+  taskId: string, actor: any, kind: string,
+  field?: string | null, before?: any, after?: any, body?: string | null,
+) {
+  try {
+    await sql`
+      INSERT INTO task_activity (id, task_id, actor_id, actor_name, kind, field, before_val, after_val, body)
+      VALUES (${newId('tact')}, ${taskId}, ${actor?.id ?? null}, ${actor?.name ?? null}, ${kind},
+              ${field ?? null},
+              ${before === null || before === undefined ? null : String(before)},
+              ${after === null || after === undefined ? null : String(after)},
+              ${body ?? null})`;
+  } catch { /* activity is an audit nicety — never fail the write for it */ }
+}
+
+// ── Boards (task_lists) ──────────────────────────────────────────────────
+
+// GET /api/task-lists?project_id=&include_archived=1
+app.get('/api/task-lists', async (req, res) => {
+  try {
+    await runStartupMigrations();
+    const gate = await taskActor(req, res);
+    if (!gate.ok) return;
+    const projectId = (req.query.project_id as string) || null;
+    const includeArchived = req.query.include_archived === '1';
+    const rows = await sql`
+      SELECT l.*, p.name AS project_name, p.client_name AS project_client,
+             (SELECT COUNT(*) FROM tasks t WHERE t.list_id = l.id AND t.parent_id IS NULL)::int AS task_count,
+             (SELECT COUNT(*) FROM tasks t WHERE t.list_id = l.id AND t.parent_id IS NULL AND t.completed_at IS NOT NULL)::int AS done_count
+      FROM task_lists l
+      LEFT JOIN projects p ON p.id = l.project_id
+      WHERE (${projectId}::text IS NULL OR l.project_id = ${projectId})
+        AND (${includeArchived}::boolean OR l.archived = FALSE)
+      ORDER BY l.sort_order, l.created_at`;
+    res.json(rows);
+  } catch (err: any) { res.status(500).json({ error: err.message ?? 'Server error' }); }
+});
+
+app.post('/api/task-lists', async (req, res) => {
+  try {
+    await runStartupMigrations();
+    const gate = await taskActor(req, res);
+    if (!gate.ok) return;
+    if (!TASK_LIST_MANAGER_ROLES.includes(gate.user.role)) {
+      return res.status(403).json({ error: 'Only admin, HR manager or project coordinator can create boards' });
+    }
+    const { project_id, name, description, color, statuses } = req.body ?? {};
+    if (!String(name ?? '').trim()) return res.status(400).json({ error: 'Board name is required' });
+    if (project_id) {
+      const exists = await sql`SELECT id FROM projects WHERE id=${project_id}` as any[];
+      if (!exists.length) return res.status(400).json({ error: 'Project not found' });
+    }
+    const cols = normalizeStatuses(statuses) ?? DEFAULT_TASK_STATUSES;
+    const order = (await sql`
+      SELECT COALESCE(MAX(sort_order), -1) + 1 AS next FROM task_lists
+      WHERE (${project_id ?? null}::text IS NULL AND project_id IS NULL) OR project_id = ${project_id ?? null}` as any[])[0]?.next ?? 0;
+    const rows = await sql`
+      INSERT INTO task_lists (id, project_id, name, description, color, statuses, sort_order, created_by_id, created_by_name)
+      VALUES (${newId('tlist')}, ${project_id ?? null}, ${String(name).trim()}, ${description ?? null},
+              ${color ?? null}, ${JSON.stringify(cols)}::jsonb, ${Number(order)},
+              ${gate.user.id}, ${gate.user.name})
+      RETURNING *`;
+    res.status(201).json(rows[0]);
+  } catch (err: any) { res.status(500).json({ error: err.message ?? 'Server error' }); }
+});
+
+app.patch('/api/task-lists/:id', async (req, res) => {
+  try {
+    await runStartupMigrations();
+    const gate = await taskActor(req, res);
+    if (!gate.ok) return;
+    if (!TASK_LIST_MANAGER_ROLES.includes(gate.user.role)) {
+      return res.status(403).json({ error: 'Only admin, HR manager or project coordinator can edit boards' });
+    }
+    const cur = (await sql`SELECT * FROM task_lists WHERE id=${req.params.id}` as any[])[0];
+    if (!cur) return res.status(404).json({ error: 'Board not found' });
+    const { name, description, color, archived, sort_order, statuses } = req.body ?? {};
+
+    // Editing columns can't be a blind overwrite: any task sitting in a
+    // column the caller removed would become unreachable on the board.
+    // Move those tasks to the first remaining column before saving.
+    let nextStatuses = cur.statuses;
+    if (statuses !== undefined) {
+      const cols = normalizeStatuses(statuses);
+      if (!cols) return res.status(400).json({ error: 'A board needs at least one status column' });
+      const keep = new Set(cols.map(c => c.id));
+      const orphaned = (cur.statuses as any[]).filter(s => !keep.has(s.id)).map(s => s.id);
+      if (orphaned.length) {
+        const fallback = cols[0];
+        // Landing in a non-done column has to clear completed_at too, or a
+        // task shows as open on the board while reporting still counts it.
+        if (fallback.type === 'done') {
+          await sql`UPDATE tasks SET status=${fallback.id}, updated_at=NOW()
+                    WHERE list_id=${cur.id} AND status = ANY(${orphaned}::text[])`;
+        } else {
+          await sql`UPDATE tasks SET status=${fallback.id}, completed_at=NULL, updated_at=NOW()
+                    WHERE list_id=${cur.id} AND status = ANY(${orphaned}::text[])`;
+        }
+      }
+      nextStatuses = cols;
+    }
+
+    const rows = await sql`
+      UPDATE task_lists SET
+        name        = COALESCE(${name ?? null}::text, name),
+        description = ${description === undefined ? cur.description : description}::text,
+        color       = COALESCE(${color ?? null}::text, color),
+        archived    = COALESCE(${archived === undefined ? null : !!archived}::boolean, archived),
+        sort_order  = COALESCE(${sort_order === undefined ? null : Number(sort_order)}::integer, sort_order),
+        statuses    = ${JSON.stringify(nextStatuses)}::jsonb,
+        updated_at  = NOW()
+      WHERE id=${cur.id}
+      RETURNING *`;
+    res.json(rows[0]);
+  } catch (err: any) { res.status(500).json({ error: err.message ?? 'Server error' }); }
+});
+
+// DELETE /api/task-lists/:id — refuses to silently destroy work. A board
+// holding tasks must be archived, or deleted with ?force=1.
+app.delete('/api/task-lists/:id', async (req, res) => {
+  try {
+    await runStartupMigrations();
+    const gate = await taskActor(req, res);
+    if (!gate.ok) return;
+    if (gate.user.role !== 'admin') return res.status(403).json({ error: 'Admin only' });
+    const cur = (await sql`SELECT id FROM task_lists WHERE id=${req.params.id}` as any[])[0];
+    if (!cur) return res.status(404).json({ error: 'Board not found' });
+    const count = Number((await sql`SELECT COUNT(*)::int AS n FROM tasks WHERE list_id=${cur.id}` as any[])[0]?.n ?? 0);
+    if (count && req.query.force !== '1') {
+      return res.status(409).json({ error: `Board still holds ${count} task${count === 1 ? '' : 's'}. Archive it, or delete with force.`, task_count: count });
+    }
+    const ids = (await sql`SELECT id FROM tasks WHERE list_id=${cur.id}` as any[]).map(r => r.id);
+    if (ids.length) {
+      await sql`DELETE FROM task_comments WHERE task_id = ANY(${ids}::text[])`;
+      await sql`DELETE FROM task_activity WHERE task_id = ANY(${ids}::text[])`;
+      await sql`DELETE FROM tasks WHERE list_id=${cur.id}`;
+    }
+    await sql`DELETE FROM task_lists WHERE id=${cur.id}`;
+    res.json({ ok: true, deleted_tasks: ids.length });
+  } catch (err: any) { res.status(500).json({ error: err.message ?? 'Server error' }); }
+});
+
+// ── Tasks ────────────────────────────────────────────────────────────────
+
+// GET /api/tasks?list_id=|project_id=|mine=1&assignee_id=&q=&include_subtasks=1
+// Top-level tasks only unless include_subtasks=1 — the board renders
+// parents as cards and pulls their children from the detail endpoint.
+app.get('/api/tasks', async (req, res) => {
+  try {
+    await runStartupMigrations();
+    const gate = await taskActor(req, res);
+    if (!gate.ok) return;
+    const listId = (req.query.list_id as string) || null;
+    const projectId = (req.query.project_id as string) || null;
+    // assignee_id holds an employees.id — see the note on taskActor.
+    // A signed-in user with no linked employee record (a bare admin login)
+    // has nothing assigned to them. Returning early matters: a null filter
+    // would fall through the `IS NULL OR` guard below and hand them every
+    // task in the org under the heading "My tasks".
+    const mine = req.query.mine === '1';
+    if (mine && !gate.user.employeeId) return res.json([]);
+    const assigneeId = mine ? gate.user.employeeId : ((req.query.assignee_id as string) || null);
+    const q = (req.query.q as string) || null;
+    const includeSubtasks = req.query.include_subtasks === '1';
+    const rows = await sql`
+      SELECT t.*, l.name AS list_name, l.color AS list_color, l.statuses AS list_statuses,
+             l.project_id, p.name AS project_name, p.client_name AS project_client,
+             (SELECT COUNT(*) FROM tasks s WHERE s.parent_id = t.id)::int AS subtask_count,
+             (SELECT COUNT(*) FROM tasks s WHERE s.parent_id = t.id AND s.completed_at IS NOT NULL)::int AS subtask_done_count,
+             (SELECT COUNT(*) FROM task_comments c WHERE c.task_id = t.id)::int AS comment_count
+      FROM tasks t
+      JOIN task_lists l ON l.id = t.list_id
+      LEFT JOIN projects p ON p.id = l.project_id
+      WHERE (${listId}::text IS NULL OR t.list_id = ${listId})
+        AND (${projectId}::text IS NULL OR l.project_id = ${projectId})
+        AND (${assigneeId}::text IS NULL OR t.assignee_id = ${assigneeId})
+        AND (${includeSubtasks}::boolean OR t.parent_id IS NULL)
+        AND (${q}::text IS NULL OR LOWER(t.title) LIKE '%' || LOWER(${q}) || '%'
+             OR LOWER(COALESCE(t.description,'')) LIKE '%' || LOWER(${q}) || '%')
+      ORDER BY t.sort_order, t.created_at`;
+    res.json(rows);
+  } catch (err: any) { res.status(500).json({ error: err.message ?? 'Server error' }); }
+});
+
+// GET /api/tasks/:id — task + its subtasks + comments + activity.
+app.get('/api/tasks/:id', async (req, res) => {
+  try {
+    await runStartupMigrations();
+    const gate = await taskActor(req, res);
+    if (!gate.ok) return;
+    const rows = await sql`
+      SELECT t.*, l.name AS list_name, l.statuses AS list_statuses, l.project_id,
+             p.name AS project_name, p.client_name AS project_client
+      FROM tasks t
+      JOIN task_lists l ON l.id = t.list_id
+      LEFT JOIN projects p ON p.id = l.project_id
+      WHERE t.id=${req.params.id}` as any[];
+    if (!rows.length) return res.status(404).json({ error: 'Task not found' });
+    const [subtasks, comments, activity] = await Promise.all([
+      sql`SELECT * FROM tasks WHERE parent_id=${req.params.id} ORDER BY sort_order, created_at`,
+      sql`SELECT * FROM task_comments WHERE task_id=${req.params.id} ORDER BY created_at`,
+      sql`SELECT * FROM task_activity WHERE task_id=${req.params.id} ORDER BY created_at DESC LIMIT 100`,
+    ]);
+    res.json({ task: rows[0], subtasks, comments, activity });
+  } catch (err: any) { res.status(500).json({ error: err.message ?? 'Server error' }); }
+});
+
+app.post('/api/tasks', async (req, res) => {
+  try {
+    await runStartupMigrations();
+    const gate = await taskActor(req, res);
+    if (!gate.ok) return;
+    const { list_id, parent_id, title, description, status, priority, assignee_id, start_date, due_date, estimate_hours, tags } = req.body ?? {};
+    if (!String(title ?? '').trim()) return res.status(400).json({ error: 'Task title is required' });
+
+    // A subtask inherits its parent's board — the client only has to send
+    // parent_id, and a mismatched list_id can't split a family across boards.
+    let listId = list_id ?? null;
+    if (parent_id) {
+      const parent = (await sql`SELECT id, list_id, parent_id FROM tasks WHERE id=${parent_id}` as any[])[0];
+      if (!parent) return res.status(400).json({ error: 'Parent task not found' });
+      if (parent.parent_id) return res.status(400).json({ error: 'Subtasks can only be one level deep' });
+      listId = parent.list_id;
+    }
+    if (!listId) return res.status(400).json({ error: 'list_id is required' });
+    const list = (await sql`SELECT * FROM task_lists WHERE id=${listId}` as any[])[0];
+    if (!list) return res.status(400).json({ error: 'Board not found' });
+
+    const cols = (list.statuses as any[]) ?? DEFAULT_TASK_STATUSES;
+    const col = cols.find(c => c.id === status) ?? cols[0];
+    const prio = TASK_PRIORITIES.includes(priority) ? priority : 'none';
+
+    let assigneeName: string | null = null;
+    if (assignee_id) {
+      const emp = (await sql`SELECT name FROM employees WHERE id=${assignee_id}` as any[])[0];
+      if (!emp) return res.status(400).json({ error: 'Assignee not found' });
+      assigneeName = emp.name;
+    }
+    // Land new cards at the bottom of their column.
+    const nextOrder = Number((await sql`
+      SELECT COALESCE(MAX(sort_order), 0) + 1024 AS next FROM tasks
+      WHERE list_id=${listId} AND status=${col.id}` as any[])[0]?.next ?? 1024);
+
+    const id = newId('task');
+    const rows = await sql`
+      INSERT INTO tasks (id, list_id, parent_id, title, description, status, priority,
+                         assignee_id, assignee_name, start_date, due_date, estimate_hours,
+                         tags, sort_order, completed_at, created_by_id, created_by_name)
+      VALUES (${id}, ${listId}, ${parent_id ?? null}, ${String(title).trim()}, ${description ?? null},
+              ${col.id}, ${prio}, ${assignee_id ?? null}, ${assigneeName},
+              ${start_date || null}, ${due_date || null},
+              ${estimate_hours === undefined || estimate_hours === null || estimate_hours === '' ? null : Number(estimate_hours)},
+              ${JSON.stringify(Array.isArray(tags) ? tags.slice(0, 8) : [])}::jsonb,
+              ${nextOrder}, ${col.type === 'done' ? new Date().toISOString() : null},
+              ${gate.user.id}, ${gate.user.name})
+      RETURNING *`;
+    await logTaskActivity(id, gate.user, 'created', null, null, null, parent_id ? 'Subtask created' : 'Task created');
+    if (assignee_id && assignee_id !== gate.user.employeeId) {
+      await notifyEmployeeUser(assignee_id, 'task_assigned', 'New task assigned',
+        `${gate.user.name ?? 'Someone'} assigned you "${String(title).trim()}"`, `/tasks?task=${id}`);
+    }
+    res.status(201).json(rows[0]);
+  } catch (err: any) { res.status(500).json({ error: err.message ?? 'Server error' }); }
+});
+
+// PATCH /api/tasks/:id — whitelisted partial update. Every changed field is
+// appended to task_activity, and a move into a 'done' column stamps
+// completed_at (a move back out clears it) so reporting never has to guess.
+app.patch('/api/tasks/:id', async (req, res) => {
+  try {
+    await runStartupMigrations();
+    const gate = await taskActor(req, res);
+    if (!gate.ok) return;
+    const cur = (await sql`SELECT * FROM tasks WHERE id=${req.params.id}` as any[])[0];
+    if (!cur) return res.status(404).json({ error: 'Task not found' });
+    const list = (await sql`SELECT * FROM task_lists WHERE id=${cur.list_id}` as any[])[0];
+    const cols = (list?.statuses as any[]) ?? DEFAULT_TASK_STATUSES;
+
+    const b = req.body ?? {};
+    const next: Record<string, any> = {};
+    if (b.title !== undefined) {
+      if (!String(b.title).trim()) return res.status(400).json({ error: 'Title cannot be empty' });
+      next.title = String(b.title).trim();
+    }
+    if (b.description !== undefined) next.description = b.description ?? null;
+    if (b.priority !== undefined) {
+      if (!TASK_PRIORITIES.includes(b.priority)) return res.status(400).json({ error: 'Unknown priority' });
+      next.priority = b.priority;
+    }
+    if (b.start_date !== undefined) next.start_date = b.start_date || null;
+    if (b.due_date !== undefined) next.due_date = b.due_date || null;
+    if (b.estimate_hours !== undefined) next.estimate_hours = b.estimate_hours === null || b.estimate_hours === '' ? null : Number(b.estimate_hours);
+    if (b.tags !== undefined) next.tags = Array.isArray(b.tags) ? b.tags.slice(0, 8) : [];
+    if (b.sort_order !== undefined) next.sort_order = Number(b.sort_order);
+    if (b.status !== undefined) {
+      const col = cols.find(c => c.id === b.status);
+      if (!col) return res.status(400).json({ error: 'That status does not exist on this board' });
+      next.status = col.id;
+      next.completed_at = col.type === 'done' ? (cur.completed_at ?? new Date().toISOString()) : null;
+    }
+    if (b.assignee_id !== undefined) {
+      next.assignee_id = b.assignee_id || null;
+      if (b.assignee_id) {
+        const emp = (await sql`SELECT name FROM employees WHERE id=${b.assignee_id}` as any[])[0];
+        if (!emp) return res.status(400).json({ error: 'Assignee not found' });
+        next.assignee_name = emp.name;
+      } else {
+        next.assignee_name = null;
+      }
+    }
+    if (!Object.keys(next).length) return res.json(cur);
+
+    const rows = await sql`
+      UPDATE tasks SET
+        title          = COALESCE(${next.title ?? null}::text, title),
+        description    = ${'description' in next ? next.description : cur.description}::text,
+        status         = COALESCE(${next.status ?? null}::text, status),
+        priority       = COALESCE(${next.priority ?? null}::text, priority),
+        assignee_id    = ${'assignee_id' in next ? next.assignee_id : cur.assignee_id}::text,
+        assignee_name  = ${'assignee_id' in next ? next.assignee_name : cur.assignee_name}::text,
+        start_date     = ${'start_date' in next ? next.start_date : cur.start_date}::date,
+        due_date       = ${'due_date' in next ? next.due_date : cur.due_date}::date,
+        estimate_hours = ${'estimate_hours' in next ? next.estimate_hours : cur.estimate_hours}::numeric,
+        tags           = ${JSON.stringify('tags' in next ? next.tags : (cur.tags ?? []))}::jsonb,
+        sort_order     = COALESCE(${next.sort_order ?? null}::numeric, sort_order),
+        completed_at   = ${'completed_at' in next ? next.completed_at : cur.completed_at}::timestamptz,
+        updated_at     = NOW()
+      WHERE id=${cur.id}
+      RETURNING *`;
+    const updated = rows[0] as any;
+
+    // Audit only the fields a human would care about — sort_order churns
+    // on every drag and would drown the timeline.
+    const labelOf = (id: string) => cols.find(c => c.id === id)?.label ?? id;
+    if (next.status && next.status !== cur.status) {
+      await logTaskActivity(cur.id, gate.user, 'status', 'status', labelOf(cur.status), labelOf(next.status));
+    }
+    if ('assignee_id' in next && next.assignee_id !== cur.assignee_id) {
+      await logTaskActivity(cur.id, gate.user, 'assignee', 'assignee', cur.assignee_name ?? 'Unassigned', next.assignee_name ?? 'Unassigned');
+      if (next.assignee_id && next.assignee_id !== gate.user.employeeId) {
+        await notifyEmployeeUser(next.assignee_id, 'task_assigned', 'Task assigned to you',
+          `${gate.user.name ?? 'Someone'} assigned you "${updated.title}"`, `/tasks?task=${cur.id}`);
+      }
+    }
+    for (const f of ['title', 'priority', 'due_date', 'start_date', 'estimate_hours'] as const) {
+      if (f in next && String(next[f] ?? '') !== String(cur[f] ?? '')) {
+        await logTaskActivity(cur.id, gate.user, 'field', f, cur[f], next[f]);
+      }
+    }
+    res.json(updated);
+  } catch (err: any) { res.status(500).json({ error: err.message ?? 'Server error' }); }
+});
+
+// DELETE /api/tasks/:id — creator, current assignee, or a board manager.
+// Takes the task's subtasks (and all their comments) with it.
+app.delete('/api/tasks/:id', async (req, res) => {
+  try {
+    await runStartupMigrations();
+    const gate = await taskActor(req, res);
+    if (!gate.ok) return;
+    const cur = (await sql`SELECT * FROM tasks WHERE id=${req.params.id}` as any[])[0];
+    if (!cur) return res.status(404).json({ error: 'Task not found' });
+    const allowed = cur.created_by_id === gate.user.id
+      || (!!gate.user.employeeId && cur.assignee_id === gate.user.employeeId)
+      || TASK_LIST_MANAGER_ROLES.includes(gate.user.role);
+    if (!allowed) return res.status(403).json({ error: 'Only the creator, the assignee or a project coordinator can delete this task' });
+    const ids = [cur.id, ...(await sql`SELECT id FROM tasks WHERE parent_id=${cur.id}` as any[]).map(r => r.id)];
+    await sql`DELETE FROM task_comments WHERE task_id = ANY(${ids}::text[])`;
+    await sql`DELETE FROM task_activity WHERE task_id = ANY(${ids}::text[])`;
+    await sql`DELETE FROM tasks WHERE id = ANY(${ids}::text[])`;
+    res.json({ ok: true, deleted: ids.length });
+  } catch (err: any) { res.status(500).json({ error: err.message ?? 'Server error' }); }
+});
+
+app.post('/api/tasks/:id/comments', async (req, res) => {
+  try {
+    await runStartupMigrations();
+    const gate = await taskActor(req, res);
+    if (!gate.ok) return;
+    const body = String(req.body?.body ?? '').trim();
+    if (!body) return res.status(400).json({ error: 'Comment cannot be empty' });
+    const task = (await sql`SELECT id, title, assignee_id, created_by_id FROM tasks WHERE id=${req.params.id}` as any[])[0];
+    if (!task) return res.status(404).json({ error: 'Task not found' });
+    const rows = await sql`
+      INSERT INTO task_comments (id, task_id, author_id, author_name, body)
+      VALUES (${newId('tcom')}, ${task.id}, ${gate.user.id}, ${gate.user.name}, ${body})
+      RETURNING *`;
+    await logTaskActivity(task.id, gate.user, 'comment', null, null, null, body.slice(0, 200));
+    // Ping everyone attached to the task except whoever just typed. The
+    // assignee is an employees.id and the creator an app_users.id, so each
+    // goes through the notifier that speaks its own id space.
+    const blurb = `${gate.user.name ?? 'Someone'} commented on "${task.title}"`;
+    const link = `/tasks?task=${task.id}`;
+    if (task.assignee_id && task.assignee_id !== gate.user.employeeId) {
+      await notifyEmployeeUser(task.assignee_id, 'task_comment', 'New comment on a task', blurb, link);
+    }
+    if (task.created_by_id && task.created_by_id !== gate.user.id) {
+      await notifyUser(task.created_by_id, 'task_comment', 'New comment on a task', blurb, link);
+    }
+    res.status(201).json(rows[0]);
+  } catch (err: any) { res.status(500).json({ error: err.message ?? 'Server error' }); }
 });
 
 // ── Global error handler — always return JSON, never Express HTML page ────

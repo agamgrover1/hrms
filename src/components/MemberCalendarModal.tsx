@@ -48,7 +48,7 @@ function dayLabel(status: string | undefined): { label: string; cls: string; dot
   return { label: status, cls: 'bg-surface-2 text-on-surface-muted' };
 }
 
-export default function MemberCalendarModal({ member, attendance, leaves, onClose, currentUser }: {
+export default function MemberCalendarModal({ member, attendance, leaves, onClose, currentUser, focusDate }: {
   member: { id: string; name: string; designation?: string };
   attendance: AttendanceRow[];
   leaves: LeaveRow[];
@@ -58,12 +58,23 @@ export default function MemberCalendarModal({ member, attendance, leaves, onClos
   // up the reporting chain (canTouchAttendanceNote), so the affordance is
   // safe to expose to whoever opened this modal — the API call enforces.
   currentUser?: { name?: string | null; role?: string | null };
+  // Optional YYYY-MM-DD. When set (from a notification deep-link), the
+  // calendar opens on that date's month so a pending attendance note is
+  // immediately visible in the notes panel below (sorted pending-first).
+  focusDate?: string;
 }) {
   const today = new Date();
   // Local YYYY-MM-DD. toISOString() would shift IST late-night users back
   // a day (same root cause as the leave-bucket bug below).
   const todayStr = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`;
-  const [cursor, setCursor] = useState<{ m: number; y: number }>({ m: today.getMonth() + 1, y: today.getFullYear() });
+  const initialCursor = (() => {
+    if (focusDate) {
+      const [y, m] = focusDate.split('-').map(Number);
+      if (y && m) return { m, y };
+    }
+    return { m: today.getMonth() + 1, y: today.getFullYear() };
+  })();
+  const [cursor, setCursor] = useState<{ m: number; y: number }>(initialCursor);
   // Attendance notes for the visible month. Loaded lazily on month change
   // so flipping back/forward doesn't refetch the entire history.
   const [notesByDate, setNotesByDate] = useState<Record<string, {

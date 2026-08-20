@@ -374,6 +374,7 @@ export default function MyTeam() {
   // Per-member calendar drill-in: a month grid showing every day color-coded
   // by attendance + leave status. Click a member card → opens this.
   const [calendarFor, setCalendarFor] = useState<any | null>(null);
+  const [calendarFocusDate, setCalendarFocusDate] = useState<string | undefined>(undefined);
   const [memberLeaves, setMemberLeaves] = useState<any[]>([]);
   const [memberBalance, setMemberBalance] = useState<any | null>(null);
   const [loadingMemberLeaves, setLoadingMemberLeaves] = useState(false);
@@ -456,6 +457,26 @@ export default function MyTeam() {
       .then(d => { setTeamPulse(d.team); setPulseWeekStart(d.week_start); })
       .catch(() => {});
   }, [subTab, teamPulseMonth, teamPulseYear]);
+
+  // Deep-link support: a notification like "attendance note awaiting
+  // approval" carries `/my-team?member=<id>&date=<YYYY-MM-DD>` as its
+  // link. When we land here with those params, auto-open the calendar
+  // for that member and jump the visible month to the note's date so
+  // the manager can approve/reject in one click. The effect waits for
+  // teamMembers to hydrate; we clear the params after opening so the
+  // modal doesn't re-open if the manager closes it and stays on the
+  // page.
+  const memberParam = searchParams.get('member');
+  const dateParam = searchParams.get('date') ?? undefined;
+  useEffect(() => {
+    if (!memberParam || !teamMembers.length) return;
+    const match = teamMembers.find((m: any) => m.id === memberParam);
+    if (!match) return;
+    setCalendarFor(match);
+    setCalendarFocusDate(dateParam);
+    navigate('/my-team' + (subTab === 'overview' ? '' : `?tab=${subTab}`), { replace: true });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [memberParam, dateParam, teamMembers.length]);
 
   async function ratePulse(employeeId: string, rating: 'good' | 'ok' | 'concern') {
     setSubmittingPulse(s => ({ ...s, [employeeId]: true }));
@@ -1088,7 +1109,8 @@ export default function MyTeam() {
           attendance={teamAttendance[calendarFor.id] ?? []}
           leaves={teamAllLeaves.filter((l: any) => l.employee_id === calendarFor.id)}
           currentUser={{ name: user?.name, role: user?.role }}
-          onClose={() => setCalendarFor(null)}
+          focusDate={calendarFocusDate}
+          onClose={() => { setCalendarFor(null); setCalendarFocusDate(undefined); }}
         />
       )}
 
