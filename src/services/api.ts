@@ -1521,6 +1521,29 @@ export const api = {
     }),
   removeTaskWatcher: (id: string, employee_id: string) =>
     request<{ ok: true }>(`/tasks/${id}/watchers/${encodeURIComponent(employee_id)}`, { method: 'DELETE' }),
+
+  // ── Task time tracking (isolated from hour_log_days) ─────────────
+  // These endpoints write to task_time_entries only. The existing
+  // timesheet / hour_logs / hour_log_days workflow is completely
+  // unaffected.
+  getTaskTime: (id: string) =>
+    request<Array<{
+      id: string; task_id: string; project_id: string | null;
+      employee_id: string; employee_name: string | null;
+      log_date: string; hours: string | number; notes: string | null;
+      source: 'manual' | 'timer'; started_at: string | null; stopped_at: string | null;
+      created_at: string; created_by_id: string | null;
+    }>>(`/tasks/${id}/time`),
+  addTaskTime: (id: string, data: { log_date: string; hours: number; notes?: string; employee_id?: string }) =>
+    request<any>(`/tasks/${id}/time`, { method: 'POST', body: JSON.stringify(data) }),
+  startTaskTimer: (id: string) =>
+    request<{ id: string; started_at: string }>(`/tasks/${id}/timer/start`, { method: 'POST' }),
+  stopTaskTimer: (id: string) =>
+    request<any>(`/tasks/${id}/timer/stop`, { method: 'POST' }),
+  getRunningTimer: () =>
+    request<null | { id: string; task_id: string; task_title: string; started_at: string; project_id: string | null }>(`/me/timer`),
+  deleteTaskTime: (entryId: string) =>
+    request<{ ok: true }>(`/task-time/${entryId}`, { method: 'DELETE' }),
 };
 
 export interface KpiTemplate {
@@ -1660,6 +1683,7 @@ export interface Task {
   subtask_count?: number;
   subtask_done_count?: number;
   comment_count?: number;
+  logged_hours?: string | number;
 }
 
 export interface TaskComment {

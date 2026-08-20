@@ -880,7 +880,7 @@ async function runStartupMigrations() {
     // For a *seed* (rows, not columns), we probe with EXISTS-style: an
     // empty result set means "still needs to run", so we don't set the
     // flag and fall through.
-    await sql`SELECT kind FROM task_dependencies LIMIT 0`;
+    await sql`SELECT source FROM task_time_entries LIMIT 0`;
     _migrated = true;
     return;
   } catch {
@@ -3189,6 +3189,43 @@ async function runStartupMigrations() {
     )`;
   await sql`CREATE INDEX IF NOT EXISTS idx_task_deps_task ON task_dependencies(task_id)`.catch(()=>{});
   await sql`CREATE INDEX IF NOT EXISTS idx_task_deps_target ON task_dependencies(depends_on_id)`.catch(()=>{});
+
+  // Task time entries — DELIBERATELY isolated from hour_log_days. The
+  // existing timesheet workflow (weekly buckets, manager approval on
+  // hour_log_days) stays exactly as it is. This table is the *additional*
+  // source of "hours logged against work" that the task module feeds.
+  // Later slices can UNION this with hour_log_days on the reporting side
+  // without mutating either table.
+  //
+  // Semantics:
+  //   source='manual' — user entered { log_date, hours } directly
+  //   source='timer'  — started_at + stopped_at set; hours = derived
+  // stopped_at IS NULL means the timer is currently running for that
+  // employee on that task. The partial-unique index below enforces
+  // one live timer per employee at any moment — starting a new one
+  // stops the previous automatically (see /timer/start).
+  await sql`
+    CREATE TABLE IF NOT EXISTS task_time_entries (
+      id TEXT PRIMARY KEY,
+      task_id TEXT NOT NULL,
+      project_id TEXT,
+      employee_id TEXT NOT NULL,
+      employee_name TEXT,
+      log_date DATE NOT NULL,
+      hours NUMERIC NOT NULL DEFAULT 0,
+      notes TEXT,
+      source TEXT NOT NULL DEFAULT 'manual',
+      started_at TIMESTAMPTZ,
+      stopped_at TIMESTAMPTZ,
+      created_at TIMESTAMPTZ DEFAULT NOW(),
+      updated_at TIMESTAMPTZ DEFAULT NOW(),
+      created_by_id TEXT
+    )`;
+  await sql`CREATE INDEX IF NOT EXISTS idx_task_time_task ON task_time_entries(task_id, log_date DESC)`.catch(()=>{});
+  await sql`CREATE INDEX IF NOT EXISTS idx_task_time_emp  ON task_time_entries(employee_id, log_date DESC)`.catch(()=>{});
+  // One live (unstopped) timer per employee at a time — enforced at the
+  // DB layer so a duplicate /timer/start race can't leave two open.
+  await sql`CREATE UNIQUE INDEX IF NOT EXISTS uq_task_time_live_per_emp ON task_time_entries(employee_id) WHERE stopped_at IS NULL AND source='timer'`.catch(()=>{});
 
   _migrated = true;
 }
@@ -20099,7 +20136,8 @@ app.get('/api/tasks', async (req, res) => {
              l.project_id, p.name AS project_name, p.client_name AS project_client,
              (SELECT COUNT(*) FROM tasks s WHERE s.parent_id = t.id)::int AS subtask_count,
              (SELECT COUNT(*) FROM tasks s WHERE s.parent_id = t.id AND s.completed_at IS NOT NULL)::int AS subtask_done_count,
-             (SELECT COUNT(*) FROM task_comments c WHERE c.task_id = t.id)::int AS comment_count
+             (SELECT COUNT(*) FROM task_comments c WHERE c.task_id = t.id)::int AS comment_count,
+             COALESCE((SELECT SUM(hours) FROM task_time_entries te WHERE te.task_id = t.id), 0)::numeric AS logged_hours
       FROM tasks t
       JOIN task_lists l ON l.id = t.list_id
       LEFT JOIN projects p ON p.id = l.project_id
@@ -20122,7 +20160,8 @@ app.get('/api/tasks/:id', async (req, res) => {
     if (!gate.ok) return;
     const rows = await sql`
       SELECT t.*, l.name AS list_name, l.statuses AS list_statuses, l.project_id,
-             p.name AS project_name, p.client_name AS project_client
+             p.name AS project_name, p.client_name AS project_client,
+             COALESCE((SELECT SUM(hours) FROM task_time_entries te WHERE te.task_id = t.id), 0)::numeric AS logged_hours
       FROM tasks t
       JOIN task_lists l ON l.id = t.list_id
       LEFT JOIN projects p ON p.id = l.project_id
@@ -20202,6 +20241,154 @@ app.delete('/api/tasks/:id/dependencies/:otherId', async (req, res) => {
     const kind = String(req.query.kind ?? 'blocks');
     await sql`DELETE FROM task_dependencies WHERE task_id=${req.params.id} AND depends_on_id=${req.params.otherId} AND kind=${kind}`;
     await logTaskActivity(req.params.id, gate.user, 'dependency_removed', null, null, kind, null);
+    res.json({ ok: true });
+  } catch (err: any) { res.status(500).json({ error: err.message ?? 'Server error' }); }
+});
+
+// ── Task time tracking (isolated from hour_log_days) ─────────────────
+// SAFETY: the existing timesheet (hour_logs / hour_log_days) is
+// COMPLETELY UNTOUCHED here. Task time lives in task_time_entries and
+// never writes to hour_log_days. If reporting later wants to show total
+// worked hours per employee, it can UNION the two tables read-only.
+async function resolveTaskProjectId(taskId: string): Promise<string | null> {
+  const row = (await sql`
+    SELECT l.project_id FROM tasks t
+    JOIN task_lists l ON l.id = t.list_id
+    WHERE t.id=${taskId}` as any[])[0];
+  return row?.project_id ?? null;
+}
+
+app.get('/api/tasks/:id/time', async (req, res) => {
+  try {
+    await runStartupMigrations();
+    const gate = await taskActor(req, res);
+    if (!gate.ok) return;
+    const rows = await sql`
+      SELECT * FROM task_time_entries
+      WHERE task_id=${req.params.id}
+      ORDER BY log_date DESC, created_at DESC`;
+    res.json(rows);
+  } catch (err: any) { res.status(500).json({ error: err.message ?? 'Server error' }); }
+});
+
+// Manual entry — someone logs { log_date, hours } without a timer.
+// Body: { log_date: YYYY-MM-DD, hours: number, notes?, employee_id? }
+// employee_id defaults to the caller's employee id (a manager can log
+// on behalf of a report by passing employee_id explicitly).
+app.post('/api/tasks/:id/time', async (req, res) => {
+  try {
+    await runStartupMigrations();
+    const gate = await taskActor(req, res);
+    if (!gate.ok) return;
+    const empId = String(req.body?.employee_id ?? gate.user.employeeId ?? '').trim();
+    if (!empId) return res.status(400).json({ error: 'No employee — the caller has no employee record and no employee_id was provided.' });
+    const logDate = String(req.body?.log_date ?? '').trim();
+    if (!logDate) return res.status(400).json({ error: 'log_date is required (YYYY-MM-DD).' });
+    const hours = Number(req.body?.hours);
+    if (!Number.isFinite(hours) || hours <= 0) return res.status(400).json({ error: 'hours must be a positive number.' });
+    if (hours > 24) return res.status(400).json({ error: 'hours per entry cannot exceed 24.' });
+    const notes = req.body?.notes ? String(req.body.notes).slice(0, 500) : null;
+    const empRow = (await sql`SELECT name FROM employees WHERE id=${empId}` as any[])[0];
+    if (!empRow) return res.status(400).json({ error: 'Employee not found.' });
+    const projectId = await resolveTaskProjectId(req.params.id);
+
+    const id = newId('ttim');
+    const rows = await sql`
+      INSERT INTO task_time_entries (id, task_id, project_id, employee_id, employee_name, log_date, hours, notes, source, created_by_id)
+      VALUES (${id}, ${req.params.id}, ${projectId}, ${empId}, ${empRow.name}, ${logDate}, ${hours}, ${notes}, 'manual', ${gate.user.id})
+      RETURNING *`;
+    await logTaskActivity(req.params.id, gate.user, 'time_logged', null, null, String(hours), `${hours}h on ${logDate}${notes ? ' — ' + notes.slice(0, 60) : ''}`);
+    res.status(201).json(rows[0]);
+  } catch (err: any) { res.status(500).json({ error: err.message ?? 'Server error' }); }
+});
+
+// Start a live timer for the caller on this task. The partial-unique
+// index guarantees ONE open timer per employee, so we first close any
+// existing one (turns it into a completed entry using started_at → NOW)
+// then insert the new open row.
+app.post('/api/tasks/:id/timer/start', async (req, res) => {
+  try {
+    await runStartupMigrations();
+    const gate = await taskActor(req, res);
+    if (!gate.ok) return;
+    const empId = gate.user.employeeId;
+    if (!empId) return res.status(400).json({ error: 'You have no linked employee record, so a timer cannot be attributed to you.' });
+    const empRow = (await sql`SELECT name FROM employees WHERE id=${empId}` as any[])[0];
+    if (!empRow) return res.status(400).json({ error: 'Employee not found.' });
+    // Close any existing open timer for this employee (regardless of which
+    // task it's on) — this is what makes the partial-unique index safe.
+    const openTimers = await sql`SELECT * FROM task_time_entries WHERE employee_id=${empId} AND stopped_at IS NULL AND source='timer'` as any[];
+    for (const t of openTimers) {
+      const startedMs = new Date(t.started_at).getTime();
+      const derivedHours = Math.max(0, (Date.now() - startedMs) / 3_600_000);
+      const rounded = Math.round(derivedHours * 100) / 100;
+      await sql`UPDATE task_time_entries SET stopped_at=NOW(), hours=${rounded}, updated_at=NOW() WHERE id=${t.id}`;
+      await logTaskActivity(t.task_id, gate.user, 'time_logged', null, null, String(rounded), `Timer auto-stopped when starting another (${rounded}h)`);
+    }
+    const projectId = await resolveTaskProjectId(req.params.id);
+    const id = newId('ttim');
+    const rows = await sql`
+      INSERT INTO task_time_entries (id, task_id, project_id, employee_id, employee_name, log_date, hours, source, started_at, created_by_id)
+      VALUES (${id}, ${req.params.id}, ${projectId}, ${empId}, ${empRow.name}, CURRENT_DATE, 0, 'timer', NOW(), ${gate.user.id})
+      RETURNING *`;
+    await logTaskActivity(req.params.id, gate.user, 'timer_started', null, null, null, 'Timer started');
+    res.status(201).json(rows[0]);
+  } catch (err: any) { res.status(500).json({ error: err.message ?? 'Server error' }); }
+});
+
+// Stop the caller's live timer on this task. Idempotent — stopping an
+// already-stopped timer is a 200 with the current row.
+app.post('/api/tasks/:id/timer/stop', async (req, res) => {
+  try {
+    await runStartupMigrations();
+    const gate = await taskActor(req, res);
+    if (!gate.ok) return;
+    const empId = gate.user.employeeId;
+    if (!empId) return res.status(400).json({ error: 'You have no linked employee record.' });
+    const open = (await sql`SELECT * FROM task_time_entries WHERE task_id=${req.params.id} AND employee_id=${empId} AND stopped_at IS NULL AND source='timer' ORDER BY started_at DESC LIMIT 1` as any[])[0];
+    if (!open) return res.status(400).json({ error: 'No running timer on this task.' });
+    const startedMs = new Date(open.started_at).getTime();
+    const derivedHours = Math.max(0, (Date.now() - startedMs) / 3_600_000);
+    const rounded = Math.round(derivedHours * 100) / 100;
+    const rows = await sql`UPDATE task_time_entries SET stopped_at=NOW(), hours=${rounded}, updated_at=NOW() WHERE id=${open.id} RETURNING *`;
+    await logTaskActivity(req.params.id, gate.user, 'time_logged', null, null, String(rounded), `Timer stopped (${rounded}h)`);
+    res.json(rows[0]);
+  } catch (err: any) { res.status(500).json({ error: err.message ?? 'Server error' }); }
+});
+
+// GET /api/me/timer — what am I timing right now? Returns null when
+// there's no running timer. The client polls this to render the
+// "timer running" chip in the top bar.
+app.get('/api/me/timer', async (req, res) => {
+  try {
+    await runStartupMigrations();
+    const gate = await taskActor(req, res);
+    if (!gate.ok) return;
+    if (!gate.user.employeeId) return res.json(null);
+    const open = (await sql`
+      SELECT te.*, t.title AS task_title
+      FROM task_time_entries te
+      JOIN tasks t ON t.id = te.task_id
+      WHERE te.employee_id=${gate.user.employeeId} AND te.stopped_at IS NULL AND te.source='timer'
+      ORDER BY te.started_at DESC LIMIT 1` as any[])[0];
+    res.json(open ?? null);
+  } catch (err: any) { res.status(500).json({ error: err.message ?? 'Server error' }); }
+});
+
+// DELETE — the entry's author or a manager can remove a specific entry.
+// Live timers can be cancelled the same way.
+app.delete('/api/task-time/:entryId', async (req, res) => {
+  try {
+    await runStartupMigrations();
+    const gate = await taskActor(req, res);
+    if (!gate.ok) return;
+    const row = (await sql`SELECT * FROM task_time_entries WHERE id=${req.params.entryId}` as any[])[0];
+    if (!row) return res.status(404).json({ error: 'Entry not found.' });
+    const isAuthor = row.created_by_id === gate.user.id || row.employee_id === gate.user.employeeId;
+    const isManager = TASK_LIST_MANAGER_ROLES.includes(gate.user.role);
+    if (!isAuthor && !isManager) return res.status(403).json({ error: 'Only the entry owner or a manager can delete this.' });
+    await sql`DELETE FROM task_time_entries WHERE id=${req.params.entryId}`;
+    await logTaskActivity(row.task_id, gate.user, 'time_removed', null, null, String(row.hours), `Time entry removed (${row.hours}h)`);
     res.json({ ok: true });
   } catch (err: any) { res.status(500).json({ error: err.message ?? 'Server error' }); }
 });

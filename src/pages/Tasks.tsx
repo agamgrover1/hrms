@@ -432,6 +432,12 @@ function TaskCard({ task, onDragStart, onOpen }: { task: Task; onDragStart: () =
               <MessageSquare size={10} /> {task.comment_count}
             </span>
           )}
+          {Number(task.logged_hours ?? 0) > 0 && (
+            <span className="inline-flex items-center gap-0.5 text-[10px] text-on-surface-subtle font-mono tabular-nums"
+              title={task.estimate_hours ? `${Number(task.logged_hours).toFixed(1)}h logged of ${task.estimate_hours}h estimate` : `${Number(task.logged_hours).toFixed(1)}h logged`}>
+              ⏱ {Number(task.logged_hours).toFixed(1)}h{task.estimate_hours ? `/${task.estimate_hours}` : ''}
+            </span>
+          )}
           {task.assignee_name && (
             <span className="ml-auto w-5 h-5 rounded-full bg-brand-container text-on-brand-container text-[9px] font-bold grid place-items-center"
               title={task.assignee_name}>

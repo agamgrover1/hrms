@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   X, Loader2, Trash2, Send, Plus, MessageSquare, History, GitBranch, Check, Eye, EyeOff,
-  Link2, Flag, Diamond,
+  Link2, Flag, Diamond, Play, Square, Clock,
 } from 'lucide-react';
 import { api } from '../../services/api';
 import type { Task, TaskActivity, TaskComment, TaskPriority, TaskStatus } from '../../services/api';
@@ -66,6 +66,14 @@ export default function TaskDetailModal({ taskId, employees, onClose, onChanged 
   const [depPickerOpen, setDepPickerOpen] = useState<DepKind | null>(null);
   const [depQuery, setDepQuery] = useState('');
   const [depCandidates, setDepCandidates] = useState<any[]>([]);
+
+  // Time tracking state — entries list + live-timer clock + manual form
+  const [timeEntries, setTimeEntries] = useState<Awaited<ReturnType<typeof api.getTaskTime>>>([]);
+  const [manualDate, setManualDate] = useState(() => new Date().toISOString().slice(0, 10));
+  const [manualHours, setManualHours] = useState('');
+  const [manualNote, setManualNote] = useState('');
+  const [timerBusy, setTimerBusy] = useState(false);
+  const [nowTick, setNowTick] = useState(Date.now());
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState('');
   const [saving, setSaving] = useState(false);
@@ -106,8 +114,71 @@ export default function TaskDetailModal({ taskId, employees, onClose, onChanged 
     api.getTaskDependencies(taskId)
       .then(d => { setDepsOut(d.out); setDepsIn(d.in); })
       .catch(() => { setDepsOut([]); setDepsIn([]); });
+    api.getTaskTime(taskId).then(setTimeEntries).catch(() => setTimeEntries([]));
   }, [taskId]);
   useEffect(load, [load]);
+
+  // Live tick for the running-timer clock — only runs while there IS
+  // an open timer belonging to the current user on this task, so an
+  // idle drawer never re-renders.
+  const openTimer = timeEntries.find(e => e.source === 'timer' && !e.stopped_at && e.employee_id === myEmpId);
+  useEffect(() => {
+    if (!openTimer) return;
+    const t = setInterval(() => setNowTick(Date.now()), 1000);
+    return () => clearInterval(t);
+  }, [openTimer?.id]);
+
+  const startTimer = async () => {
+    if (timerBusy) return;
+    setTimerBusy(true);
+    try {
+      await api.startTaskTimer(taskId);
+      const fresh = await api.getTaskTime(taskId);
+      setTimeEntries(fresh);
+    } catch (e: any) { toast.error('Could not start timer', e?.message ?? 'Please try again.'); }
+    finally { setTimerBusy(false); }
+  };
+  const stopTimer = async () => {
+    if (timerBusy) return;
+    setTimerBusy(true);
+    try {
+      await api.stopTaskTimer(taskId);
+      const fresh = await api.getTaskTime(taskId);
+      setTimeEntries(fresh);
+      load();
+    } catch (e: any) { toast.error('Could not stop timer', e?.message ?? 'Please try again.'); }
+    finally { setTimerBusy(false); }
+  };
+  const addManualTime = async () => {
+    const hrs = Number(manualHours);
+    if (!Number.isFinite(hrs) || hrs <= 0) { toast.error('Hours required', 'Enter a positive number.'); return; }
+    try {
+      await api.addTaskTime(taskId, { log_date: manualDate, hours: hrs, notes: manualNote.trim() || undefined });
+      setManualHours(''); setManualNote('');
+      const fresh = await api.getTaskTime(taskId);
+      setTimeEntries(fresh);
+      load();
+    } catch (e: any) { toast.error('Could not save', e?.message ?? 'Please try again.'); }
+  };
+  const removeTime = async (entryId: string) => {
+    if (!window.confirm('Delete this time entry?')) return;
+    try {
+      await api.deleteTaskTime(entryId);
+      setTimeEntries(prev => prev.filter(e => e.id !== entryId));
+      load();
+    } catch (e: any) { toast.error('Could not delete', e?.message ?? 'Please try again.'); }
+  };
+
+  const totalLoggedH = Number(task?.logged_hours ?? 0);
+  const runningHours = openTimer ? (nowTick - new Date(openTimer.started_at!).getTime()) / 3_600_000 : 0;
+  const totalWithRunningH = totalLoggedH + runningHours;
+  const fmtDuration = (h: number) => {
+    const totalSec = Math.max(0, Math.round(h * 3600));
+    const H = Math.floor(totalSec / 3600);
+    const M = Math.floor((totalSec % 3600) / 60);
+    const S = totalSec % 60;
+    return `${String(H).padStart(2, '0')}:${String(M).padStart(2, '0')}:${String(S).padStart(2, '0')}`;
+  };
 
   // Dep-picker search: fetch matching tasks whenever the picker is
   // open and the query changes. Cheap search endpoint already exists
@@ -461,6 +532,93 @@ export default function TaskDetailModal({ taskId, employees, onClose, onChanged 
                     </button>
                   ))}
                 </div>
+              </div>
+
+              {/* Time tracking */}
+              <div>
+                <div className="flex items-center gap-1.5 mb-2">
+                  <Clock size={13} className="text-on-surface-muted" />
+                  <span className="text-xs font-semibold text-on-surface-muted">Time</span>
+                  <span className="ml-auto text-[11px] font-mono text-on-surface-muted">
+                    {totalWithRunningH.toFixed(2)}h logged
+                    {task.estimate_hours ? <> · est {task.estimate_hours}h</> : null}
+                  </span>
+                </div>
+
+                <div className="flex items-center gap-2 mb-3">
+                  {openTimer ? (
+                    <button onClick={stopTimer} disabled={timerBusy}
+                      className="inline-flex items-center gap-2 h-9 px-3 rounded-lg text-sm font-semibold bg-danger-container/40 border border-danger/40 text-danger hover:bg-danger-container/60 disabled:opacity-60">
+                      <Square size={12} className="fill-current" />
+                      <span className="hidden sm:inline">Stop</span>
+                      <span className="font-mono tabular-nums text-[12px] px-1.5 py-0.5 rounded bg-danger/10 border border-danger/30">
+                        {fmtDuration(runningHours)}
+                      </span>
+                    </button>
+                  ) : (
+                    <button onClick={startTimer} disabled={timerBusy || !myEmpId}
+                      title={!myEmpId ? 'You have no linked employee record.' : 'Start a timer on this task'}
+                      className="inline-flex items-center gap-1.5 h-9 px-3 rounded-lg text-sm font-semibold bg-success-container/40 border border-success/40 text-success hover:bg-success-container/60 disabled:opacity-60">
+                      <Play size={12} className="fill-current" /> Start timer
+                    </button>
+                  )}
+                  <div className="flex items-center gap-1.5 ml-auto">
+                    <input type="date" value={manualDate} onChange={e => setManualDate(e.target.value)}
+                      className="px-2 py-1.5 rounded-lg border border-outline bg-surface text-xs" />
+                    <input type="number" min="0" step="0.25" placeholder="Hrs" value={manualHours}
+                      onChange={e => setManualHours(e.target.value)}
+                      className="w-16 px-2 py-1.5 rounded-lg border border-outline bg-surface text-xs font-mono" />
+                    <input value={manualNote} onChange={e => setManualNote(e.target.value)}
+                      placeholder="Note (optional)"
+                      className="w-36 px-2 py-1.5 rounded-lg border border-outline bg-surface text-xs" />
+                    <button onClick={addManualTime}
+                      className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-accent text-on-accent text-xs font-semibold hover:opacity-90">
+                      <Plus size={11} /> Log
+                    </button>
+                  </div>
+                </div>
+
+                {timeEntries.length === 0 ? (
+                  <p className="text-[11px] text-on-surface-subtle italic">No time logged yet.</p>
+                ) : (
+                  <div className="border border-outline rounded-lg overflow-hidden">
+                    {timeEntries.slice(0, 8).map(e => {
+                      const isOpen = e.source === 'timer' && !e.stopped_at;
+                      const canDelete = e.employee_id === myEmpId || e.created_by_id === user?.id
+                        || ['admin', 'hr_manager', 'project_coordinator'].includes(user?.role ?? '');
+                      return (
+                        <div key={e.id} className="group grid grid-cols-[70px_1fr_60px_50px_16px] items-center gap-2 px-2.5 py-1.5 text-xs border-b border-outline last:border-b-0 hover:bg-surface-2">
+                          <span className="font-mono text-[11px] text-on-surface-muted">
+                            {new Date(e.log_date).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' })}
+                          </span>
+                          <span className="truncate text-on-surface">
+                            <span className="font-medium">{e.employee_name?.split(' ')[0] ?? '—'}</span>
+                            {e.notes && <span className="text-on-surface-subtle"> · {e.notes}</span>}
+                          </span>
+                          <span className="font-mono text-[11px] text-on-surface tabular-nums text-right">
+                            {isOpen
+                              ? <span className="text-danger font-semibold">running…</span>
+                              : `${Number(e.hours).toFixed(2)}h`}
+                          </span>
+                          <span className={`text-[9px] font-semibold uppercase tracking-wider text-center px-1 py-0.5 rounded ${e.source === 'timer' ? 'bg-brand-container text-on-brand-container' : 'bg-surface-2 text-on-surface-muted'}`}>
+                            {e.source === 'timer' ? 'timer' : 'manual'}
+                          </span>
+                          {canDelete && !isOpen ? (
+                            <button onClick={() => removeTime(e.id)}
+                              className="opacity-0 group-hover:opacity-100 p-0.5 rounded text-on-surface-subtle hover:text-danger hover:bg-danger/10 transition">
+                              <X size={11} />
+                            </button>
+                          ) : <span />}
+                        </div>
+                      );
+                    })}
+                    {timeEntries.length > 8 && (
+                      <div className="px-2.5 py-1 text-[10px] text-on-surface-subtle bg-surface-2 border-t border-outline">
+                        + {timeEntries.length - 8} older entries
+                      </div>
+                    )}
+                  </div>
+                )}
               </div>
 
               {/* Comments / activity */}
