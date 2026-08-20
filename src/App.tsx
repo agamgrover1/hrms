@@ -20,6 +20,7 @@ import AssetRepairs from './pages/AssetRepairs';
 import MyPortal from './pages/employee/MyPortal';
 import MyTeam from './pages/employee/MyTeam';
 import Projects from './pages/Projects';
+import Tasks from './pages/Tasks';
 import ProjectHours from './pages/ProjectHours';
 import HoursApproval from './pages/HoursApproval';
 import HoursCompliance from './pages/HoursCompliance';
@@ -101,6 +102,10 @@ function AppRoutes() {
 
         {/* Project Mgmt routes */}
         <Route path="projects" element={<ProtectedRoute roles={['admin', 'hr_manager', 'project_coordinator']}><Projects /></ProtectedRoute>} />
+        {/* Tasks — ClickUp-style boards. Open to anyone signed in: everyone
+            has work assigned to them, and the API decides what they may
+            change (only admin / HR manager / coordinator create boards). */}
+        <Route path="tasks" element={<ProtectedRoute><Tasks /></ProtectedRoute>} />
         {/* /hours: open to anyone. The page itself decides which tabs are visible
             based on role + whether the viewer leads/reviews any projects. Team
             leads (role=employee) need this to see all projects they lead. */}

@@ -1466,6 +1466,43 @@ export const api = {
     request<any>(`/kpis/assignments/${assignmentId}/measure`, { method: 'POST', body: JSON.stringify(data) }),
   autoComputeKpi: (assignmentId: string, period_start?: string) =>
     request<any>(`/kpis/assignments/${assignmentId}/auto`, { method: 'POST', body: JSON.stringify({ period_start }) }),
+
+  // ── Tasks module (ClickUp-style boards, Aug 2026) ─────────────────────
+  listTaskBoards: (params?: { project_id?: string; include_archived?: boolean }) => {
+    const qs = new URLSearchParams();
+    if (params?.project_id) qs.set('project_id', params.project_id);
+    if (params?.include_archived) qs.set('include_archived', '1');
+    return request<TaskBoard[]>(`/task-lists${qs.toString() ? '?' + qs : ''}`);
+  },
+  createTaskBoard: (data: { project_id?: string | null; name: string; description?: string; color?: string; statuses?: TaskStatus[] }) =>
+    request<TaskBoard>('/task-lists', { method: 'POST', body: JSON.stringify(data) }),
+  patchTaskBoard: (id: string, patch: Partial<{ name: string; description: string | null; color: string; archived: boolean; sort_order: number; statuses: TaskStatus[] }>) =>
+    request<TaskBoard>(`/task-lists/${id}`, { method: 'PATCH', body: JSON.stringify(patch) }),
+  deleteTaskBoard: (id: string, force?: boolean) =>
+    request<{ ok: true; deleted_tasks: number }>(`/task-lists/${id}${force ? '?force=1' : ''}`, { method: 'DELETE' }),
+
+  listTasks: (params?: { list_id?: string; project_id?: string; mine?: boolean; assignee_id?: string; q?: string; include_subtasks?: boolean }) => {
+    const qs = new URLSearchParams();
+    if (params?.list_id) qs.set('list_id', params.list_id);
+    if (params?.project_id) qs.set('project_id', params.project_id);
+    if (params?.mine) qs.set('mine', '1');
+    if (params?.assignee_id) qs.set('assignee_id', params.assignee_id);
+    if (params?.q) qs.set('q', params.q);
+    if (params?.include_subtasks) qs.set('include_subtasks', '1');
+    return request<Task[]>(`/tasks${qs.toString() ? '?' + qs : ''}`);
+  },
+  getTask: (id: string) =>
+    request<{ task: Task; subtasks: Task[]; comments: TaskComment[]; activity: TaskActivity[] }>(`/tasks/${id}`),
+  createTask: (data: {
+    list_id?: string; parent_id?: string; title: string; description?: string;
+    status?: string; priority?: TaskPriority; assignee_id?: string | null;
+    start_date?: string | null; due_date?: string | null; estimate_hours?: number | null; tags?: string[];
+  }) => request<Task>('/tasks', { method: 'POST', body: JSON.stringify(data) }),
+  patchTask: (id: string, patch: Record<string, any>) =>
+    request<Task>(`/tasks/${id}`, { method: 'PATCH', body: JSON.stringify(patch) }),
+  deleteTask: (id: string) => request<{ ok: true; deleted: number }>(`/tasks/${id}`, { method: 'DELETE' }),
+  addTaskComment: (id: string, body: string) =>
+    request<TaskComment>(`/tasks/${id}/comments`, { method: 'POST', body: JSON.stringify({ body }) }),
 };
 
 export interface KpiTemplate {
@@ -1542,4 +1579,88 @@ export interface AllocationChangeRequest {
   requested_by_id: string | null; requested_by_name: string | null; requested_by_role: string | null;
   reviewed_by_id: string | null; reviewed_by_name: string | null; reviewed_at: string | null; review_note: string | null;
   created_at: string; updated_at: string;
+}
+
+// ── Tasks module ────────────────────────────────────────────────────────
+// `type` drives behaviour (a 'done' column closes the task); `label` is
+// only ever shown, so a board owner can rename columns freely.
+export interface TaskStatus {
+  id: string;
+  label: string;
+  color: string;
+  type: 'open' | 'active' | 'done';
+}
+
+export type TaskPriority = 'urgent' | 'high' | 'normal' | 'low' | 'none';
+
+export interface TaskBoard {
+  id: string;
+  project_id: string | null;
+  project_name?: string | null;
+  project_client?: string | null;
+  name: string;
+  description: string | null;
+  color: string | null;
+  statuses: TaskStatus[];
+  archived: boolean;
+  sort_order: number;
+  task_count?: number;
+  done_count?: number;
+  created_at: string;
+  updated_at: string;
+  created_by_id: string | null;
+  created_by_name: string | null;
+}
+
+export interface Task {
+  id: string;
+  list_id: string;
+  parent_id: string | null;
+  title: string;
+  description: string | null;
+  status: string;
+  priority: TaskPriority;
+  assignee_id: string | null;
+  assignee_name: string | null;
+  start_date: string | null;
+  due_date: string | null;
+  estimate_hours: number | null;
+  tags: string[];
+  sort_order: number;
+  completed_at: string | null;
+  created_at: string;
+  updated_at: string;
+  created_by_id: string | null;
+  created_by_name: string | null;
+  // Joined on the list / detail endpoints only.
+  list_name?: string;
+  list_color?: string | null;
+  list_statuses?: TaskStatus[];
+  project_name?: string | null;
+  project_client?: string | null;
+  subtask_count?: number;
+  subtask_done_count?: number;
+  comment_count?: number;
+}
+
+export interface TaskComment {
+  id: string;
+  task_id: string;
+  author_id: string | null;
+  author_name: string | null;
+  body: string;
+  created_at: string;
+}
+
+export interface TaskActivity {
+  id: string;
+  task_id: string;
+  actor_id: string | null;
+  actor_name: string | null;
+  kind: 'created' | 'status' | 'assignee' | 'field' | 'comment';
+  field: string | null;
+  before_val: string | null;
+  after_val: string | null;
+  body: string | null;
+  created_at: string;
 }

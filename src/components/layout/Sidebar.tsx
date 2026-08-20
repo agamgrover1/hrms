@@ -2,7 +2,7 @@ import { NavLink, useLocation } from 'react-router-dom';
 import {
   LayoutDashboard, Users, Clock3, CalendarDays, Wallet, Sparkles,
   ChevronLeft, ChevronRight, ChevronDown, UserCog, User, SlidersHorizontal, TrendingUp, Wrench,
-  Briefcase, ClipboardCheck, Layers, LineChart, AlertTriangle, Activity, Megaphone, BookOpen, HelpCircle, Mail, UserPlus, FileText, UserSearch, type LucideIcon,
+  Briefcase, ClipboardCheck, Layers, LineChart, AlertTriangle, Activity, Megaphone, BookOpen, HelpCircle, Mail, UserPlus, FileText, UserSearch, KanbanSquare, type LucideIcon,
 } from 'lucide-react';
 import { useState, useEffect, useRef } from 'react';
 import { useAuth } from '../../context/AuthContext';
@@ -42,6 +42,7 @@ const projectGroup: NavGroup = {
   label: 'Project Mgmt',
   items: [
     { to: '/projects', icon: Briefcase, label: 'Projects' },
+    { to: '/tasks', icon: KanbanSquare, label: 'Tasks' },
     { to: '/hours', icon: Layers, label: 'Hours grid' },
     { to: '/hours/allocation', icon: CalendarDays, label: 'Allocation' },
     { to: '/hours/compliance', icon: AlertTriangle, label: 'Compliance' },
@@ -278,6 +279,7 @@ export default function Sidebar({ mobileOpen = false, onMobileClose }: { mobileO
       // HR Intern already has Overview in her Workspace group above — no Home duplicate here.
       ...(isEmployee || isCoord ? [{ to: '/', icon: LayoutDashboard, label: 'Home', end: true } as NavItem] : []),
       { to: '/my', icon: User, label: 'My portal', end: true },
+      ...(role === 'admin' || isCoord ? [] : [{ to: '/tasks', icon: KanbanSquare, label: 'My tasks' } as NavItem]),
       ...(isManager ? [{ to: '/my-team', icon: Users, label: 'My team' } as NavItem] : []),
       // Team leads (project_reporting OR project_lead on any project) need to see
       // all the projects they own, not just hours from their direct reports.
