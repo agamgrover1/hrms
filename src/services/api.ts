@@ -1503,6 +1503,15 @@ export const api = {
   deleteTask: (id: string) => request<{ ok: true; deleted: number }>(`/tasks/${id}`, { method: 'DELETE' }),
   addTaskComment: (id: string, body: string) =>
     request<TaskComment>(`/tasks/${id}/comments`, { method: 'POST', body: JSON.stringify({ body }) }),
+  getTaskWatchers: (id: string) =>
+    request<Array<{ employee_id: string; employee_name: string | null; avatar: string | null; added_at: string }>>(`/tasks/${id}/watchers`),
+  addTaskWatcher: (id: string, employee_id?: string) =>
+    request<{ ok: true; task_id: string; employee_id: string }>(`/tasks/${id}/watchers`, {
+      method: 'POST',
+      body: JSON.stringify(employee_id ? { employee_id } : {}),
+    }),
+  removeTaskWatcher: (id: string, employee_id: string) =>
+    request<{ ok: true }>(`/tasks/${id}/watchers/${encodeURIComponent(employee_id)}`, { method: 'DELETE' }),
 };
 
 export interface KpiTemplate {

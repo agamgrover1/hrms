@@ -1,11 +1,34 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
-  X, Loader2, Trash2, Send, Plus, MessageSquare, History, GitBranch, Check,
+  X, Loader2, Trash2, Send, Plus, MessageSquare, History, GitBranch, Check, Eye, EyeOff,
 } from 'lucide-react';
 import { api } from '../../services/api';
 import type { Task, TaskActivity, TaskComment, TaskPriority, TaskStatus } from '../../services/api';
+import { useAuth } from '../../context/AuthContext';
 import { toast } from '../Toaster';
 import { TASK_PRIORITIES, PRIORITY_META, initials } from '../../lib/taskMeta';
+
+// Render a comment body with inline @[Name](emp_id) mentions expanded
+// into brand-coloured chips. Everything else preserves whitespace so
+// multi-line comments still read as written.
+const MENTION_RE = /@\[([^\]]+)\]\(([^)]+)\)/g;
+function renderCommentBody(body: string): (string | JSX.Element)[] {
+  const nodes: (string | JSX.Element)[] = [];
+  let last = 0;
+  let m: RegExpExecArray | null;
+  MENTION_RE.lastIndex = 0;
+  while ((m = MENTION_RE.exec(body)) !== null) {
+    if (m.index > last) nodes.push(body.slice(last, m.index));
+    nodes.push(
+      <span key={`${m.index}-${m[2]}`} className="inline-flex items-baseline px-1.5 py-0.5 mx-0.5 rounded bg-accent/10 text-accent font-semibold text-[12.5px]">
+        @{m[1]}
+      </span>
+    );
+    last = m.index + m[0].length;
+  }
+  if (last < body.length) nodes.push(body.slice(last));
+  return nodes;
+}
 
 // Full task detail — the panel behind every card. Field edits save on blur /
 // change immediately (no Save button), matching how the rest of the portal's
@@ -21,19 +44,40 @@ interface Props {
 }
 
 export default function TaskDetailModal({ taskId, employees, onClose, onChanged }: Props) {
+  const { user } = useAuth();
+  const myEmpId = user?.employee_id_ref ?? null;
+
   const [task, setTask] = useState<Task | null>(null);
   const [subtasks, setSubtasks] = useState<Task[]>([]);
   const [comments, setComments] = useState<TaskComment[]>([]);
   const [activity, setActivity] = useState<TaskActivity[]>([]);
+  const [watchers, setWatchers] = useState<Array<{ employee_id: string; employee_name: string | null; avatar: string | null }>>([]);
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState('');
   const [saving, setSaving] = useState(false);
+  const [watchBusy, setWatchBusy] = useState(false);
 
   const [title, setTitle] = useState('');
   const [description, setDescription] = useState('');
   const [comment, setComment] = useState('');
   const [newSubtask, setNewSubtask] = useState('');
   const [tab, setTab] = useState<'comments' | 'activity'>('comments');
+
+  // Mention picker state — triggered when the caret sits just after an
+  // unclosed `@…` in the composer. `mentionAnchor` is the character index
+  // of the `@`; `mentionQuery` is what the user has typed since.
+  const composerRef = useRef<HTMLTextAreaElement | null>(null);
+  const [mentionAnchor, setMentionAnchor] = useState<number | null>(null);
+  const [mentionQuery, setMentionQuery] = useState('');
+  const [mentionCursor, setMentionCursor] = useState(0);
+
+  const mentionMatches = useMemo(() => {
+    if (mentionAnchor == null) return [];
+    const q = mentionQuery.toLowerCase();
+    return employees
+      .filter((e: any) => e.name && (!q || e.name.toLowerCase().includes(q) || (e.employee_id ?? '').toLowerCase().includes(q)))
+      .slice(0, 6);
+  }, [employees, mentionAnchor, mentionQuery]);
 
   const load = useCallback(() => {
     setLoading(true);
@@ -44,8 +88,82 @@ export default function TaskDetailModal({ taskId, employees, onClose, onChanged 
       })
       .catch((e: any) => setErr(e?.message ?? 'Failed to load task'))
       .finally(() => setLoading(false));
+    api.getTaskWatchers(taskId).then(setWatchers).catch(() => setWatchers([]));
   }, [taskId]);
   useEffect(load, [load]);
+
+  const isWatching = myEmpId ? watchers.some(w => w.employee_id === myEmpId) : false;
+  const toggleWatch = async () => {
+    if (!myEmpId || watchBusy) return;
+    setWatchBusy(true);
+    try {
+      if (isWatching) {
+        await api.removeTaskWatcher(taskId, myEmpId);
+        setWatchers(prev => prev.filter(w => w.employee_id !== myEmpId));
+      } else {
+        await api.addTaskWatcher(taskId);
+        api.getTaskWatchers(taskId).then(setWatchers).catch(() => {});
+      }
+    } catch (e: any) {
+      toast.error('Could not update watch', e?.message ?? 'Please try again.');
+    } finally { setWatchBusy(false); }
+  };
+
+  // Detect a mention trigger: look backwards from the caret for the
+  // nearest `@` that isn't preceded by an alphanumeric (so "email@x"
+  // doesn't fire). If the run since that `@` has no whitespace, we're
+  // in a live mention.
+  const onCommentChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
+    const val = e.target.value;
+    setComment(val);
+    const caret = e.target.selectionStart ?? val.length;
+    let i = caret - 1;
+    while (i >= 0) {
+      const ch = val[i];
+      if (ch === '@') {
+        const prev = i === 0 ? '' : val[i - 1];
+        if (/[A-Za-z0-9_]/.test(prev)) { setMentionAnchor(null); return; }
+        setMentionAnchor(i);
+        setMentionQuery(val.slice(i + 1, caret));
+        setMentionCursor(0);
+        return;
+      }
+      if (/\s/.test(ch)) break;
+      i--;
+    }
+    setMentionAnchor(null);
+  };
+
+  const pickMention = (emp: any) => {
+    if (mentionAnchor == null || !composerRef.current) return;
+    const caret = composerRef.current.selectionStart ?? comment.length;
+    const before = comment.slice(0, mentionAnchor);
+    const after = comment.slice(caret);
+    const insert = `@[${emp.name}](${emp.id}) `;
+    const next = before + insert + after;
+    setComment(next);
+    setMentionAnchor(null);
+    setMentionQuery('');
+    // Restore caret just after the inserted mention.
+    requestAnimationFrame(() => {
+      const pos = (before + insert).length;
+      composerRef.current?.setSelectionRange(pos, pos);
+      composerRef.current?.focus();
+    });
+  };
+
+  const onCommentKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if (mentionAnchor != null && mentionMatches.length) {
+      if (e.key === 'ArrowDown') { e.preventDefault(); setMentionCursor(c => Math.min(c + 1, mentionMatches.length - 1)); return; }
+      if (e.key === 'ArrowUp')   { e.preventDefault(); setMentionCursor(c => Math.max(c - 1, 0)); return; }
+      if (e.key === 'Enter' || e.key === 'Tab') { e.preventDefault(); pickMention(mentionMatches[mentionCursor]); return; }
+      if (e.key === 'Escape') { setMentionAnchor(null); return; }
+    }
+    if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
+      e.preventDefault();
+      addComment();
+    }
+  };
 
   // Esc closes — the modal is a full-screen overlay, so leaving it keyboard-
   // inert would trap anyone not using a mouse.
@@ -240,19 +358,39 @@ export default function TaskDetailModal({ taskId, employees, onClose, onChanged 
                               {new Date(c.created_at).toLocaleString('en-IN', { day: 'numeric', month: 'short', hour: 'numeric', minute: '2-digit' })}
                             </span>
                           </p>
-                          <p className="text-sm text-on-surface whitespace-pre-wrap break-words">{c.body}</p>
+                          <p className="text-sm text-on-surface whitespace-pre-wrap break-words">{renderCommentBody(c.body)}</p>
                         </div>
                       </div>
                     ))}
-                    <div className="flex items-end gap-2 pt-1">
-                      <textarea
-                        value={comment} onChange={e => setComment(e.target.value)}
-                        onKeyDown={e => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); addComment(); } }}
-                        rows={2} placeholder="Write a comment… (⌘/Ctrl + Enter to post)"
-                        className={`${field} resize-none`}
-                      />
-                      <button onClick={addComment} disabled={!comment.trim()}
-                        className="p-2 rounded-lg bg-accent text-on-accent disabled:opacity-40 hover:opacity-90"><Send size={14} /></button>
+                    <div className="relative">
+                      <div className="flex items-end gap-2 pt-1">
+                        <textarea
+                          ref={composerRef}
+                          value={comment}
+                          onChange={onCommentChange}
+                          onKeyDown={onCommentKeyDown}
+                          rows={2} placeholder="Write a comment… type @ to mention · ⌘/Ctrl + Enter to post"
+                          className={`${field} resize-none`}
+                        />
+                        <button onClick={addComment} disabled={!comment.trim()}
+                          className="p-2 rounded-lg bg-accent text-on-accent disabled:opacity-40 hover:opacity-90"><Send size={14} /></button>
+                      </div>
+                      {mentionAnchor != null && mentionMatches.length > 0 && (
+                        <div className="absolute z-10 left-0 bottom-full mb-1 w-64 max-h-56 overflow-y-auto rounded-lg border border-outline bg-surface shadow-elev-3 py-1">
+                          {mentionMatches.map((emp: any, i: number) => (
+                            <button key={emp.id}
+                              onMouseDown={(e) => { e.preventDefault(); pickMention(emp); }}
+                              onMouseEnter={() => setMentionCursor(i)}
+                              className={`w-full flex items-center gap-2 px-3 py-1.5 text-left text-sm ${i === mentionCursor ? 'bg-accent/10 text-accent' : 'text-on-surface hover:bg-surface-2'}`}>
+                              <span className="w-5 h-5 rounded-full bg-brand-container text-on-brand-container text-[9px] font-bold grid place-items-center flex-shrink-0">
+                                {initials(emp.name)}
+                              </span>
+                              <span className="flex-1 min-w-0 truncate">{emp.name}</span>
+                              <span className="text-[10px] text-on-surface-subtle font-mono">{emp.employee_id}</span>
+                            </button>
+                          ))}
+                        </div>
+                      )}
                     </div>
                   </div>
                 ) : (
@@ -326,6 +464,35 @@ export default function TaskDetailModal({ taskId, employees, onClose, onChanged 
                     if (String(v ?? '') !== String(task.estimate_hours ?? '')) patch({ estimate_hours: v });
                   }}
                   className={field} />
+              </div>
+
+              <div>
+                <div className="flex items-center justify-between mb-1.5">
+                  <label className="text-[11px] font-semibold text-on-surface-muted">Watchers {watchers.length > 0 && <span className="font-mono text-on-surface-subtle">· {watchers.length}</span>}</label>
+                  {myEmpId && (
+                    <button onClick={toggleWatch} disabled={watchBusy}
+                      title={isWatching ? "You'll stop getting notifications for this task" : "Get notified about comments and mentions"}
+                      className={`inline-flex items-center gap-1 text-[10px] font-semibold px-2 py-1 rounded border ${isWatching ? 'border-accent/40 text-accent bg-accent/5 hover:bg-accent/10' : 'border-outline text-on-surface-muted hover:bg-surface hover:text-on-surface'} disabled:opacity-50`}>
+                      {isWatching ? <><EyeOff size={11} /> Unwatch</> : <><Eye size={11} /> Watch</>}
+                    </button>
+                  )}
+                </div>
+                {watchers.length === 0 ? (
+                  <p className="text-[11px] text-on-surface-subtle italic">No watchers yet.</p>
+                ) : (
+                  <div className="flex flex-wrap gap-1.5">
+                    {watchers.map(w => (
+                      <span key={w.employee_id}
+                        title={w.employee_name ?? 'Unknown'}
+                        className="inline-flex items-center gap-1.5 px-1.5 py-0.5 rounded-full bg-surface border border-outline text-[11px]">
+                        <span className="w-4 h-4 rounded-full bg-brand-container text-on-brand-container text-[8px] font-bold grid place-items-center">
+                          {initials(w.employee_name ?? '')}
+                        </span>
+                        <span className="truncate max-w-[100px]">{w.employee_name?.split(' ')[0] ?? '—'}</span>
+                      </span>
+                    ))}
+                  </div>
+                )}
               </div>
 
               <div className="pt-2 border-t border-outline text-[11px] text-on-surface-subtle space-y-0.5">

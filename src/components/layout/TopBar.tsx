@@ -37,6 +37,14 @@ export function getNotifRoute(type: string, role: string): string {
       // to /attendance where they can also approve; managers to /my-team.
       return isHR ? '/attendance' : '/my-team';
 
+    case 'task_mention':
+    case 'task_comment':
+    case 'task_assigned':
+      // Fallback — the notification producers already stamp `link` on
+      // these, so this only fires for pre-existing rows in the DB that
+      // pre-date the link column being populated.
+      return '/tasks';
+
     case 'leave_submitted':
       // Admin/HR FYI copy on optional-leave submissions (manager is
       // the primary reviewer). Land on the same leaves page.
@@ -226,6 +234,9 @@ export const TYPE_CONFIG: Record<string, { icon: any; color: string; bg: string 
   offer_released:                  { icon: Send,        color: '#ea580c', bg: '#fff7ed' },
   candidate_hired:                 { icon: UserPlus,    color: '#15803d', bg: '#f0fdf4' },
   attendance_note_pending: { icon: ClockIcon,      color: '#d97706', bg: '#fffbeb' },
+  task_mention:            { icon: AtSign,         color: '#7c3aed', bg: '#f5f3ff' },
+  task_comment:            { icon: FileText,       color: '#0891b2', bg: '#f0f9ff' },
+  task_assigned:           { icon: CheckCircle,    color: '#2563eb', bg: '#eff6ff' },
   leave_applied:           { icon: Calendar,       color: '#d97706', bg: '#fffbeb' },
   leave_submitted:         { icon: Calendar,       color: '#64748b', bg: '#f1f5f9' },
   leave_needs_hr_approval: { icon: Calendar,       color: '#d97706', bg: '#fffbeb' },

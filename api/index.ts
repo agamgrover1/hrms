@@ -880,7 +880,7 @@ async function runStartupMigrations() {
     // For a *seed* (rows, not columns), we probe with EXISTS-style: an
     // empty result set means "still needs to run", so we don't set the
     // flag and fall through.
-    await sql`SELECT sort_order FROM tasks LIMIT 0`;
+    await sql`SELECT employee_id FROM task_watchers LIMIT 0`;
     _migrated = true;
     return;
   } catch {
@@ -3151,6 +3151,21 @@ async function runStartupMigrations() {
       created_at TIMESTAMPTZ DEFAULT NOW()
     )`;
   await sql`CREATE INDEX IF NOT EXISTS idx_task_activity_task ON task_activity(task_id, created_at DESC)`.catch(()=>{});
+
+  // Watchers = people who chose to follow a task without being the
+  // assignee or creator. They receive the same fan-out that assignee +
+  // creator get (new comments, mentions later, status flips later).
+  // employee_id is the employees.id (matches the assignee_id id-space
+  // in `tasks`) — the row exists whether or not the person also has
+  // an app_users login, so we can watch external stakeholders in future.
+  await sql`
+    CREATE TABLE IF NOT EXISTS task_watchers (
+      task_id TEXT NOT NULL,
+      employee_id TEXT NOT NULL,
+      added_at TIMESTAMPTZ DEFAULT NOW(),
+      PRIMARY KEY (task_id, employee_id)
+    )`;
+  await sql`CREATE INDEX IF NOT EXISTS idx_task_watchers_emp ON task_watchers(employee_id)`.catch(()=>{});
 
   _migrated = true;
 }
@@ -20280,18 +20295,104 @@ app.post('/api/tasks/:id/comments', async (req, res) => {
       VALUES (${newId('tcom')}, ${task.id}, ${gate.user.id}, ${gate.user.name}, ${body})
       RETURNING *`;
     await logTaskActivity(task.id, gate.user, 'comment', null, null, null, body.slice(0, 200));
-    // Ping everyone attached to the task except whoever just typed. The
-    // assignee is an employees.id and the creator an app_users.id, so each
-    // goes through the notifier that speaks its own id space.
+
+    // ── @mentions ─────────────────────────────────────────────────────
+    // Mentions are stored inline as `@[Display Name](emp_<id>)` — same
+    // encoding as hour_log_comments. Parse them here so a mention fires
+    // a distinct task_mention notification (action-required in the bell)
+    // that beats the plain task_comment fan-out below.
+    const mentionRe = /@\[[^\]]+\]\(([^)]+)\)/g;
+    const mentionedIds = new Set<string>();
+    let m: RegExpExecArray | null;
+    while ((m = mentionRe.exec(body)) !== null) {
+      const empId = m[1];
+      // Don't notify the author for tagging themselves.
+      if (empId && empId !== gate.user.employeeId) mentionedIds.add(empId);
+    }
+
     const blurb = `${gate.user.name ?? 'Someone'} commented on "${task.title}"`;
     const link = `/tasks?task=${task.id}`;
-    if (task.assignee_id && task.assignee_id !== gate.user.employeeId) {
+
+    // Mentions win over the generic comment fan-out — a mentioned person
+    // gets task_mention instead of task_comment, so their bell shows the
+    // stronger signal. Track who's been notified so we don't double up.
+    const notifiedEmployeeIds = new Set<string>();
+    for (const empId of mentionedIds) {
+      await notifyEmployeeUser(empId, 'task_mention',
+        `${gate.user.name ?? 'Someone'} mentioned you`,
+        `on task "${task.title}": ${stripMentions(body).slice(0, 140)}`,
+        link);
+      notifiedEmployeeIds.add(empId);
+    }
+
+    // Comment fan-out — assignee, creator, and every watcher (except the
+    // author and anyone already pinged via mention).
+    const watchers = await sql`SELECT employee_id FROM task_watchers WHERE task_id=${task.id}`.catch(() => [] as any[]) as any[];
+    const watcherIds: string[] = watchers.map((w: any) => w.employee_id).filter(Boolean);
+    if (task.assignee_id && task.assignee_id !== gate.user.employeeId && !notifiedEmployeeIds.has(task.assignee_id)) {
       await notifyEmployeeUser(task.assignee_id, 'task_comment', 'New comment on a task', blurb, link);
+      notifiedEmployeeIds.add(task.assignee_id);
+    }
+    for (const empId of watcherIds) {
+      if (empId === gate.user.employeeId) continue;
+      if (notifiedEmployeeIds.has(empId)) continue;
+      await notifyEmployeeUser(empId, 'task_comment', 'New comment on a task', blurb, link);
+      notifiedEmployeeIds.add(empId);
     }
     if (task.created_by_id && task.created_by_id !== gate.user.id) {
       await notifyUser(task.created_by_id, 'task_comment', 'New comment on a task', blurb, link);
     }
     res.status(201).json(rows[0]);
+  } catch (err: any) { res.status(500).json({ error: err.message ?? 'Server error' }); }
+});
+
+// Strip `@[Name](id)` chunks down to just the display name for the
+// notification blurb — the raw markup reads poorly in the bell.
+function stripMentions(body: string): string {
+  return body.replace(/@\[([^\]]+)\]\([^)]+\)/g, '@$1');
+}
+
+// ── Watchers ──────────────────────────────────────────────────────────
+
+app.get('/api/tasks/:id/watchers', async (req, res) => {
+  try {
+    await runStartupMigrations();
+    const gate = await taskActor(req, res);
+    if (!gate.ok) return;
+    const rows = await sql`
+      SELECT w.employee_id, w.added_at, e.name AS employee_name, e.avatar
+      FROM task_watchers w
+      LEFT JOIN employees e ON e.id = w.employee_id
+      WHERE w.task_id = ${req.params.id}
+      ORDER BY w.added_at`;
+    res.json(rows);
+  } catch (err: any) { res.status(500).json({ error: err.message ?? 'Server error' }); }
+});
+
+// POST body: { employee_id }. Omit to add self (uses gate.user.employeeId).
+// Idempotent on the composite PK — clicking Watch twice never errors.
+app.post('/api/tasks/:id/watchers', async (req, res) => {
+  try {
+    await runStartupMigrations();
+    const gate = await taskActor(req, res);
+    if (!gate.ok) return;
+    const empId = String(req.body?.employee_id ?? gate.user.employeeId ?? '').trim();
+    if (!empId) return res.status(400).json({ error: 'No employee_id — signed-in user has no employee record and no id was provided.' });
+    await sql`
+      INSERT INTO task_watchers (task_id, employee_id)
+      VALUES (${req.params.id}, ${empId})
+      ON CONFLICT (task_id, employee_id) DO NOTHING`;
+    res.status(201).json({ ok: true, task_id: req.params.id, employee_id: empId });
+  } catch (err: any) { res.status(500).json({ error: err.message ?? 'Server error' }); }
+});
+
+app.delete('/api/tasks/:id/watchers/:empId', async (req, res) => {
+  try {
+    await runStartupMigrations();
+    const gate = await taskActor(req, res);
+    if (!gate.ok) return;
+    await sql`DELETE FROM task_watchers WHERE task_id=${req.params.id} AND employee_id=${req.params.empId}`;
+    res.json({ ok: true });
   } catch (err: any) { res.status(500).json({ error: err.message ?? 'Server error' }); }
 });
 

@@ -43,6 +43,9 @@ export const ACTION_REQUIRED_TYPES: readonly string[] = [
   // action — so they stay off this list.
   'candidate_review_requested',
   'interview_scheduled',
+  // Task collaboration
+  'task_assigned',
+  'task_mention',
 ];
 
 const ACTION_SET = new Set(ACTION_REQUIRED_TYPES);
