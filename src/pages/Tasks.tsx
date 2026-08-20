@@ -2,7 +2,8 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import {
   KanbanSquare, Plus, Search, Loader2, LayoutList, Columns3, Inbox,
-  MessageSquare, GitBranch, Archive, X, Briefcase, ChevronDown,
+  MessageSquare, GitBranch, Archive, X, Briefcase, ChevronDown, CalendarDays,
+  ChevronLeft, ChevronRight, Diamond,
 } from 'lucide-react';
 import { api } from '../services/api';
 import type { Task, TaskBoard } from '../services/api';
@@ -22,7 +23,7 @@ import {
 
 const MANAGER_ROLES = ['admin', 'hr_manager', 'project_coordinator'];
 
-type View = 'board' | 'list';
+type View = 'board' | 'list' | 'calendar';
 
 export default function Tasks() {
   const { user } = useAuth();
@@ -209,6 +210,10 @@ export default function Tasks() {
                 className={`inline-flex items-center gap-1.5 px-3 py-2 text-sm font-semibold ${view === 'list' ? 'bg-accent text-on-accent' : 'text-on-surface hover:bg-surface-2'}`}>
                 <LayoutList size={14} /> List
               </button>
+              <button onClick={() => setView('calendar')}
+                className={`inline-flex items-center gap-1.5 px-3 py-2 text-sm font-semibold ${view === 'calendar' ? 'bg-accent text-on-accent' : 'text-on-surface hover:bg-surface-2'}`}>
+                <CalendarDays size={14} /> Calendar
+              </button>
             </div>
           )}
           {canManageBoards && (
@@ -293,7 +298,9 @@ export default function Tasks() {
                     ))}
                   </div>
                 )
-                : <BoardListView statuses={statuses} byStatus={byStatus} onOpen={setOpenTask} />}
+                : effectiveView === 'calendar'
+                  ? <CalendarView tasks={filtered} onOpen={setOpenTask} />
+                  : <BoardListView statuses={statuses} byStatus={byStatus} onOpen={setOpenTask} />}
         </section>
       </div>
 
@@ -392,10 +399,17 @@ function TaskCard({ task, onDragStart, onOpen }: { task: Task; onDragStart: () =
   return (
     <div
       draggable onDragStart={onDragStart} onClick={onOpen}
-      className="rounded-lg border border-outline bg-surface-2 p-2.5 cursor-pointer hover:border-outline-strong hover:shadow-elev-1 transition"
+      className={`rounded-lg border p-2.5 cursor-pointer transition ${
+        task.is_milestone
+          ? 'border-accent/40 bg-accent/5 hover:border-accent hover:shadow-elev-1'
+          : 'border-outline bg-surface-2 hover:border-outline-strong hover:shadow-elev-1'
+      }`}
     >
       <div className="flex items-start gap-2">
-        {task.priority !== 'none' && (
+        {task.is_milestone && (
+          <span className="mt-1 w-3 h-3 rotate-45 bg-accent flex-shrink-0" title="Milestone" />
+        )}
+        {!task.is_milestone && task.priority !== 'none' && (
           <span className="mt-1.5 w-1.5 h-1.5 rounded-full flex-shrink-0" style={{ background: prio.color }} title={`${prio.label} priority`} />
         )}
         <p className={`text-sm leading-snug text-on-surface ${task.completed_at ? 'line-through text-on-surface-subtle' : ''}`}>
@@ -607,4 +621,129 @@ function NewBoardModal({ onClose, onCreated }: { onClose: () => void; onCreated:
       </form>
     </div>
   );
+}
+
+// Month-grid calendar. Tasks with a due_date land on that cell; the
+// current day is highlighted; overdue-and-open cells carry a red rail;
+// milestones show as an accent diamond. Rendered as pure divs (no
+// external calendar dep) so it inherits the app's design tokens.
+function CalendarView({ tasks, onOpen }: { tasks: Task[]; onOpen: (id: string) => void }) {
+  const today = new Date();
+  const todayStr = ymd(today);
+  const [cursor, setCursor] = useState<{ m: number; y: number }>({ m: today.getMonth(), y: today.getFullYear() });
+  const monthLabel = new Date(cursor.y, cursor.m, 1).toLocaleDateString('en-IN', { month: 'long', year: 'numeric' });
+  const gridStart = firstGridDay(cursor.y, cursor.m); // Sunday on/before day 1
+  const days = Array.from({ length: 42 }, (_, i) => {
+    const d = new Date(gridStart);
+    d.setDate(gridStart.getDate() + i);
+    return d;
+  });
+  // Bucket tasks by due-date YMD. Cheap re-bucket on every render — the
+  // filtered list is small enough that memoising here would be overkill.
+  const byDay: Record<string, Task[]> = {};
+  for (const t of tasks) {
+    if (!t.due_date) continue;
+    const key = t.due_date.slice(0, 10);
+    (byDay[key] ??= []).push(t);
+  }
+  const undated = tasks.filter(t => !t.due_date);
+
+  return (
+    <div className="flex-1 min-h-0 flex flex-col gap-3">
+      <div className="flex items-center justify-between">
+        <div className="inline-flex items-center gap-1">
+          <button onClick={() => setCursor(c => ({ m: c.m === 0 ? 11 : c.m - 1, y: c.m === 0 ? c.y - 1 : c.y }))}
+            className="p-1.5 rounded-lg hover:bg-surface-2 text-on-surface"><ChevronLeft size={16} /></button>
+          <button onClick={() => setCursor(c => ({ m: c.m === 11 ? 0 : c.m + 1, y: c.m === 11 ? c.y + 1 : c.y }))}
+            className="p-1.5 rounded-lg hover:bg-surface-2 text-on-surface"><ChevronRight size={16} /></button>
+          <h3 className="font-display text-lg font-bold text-on-surface ml-2">{monthLabel}</h3>
+        </div>
+        <button onClick={() => setCursor({ m: today.getMonth(), y: today.getFullYear() })}
+          className="text-xs font-semibold text-on-surface-muted hover:text-on-surface px-2.5 py-1.5 rounded-lg border border-outline">
+          Today
+        </button>
+      </div>
+
+      <div className="flex-1 min-h-0 grid grid-cols-7 grid-rows-[auto_repeat(6,minmax(0,1fr))] gap-px bg-outline border border-outline rounded-xl-2 overflow-hidden">
+        {['Sun','Mon','Tue','Wed','Thu','Fri','Sat'].map(d => (
+          <div key={d} className="bg-surface-2 px-2 py-1.5 text-[10px] font-bold uppercase tracking-wider text-on-surface-subtle">{d}</div>
+        ))}
+        {days.map((d, i) => {
+          const key = ymd(d);
+          const cellTasks = byDay[key] ?? [];
+          const inMonth = d.getMonth() === cursor.m;
+          const isToday = key === todayStr;
+          const hasOverdue = cellTasks.some(t => !t.completed_at && key < todayStr);
+          return (
+            <div key={i}
+              className={`relative min-h-[92px] p-1 bg-surface flex flex-col gap-0.5 overflow-hidden ${inMonth ? '' : 'bg-surface-2/40'}`}>
+              <div className={`flex items-center gap-1 px-1 pt-0.5 ${inMonth ? 'text-on-surface' : 'text-on-surface-subtle'}`}>
+                <span className={`inline-flex items-center justify-center text-[11px] font-mono font-semibold ${isToday ? 'w-5 h-5 rounded-full bg-accent text-on-accent' : ''}`}>
+                  {d.getDate()}
+                </span>
+                {cellTasks.length > 0 && !isToday && (
+                  <span className="ml-auto text-[9px] text-on-surface-subtle font-mono">{cellTasks.length}</span>
+                )}
+              </div>
+              {hasOverdue && <span className="absolute left-0 top-0 bottom-0 w-0.5 bg-danger" />}
+              <div className="flex-1 min-h-0 flex flex-col gap-0.5 overflow-hidden">
+                {cellTasks.slice(0, 3).map(t => {
+                  const p = PRIORITY_META[t.priority];
+                  return (
+                    <button key={t.id} onClick={() => onOpen(t.id)}
+                      className={`text-left text-[11px] px-1.5 py-0.5 rounded truncate flex items-center gap-1 ${
+                        t.completed_at
+                          ? 'bg-success/10 text-on-surface-subtle line-through'
+                          : t.is_milestone
+                            ? 'bg-accent/10 text-accent font-semibold'
+                            : 'bg-surface-2 text-on-surface hover:bg-brand-container'
+                      }`}
+                      title={t.title}>
+                      {t.is_milestone
+                        ? <Diamond size={9} className="fill-current flex-shrink-0" />
+                        : t.priority !== 'none' && <span className="w-1 h-1 rounded-full flex-shrink-0" style={{ background: p.color }} />}
+                      <span className="truncate">{t.title}</span>
+                    </button>
+                  );
+                })}
+                {cellTasks.length > 3 && (
+                  <span className="text-[10px] text-on-surface-subtle px-1.5">+{cellTasks.length - 3} more</span>
+                )}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+
+      {undated.length > 0 && (
+        <div className="rounded-lg border border-outline bg-surface p-3">
+          <p className="text-[10px] uppercase tracking-wider text-on-surface-subtle font-semibold mb-1.5">No due date · {undated.length}</p>
+          <div className="flex flex-wrap gap-1.5">
+            {undated.slice(0, 12).map(t => (
+              <button key={t.id} onClick={() => onOpen(t.id)}
+                className="inline-flex items-center gap-1 px-2 py-1 rounded border border-outline text-[11px] hover:bg-surface-2 max-w-[220px] truncate">
+                {t.is_milestone && <Diamond size={9} className="fill-accent text-accent flex-shrink-0" />}
+                <span className="truncate">{t.title}</span>
+              </button>
+            ))}
+            {undated.length > 12 && <span className="text-[11px] text-on-surface-subtle self-center">+{undated.length - 12} more</span>}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// YYYY-MM-DD in LOCAL time (never toISOString, which shifts IST users
+// past midnight backwards a day and puts tasks on the wrong cell).
+function ymd(d: Date): string {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+// Sunday on or before day 1 of the given (0-indexed) month.
+function firstGridDay(year: number, month: number): Date {
+  const first = new Date(year, month, 1);
+  const dow = first.getDay(); // 0 = Sunday
+  const g = new Date(first);
+  g.setDate(first.getDate() - dow);
+  return g;
 }

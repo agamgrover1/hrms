@@ -1,12 +1,21 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   X, Loader2, Trash2, Send, Plus, MessageSquare, History, GitBranch, Check, Eye, EyeOff,
+  Link2, Flag, Diamond,
 } from 'lucide-react';
 import { api } from '../../services/api';
 import type { Task, TaskActivity, TaskComment, TaskPriority, TaskStatus } from '../../services/api';
 import { useAuth } from '../../context/AuthContext';
 import { toast } from '../Toaster';
 import { TASK_PRIORITIES, PRIORITY_META, initials } from '../../lib/taskMeta';
+
+type DepKind = 'blocks' | 'waiting_on' | 'related_to';
+type DepEdge = { kind: DepKind; other_id: string; other_title: string; other_status: string; other_completed_at: string | null };
+const DEP_LABEL: Record<DepKind, { out: string; in: string }> = {
+  blocks:      { out: 'Blocked by',   in: 'Blocks' },
+  waiting_on:  { out: 'Waiting on',   in: 'Waited on by' },
+  related_to:  { out: 'Related to',   in: 'Related to' },
+};
 
 // Render a comment body with inline @[Name](emp_id) mentions expanded
 // into brand-coloured chips. Everything else preserves whitespace so
@@ -52,6 +61,11 @@ export default function TaskDetailModal({ taskId, employees, onClose, onChanged 
   const [comments, setComments] = useState<TaskComment[]>([]);
   const [activity, setActivity] = useState<TaskActivity[]>([]);
   const [watchers, setWatchers] = useState<Array<{ employee_id: string; employee_name: string | null; avatar: string | null }>>([]);
+  const [depsOut, setDepsOut] = useState<DepEdge[]>([]);
+  const [depsIn, setDepsIn] = useState<DepEdge[]>([]);
+  const [depPickerOpen, setDepPickerOpen] = useState<DepKind | null>(null);
+  const [depQuery, setDepQuery] = useState('');
+  const [depCandidates, setDepCandidates] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState('');
   const [saving, setSaving] = useState(false);
@@ -89,8 +103,56 @@ export default function TaskDetailModal({ taskId, employees, onClose, onChanged 
       .catch((e: any) => setErr(e?.message ?? 'Failed to load task'))
       .finally(() => setLoading(false));
     api.getTaskWatchers(taskId).then(setWatchers).catch(() => setWatchers([]));
+    api.getTaskDependencies(taskId)
+      .then(d => { setDepsOut(d.out); setDepsIn(d.in); })
+      .catch(() => { setDepsOut([]); setDepsIn([]); });
   }, [taskId]);
   useEffect(load, [load]);
+
+  // Dep-picker search: fetch matching tasks whenever the picker is
+  // open and the query changes. Cheap search endpoint already exists
+  // via listTasks(q). Excludes self + tasks already linked so the
+  // picker never shows a duplicate row.
+  useEffect(() => {
+    if (!depPickerOpen) { setDepCandidates([]); return; }
+    const q = depQuery.trim();
+    let cancelled = false;
+    const alreadyLinked = new Set([...depsOut, ...depsIn].map(d => d.other_id));
+    alreadyLinked.add(taskId);
+    api.listTasks({ q: q || undefined, include_subtasks: true }).then((rows: any[]) => {
+      if (cancelled) return;
+      setDepCandidates(rows.filter(r => !alreadyLinked.has(r.id)).slice(0, 8));
+    }).catch(() => setDepCandidates([]));
+    return () => { cancelled = true; };
+  }, [depPickerOpen, depQuery, depsOut, depsIn, taskId]);
+
+  const addDep = async (otherId: string, kind: DepKind) => {
+    try {
+      await api.addTaskDependency(taskId, otherId, kind);
+      const d = await api.getTaskDependencies(taskId);
+      setDepsOut(d.out); setDepsIn(d.in);
+      setDepPickerOpen(null); setDepQuery('');
+    } catch (e: any) {
+      toast.error('Could not link', e?.message ?? 'Please try again.');
+    }
+  };
+  const removeDep = async (otherId: string, kind: DepKind, direction: 'out' | 'in') => {
+    try {
+      // Direction determines which side of the edge the DELETE targets:
+      // an outgoing "blocked_by" edge = task_id is US → out call uses (us, other).
+      // an incoming edge = task_id is OTHER → we need to call remove(other, us, kind).
+      if (direction === 'out') await api.removeTaskDependency(taskId, otherId, kind);
+      else                     await api.removeTaskDependency(otherId, taskId, kind);
+      const d = await api.getTaskDependencies(taskId);
+      setDepsOut(d.out); setDepsIn(d.in);
+    } catch (e: any) {
+      toast.error('Could not unlink', e?.message ?? 'Please try again.');
+    }
+  };
+
+  // Task is blocked if any outgoing 'blocks' edge points to an
+  // uncompleted task. Read straight off the deps arrays.
+  const blockedByOpen = depsOut.filter(d => d.kind === 'blocks' && !d.other_completed_at);
 
   const isWatching = myEmpId ? watchers.some(w => w.employee_id === myEmpId) : false;
   const toggleWatch = async () => {
@@ -331,6 +393,76 @@ export default function TaskDetailModal({ taskId, employees, onClose, onChanged 
                 </div>
               </div>
 
+              {/* Dependencies */}
+              <div>
+                <div className="flex items-center gap-1.5 mb-2">
+                  <Link2 size={13} className="text-on-surface-muted" />
+                  <span className="text-xs font-semibold text-on-surface-muted">Dependencies</span>
+                  {blockedByOpen.length > 0 && (
+                    <span className="ml-1 inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider bg-danger/10 text-danger">
+                      Blocked · {blockedByOpen.length}
+                    </span>
+                  )}
+                </div>
+
+                {(['blocks', 'waiting_on', 'related_to'] as DepKind[]).map(kind => {
+                  const outs = depsOut.filter(d => d.kind === kind);
+                  const ins  = depsIn .filter(d => d.kind === kind);
+                  if (!outs.length && !ins.length && depPickerOpen !== kind) return null;
+                  return (
+                    <div key={kind} className="mb-2">
+                      {outs.length > 0 && (
+                        <>
+                          <p className="text-[10px] uppercase tracking-wider text-on-surface-subtle font-semibold mt-1 mb-1">{DEP_LABEL[kind].out}</p>
+                          <div className="space-y-1">
+                            {outs.map(d => <DepRow key={`${kind}-out-${d.other_id}`} edge={d} onRemove={() => removeDep(d.other_id, kind, 'out')} />)}
+                          </div>
+                        </>
+                      )}
+                      {ins.length > 0 && (
+                        <>
+                          <p className="text-[10px] uppercase tracking-wider text-on-surface-subtle font-semibold mt-2 mb-1">{DEP_LABEL[kind].in}</p>
+                          <div className="space-y-1">
+                            {ins.map(d => <DepRow key={`${kind}-in-${d.other_id}`} edge={d} onRemove={() => removeDep(d.other_id, kind, 'in')} />)}
+                          </div>
+                        </>
+                      )}
+                    </div>
+                  );
+                })}
+
+                {depPickerOpen && (
+                  <div className="relative mt-2">
+                    <input autoFocus value={depQuery} onChange={e => setDepQuery(e.target.value)}
+                      onKeyDown={e => { if (e.key === 'Escape') { setDepPickerOpen(null); setDepQuery(''); } }}
+                      placeholder={`Search tasks to link as "${DEP_LABEL[depPickerOpen].out.toLowerCase()}"…`}
+                      className={`${field} pr-8`} />
+                    <button onClick={() => { setDepPickerOpen(null); setDepQuery(''); }}
+                      className="absolute right-2 top-1/2 -translate-y-1/2 text-on-surface-subtle hover:text-on-surface"><X size={13} /></button>
+                    {depCandidates.length > 0 && (
+                      <div className="absolute z-10 top-full mt-1 left-0 right-0 max-h-60 overflow-y-auto rounded-lg border border-outline bg-surface shadow-elev-3 py-1">
+                        {depCandidates.map((c: any) => (
+                          <button key={c.id} onMouseDown={(e) => { e.preventDefault(); addDep(c.id, depPickerOpen); }}
+                            className="w-full text-left px-3 py-1.5 text-sm hover:bg-surface-2">
+                            <div className="text-on-surface font-medium truncate">{c.title}</div>
+                            <div className="text-[10px] text-on-surface-subtle">{c.project_name ? `${c.project_name} · ` : ''}{c.list_name}</div>
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                <div className="flex flex-wrap gap-1.5 mt-1.5">
+                  {(['blocks', 'waiting_on', 'related_to'] as DepKind[]).map(k => (
+                    <button key={k} onClick={() => { setDepPickerOpen(k); setDepQuery(''); }}
+                      className="inline-flex items-center gap-1 px-2 py-1 rounded border border-dashed border-outline text-[10px] font-semibold text-on-surface-muted hover:text-on-surface hover:bg-surface-2">
+                      <Plus size={10} /> {DEP_LABEL[k].out.toLowerCase()}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
               {/* Comments / activity */}
               <div>
                 <div className="flex items-center gap-3 border-b border-outline mb-3">
@@ -466,6 +598,13 @@ export default function TaskDetailModal({ taskId, employees, onClose, onChanged 
                   className={field} />
               </div>
 
+              <button onClick={() => patch({ is_milestone: !task.is_milestone })}
+                className={`inline-flex items-center gap-2 px-2 py-1.5 rounded-lg text-[11px] font-semibold border ${task.is_milestone ? 'bg-accent/10 text-accent border-accent/30' : 'bg-surface text-on-surface-muted border-outline hover:bg-surface-2'}`}
+                title="Milestones mark a headline delivery on the calendar + timeline.">
+                <Diamond size={11} className={task.is_milestone ? 'fill-current' : ''} />
+                {task.is_milestone ? 'This is a milestone' : 'Mark as milestone'}
+              </button>
+
               <div>
                 <div className="flex items-center justify-between mb-1.5">
                   <label className="text-[11px] font-semibold text-on-surface-muted">Watchers {watchers.length > 0 && <span className="font-mono text-on-surface-subtle">· {watchers.length}</span>}</label>
@@ -508,6 +647,24 @@ export default function TaskDetailModal({ taskId, employees, onClose, onChanged 
           </div>
         )}
       </div>
+    </div>
+  );
+}
+
+function DepRow({ edge, onRemove }: { edge: DepEdge; onRemove: () => void }) {
+  const done = !!edge.other_completed_at;
+  return (
+    <div className={`group flex items-center gap-2 px-2 py-1.5 rounded-lg border ${done ? 'border-outline bg-surface-2 text-on-surface-subtle' : 'border-outline bg-surface text-on-surface'}`}>
+      <span className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${done ? 'bg-success' : 'bg-danger/70'}`} />
+      <span className={`flex-1 min-w-0 truncate text-sm ${done ? 'line-through' : ''}`}>{edge.other_title}</span>
+      {done ? (
+        <span className="text-[10px] font-semibold text-success uppercase tracking-wider">Done</span>
+      ) : (
+        <span className="text-[10px] font-mono text-on-surface-subtle">{edge.other_status}</span>
+      )}
+      <button onClick={onRemove}
+        className="opacity-0 group-hover:opacity-100 p-1 rounded text-on-surface-subtle hover:text-danger hover:bg-danger/10 transition"
+        title="Unlink"><X size={11} /></button>
     </div>
   );
 }

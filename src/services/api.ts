@@ -1503,6 +1503,15 @@ export const api = {
   deleteTask: (id: string) => request<{ ok: true; deleted: number }>(`/tasks/${id}`, { method: 'DELETE' }),
   addTaskComment: (id: string, body: string) =>
     request<TaskComment>(`/tasks/${id}/comments`, { method: 'POST', body: JSON.stringify({ body }) }),
+  getTaskDependencies: (id: string) =>
+    request<{
+      out: Array<{ kind: 'blocks' | 'waiting_on' | 'related_to'; other_id: string; other_title: string; other_status: string; other_completed_at: string | null }>;
+      in:  Array<{ kind: 'blocks' | 'waiting_on' | 'related_to'; other_id: string; other_title: string; other_status: string; other_completed_at: string | null }>;
+    }>(`/tasks/${id}/dependencies`),
+  addTaskDependency: (id: string, depends_on_id: string, kind: 'blocks' | 'waiting_on' | 'related_to' = 'blocks') =>
+    request<{ ok: true }>(`/tasks/${id}/dependencies`, { method: 'POST', body: JSON.stringify({ depends_on_id, kind }) }),
+  removeTaskDependency: (id: string, other_id: string, kind: 'blocks' | 'waiting_on' | 'related_to' = 'blocks') =>
+    request<{ ok: true }>(`/tasks/${id}/dependencies/${encodeURIComponent(other_id)}?kind=${kind}`, { method: 'DELETE' }),
   getTaskWatchers: (id: string) =>
     request<Array<{ employee_id: string; employee_name: string | null; avatar: string | null; added_at: string }>>(`/tasks/${id}/watchers`),
   addTaskWatcher: (id: string, employee_id?: string) =>
@@ -1637,6 +1646,7 @@ export interface Task {
   tags: string[];
   sort_order: number;
   completed_at: string | null;
+  is_milestone?: boolean;
   created_at: string;
   updated_at: string;
   created_by_id: string | null;

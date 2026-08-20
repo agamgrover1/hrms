@@ -880,7 +880,7 @@ async function runStartupMigrations() {
     // For a *seed* (rows, not columns), we probe with EXISTS-style: an
     // empty result set means "still needs to run", so we don't set the
     // flag and fall through.
-    await sql`SELECT employee_id FROM task_watchers LIMIT 0`;
+    await sql`SELECT kind FROM task_dependencies LIMIT 0`;
     _migrated = true;
     return;
   } catch {
@@ -3166,6 +3166,29 @@ async function runStartupMigrations() {
       PRIMARY KEY (task_id, employee_id)
     )`;
   await sql`CREATE INDEX IF NOT EXISTS idx_task_watchers_emp ON task_watchers(employee_id)`.catch(()=>{});
+
+  // Milestone flag on tasks — a dot on the card + a stronger surface in
+  // the drawer. No behavioural impact on the pipeline, just visual.
+  await sql`ALTER TABLE tasks ADD COLUMN IF NOT EXISTS is_milestone BOOLEAN NOT NULL DEFAULT FALSE`.catch(()=>{});
+
+  // Task dependencies — a directed edge from `task_id` to `depends_on_id`.
+  // kind captures the semantic:
+  //   'blocks'      — task_id blocks depends_on_id (task_id must ship first)
+  //   'waiting_on'  — task_id is waiting on depends_on_id (soft, external)
+  //   'related_to'  — no ordering, just a link (see-also)
+  // Composite PK prevents duplicate edges; a task is never allowed to
+  // depend on itself (application-enforced in the POST handler).
+  await sql`
+    CREATE TABLE IF NOT EXISTS task_dependencies (
+      task_id TEXT NOT NULL,
+      depends_on_id TEXT NOT NULL,
+      kind TEXT NOT NULL DEFAULT 'blocks',
+      created_at TIMESTAMPTZ DEFAULT NOW(),
+      created_by_id TEXT,
+      PRIMARY KEY (task_id, depends_on_id, kind)
+    )`;
+  await sql`CREATE INDEX IF NOT EXISTS idx_task_deps_task ON task_dependencies(task_id)`.catch(()=>{});
+  await sql`CREATE INDEX IF NOT EXISTS idx_task_deps_target ON task_dependencies(depends_on_id)`.catch(()=>{});
 
   _migrated = true;
 }
@@ -20105,12 +20128,81 @@ app.get('/api/tasks/:id', async (req, res) => {
       LEFT JOIN projects p ON p.id = l.project_id
       WHERE t.id=${req.params.id}` as any[];
     if (!rows.length) return res.status(404).json({ error: 'Task not found' });
-    const [subtasks, comments, activity] = await Promise.all([
+    const [subtasks, comments, activity, depsOut, depsIn] = await Promise.all([
       sql`SELECT * FROM tasks WHERE parent_id=${req.params.id} ORDER BY sort_order, created_at`,
       sql`SELECT * FROM task_comments WHERE task_id=${req.params.id} ORDER BY created_at`,
       sql`SELECT * FROM task_activity WHERE task_id=${req.params.id} ORDER BY created_at DESC LIMIT 100`,
+      // What this task depends on (blocked_by / waiting_on / related_to).
+      sql`SELECT d.kind, d.depends_on_id AS other_id, t.title AS other_title, t.status AS other_status, t.completed_at AS other_completed_at
+          FROM task_dependencies d JOIN tasks t ON t.id = d.depends_on_id
+          WHERE d.task_id=${req.params.id}
+          ORDER BY d.created_at`,
+      // What depends on this task (inverse view — "blocks these tasks").
+      sql`SELECT d.kind, d.task_id AS other_id, t.title AS other_title, t.status AS other_status, t.completed_at AS other_completed_at
+          FROM task_dependencies d JOIN tasks t ON t.id = d.task_id
+          WHERE d.depends_on_id=${req.params.id}
+          ORDER BY d.created_at`,
     ]);
-    res.json({ task: rows[0], subtasks, comments, activity });
+    res.json({ task: rows[0], subtasks, comments, activity, dependencies: { out: depsOut, in: depsIn } });
+  } catch (err: any) { res.status(500).json({ error: err.message ?? 'Server error' }); }
+});
+
+// ── Task dependencies ────────────────────────────────────────────────
+// GET returns both sides (out = "this task depends on X", in = "X
+// depends on this task") so the drawer can render Blocks + Blocked-by
+// sections from one call.
+app.get('/api/tasks/:id/dependencies', async (req, res) => {
+  try {
+    await runStartupMigrations();
+    const gate = await taskActor(req, res);
+    if (!gate.ok) return;
+    const [out, incoming] = await Promise.all([
+      sql`SELECT d.kind, d.depends_on_id AS other_id, t.title AS other_title, t.status AS other_status, t.completed_at AS other_completed_at
+          FROM task_dependencies d JOIN tasks t ON t.id = d.depends_on_id
+          WHERE d.task_id=${req.params.id}
+          ORDER BY d.created_at`,
+      sql`SELECT d.kind, d.task_id AS other_id, t.title AS other_title, t.status AS other_status, t.completed_at AS other_completed_at
+          FROM task_dependencies d JOIN tasks t ON t.id = d.task_id
+          WHERE d.depends_on_id=${req.params.id}
+          ORDER BY d.created_at`,
+    ]);
+    res.json({ out, in: incoming });
+  } catch (err: any) { res.status(500).json({ error: err.message ?? 'Server error' }); }
+});
+
+// POST body: { depends_on_id, kind? }
+// kind defaults to 'blocks' (this task is blocked BY depends_on_id).
+// Same-id self-edges are rejected. Composite PK makes it idempotent.
+app.post('/api/tasks/:id/dependencies', async (req, res) => {
+  try {
+    await runStartupMigrations();
+    const gate = await taskActor(req, res);
+    if (!gate.ok) return;
+    const dependsOn = String(req.body?.depends_on_id ?? '').trim();
+    const kind = String(req.body?.kind ?? 'blocks');
+    if (!dependsOn) return res.status(400).json({ error: 'depends_on_id is required' });
+    if (dependsOn === req.params.id) return res.status(400).json({ error: 'A task cannot depend on itself' });
+    if (!['blocks', 'waiting_on', 'related_to'].includes(kind)) return res.status(400).json({ error: `Unknown dependency kind: ${kind}` });
+    const target = (await sql`SELECT id, title FROM tasks WHERE id=${dependsOn}` as any[])[0];
+    if (!target) return res.status(404).json({ error: 'Linked task not found' });
+    await sql`
+      INSERT INTO task_dependencies (task_id, depends_on_id, kind, created_by_id)
+      VALUES (${req.params.id}, ${dependsOn}, ${kind}, ${gate.user.id})
+      ON CONFLICT (task_id, depends_on_id, kind) DO NOTHING`;
+    await logTaskActivity(req.params.id, gate.user, 'dependency_added', null, null, kind, `Linked to "${target.title}" (${kind})`);
+    res.status(201).json({ ok: true });
+  } catch (err: any) { res.status(500).json({ error: err.message ?? 'Server error' }); }
+});
+
+app.delete('/api/tasks/:id/dependencies/:otherId', async (req, res) => {
+  try {
+    await runStartupMigrations();
+    const gate = await taskActor(req, res);
+    if (!gate.ok) return;
+    const kind = String(req.query.kind ?? 'blocks');
+    await sql`DELETE FROM task_dependencies WHERE task_id=${req.params.id} AND depends_on_id=${req.params.otherId} AND kind=${kind}`;
+    await logTaskActivity(req.params.id, gate.user, 'dependency_removed', null, null, kind, null);
+    res.json({ ok: true });
   } catch (err: any) { res.status(500).json({ error: err.message ?? 'Server error' }); }
 });
 
@@ -20201,6 +20293,7 @@ app.patch('/api/tasks/:id', async (req, res) => {
     if (b.estimate_hours !== undefined) next.estimate_hours = b.estimate_hours === null || b.estimate_hours === '' ? null : Number(b.estimate_hours);
     if (b.tags !== undefined) next.tags = Array.isArray(b.tags) ? b.tags.slice(0, 8) : [];
     if (b.sort_order !== undefined) next.sort_order = Number(b.sort_order);
+    if (b.is_milestone !== undefined) next.is_milestone = !!b.is_milestone;
     if (b.status !== undefined) {
       const col = cols.find(c => c.id === b.status);
       if (!col) return res.status(400).json({ error: 'That status does not exist on this board' });
@@ -20233,6 +20326,7 @@ app.patch('/api/tasks/:id', async (req, res) => {
         tags           = ${JSON.stringify('tags' in next ? next.tags : (cur.tags ?? []))}::jsonb,
         sort_order     = COALESCE(${next.sort_order ?? null}::numeric, sort_order),
         completed_at   = ${'completed_at' in next ? next.completed_at : cur.completed_at}::timestamptz,
+        is_milestone   = ${'is_milestone' in next ? next.is_milestone : cur.is_milestone}::boolean,
         updated_at     = NOW()
       WHERE id=${cur.id}
       RETURNING *`;
@@ -20255,6 +20349,9 @@ app.patch('/api/tasks/:id', async (req, res) => {
       if (f in next && String(next[f] ?? '') !== String(cur[f] ?? '')) {
         await logTaskActivity(cur.id, gate.user, 'field', f, cur[f], next[f]);
       }
+    }
+    if ('is_milestone' in next && !!next.is_milestone !== !!cur.is_milestone) {
+      await logTaskActivity(cur.id, gate.user, 'field', 'milestone', cur.is_milestone ? 'yes' : 'no', next.is_milestone ? 'yes' : 'no');
     }
     res.json(updated);
   } catch (err: any) { res.status(500).json({ error: err.message ?? 'Server error' }); }
