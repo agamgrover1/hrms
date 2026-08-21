@@ -1703,6 +1703,7 @@ export interface Task {
   sort_order: number;
   completed_at: string | null;
   is_milestone?: boolean;
+  recurrence?: { kind: 'daily' | 'weekly' | 'monthly'; interval: number; dow?: number; dom?: number } | null;
   created_at: string;
   updated_at: string;
   created_by_id: string | null;

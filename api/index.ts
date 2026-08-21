@@ -880,7 +880,7 @@ async function runStartupMigrations() {
     // For a *seed* (rows, not columns), we probe with EXISTS-style: an
     // empty result set means "still needs to run", so we don't set the
     // flag and fall through.
-    await sql`SELECT source FROM task_time_entries LIMIT 0`;
+    await sql`SELECT recurrence FROM tasks LIMIT 0`;
     _migrated = true;
     return;
   } catch {
@@ -3170,6 +3170,15 @@ async function runStartupMigrations() {
   // Milestone flag on tasks — a dot on the card + a stronger surface in
   // the drawer. No behavioural impact on the pipeline, just visual.
   await sql`ALTER TABLE tasks ADD COLUMN IF NOT EXISTS is_milestone BOOLEAN NOT NULL DEFAULT FALSE`.catch(()=>{});
+
+  // Recurrence rule on tasks — stored as JSONB so the shape can evolve
+  // without a migration each time. Shapes we support today:
+  //   { kind: 'daily',   interval: N }
+  //   { kind: 'weekly',  interval: N, dow: 0..6 }     -- 0 = Sunday
+  //   { kind: 'monthly', interval: N, dom: 1..31 }
+  // When a top-level task with a recurrence completes, PATCH spawns
+  // the next occurrence — no cron required. Subtasks don't recur.
+  await sql`ALTER TABLE tasks ADD COLUMN IF NOT EXISTS recurrence JSONB`.catch(()=>{});
 
   // Task dependencies — a directed edge from `task_id` to `depends_on_id`.
   // kind captures the semantic:
@@ -20702,6 +20711,22 @@ app.patch('/api/tasks/:id', async (req, res) => {
     if (b.tags !== undefined) next.tags = Array.isArray(b.tags) ? b.tags.slice(0, 8) : [];
     if (b.sort_order !== undefined) next.sort_order = Number(b.sort_order);
     if (b.is_milestone !== undefined) next.is_milestone = !!b.is_milestone;
+    if (b.recurrence !== undefined) {
+      // Accept null (removes recurrence) OR a validated object. Anything
+      // else is a client bug — reject so bad payloads don't silently
+      // brick a task's recurring behaviour.
+      const r = b.recurrence;
+      if (r === null) next.recurrence = null;
+      else if (typeof r === 'object' && ['daily','weekly','monthly'].includes(r.kind)) {
+        const interval = Math.max(1, Math.min(365, Number(r.interval) || 1));
+        const clean: any = { kind: r.kind, interval };
+        if (r.kind === 'weekly'  && Number.isInteger(r.dow) && r.dow >= 0 && r.dow <= 6) clean.dow = r.dow;
+        if (r.kind === 'monthly' && Number.isInteger(r.dom) && r.dom >= 1 && r.dom <= 31) clean.dom = r.dom;
+        next.recurrence = clean;
+      } else {
+        return res.status(400).json({ error: 'recurrence must be null or { kind: daily|weekly|monthly, interval, dow?, dom? }' });
+      }
+    }
     if (b.status !== undefined) {
       const col = cols.find(c => c.id === b.status);
       if (!col) return res.status(400).json({ error: 'That status does not exist on this board' });
@@ -20735,6 +20760,7 @@ app.patch('/api/tasks/:id', async (req, res) => {
         sort_order     = COALESCE(${next.sort_order ?? null}::numeric, sort_order),
         completed_at   = ${'completed_at' in next ? next.completed_at : cur.completed_at}::timestamptz,
         is_milestone   = ${'is_milestone' in next ? next.is_milestone : cur.is_milestone}::boolean,
+        recurrence     = ${'recurrence' in next ? (next.recurrence === null ? null : JSON.stringify(next.recurrence)) : (cur.recurrence === null ? null : JSON.stringify(cur.recurrence))}::jsonb,
         updated_at     = NOW()
       WHERE id=${cur.id}
       RETURNING *`;
@@ -20761,9 +20787,94 @@ app.patch('/api/tasks/:id', async (req, res) => {
     if ('is_milestone' in next && !!next.is_milestone !== !!cur.is_milestone) {
       await logTaskActivity(cur.id, gate.user, 'field', 'milestone', cur.is_milestone ? 'yes' : 'no', next.is_milestone ? 'yes' : 'no');
     }
+
+    // Spawn next occurrence when a recurring top-level task just landed
+    // in a 'done' column. Only fires on the completion transition — a
+    // re-open + re-close won't spawn twice because updated.completed_at
+    // will already have been set on the earlier close (we compare to
+    // cur.completed_at pre-update).
+    const justCompleted = 'status' in next && next.status !== cur.status
+      && next.completed_at && !cur.completed_at;
+    if (justCompleted && !cur.parent_id && cur.recurrence) {
+      try {
+        const nextDates = computeNextRecurrence(cur.recurrence, cur.due_date, cur.start_date);
+        if (nextDates) {
+          const openCol = cols.find(c => c.type !== 'done') ?? cols[0];
+          const spawnId = newId('task');
+          // Land the spawned task at the bottom of the first open column.
+          const nextOrder = Number((await sql`
+            SELECT COALESCE(MAX(sort_order), 0) + 1024 AS n FROM tasks
+            WHERE list_id=${cur.list_id} AND status=${openCol.id}` as any[])[0]?.n ?? 1024);
+          await sql`
+            INSERT INTO tasks (id, list_id, parent_id, title, description, status, priority,
+                               assignee_id, assignee_name, start_date, due_date, estimate_hours,
+                               tags, sort_order, completed_at, is_milestone, recurrence,
+                               created_by_id, created_by_name)
+            VALUES (${spawnId}, ${cur.list_id}, NULL, ${cur.title}, ${cur.description},
+                    ${openCol.id}, ${cur.priority}, ${cur.assignee_id}, ${cur.assignee_name},
+                    ${nextDates.start_date}, ${nextDates.due_date}, ${cur.estimate_hours},
+                    ${JSON.stringify(cur.tags ?? [])}::jsonb, ${nextOrder}, NULL,
+                    ${!!cur.is_milestone}, ${JSON.stringify(cur.recurrence)}::jsonb,
+                    ${gate.user.id}, ${gate.user.name})`;
+          await logTaskActivity(spawnId, gate.user, 'created', null, null, null, `Auto-created from recurring task ${cur.id}`);
+          await logTaskActivity(cur.id, gate.user, 'recurrence_spawned', null, null, spawnId, `Next occurrence spawned as ${spawnId} due ${nextDates.due_date}`);
+          if (cur.assignee_id && cur.assignee_id !== gate.user.employeeId) {
+            await notifyEmployeeUser(cur.assignee_id, 'task_assigned', 'Recurring task — next occurrence',
+              `"${cur.title}" is back on your plate, due ${nextDates.due_date}`, `/tasks?task=${spawnId}`);
+          }
+        }
+      } catch (spawnErr) {
+        // Spawn failure is non-fatal — the primary completion succeeded.
+        // The audit log will show the miss so HR can re-open + close to retry.
+        console.error('[recurrence spawn]', spawnErr);
+      }
+    }
+
     res.json(updated);
   } catch (err: any) { res.status(500).json({ error: err.message ?? 'Server error' }); }
 });
+
+// Compute the next start/due dates for a recurring rule. Anchors on
+// the task's own due_date so late-closed occurrences don't compound
+// (a weekly Monday task closed Wednesday still spawns for the FOLLOWING
+// Monday, not "Monday + interval from close-day"). Returns null when
+// the rule can't produce a next date (shouldn't happen post-validation).
+function computeNextRecurrence(rule: any, dueDate: string | null, startDate: string | null): { start_date: string | null; due_date: string } | null {
+  if (!rule?.kind) return null;
+  const interval = Math.max(1, Number(rule.interval) || 1);
+  // Use due_date as the anchor. If none, start from today.
+  const anchor = dueDate ? new Date(dueDate) : new Date();
+  const nextDue = new Date(anchor);
+  if (rule.kind === 'daily') {
+    nextDue.setDate(nextDue.getDate() + interval);
+  } else if (rule.kind === 'weekly') {
+    nextDue.setDate(nextDue.getDate() + interval * 7);
+    // Optional: snap to a specific day-of-week if the rule pins one.
+    if (Number.isInteger(rule.dow)) {
+      const delta = ((rule.dow - nextDue.getDay()) + 7) % 7;
+      nextDue.setDate(nextDue.getDate() + delta);
+    }
+  } else if (rule.kind === 'monthly') {
+    nextDue.setMonth(nextDue.getMonth() + interval);
+    if (Number.isInteger(rule.dom)) {
+      // Clamp to the last day of the target month (e.g. Feb 30 → Feb 28/29).
+      const targetDom = rule.dom;
+      const lastDayNext = new Date(nextDue.getFullYear(), nextDue.getMonth() + 1, 0).getDate();
+      nextDue.setDate(Math.min(targetDom, lastDayNext));
+    }
+  } else { return null; }
+
+  // Carry the start→due gap so a task that historically ran 3 days gets
+  // 3 days again. If there was no prior start_date, leave the new one null.
+  let nextStart: string | null = null;
+  if (startDate && dueDate) {
+    const gapDays = Math.round((new Date(dueDate).getTime() - new Date(startDate).getTime()) / 86_400_000);
+    const s = new Date(nextDue);
+    s.setDate(s.getDate() - gapDays);
+    nextStart = s.toISOString().slice(0, 10);
+  }
+  return { start_date: nextStart, due_date: nextDue.toISOString().slice(0, 10) };
+}
 
 // DELETE /api/tasks/:id — creator, current assignee, or a board manager.
 // Takes the task's subtasks (and all their comments) with it.

@@ -3,7 +3,7 @@ import { useSearchParams } from 'react-router-dom';
 import {
   KanbanSquare, Plus, Search, Loader2, LayoutList, Columns3, Inbox,
   MessageSquare, GitBranch, Archive, X, Briefcase, ChevronDown, CalendarDays,
-  ChevronLeft, ChevronRight, Diamond,
+  ChevronLeft, ChevronRight, Diamond, Repeat, GanttChartSquare,
 } from 'lucide-react';
 import { api } from '../services/api';
 import type { Task, TaskBoard } from '../services/api';
@@ -23,7 +23,7 @@ import {
 
 const MANAGER_ROLES = ['admin', 'hr_manager', 'project_coordinator'];
 
-type View = 'board' | 'list' | 'calendar';
+type View = 'board' | 'list' | 'calendar' | 'timeline';
 
 export default function Tasks() {
   const { user } = useAuth();
@@ -214,6 +214,10 @@ export default function Tasks() {
                 className={`inline-flex items-center gap-1.5 px-3 py-2 text-sm font-semibold ${view === 'calendar' ? 'bg-accent text-on-accent' : 'text-on-surface hover:bg-surface-2'}`}>
                 <CalendarDays size={14} /> Calendar
               </button>
+              <button onClick={() => setView('timeline')}
+                className={`inline-flex items-center gap-1.5 px-3 py-2 text-sm font-semibold ${view === 'timeline' ? 'bg-accent text-on-accent' : 'text-on-surface hover:bg-surface-2'}`}>
+                <GanttChartSquare size={14} /> Timeline
+              </button>
             </div>
           )}
           {canManageBoards && (
@@ -300,7 +304,9 @@ export default function Tasks() {
                 )
                 : effectiveView === 'calendar'
                   ? <CalendarView tasks={filtered} onOpen={setOpenTask} />
-                  : <BoardListView statuses={statuses} byStatus={byStatus} onOpen={setOpenTask} />}
+                  : effectiveView === 'timeline'
+                    ? <TimelineView tasks={filtered} onOpen={setOpenTask} />
+                    : <BoardListView statuses={statuses} byStatus={byStatus} onOpen={setOpenTask} />}
         </section>
       </div>
 
@@ -430,6 +436,11 @@ function TaskCard({ task, onDragStart, onOpen }: { task: Task; onDragStart: () =
           {(task.comment_count ?? 0) > 0 && (
             <span className="inline-flex items-center gap-0.5 text-[10px] text-on-surface-subtle">
               <MessageSquare size={10} /> {task.comment_count}
+            </span>
+          )}
+          {task.recurrence && (
+            <span className="inline-flex items-center gap-0.5 text-[10px] text-accent" title="Recurring task">
+              <Repeat size={10} />
             </span>
           )}
           {Number(task.logged_hours ?? 0) > 0 && (
@@ -752,4 +763,172 @@ function firstGridDay(year: number, month: number): Date {
   const g = new Date(first);
   g.setDate(first.getDate() - dow);
   return g;
+}
+
+// Horizontal timeline / Gantt. Each task with a due_date renders as a
+// bar spanning start_date → due_date (or a single-day pin if no start).
+// Milestones render as diamonds at their due_date. Zoom by week (14
+// days visible) or month (~45 days). Undated tasks are skipped — they
+// live in the Calendar view's "No due date" strip.
+function TimelineView({ tasks, onOpen }: { tasks: Task[]; onOpen: (id: string) => void }) {
+  const [zoom, setZoom] = useState<'week' | 'month'>('week');
+  const dayPx = zoom === 'week' ? 46 : 22;
+  const rowH = 30;
+
+  const today = new Date();
+  const todayStr = ymd(today);
+  const dated = tasks.filter(t => !!t.due_date);
+  // Range: earliest task date → latest, padded a week either side. Fall
+  // back to a today-centred window when nothing has dates yet.
+  const allDates = dated.flatMap(t => [t.start_date, t.due_date].filter(Boolean) as string[]);
+  const min = allDates.length ? new Date(Math.min(...allDates.map(d => +new Date(d)))) : new Date(today.getTime() - 7 * 86_400_000);
+  const max = allDates.length ? new Date(Math.max(...allDates.map(d => +new Date(d)))) : new Date(today.getTime() + 21 * 86_400_000);
+  const rangeStart = new Date(min); rangeStart.setDate(min.getDate() - 3);
+  const rangeEnd = new Date(max); rangeEnd.setDate(max.getDate() + 7);
+  const totalDays = Math.max(21, Math.round((+rangeEnd - +rangeStart) / 86_400_000) + 1);
+  const totalWidth = totalDays * dayPx;
+  const days = Array.from({ length: totalDays }, (_, i) => {
+    const d = new Date(rangeStart); d.setDate(rangeStart.getDate() + i);
+    return d;
+  });
+
+  const rows = dated
+    .slice()
+    .sort((a, b) => {
+      const ad = a.due_date ?? ''; const bd = b.due_date ?? '';
+      return ad.localeCompare(bd);
+    });
+
+  if (dated.length === 0) {
+    return (
+      <div className="flex-1 min-h-0 flex items-center justify-center text-sm text-on-surface-subtle">
+        No tasks with a due date. Add dates in the drawer to see them on the timeline.
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex-1 min-h-0 flex flex-col gap-2">
+      <div className="flex items-center gap-2">
+        <div className="inline-flex items-center gap-1 rounded-lg border border-outline bg-surface p-1">
+          {(['week','month'] as const).map(z => (
+            <button key={z} onClick={() => setZoom(z)}
+              className={`px-3 py-1 rounded-md text-xs font-semibold ${zoom === z ? 'bg-accent text-on-accent' : 'text-on-surface-muted hover:bg-surface-2'}`}>
+              {z === 'week' ? 'Week' : 'Month'}
+            </button>
+          ))}
+        </div>
+        <span className="text-[11px] text-on-surface-subtle ml-2">
+          {new Date(rangeStart).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' })} — {new Date(rangeEnd).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' })}
+        </span>
+      </div>
+
+      <div className="flex-1 min-h-0 border border-outline rounded-xl-2 bg-surface overflow-hidden flex">
+        {/* Left: task titles column */}
+        <div className="w-56 flex-shrink-0 border-r border-outline overflow-y-auto">
+          <div className="h-10 border-b border-outline bg-surface-2 px-3 flex items-center text-[10px] uppercase tracking-wider text-on-surface-muted font-semibold">
+            Task
+          </div>
+          {rows.map(t => (
+            <button key={t.id} onClick={() => onOpen(t.id)}
+              style={{ height: rowH }}
+              className="w-full text-left px-3 border-b border-outline hover:bg-surface-2 flex items-center gap-2 text-xs">
+              {t.is_milestone && <Diamond size={9} className="fill-accent text-accent flex-shrink-0" />}
+              <span className={`truncate ${t.completed_at ? 'line-through text-on-surface-subtle' : 'text-on-surface'}`}>
+                {t.title}
+              </span>
+            </button>
+          ))}
+        </div>
+
+        {/* Right: scrollable date axis + bars */}
+        <div className="flex-1 overflow-x-auto overflow-y-auto">
+          <div style={{ width: totalWidth }}>
+            {/* Date axis */}
+            <div className="h-10 flex border-b border-outline bg-surface-2 sticky top-0 z-10">
+              {days.map((d, i) => {
+                const isMonthStart = d.getDate() === 1;
+                const isWeekStart = d.getDay() === 1;
+                const isToday = ymd(d) === todayStr;
+                return (
+                  <div key={i} style={{ width: dayPx, minWidth: dayPx }}
+                    className={`flex flex-col items-center justify-center border-r ${isMonthStart ? 'border-outline-strong' : 'border-outline/50'} ${isToday ? 'bg-accent/10' : ''}`}>
+                    {zoom === 'week' || isMonthStart || isWeekStart ? (
+                      <>
+                        <span className="text-[9px] uppercase tracking-wider text-on-surface-subtle font-semibold">
+                          {d.toLocaleDateString('en-IN', { month: 'short' })}
+                        </span>
+                        <span className={`text-[11px] font-mono ${isToday ? 'text-accent font-bold' : 'text-on-surface-muted'}`}>
+                          {d.getDate()}
+                        </span>
+                      </>
+                    ) : (
+                      <span className="text-[10px] font-mono text-on-surface-subtle">{d.getDate()}</span>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+
+            {/* Rows with bars */}
+            <div className="relative">
+              {/* Today rail */}
+              {(() => {
+                const idx = days.findIndex(d => ymd(d) === todayStr);
+                if (idx < 0) return null;
+                return (
+                  <div className="absolute top-0 bottom-0 w-px bg-accent/60 pointer-events-none z-[1]"
+                    style={{ left: idx * dayPx + dayPx / 2 }} />
+                );
+              })()}
+              {rows.map(t => {
+                const dueIdx = days.findIndex(d => ymd(d) === (t.due_date ?? '').slice(0, 10));
+                const startIdx = t.start_date ? days.findIndex(d => ymd(d) === t.start_date!.slice(0, 10)) : dueIdx;
+                const spanStart = Math.max(0, Math.min(startIdx, dueIdx));
+                const spanEnd   = Math.max(startIdx, dueIdx);
+                const left  = spanStart * dayPx + 2;
+                const width = Math.max(dayPx - 4, (spanEnd - spanStart + 1) * dayPx - 4);
+                const p = PRIORITY_META[t.priority];
+                const overdue = !t.completed_at && (t.due_date ?? '') < todayStr;
+                return (
+                  <div key={t.id} style={{ height: rowH }} className="relative border-b border-outline">
+                    {/* faint grid */}
+                    <div className="absolute inset-0 flex pointer-events-none">
+                      {days.map((_, i) => (
+                        <div key={i} style={{ width: dayPx }} className="border-r border-outline/40" />
+                      ))}
+                    </div>
+                    {dueIdx >= 0 && (
+                      t.is_milestone ? (
+                        <button onClick={() => onOpen(t.id)}
+                          title={t.title}
+                          style={{ left: dueIdx * dayPx + dayPx / 2 - 7, top: (rowH - 14) / 2 }}
+                          className="absolute w-3.5 h-3.5 rotate-45 bg-accent border border-accent shadow-md hover:scale-110 transition-transform" />
+                      ) : (
+                        <button onClick={() => onOpen(t.id)}
+                          title={`${t.title}${t.assignee_name ? ' · ' + t.assignee_name : ''}`}
+                          style={{
+                            left, width,
+                            top: (rowH - 20) / 2,
+                            background: t.completed_at ? undefined : (overdue ? undefined : `linear-gradient(90deg, ${p.color}22, ${p.color}44)`),
+                            borderColor: p.color,
+                          }}
+                          className={`absolute h-5 rounded flex items-center px-2 text-[10px] font-semibold truncate border transition ${
+                            t.completed_at ? 'bg-success/20 text-on-surface-subtle line-through hover:bg-success/30'
+                              : overdue ? 'bg-danger/20 text-danger hover:bg-danger/30'
+                              : 'text-on-surface hover:brightness-110'
+                          }`}>
+                          {t.assignee_name ? initials(t.assignee_name) : ''}
+                        </button>
+                      )
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
 }

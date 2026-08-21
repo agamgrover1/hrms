@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   X, Loader2, Trash2, Send, Plus, MessageSquare, History, GitBranch, Check, Eye, EyeOff,
-  Link2, Flag, Diamond, Play, Square, Clock,
+  Link2, Flag, Diamond, Play, Square, Clock, Repeat,
 } from 'lucide-react';
 import { api } from '../../services/api';
 import type { Task, TaskActivity, TaskComment, TaskPriority, TaskStatus } from '../../services/api';
@@ -763,6 +763,19 @@ export default function TaskDetailModal({ taskId, employees, onClose, onChanged 
                 {task.is_milestone ? 'This is a milestone' : 'Mark as milestone'}
               </button>
 
+              <RecurrencePicker
+                value={(task.recurrence as any) ?? null}
+                dueDate={task.due_date}
+                parentId={task.parent_id}
+                onChange={rule => patch({ recurrence: rule })}
+              />
+              {!task.parent_id && task.recurrence && (
+                <p className="text-[10px] text-on-surface-subtle -mt-1 leading-snug">
+                  When you mark this Done, the next occurrence will be auto-created
+                  {task.due_date ? '' : ' — add a due date so the next date can be computed'}.
+                </p>
+              )}
+
               <div>
                 <div className="flex items-center justify-between mb-1.5">
                   <label className="text-[11px] font-semibold text-on-surface-muted">Watchers {watchers.length > 0 && <span className="font-mono text-on-surface-subtle">· {watchers.length}</span>}</label>
@@ -823,6 +836,95 @@ function DepRow({ edge, onRemove }: { edge: DepEdge; onRemove: () => void }) {
       <button onClick={onRemove}
         className="opacity-0 group-hover:opacity-100 p-1 rounded text-on-surface-subtle hover:text-danger hover:bg-danger/10 transition"
         title="Unlink"><X size={11} /></button>
+    </div>
+  );
+}
+
+// Recurrence picker in the drawer's right rail. Sub-tasks (parent_id
+// set) can't recur — the whole model spawns off the top-level task.
+type RecurrenceRule = { kind: 'daily' | 'weekly' | 'monthly'; interval: number; dow?: number; dom?: number } | null;
+const WEEKDAYS = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
+function summariseRecurrence(r: NonNullable<RecurrenceRule>): string {
+  const every = r.interval > 1 ? `every ${r.interval} ` : 'every ';
+  if (r.kind === 'daily')   return `${every}day${r.interval > 1 ? 's' : ''}`;
+  if (r.kind === 'weekly')  return `${every}week${r.interval > 1 ? 's' : ''}${Number.isInteger(r.dow) ? ` on ${WEEKDAYS[r.dow!]}` : ''}`;
+  return `${every}month${r.interval > 1 ? 's' : ''}${Number.isInteger(r.dom) ? ` on the ${r.dom}${suffix(r.dom!)}` : ''}`;
+}
+function suffix(n: number): string {
+  const s = ['th','st','nd','rd']; const v = n % 100;
+  return s[(v - 20) % 10] || s[v] || s[0];
+}
+function RecurrencePicker({ value, dueDate, parentId, onChange }: {
+  value: RecurrenceRule; dueDate: string | null; parentId: string | null; onChange: (v: RecurrenceRule) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  if (parentId) {
+    return (
+      <div className="text-[11px] text-on-surface-subtle italic border border-dashed border-outline rounded-lg px-2 py-1.5">
+        Sub-tasks can't recur — put the rule on the parent task.
+      </div>
+    );
+  }
+  if (!value && !open) {
+    return (
+      <button onClick={() => setOpen(true)}
+        className="inline-flex items-center gap-2 px-2 py-1.5 rounded-lg text-[11px] font-semibold border bg-surface text-on-surface-muted border-outline hover:bg-surface-2">
+        <Repeat size={11} /> Make recurring
+      </button>
+    );
+  }
+  const current: NonNullable<RecurrenceRule> = value ?? { kind: 'weekly', interval: 1, dow: dueDate ? new Date(dueDate).getDay() : new Date().getDay() };
+  return (
+    <div className="rounded-lg border border-accent/30 bg-accent/5 p-2.5 space-y-2">
+      <div className="flex items-center gap-2">
+        <Repeat size={11} className="text-accent" />
+        <span className="text-[11px] font-semibold text-accent">{value ? summariseRecurrence(value) : 'Configure recurrence'}</span>
+        {value && (
+          <button onClick={() => { onChange(null); setOpen(false); }} title="Remove recurrence"
+            className="ml-auto p-1 rounded text-on-surface-subtle hover:text-danger hover:bg-danger/10"><X size={11} /></button>
+        )}
+      </div>
+      <div className="grid grid-cols-3 gap-1.5">
+        {(['daily','weekly','monthly'] as const).map(k => (
+          <button key={k} onClick={() => onChange({ ...current, kind: k, interval: current.interval || 1 })}
+            className={`text-[11px] font-semibold py-1 rounded ${current.kind === k ? 'bg-accent text-on-accent' : 'bg-surface text-on-surface-muted border border-outline hover:bg-surface-2'}`}>
+            {k[0].toUpperCase() + k.slice(1)}
+          </button>
+        ))}
+      </div>
+      <div className="flex items-center gap-2">
+        <span className="text-[11px] text-on-surface-muted">every</span>
+        <input type="number" min="1" max="365" value={current.interval}
+          onChange={e => onChange({ ...current, interval: Math.max(1, Number(e.target.value) || 1) })}
+          className="w-14 px-1.5 py-1 rounded border border-outline bg-surface text-xs font-mono text-right" />
+        <span className="text-[11px] text-on-surface-muted">{current.kind === 'daily' ? 'days' : current.kind === 'weekly' ? 'weeks' : 'months'}</span>
+      </div>
+      {current.kind === 'weekly' && (
+        <div className="flex flex-wrap gap-1">
+          {WEEKDAYS.map((d, i) => (
+            <button key={d} onClick={() => onChange({ ...current, dow: i })}
+              className={`text-[10px] font-semibold px-1.5 py-1 rounded ${current.dow === i ? 'bg-accent text-on-accent' : 'bg-surface text-on-surface-muted border border-outline hover:bg-surface-2'}`}>
+              {d}
+            </button>
+          ))}
+        </div>
+      )}
+      {current.kind === 'monthly' && (
+        <div className="flex items-center gap-2">
+          <span className="text-[11px] text-on-surface-muted">on day</span>
+          <input type="number" min="1" max="31" value={current.dom ?? ''}
+            placeholder={dueDate ? String(new Date(dueDate).getDate()) : '1'}
+            onChange={e => onChange({ ...current, dom: Number(e.target.value) || 1 })}
+            className="w-16 px-1.5 py-1 rounded border border-outline bg-surface text-xs font-mono text-right" />
+          <span className="text-[10px] text-on-surface-subtle italic">(clamped to last day for short months)</span>
+        </div>
+      )}
+      {!value && (
+        <div className="flex justify-end gap-1.5 pt-1 border-t border-outline">
+          <button onClick={() => setOpen(false)} className="px-2 py-1 rounded text-[11px] text-on-surface-muted hover:bg-surface">Cancel</button>
+          <button onClick={() => { onChange(current); setOpen(false); }} className="px-2 py-1 rounded bg-accent text-on-accent text-[11px] font-semibold hover:opacity-90">Save</button>
+        </div>
+      )}
     </div>
   );
 }
