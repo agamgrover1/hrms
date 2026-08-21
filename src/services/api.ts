@@ -1597,7 +1597,43 @@ export const api = {
   patchKeyResult: (krId: string, patch: Record<string, any>) =>
     request<KeyResult>(`/goal-key-results/${krId}`, { method: 'PATCH', body: JSON.stringify(patch) }),
   deleteKeyResult: (krId: string) => request<{ ok: true }>(`/goal-key-results/${krId}`, { method: 'DELETE' }),
+
+  // ── Saved task views (Phase 5a) ──────────────────────────────────
+  listTaskViews: () => request<TaskSavedView[]>(`/task-views`),
+  createTaskView: (data: { name: string; scope?: 'personal' | 'shared'; board_id?: string | null; filters: TaskFilters; group_by?: string | null; sort_by?: string | null; sort_dir?: 'asc' | 'desc' | null }) =>
+    request<TaskSavedView>('/task-views', { method: 'POST', body: JSON.stringify(data) }),
+  patchTaskView: (id: string, patch: Record<string, any>) =>
+    request<TaskSavedView>(`/task-views/${id}`, { method: 'PATCH', body: JSON.stringify(patch) }),
+  deleteTaskView: (id: string) =>
+    request<{ ok: true }>(`/task-views/${id}`, { method: 'DELETE' }),
 };
+
+// Filter payload the Tasks page interprets client-side. Every field is
+// optional; a saved view carries only the fields it actively narrows on.
+export interface TaskFilters {
+  assignee_ids?: string[];
+  statuses?: string[];
+  priorities?: string[];    // 'none' | 'low' | 'normal' | 'high' | 'urgent'
+  tags?: string[];
+  due?: 'overdue' | 'today' | 'this_week' | 'next_week' | 'no_date' | 'custom';
+  due_from?: string; due_to?: string;
+  is_milestone?: boolean;
+  has_recurrence?: boolean;
+  query?: string;
+}
+export interface TaskSavedView {
+  id: string;
+  owner_id: string;
+  name: string;
+  scope: 'personal' | 'shared';
+  board_id: string | null;
+  filters: TaskFilters;
+  group_by: string | null;
+  sort_by: string | null;
+  sort_dir: 'asc' | 'desc' | null;
+  created_at: string;
+  updated_at: string;
+}
 
 export interface KeyResult {
   id: string;

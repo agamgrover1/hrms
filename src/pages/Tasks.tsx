@@ -6,10 +6,11 @@ import {
   ChevronLeft, ChevronRight, Diamond, Repeat, GanttChartSquare,
 } from 'lucide-react';
 import { api } from '../services/api';
-import type { Task, TaskBoard } from '../services/api';
+import type { Task, TaskBoard, TaskFilters, TaskSavedView } from '../services/api';
 import { useAuth } from '../context/AuthContext';
 import { toast } from '../components/Toaster';
 import TaskDetailModal from '../components/tasks/TaskDetailModal';
+import TaskFilterBar from '../components/tasks/TaskFilterBar';
 import {
   PRIORITY_META, DEFAULT_STATUSES, dueMeta, DUE_TONE_CLASS, midpoint, initials, todayISO, defaultBoardParams } from '../lib/taskMeta';
 
@@ -109,14 +110,16 @@ export default function Tasks() {
   // renders as a list grouped by urgency instead.
   const effectiveView: View = isMine ? 'list' : view;
 
-  const filtered = useMemo(() => {
-    const q = search.trim().toLowerCase();
-    if (!q) return tasks;
-    return tasks.filter(t =>
-      t.title.toLowerCase().includes(q)
-      || (t.description ?? '').toLowerCase().includes(q)
-      || (t.assignee_name ?? '').toLowerCase().includes(q));
-  }, [tasks, search]);
+  // Structured filters (Phase 5a) — applied client-side over the loaded
+  // tasks. Nothing here is persisted unless the user saves a view.
+  const [filters, setFilters] = useState<TaskFilters>({});
+  const [savedViews, setSavedViews] = useState<TaskSavedView[]>([]);
+  const [activeViewId, setActiveViewId] = useState<string | null>(null);
+  useEffect(() => {
+    api.listTaskViews().then(setSavedViews).catch(() => setSavedViews([]));
+  }, []);
+
+  const filtered = useMemo(() => filterTasks(tasks, filters, search), [tasks, filters, search]);
 
   const statuses = activeBoard?.statuses?.length ? activeBoard.statuses : DEFAULT_STATUSES;
 
@@ -235,6 +238,23 @@ export default function Tasks() {
           <button onClick={() => setErr('')} className="text-danger/70 hover:text-danger"><X size={14} /></button>
         </div>
       )}
+
+      <TaskFilterBar
+        filters={filters}
+        onChange={f => { setFilters(f); setActiveViewId(null); }}
+        savedViews={savedViews}
+        activeViewId={activeViewId}
+        onLoadView={v => {
+          setFilters(v.filters ?? {});
+          if (v.board_id && v.board_id !== boardParam) setBoardParam(v.board_id);
+          setActiveViewId(v.id);
+        }}
+        onSaved={v => { setSavedViews(prev => [...prev.filter(x => x.id !== v.id), v]); setActiveViewId(v.id); }}
+        onDeleted={id => { setSavedViews(prev => prev.filter(v => v.id !== id)); if (activeViewId === id) setActiveViewId(null); }}
+        employees={employees}
+        statuses={statuses.map(s => ({ id: s.id, label: s.label }))}
+        boardId={boardParam === 'mine' ? null : (boardParam ?? null)}
+      />
 
       <div className="flex-1 min-h-0 flex gap-4">
         {/* ── Left rail: My tasks + boards by project ── */}
@@ -763,6 +783,62 @@ function firstGridDay(year: number, month: number): Date {
   const g = new Date(first);
   g.setDate(first.getDate() - dow);
   return g;
+}
+
+// Apply structured filters + free-text search to the loaded task set.
+// Every field on `filters` is optional; an empty filters + empty query
+// returns the input untouched. Deliberately client-side — the server
+// already loads a bounded set (per-board or "mine"), so this is cheap.
+function filterTasks(tasks: Task[], f: TaskFilters, q: string): Task[] {
+  const query = q.trim().toLowerCase();
+  const activeFilter = f && Object.values(f).some(v => v !== undefined && v !== null && (!Array.isArray(v) || v.length > 0));
+  if (!query && !activeFilter) return tasks;
+  const today = ymd(new Date());
+  const now = new Date();
+  const startOfWeek = new Date(now); const dow = now.getDay(); startOfWeek.setDate(now.getDate() - dow);
+  const endOfWeek = new Date(startOfWeek); endOfWeek.setDate(startOfWeek.getDate() + 6);
+  const startOfNextWeek = new Date(endOfWeek); startOfNextWeek.setDate(endOfWeek.getDate() + 1);
+  const endOfNextWeek = new Date(startOfNextWeek); endOfNextWeek.setDate(startOfNextWeek.getDate() + 6);
+  return tasks.filter(t => {
+    if (query) {
+      const hay = `${t.title} ${t.description ?? ''} ${t.assignee_name ?? ''}`.toLowerCase();
+      if (!hay.includes(query)) return false;
+    }
+    if (f.assignee_ids?.length) {
+      const wantsUnassigned = f.assignee_ids.includes('__unassigned__');
+      if (!wantsUnassigned) { if (!t.assignee_id || !f.assignee_ids.includes(t.assignee_id)) return false; }
+      else if (t.assignee_id && !f.assignee_ids.includes(t.assignee_id)) return false;
+    }
+    if (f.statuses?.length && !f.statuses.includes(t.status)) return false;
+    if (f.priorities?.length && !f.priorities.includes(t.priority)) return false;
+    if (f.tags?.length) {
+      const set = new Set((t.tags ?? []).map(String));
+      if (!f.tags.some(g => set.has(g))) return false;
+    }
+    if (f.is_milestone === true && !t.is_milestone) return false;
+    if (f.is_milestone === false && t.is_milestone) return false;
+    if (f.has_recurrence === true && !t.recurrence) return false;
+    if (f.has_recurrence === false && t.recurrence) return false;
+    if (f.due === 'no_date' && t.due_date) return false;
+    if (f.due === 'overdue') {
+      if (!t.due_date || t.completed_at || t.due_date >= today) return false;
+    } else if (f.due === 'today') {
+      if (!t.due_date || t.due_date.slice(0, 10) !== today) return false;
+    } else if (f.due === 'this_week') {
+      if (!t.due_date) return false;
+      const d = new Date(t.due_date);
+      if (d < startOfWeek || d > endOfWeek) return false;
+    } else if (f.due === 'next_week') {
+      if (!t.due_date) return false;
+      const d = new Date(t.due_date);
+      if (d < startOfNextWeek || d > endOfNextWeek) return false;
+    } else if (f.due === 'custom') {
+      if (!t.due_date) return false;
+      if (f.due_from && t.due_date < f.due_from) return false;
+      if (f.due_to   && t.due_date > f.due_to)   return false;
+    }
+    return true;
+  });
 }
 
 // Horizontal timeline / Gantt. Each task with a due_date renders as a

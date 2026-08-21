@@ -880,7 +880,7 @@ async function runStartupMigrations() {
     // For a *seed* (rows, not columns), we probe with EXISTS-style: an
     // empty result set means "still needs to run", so we don't set the
     // flag and fall through.
-    await sql`SELECT target_value FROM goal_key_results LIMIT 0`;
+    await sql`SELECT scope FROM task_saved_views LIMIT 0`;
     _migrated = true;
     return;
   } catch {
@@ -3290,6 +3290,31 @@ async function runStartupMigrations() {
       updated_by_name TEXT
     )`;
   await sql`CREATE INDEX IF NOT EXISTS idx_krs_goal ON goal_key_results(goal_id, sort_order)`.catch(()=>{});
+
+  // Saved task views (Phase 5a). A view captures the filter + grouping
+  // + sort state of the Tasks page so a user can restore it in one
+  // click. Scope:
+  //   'personal' — visible only to owner_id
+  //   'shared'   — visible to everyone signed in
+  // filters is a JSONB blob the client interprets — evolving the shape
+  // never needs a migration. board_id snapshots the list/board the
+  // view was saved on (nullable ⇒ "all boards").
+  await sql`
+    CREATE TABLE IF NOT EXISTS task_saved_views (
+      id TEXT PRIMARY KEY,
+      owner_id TEXT NOT NULL,
+      name TEXT NOT NULL,
+      scope TEXT NOT NULL DEFAULT 'personal',
+      board_id TEXT,
+      filters JSONB NOT NULL DEFAULT '{}'::jsonb,
+      group_by TEXT,
+      sort_by TEXT,
+      sort_dir TEXT,
+      created_at TIMESTAMPTZ DEFAULT NOW(),
+      updated_at TIMESTAMPTZ DEFAULT NOW()
+    )`;
+  await sql`CREATE INDEX IF NOT EXISTS idx_task_views_owner ON task_saved_views(owner_id, scope)`.catch(()=>{});
+  await sql`CREATE INDEX IF NOT EXISTS idx_task_views_shared ON task_saved_views(scope) WHERE scope='shared'`.catch(()=>{});
 
   _migrated = true;
 }
@@ -21337,6 +21362,101 @@ app.delete('/api/goal-key-results/:krId', async (req, res) => {
     const canDelete = cur.owner_id === gate.user.employeeId || cur.created_by_id === gate.user.id || TASK_LIST_MANAGER_ROLES.includes(gate.user.role);
     if (!canDelete) return res.status(403).json({ error: 'Only the goal owner or a manager can delete key results.' });
     await sql`DELETE FROM goal_key_results WHERE id=${req.params.krId}`;
+    res.json({ ok: true });
+  } catch (err: any) { res.status(500).json({ error: err.message ?? 'Server error' }); }
+});
+
+// ── Saved task views (Phase 5a) ──────────────────────────────────────
+// Personal views live under the owner. Shared views are readable by
+// anyone but only the owner (or a manager) can edit or delete them.
+app.get('/api/task-views', async (req, res) => {
+  try {
+    await runStartupMigrations();
+    const gate = await taskActor(req, res);
+    if (!gate.ok) return;
+    const rows = await sql`
+      SELECT * FROM task_saved_views
+      WHERE scope='shared' OR owner_id=${gate.user.id}
+      ORDER BY scope='shared', name` as any[];
+    res.json(rows);
+  } catch (err: any) { res.status(500).json({ error: err.message ?? 'Server error' }); }
+});
+
+app.post('/api/task-views', async (req, res) => {
+  try {
+    await runStartupMigrations();
+    const gate = await taskActor(req, res);
+    if (!gate.ok) return;
+    const name = String(req.body?.name ?? '').trim();
+    if (!name) return res.status(400).json({ error: 'name is required' });
+    const scope = req.body?.scope === 'shared' ? 'shared' : 'personal';
+    const boardId = req.body?.board_id || null;
+    const filters = req.body?.filters ?? {};
+    if (typeof filters !== 'object' || Array.isArray(filters)) return res.status(400).json({ error: 'filters must be an object' });
+    const groupBy = req.body?.group_by ?? null;
+    const sortBy  = req.body?.sort_by ?? null;
+    const sortDir = req.body?.sort_dir === 'desc' ? 'desc' : req.body?.sort_dir === 'asc' ? 'asc' : null;
+    const id = newId('tvw');
+    const rows = await sql`
+      INSERT INTO task_saved_views (id, owner_id, name, scope, board_id, filters, group_by, sort_by, sort_dir)
+      VALUES (${id}, ${gate.user.id}, ${name}, ${scope}, ${boardId}, ${JSON.stringify(filters)}::jsonb, ${groupBy}, ${sortBy}, ${sortDir})
+      RETURNING *`;
+    res.status(201).json(rows[0]);
+  } catch (err: any) { res.status(500).json({ error: err.message ?? 'Server error' }); }
+});
+
+app.patch('/api/task-views/:id', async (req, res) => {
+  try {
+    await runStartupMigrations();
+    const gate = await taskActor(req, res);
+    if (!gate.ok) return;
+    const cur = (await sql`SELECT * FROM task_saved_views WHERE id=${req.params.id}` as any[])[0];
+    if (!cur) return res.status(404).json({ error: 'View not found' });
+    const canEdit = cur.owner_id === gate.user.id || TASK_LIST_MANAGER_ROLES.includes(gate.user.role);
+    if (!canEdit) return res.status(403).json({ error: 'Only the owner or a manager can edit this view.' });
+    const b = req.body ?? {};
+    const next: Record<string, any> = {};
+    if (b.name !== undefined) {
+      const t = String(b.name).trim();
+      if (!t) return res.status(400).json({ error: 'name cannot be empty' });
+      next.name = t;
+    }
+    if (b.scope !== undefined) next.scope = b.scope === 'shared' ? 'shared' : 'personal';
+    if (b.board_id !== undefined) next.board_id = b.board_id || null;
+    if (b.filters !== undefined) {
+      if (typeof b.filters !== 'object' || Array.isArray(b.filters)) return res.status(400).json({ error: 'filters must be an object' });
+      next.filters = b.filters;
+    }
+    if (b.group_by !== undefined) next.group_by = b.group_by || null;
+    if (b.sort_by !== undefined) next.sort_by = b.sort_by || null;
+    if (b.sort_dir !== undefined) next.sort_dir = b.sort_dir === 'desc' ? 'desc' : b.sort_dir === 'asc' ? 'asc' : null;
+    if (!Object.keys(next).length) return res.json(cur);
+    const rows = await sql`
+      UPDATE task_saved_views SET
+        name       = COALESCE(${next.name ?? null}::text, name),
+        scope      = COALESCE(${next.scope ?? null}::text, scope),
+        board_id   = ${'board_id' in next ? next.board_id : cur.board_id}::text,
+        filters    = ${'filters' in next ? JSON.stringify(next.filters) : JSON.stringify(cur.filters ?? {})}::jsonb,
+        group_by   = ${'group_by' in next ? next.group_by : cur.group_by}::text,
+        sort_by    = ${'sort_by' in next ? next.sort_by : cur.sort_by}::text,
+        sort_dir   = ${'sort_dir' in next ? next.sort_dir : cur.sort_dir}::text,
+        updated_at = NOW()
+      WHERE id = ${req.params.id}
+      RETURNING *`;
+    res.json(rows[0]);
+  } catch (err: any) { res.status(500).json({ error: err.message ?? 'Server error' }); }
+});
+
+app.delete('/api/task-views/:id', async (req, res) => {
+  try {
+    await runStartupMigrations();
+    const gate = await taskActor(req, res);
+    if (!gate.ok) return;
+    const cur = (await sql`SELECT owner_id FROM task_saved_views WHERE id=${req.params.id}` as any[])[0];
+    if (!cur) return res.status(404).json({ error: 'View not found' });
+    const canDelete = cur.owner_id === gate.user.id || TASK_LIST_MANAGER_ROLES.includes(gate.user.role);
+    if (!canDelete) return res.status(403).json({ error: 'Only the owner or a manager can delete this view.' });
+    await sql`DELETE FROM task_saved_views WHERE id=${req.params.id}`;
     res.json({ ok: true });
   } catch (err: any) { res.status(500).json({ error: err.message ?? 'Server error' }); }
 });
