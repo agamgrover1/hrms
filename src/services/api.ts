@@ -1635,7 +1635,31 @@ export const api = {
     ),
   deleteProjectTemplate: (id: string) =>
     request<{ ok: true }>(`/project-templates/${id}`, { method: 'DELETE' }),
+
+  // ── Reports (Phase 5c) ────────────────────────────────────────────
+  getReportsOverview: (days = 30) =>
+    request<ReportsOverview>(`/reports/overview?days=${days}`),
 };
+
+export interface ReportsOverview {
+  days: number;
+  since: string;
+  totals: {
+    open: number;
+    completed_in_window: number;
+    overdue: number;
+    hours_logged_in_window: number;
+    active_projects: number;
+    active_assignees: number;
+  };
+  tasks_by_status: Array<{ status: string; count: number }>;
+  tasks_by_priority: Array<{ priority: string; count: number }>;
+  overdue_by_assignee: Array<{ employee_id: string | null; name: string; count: number }>;
+  time_by_employee: Array<{ employee_id: string | null; name: string | null; task_hours: number; timesheet_hours: number; total_hours: number }>;
+  projects_completion: Array<{ project_id: string; name: string; client_name: string | null; total: number; done: number; open: number; overdue: number; pct: number }>;
+  activity: Array<{ actor_name: string | null; action: string; project_name: string | null; subject_title: string | null; source: 'task' | 'project'; when: string }>;
+  overdue_tasks: Array<{ id: string; title: string; assignee_name: string | null; due_date: string; priority: string; project_name: string | null; days_overdue: number }>;
+}
 
 export interface TaskCustomField {
   id: string;

@@ -23,6 +23,7 @@ import Projects from './pages/Projects';
 import Tasks from './pages/Tasks';
 import Workload from './pages/Workload';
 import Goals from './pages/Goals';
+import Reports from './pages/Reports';
 import ProjectHours from './pages/ProjectHours';
 import HoursApproval from './pages/HoursApproval';
 import HoursCompliance from './pages/HoursCompliance';
@@ -115,6 +116,8 @@ function AppRoutes() {
         {/* Goals — anyone can view; the API enforces edit/delete permissions
             (owner or admin/HR/coord). */}
         <Route path="goals" element={<ProtectedRoute><Goals /></ProtectedRoute>} />
+        {/* Reports — admin / HR / project_coordinator only (API also gates). */}
+        <Route path="reports" element={<ProtectedRoute roles={['admin', 'hr_manager', 'project_coordinator']}><Reports /></ProtectedRoute>} />
         {/* /hours: open to anyone. The page itself decides which tabs are visible
             based on role + whether the viewer leads/reviews any projects. Team
             leads (role=employee) need this to see all projects they lead. */}

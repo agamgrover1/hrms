@@ -2,7 +2,7 @@ import { NavLink, useLocation } from 'react-router-dom';
 import {
   LayoutDashboard, Users, Clock3, CalendarDays, Wallet, Sparkles,
   ChevronLeft, ChevronRight, ChevronDown, UserCog, User, SlidersHorizontal, TrendingUp, Wrench,
-  Briefcase, ClipboardCheck, Layers, LineChart, AlertTriangle, Activity, Megaphone, BookOpen, HelpCircle, Mail, UserPlus, FileText, UserSearch, KanbanSquare, Target, type LucideIcon,
+  Briefcase, ClipboardCheck, Layers, LineChart, AlertTriangle, Activity, Megaphone, BookOpen, HelpCircle, Mail, UserPlus, FileText, UserSearch, KanbanSquare, Target, BarChart3, type LucideIcon,
 } from 'lucide-react';
 import { useState, useEffect, useRef } from 'react';
 import { useAuth } from '../../context/AuthContext';
@@ -45,6 +45,7 @@ const projectGroup: NavGroup = {
     { to: '/tasks', icon: KanbanSquare, label: 'Tasks' },
     { to: '/workload', icon: Activity, label: 'Workload' },
     { to: '/goals', icon: Target, label: 'Goals' },
+    { to: '/reports', icon: BarChart3, label: 'Reports' },
     { to: '/hours', icon: Layers, label: 'Hours grid' },
     { to: '/hours/allocation', icon: CalendarDays, label: 'Allocation' },
     { to: '/hours/compliance', icon: AlertTriangle, label: 'Compliance' },

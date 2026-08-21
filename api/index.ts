@@ -21765,6 +21765,172 @@ app.post('/api/project-templates/from-project', async (req, res) => {
   } catch (err: any) { res.status(500).json({ error: err.message ?? 'Server error' }); }
 });
 
+// ── Reports (Phase 5c) ───────────────────────────────────────────────
+// One batched aggregate endpoint that feeds both the visual overview
+// tab and the tabular reports tab on /reports. All data is derived from
+// existing tables + task_time_entries — no reporting-specific schema.
+// Access: admin / hr_manager / project_coordinator only.
+app.get('/api/reports/overview', async (req, res) => {
+  try {
+    await runStartupMigrations();
+    const gate = await taskActor(req, res);
+    if (!gate.ok) return;
+    if (!TASK_LIST_MANAGER_ROLES.includes(gate.user.role)) {
+      return res.status(403).json({ error: 'Reports are limited to admin / HR / project coordinator.' });
+    }
+    const days = Math.max(1, Math.min(365, Number(req.query.days) || 30));
+    const sinceISO = new Date(Date.now() - days * 86_400_000).toISOString();
+    const todayISO = new Date().toISOString().slice(0, 10);
+
+    // Totals band.
+    const [openRow, doneRow, overdueRow, hoursRow, projRow, empRow] = await Promise.all([
+      sql`SELECT COUNT(*)::int AS n FROM tasks WHERE completed_at IS NULL AND parent_id IS NULL`,
+      sql`SELECT COUNT(*)::int AS n FROM tasks WHERE completed_at >= ${sinceISO} AND parent_id IS NULL`,
+      sql`SELECT COUNT(*)::int AS n FROM tasks WHERE completed_at IS NULL AND due_date < ${todayISO}::date AND parent_id IS NULL`,
+      sql`SELECT COALESCE(SUM(hours), 0)::numeric AS h FROM task_time_entries WHERE log_date >= ${sinceISO}::date`,
+      sql`SELECT COUNT(*)::int AS n FROM projects WHERE status='active'`,
+      sql`SELECT COUNT(DISTINCT assignee_id)::int AS n FROM tasks WHERE completed_at IS NULL AND assignee_id IS NOT NULL`,
+    ]);
+
+    // Tasks by status — pulls labels from each list's own statuses JSONB
+    // so cross-board rollups still read as "In progress" / "Blocked" etc.
+    const statusRows = await sql`
+      SELECT t.status, COUNT(*)::int AS n
+      FROM tasks t
+      WHERE t.parent_id IS NULL
+      GROUP BY t.status
+      ORDER BY n DESC
+      LIMIT 12` as any[];
+
+    // Tasks by priority.
+    const priorityRows = await sql`
+      SELECT priority, COUNT(*)::int AS n
+      FROM tasks
+      WHERE completed_at IS NULL AND parent_id IS NULL
+      GROUP BY priority` as any[];
+
+    // Top overdue owners.
+    const overdueByAssignee = await sql`
+      SELECT t.assignee_id, COALESCE(t.assignee_name, 'Unassigned') AS name,
+             COUNT(*)::int AS n
+      FROM tasks t
+      WHERE t.completed_at IS NULL AND t.due_date < ${todayISO}::date AND t.parent_id IS NULL
+      GROUP BY t.assignee_id, t.assignee_name
+      ORDER BY n DESC
+      LIMIT 10` as any[];
+
+    // Time by employee — union both sources but keep them split so the
+    // reports table can show the two lanes distinctly.
+    const timeByEmployee = await sql`
+      WITH task_h AS (
+        SELECT employee_id, employee_name, SUM(hours)::numeric AS h
+        FROM task_time_entries WHERE log_date >= ${sinceISO}::date
+        GROUP BY employee_id, employee_name
+      ),
+      manual_h AS (
+        SELECT employee_id, employee_name, SUM(hours)::numeric AS h
+        FROM hour_log_days WHERE log_date >= ${sinceISO}::date
+        GROUP BY employee_id, employee_name
+      ),
+      u AS (
+        SELECT COALESCE(t.employee_id, m.employee_id) AS employee_id,
+               COALESCE(t.employee_name, m.employee_name) AS employee_name,
+               COALESCE(t.h, 0)::numeric AS task_hours,
+               COALESCE(m.h, 0)::numeric AS timesheet_hours
+        FROM task_h t FULL OUTER JOIN manual_h m ON m.employee_id = t.employee_id
+      )
+      SELECT * FROM u
+      ORDER BY (task_hours + timesheet_hours) DESC
+      LIMIT 25` as any[];
+
+    // Per-project completion.
+    const projectRows = await sql`
+      SELECT p.id, p.name, p.client_name,
+             COUNT(t.id)::int AS total,
+             COUNT(t.id) FILTER (WHERE t.completed_at IS NOT NULL)::int AS done,
+             COUNT(t.id) FILTER (WHERE t.completed_at IS NULL)::int AS open,
+             COUNT(t.id) FILTER (WHERE t.completed_at IS NULL AND t.due_date < ${todayISO}::date)::int AS overdue
+      FROM projects p
+      LEFT JOIN task_lists l ON l.project_id = p.id AND l.archived = FALSE
+      LEFT JOIN tasks t ON t.list_id = l.id AND t.parent_id IS NULL
+      WHERE p.status = 'active'
+      GROUP BY p.id, p.name, p.client_name
+      HAVING COUNT(t.id) > 0
+      ORDER BY overdue DESC, total DESC
+      LIMIT 25` as any[];
+
+    // Recent activity across the module. Combine task activity + project
+    // activity read-only. Limit tight so this stays a preview, not a feed.
+    const recentActivity = await sql`
+      (SELECT ta.created_at, ta.actor_name, ta.kind AS action, t.title AS subject_title,
+              p.name AS project_name, 'task' AS source
+       FROM task_activity ta
+       JOIN tasks t ON t.id = ta.task_id
+       JOIN task_lists l ON l.id = t.list_id
+       LEFT JOIN projects p ON p.id = l.project_id
+       WHERE ta.created_at >= ${sinceISO}
+       ORDER BY ta.created_at DESC
+       LIMIT 30)
+      UNION ALL
+      (SELECT pa.created_at, pa.actor_name, pa.action, NULL AS subject_title,
+              p.name AS project_name, 'project' AS source
+       FROM project_activity pa
+       LEFT JOIN projects p ON p.id = pa.project_id
+       WHERE pa.created_at >= ${sinceISO}
+       ORDER BY pa.created_at DESC
+       LIMIT 30)
+      ORDER BY created_at DESC
+      LIMIT 30` as any[];
+
+    // Overdue task list for the reports tab.
+    const overdueTasks = await sql`
+      SELECT t.id, t.title, t.assignee_name, t.due_date, t.priority,
+             p.name AS project_name
+      FROM tasks t
+      JOIN task_lists l ON l.id = t.list_id
+      LEFT JOIN projects p ON p.id = l.project_id
+      WHERE t.completed_at IS NULL AND t.due_date < ${todayISO}::date AND t.parent_id IS NULL
+      ORDER BY t.due_date ASC
+      LIMIT 100` as any[];
+
+    res.json({
+      days,
+      since: sinceISO,
+      totals: {
+        open: Number((openRow as any[])[0]?.n ?? 0),
+        completed_in_window: Number((doneRow as any[])[0]?.n ?? 0),
+        overdue: Number((overdueRow as any[])[0]?.n ?? 0),
+        hours_logged_in_window: Math.round(Number((hoursRow as any[])[0]?.h ?? 0) * 10) / 10,
+        active_projects: Number((projRow as any[])[0]?.n ?? 0),
+        active_assignees: Number((empRow as any[])[0]?.n ?? 0),
+      },
+      tasks_by_status: statusRows.map(r => ({ status: r.status, count: Number(r.n) })),
+      tasks_by_priority: priorityRows.map(r => ({ priority: r.priority, count: Number(r.n) })),
+      overdue_by_assignee: overdueByAssignee.map(r => ({ employee_id: r.assignee_id, name: r.name, count: Number(r.n) })),
+      time_by_employee: timeByEmployee.map(r => ({
+        employee_id: r.employee_id, name: r.employee_name,
+        task_hours: Math.round(Number(r.task_hours) * 10) / 10,
+        timesheet_hours: Math.round(Number(r.timesheet_hours) * 10) / 10,
+        total_hours: Math.round((Number(r.task_hours) + Number(r.timesheet_hours)) * 10) / 10,
+      })),
+      projects_completion: projectRows.map(r => ({
+        project_id: r.id, name: r.name, client_name: r.client_name,
+        total: Number(r.total), done: Number(r.done), open: Number(r.open), overdue: Number(r.overdue),
+        pct: Number(r.total) > 0 ? Math.round((Number(r.done) / Number(r.total)) * 1000) / 10 : 0,
+      })),
+      activity: recentActivity.map(r => ({
+        actor_name: r.actor_name, action: r.action, project_name: r.project_name,
+        subject_title: r.subject_title, source: r.source, when: r.created_at,
+      })),
+      overdue_tasks: overdueTasks.map(r => ({
+        id: r.id, title: r.title, assignee_name: r.assignee_name, due_date: r.due_date,
+        priority: r.priority, project_name: r.project_name,
+        days_overdue: Math.floor((Date.now() - new Date(r.due_date).getTime()) / 86_400_000),
+      })),
+    });
+  } catch (err: any) { res.status(500).json({ error: err.message ?? 'Server error' }); }
+});
+
 // Apply a template to an EXISTING project — creates lists + tasks +
 // subtasks from the template's structure. Nothing is overwritten;
 // duplicate list names get " (copy)" suffixes. Returns a summary.
