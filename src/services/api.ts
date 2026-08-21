@@ -1606,7 +1606,68 @@ export const api = {
     request<TaskSavedView>(`/task-views/${id}`, { method: 'PATCH', body: JSON.stringify(patch) }),
   deleteTaskView: (id: string) =>
     request<{ ok: true }>(`/task-views/${id}`, { method: 'DELETE' }),
+
+  // ── Custom fields (Phase 5b) ─────────────────────────────────────
+  listTaskFields: (params: { project_id?: string; list_id?: string }) => {
+    const qs = new URLSearchParams();
+    if (params.project_id) qs.set('project_id', params.project_id);
+    if (params.list_id) qs.set('list_id', params.list_id);
+    return request<TaskCustomField[]>(`/task-fields?${qs}`);
+  },
+  createTaskField: (data: { project_id?: string; list_id?: string; name: string; kind: TaskCustomField['kind']; options?: Record<string, any> }) =>
+    request<TaskCustomField>('/task-fields', { method: 'POST', body: JSON.stringify(data) }),
+  patchTaskField: (id: string, patch: Record<string, any>) =>
+    request<TaskCustomField>(`/task-fields/${id}`, { method: 'PATCH', body: JSON.stringify(patch) }),
+  deleteTaskField: (id: string) =>
+    request<{ ok: true }>(`/task-fields/${id}`, { method: 'DELETE' }),
+  setTaskFieldValue: (taskId: string, fieldId: string, value: unknown) =>
+    request<any>(`/tasks/${taskId}/field-values/${fieldId}`, { method: 'PUT', body: JSON.stringify({ value }) }),
+
+  // ── Project templates (Phase 5b) ─────────────────────────────────
+  listProjectTemplates: () => request<ProjectTemplate[]>(`/project-templates`),
+  createProjectTemplate: (data: { name: string; description?: string; structure: ProjectTemplate['structure'] }) =>
+    request<ProjectTemplate>('/project-templates', { method: 'POST', body: JSON.stringify(data) }),
+  captureProjectTemplate: (data: { project_id: string; name: string; description?: string }) =>
+    request<ProjectTemplate>('/project-templates/from-project', { method: 'POST', body: JSON.stringify(data) }),
+  applyProjectTemplate: (templateId: string, project_id: string) =>
+    request<{ ok: true; template: string; lists_created: number; tasks_created: number; subtasks_created: number }>(
+      `/project-templates/${templateId}/apply`, { method: 'POST', body: JSON.stringify({ project_id }) }
+    ),
+  deleteProjectTemplate: (id: string) =>
+    request<{ ok: true }>(`/project-templates/${id}`, { method: 'DELETE' }),
 };
+
+export interface TaskCustomField {
+  id: string;
+  project_id: string | null;
+  list_id: string | null;
+  name: string;
+  kind: 'text' | 'number' | 'date' | 'checkbox' | 'dropdown';
+  options: { choices?: string[] } & Record<string, any>;
+  sort_order: number;
+  value?: any;              // populated on GET /tasks/:id per-task
+  created_at: string;
+  updated_at: string;
+}
+export interface ProjectTemplate {
+  id: string;
+  name: string;
+  description: string | null;
+  structure: {
+    lists: Array<{
+      name: string;
+      statuses?: any[];
+      tasks: Array<{
+        title: string; description?: string; priority?: string; tags?: string[]; estimate_hours?: number;
+        subtasks?: Array<{ title: string }>;
+      }>;
+    }>;
+  };
+  created_at: string;
+  updated_at: string;
+  created_by_id: string | null;
+  created_by_name: string | null;
+}
 
 // Filter payload the Tasks page interprets client-side. Every field is
 // optional; a saved view carries only the fields it actively narrows on.

@@ -4,7 +4,7 @@ import {
   Link2, Flag, Diamond, Play, Square, Clock, Repeat,
 } from 'lucide-react';
 import { api } from '../../services/api';
-import type { Task, TaskActivity, TaskComment, TaskPriority, TaskStatus } from '../../services/api';
+import type { Task, TaskActivity, TaskComment, TaskPriority, TaskStatus, TaskCustomField } from '../../services/api';
 import { useAuth } from '../../context/AuthContext';
 import { toast } from '../Toaster';
 import { TASK_PRIORITIES, PRIORITY_META, initials } from '../../lib/taskMeta';
@@ -63,6 +63,7 @@ export default function TaskDetailModal({ taskId, employees, onClose, onChanged 
   const [watchers, setWatchers] = useState<Array<{ employee_id: string; employee_name: string | null; avatar: string | null }>>([]);
   const [depsOut, setDepsOut] = useState<DepEdge[]>([]);
   const [depsIn, setDepsIn] = useState<DepEdge[]>([]);
+  const [customFields, setCustomFields] = useState<TaskCustomField[]>([]);
   const [depPickerOpen, setDepPickerOpen] = useState<DepKind | null>(null);
   const [depQuery, setDepQuery] = useState('');
   const [depCandidates, setDepCandidates] = useState<any[]>([]);
@@ -104,8 +105,10 @@ export default function TaskDetailModal({ taskId, employees, onClose, onChanged 
   const load = useCallback(() => {
     setLoading(true);
     api.getTask(taskId)
-      .then(({ task: t, subtasks: st, comments: cs, activity: acts }) => {
+      .then((r: any) => {
+        const { task: t, subtasks: st, comments: cs, activity: acts, custom_fields: cf } = r;
         setTask(t); setSubtasks(st); setComments(cs); setActivity(acts);
+        setCustomFields(cf ?? []);
         setTitle(t.title); setDescription(t.description ?? '');
       })
       .catch((e: any) => setErr(e?.message ?? 'Failed to load task'))
@@ -805,6 +808,16 @@ export default function TaskDetailModal({ taskId, employees, onClose, onChanged 
                 )}
               </div>
 
+              {customFields.length > 0 && (
+                <div className="pt-2 border-t border-outline space-y-2">
+                  <p className="text-[10px] uppercase tracking-wider text-on-surface-muted font-semibold">Custom fields</p>
+                  {customFields.map(cf => (
+                    <CustomFieldEditor key={cf.id} field={cf} taskId={taskId}
+                      onChanged={next => setCustomFields(prev => prev.map(f => f.id === cf.id ? { ...f, value: next } : f))} />
+                  ))}
+                </div>
+              )}
+
               <div className="pt-2 border-t border-outline text-[11px] text-on-surface-subtle space-y-0.5">
                 <p>Created by {task.created_by_name ?? 'Unknown'}</p>
                 <p>{new Date(task.created_at).toLocaleString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' })}</p>
@@ -928,3 +941,49 @@ function RecurrencePicker({ value, dueDate, parentId, onChange }: {
     </div>
   );
 }
+
+// Inline editor for one custom field on the task drawer. Auto-saves on
+// blur / change so nothing needs a Save button.
+function CustomFieldEditor({ field, taskId, onChanged }: {
+  field: TaskCustomField; taskId: string; onChanged: (next: any) => void;
+}) {
+  const [local, setLocal] = useState<any>(field.value ?? '');
+  useEffect(() => setLocal(field.value ?? ''), [field.value]);
+  const commit = async (v: any) => {
+    try {
+      await api.setTaskFieldValue(taskId, field.id, v === '' ? null : v);
+      onChanged(v === '' ? null : v);
+    } catch (e: any) {
+      toast.error('Could not save', e?.message ?? 'Please try again.');
+      setLocal(field.value ?? '');
+    }
+  };
+  const wrap = 'text-sm w-full px-2 py-1 rounded border border-outline bg-surface focus:outline-none focus:ring-1 focus:ring-accent/40';
+  return (
+    <div>
+      <label className="block text-[10px] text-on-surface-muted font-semibold uppercase tracking-wider mb-1">{field.name}</label>
+      {field.kind === 'text' && (
+        <input value={local ?? ''} onChange={e => setLocal(e.target.value)} onBlur={() => local !== (field.value ?? '') && commit(local)} className={wrap} />
+      )}
+      {field.kind === 'number' && (
+        <input type="number" value={local ?? ''} onChange={e => setLocal(e.target.value)} onBlur={() => { const n = local === '' ? '' : Number(local); if (String(n) !== String(field.value ?? '')) commit(n); }} className={wrap + ' font-mono'} />
+      )}
+      {field.kind === 'date' && (
+        <input type="date" value={local ?? ''} onChange={e => { setLocal(e.target.value); commit(e.target.value); }} className={wrap} />
+      )}
+      {field.kind === 'checkbox' && (
+        <label className="flex items-center gap-2 text-sm text-on-surface">
+          <input type="checkbox" checked={!!local} onChange={e => { setLocal(e.target.checked); commit(e.target.checked); }} />
+          {local ? 'Yes' : 'No'}
+        </label>
+      )}
+      {field.kind === 'dropdown' && (
+        <select value={local ?? ''} onChange={e => { setLocal(e.target.value); commit(e.target.value); }} className={wrap}>
+          <option value="">— none —</option>
+          {(field.options?.choices ?? []).map((c: string) => <option key={c} value={c}>{c}</option>)}
+        </select>
+      )}
+    </div>
+  );
+}
+

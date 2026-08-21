@@ -11,6 +11,7 @@ import { useAuth } from '../context/AuthContext';
 import { toast } from '../components/Toaster';
 import TaskDetailModal from '../components/tasks/TaskDetailModal';
 import TaskFilterBar from '../components/tasks/TaskFilterBar';
+import TaskFieldsAndTemplatesMenu from '../components/tasks/TaskFieldsAndTemplatesMenu';
 import {
   PRIORITY_META, DEFAULT_STATUSES, dueMeta, DUE_TONE_CLASS, midpoint, initials, todayISO, defaultBoardParams } from '../lib/taskMeta';
 
@@ -61,6 +62,9 @@ export default function Tasks() {
     setParams(next, { replace: true });
   };
 
+  const reloadBoards = useCallback(() => {
+    api.listTaskBoards().then(setBoards).catch(() => {});
+  }, []);
   useEffect(() => {
     Promise.all([
       api.listTaskBoards().catch(() => [] as TaskBoard[]),
@@ -223,6 +227,7 @@ export default function Tasks() {
               </button>
             </div>
           )}
+          <TaskFieldsAndTemplatesMenu board={activeBoard ?? null} canManage={canManageBoards} onApplied={() => { reloadBoards(); loadTasks(); }} />
           {canManageBoards && (
             <button onClick={() => setShowNewBoard(true)}
               className="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg bg-accent text-on-accent text-sm font-semibold hover:opacity-90">

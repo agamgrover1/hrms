@@ -880,7 +880,7 @@ async function runStartupMigrations() {
     // For a *seed* (rows, not columns), we probe with EXISTS-style: an
     // empty result set means "still needs to run", so we don't set the
     // flag and fall through.
-    await sql`SELECT scope FROM task_saved_views LIMIT 0`;
+    await sql`SELECT structure FROM project_templates LIMIT 0`;
     _migrated = true;
     return;
   } catch {
@@ -3315,6 +3315,61 @@ async function runStartupMigrations() {
     )`;
   await sql`CREATE INDEX IF NOT EXISTS idx_task_views_owner ON task_saved_views(owner_id, scope)`.catch(()=>{});
   await sql`CREATE INDEX IF NOT EXISTS idx_task_views_shared ON task_saved_views(scope) WHERE scope='shared'`.catch(()=>{});
+
+  // ── Custom fields on tasks (Phase 5b) ────────────────────────────
+  // Fields belong to a project (project_id set) OR to a specific board
+  // (list_id set for boards that aren't tied to a project). At most one
+  // of the two is set — the API enforces this at insert time. Kind is
+  // one of: text | number | date | checkbox | dropdown.
+  // Options JSONB carries a `choices: string[]` array for dropdown kinds.
+  await sql`
+    CREATE TABLE IF NOT EXISTS task_custom_fields (
+      id TEXT PRIMARY KEY,
+      project_id TEXT,
+      list_id TEXT,
+      name TEXT NOT NULL,
+      kind TEXT NOT NULL,
+      options JSONB DEFAULT '{}'::jsonb,
+      sort_order NUMERIC NOT NULL DEFAULT 0,
+      created_at TIMESTAMPTZ DEFAULT NOW(),
+      updated_at TIMESTAMPTZ DEFAULT NOW(),
+      created_by_id TEXT,
+      created_by_name TEXT
+    )`;
+  await sql`CREATE INDEX IF NOT EXISTS idx_task_fields_project ON task_custom_fields(project_id, sort_order)`.catch(()=>{});
+  await sql`CREATE INDEX IF NOT EXISTS idx_task_fields_list ON task_custom_fields(list_id, sort_order)`.catch(()=>{});
+  // Composite value store — one row per (task, field). value is JSONB
+  // so text / number / date / boolean / dropdown-choice all fit without
+  // per-kind columns. Cascade delete when either side goes away.
+  await sql`
+    CREATE TABLE IF NOT EXISTS task_custom_field_values (
+      task_id TEXT NOT NULL,
+      field_id TEXT NOT NULL REFERENCES task_custom_fields(id) ON DELETE CASCADE,
+      value JSONB,
+      updated_at TIMESTAMPTZ DEFAULT NOW(),
+      updated_by_id TEXT,
+      PRIMARY KEY (task_id, field_id)
+    )`;
+  await sql`CREATE INDEX IF NOT EXISTS idx_task_field_values_task ON task_custom_field_values(task_id)`.catch(()=>{});
+
+  // ── Project templates (Phase 5b) ─────────────────────────────────
+  // Whole structure lives in one JSONB blob so applying is a single
+  // read → many writes. Shape:
+  //   { lists: [{ name, statuses?, tasks: [{ title, description?,
+  //             priority?, tags?, estimate_hours?, subtasks?: [{title}] }] }] }
+  // No FKs — templates outlive the projects they were captured from.
+  await sql`
+    CREATE TABLE IF NOT EXISTS project_templates (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      description TEXT,
+      structure JSONB NOT NULL,
+      created_at TIMESTAMPTZ DEFAULT NOW(),
+      updated_at TIMESTAMPTZ DEFAULT NOW(),
+      created_by_id TEXT,
+      created_by_name TEXT
+    )`;
+  await sql`CREATE INDEX IF NOT EXISTS idx_project_templates_name ON project_templates(name)`.catch(()=>{});
 
   _migrated = true;
 }
@@ -20256,7 +20311,7 @@ app.get('/api/tasks/:id', async (req, res) => {
       LEFT JOIN projects p ON p.id = l.project_id
       WHERE t.id=${req.params.id}` as any[];
     if (!rows.length) return res.status(404).json({ error: 'Task not found' });
-    const [subtasks, comments, activity, depsOut, depsIn] = await Promise.all([
+    const [subtasks, comments, activity, depsOut, depsIn, cfDefs, cfValues] = await Promise.all([
       sql`SELECT * FROM tasks WHERE parent_id=${req.params.id} ORDER BY sort_order, created_at`,
       sql`SELECT * FROM task_comments WHERE task_id=${req.params.id} ORDER BY created_at`,
       sql`SELECT * FROM task_activity WHERE task_id=${req.params.id} ORDER BY created_at DESC LIMIT 100`,
@@ -20270,8 +20325,18 @@ app.get('/api/tasks/:id', async (req, res) => {
           FROM task_dependencies d JOIN tasks t ON t.id = d.task_id
           WHERE d.depends_on_id=${req.params.id}
           ORDER BY d.created_at`,
+      // Custom-field definitions for this task's project or list.
+      sql`SELECT * FROM task_custom_fields
+          WHERE (${rows[0].project_id}::text IS NOT NULL AND project_id=${rows[0].project_id})
+             OR (${rows[0].project_id}::text IS NULL AND list_id=${rows[0].list_id})
+          ORDER BY sort_order, name`,
+      sql`SELECT field_id, value FROM task_custom_field_values WHERE task_id=${req.params.id}`,
     ]);
-    res.json({ task: rows[0], subtasks, comments, activity, dependencies: { out: depsOut, in: depsIn } });
+    // Merge value onto each definition so the drawer can render in one pass.
+    const valueByField: Record<string, any> = {};
+    for (const v of (cfValues as any[])) valueByField[v.field_id] = v.value;
+    const custom_fields = (cfDefs as any[]).map((d: any) => ({ ...d, value: valueByField[d.id] ?? null }));
+    res.json({ task: rows[0], subtasks, comments, activity, dependencies: { out: depsOut, in: depsIn }, custom_fields });
   } catch (err: any) { res.status(500).json({ error: err.message ?? 'Server error' }); }
 });
 
@@ -21458,6 +21523,302 @@ app.delete('/api/task-views/:id', async (req, res) => {
     if (!canDelete) return res.status(403).json({ error: 'Only the owner or a manager can delete this view.' });
     await sql`DELETE FROM task_saved_views WHERE id=${req.params.id}`;
     res.json({ ok: true });
+  } catch (err: any) { res.status(500).json({ error: err.message ?? 'Server error' }); }
+});
+
+// ── Custom fields (Phase 5b) ─────────────────────────────────────────
+const CUSTOM_FIELD_KINDS = ['text', 'number', 'date', 'checkbox', 'dropdown'] as const;
+
+// GET /api/task-fields?project_id=  OR  ?list_id=
+// Returns the field definitions attached to that scope. View is open;
+// mutation is gated to TASK_LIST_MANAGER_ROLES so casual users can't
+// churn the schema.
+app.get('/api/task-fields', async (req, res) => {
+  try {
+    await runStartupMigrations();
+    const gate = await taskActor(req, res);
+    if (!gate.ok) return;
+    const projectId = (req.query.project_id as string) || null;
+    const listId    = (req.query.list_id as string) || null;
+    if (!projectId && !listId) return res.status(400).json({ error: 'project_id or list_id is required' });
+    const rows = projectId
+      ? await sql`SELECT * FROM task_custom_fields WHERE project_id=${projectId} ORDER BY sort_order, name`
+      : await sql`SELECT * FROM task_custom_fields WHERE list_id=${listId}   ORDER BY sort_order, name`;
+    res.json(rows);
+  } catch (err: any) { res.status(500).json({ error: err.message ?? 'Server error' }); }
+});
+
+app.post('/api/task-fields', async (req, res) => {
+  try {
+    await runStartupMigrations();
+    const gate = await taskActor(req, res);
+    if (!gate.ok) return;
+    if (!TASK_LIST_MANAGER_ROLES.includes(gate.user.role)) return res.status(403).json({ error: 'Admin / HR / project coordinator only.' });
+    const name = String(req.body?.name ?? '').trim();
+    const kind = String(req.body?.kind ?? '');
+    if (!name) return res.status(400).json({ error: 'name is required' });
+    if (!CUSTOM_FIELD_KINDS.includes(kind as any)) return res.status(400).json({ error: `kind must be one of ${CUSTOM_FIELD_KINDS.join(', ')}` });
+    const projectId = req.body?.project_id || null;
+    const listId    = req.body?.list_id    || null;
+    if (!projectId && !listId) return res.status(400).json({ error: 'project_id or list_id is required' });
+    if (projectId && listId) return res.status(400).json({ error: 'exactly one of project_id or list_id must be set' });
+    const options = req.body?.options && typeof req.body.options === 'object' ? req.body.options : {};
+    if (kind === 'dropdown') {
+      const choices = Array.isArray(options.choices) ? options.choices.map((c: any) => String(c).trim()).filter(Boolean) : [];
+      if (!choices.length) return res.status(400).json({ error: 'dropdown fields need at least one choice' });
+      options.choices = choices.slice(0, 40);
+    }
+    const nextOrder = Number((await sql`SELECT COALESCE(MAX(sort_order), 0) + 1024 AS n FROM task_custom_fields WHERE ${projectId}::text IS NOT NULL AND project_id=${projectId} OR ${listId}::text IS NOT NULL AND list_id=${listId}` as any[])[0]?.n ?? 1024);
+    const id = newId('cf');
+    const rows = await sql`
+      INSERT INTO task_custom_fields (id, project_id, list_id, name, kind, options, sort_order, created_by_id, created_by_name)
+      VALUES (${id}, ${projectId}, ${listId}, ${name}, ${kind}, ${JSON.stringify(options)}::jsonb, ${nextOrder}, ${gate.user.id}, ${gate.user.name})
+      RETURNING *`;
+    res.status(201).json(rows[0]);
+  } catch (err: any) { res.status(500).json({ error: err.message ?? 'Server error' }); }
+});
+
+app.patch('/api/task-fields/:id', async (req, res) => {
+  try {
+    await runStartupMigrations();
+    const gate = await taskActor(req, res);
+    if (!gate.ok) return;
+    if (!TASK_LIST_MANAGER_ROLES.includes(gate.user.role)) return res.status(403).json({ error: 'Admin / HR / project coordinator only.' });
+    const cur = (await sql`SELECT * FROM task_custom_fields WHERE id=${req.params.id}` as any[])[0];
+    if (!cur) return res.status(404).json({ error: 'Field not found' });
+    const b = req.body ?? {};
+    const next: Record<string, any> = {};
+    if (b.name !== undefined) {
+      const t = String(b.name).trim();
+      if (!t) return res.status(400).json({ error: 'name cannot be empty' });
+      next.name = t;
+    }
+    if (b.options !== undefined) next.options = b.options && typeof b.options === 'object' ? b.options : {};
+    if (b.sort_order !== undefined) next.sort_order = Number(b.sort_order);
+    if (!Object.keys(next).length) return res.json(cur);
+    const rows = await sql`
+      UPDATE task_custom_fields SET
+        name       = COALESCE(${next.name ?? null}::text, name),
+        options    = ${'options' in next ? JSON.stringify(next.options) : JSON.stringify(cur.options ?? {})}::jsonb,
+        sort_order = COALESCE(${next.sort_order ?? null}::numeric, sort_order),
+        updated_at = NOW()
+      WHERE id = ${req.params.id}
+      RETURNING *`;
+    res.json(rows[0]);
+  } catch (err: any) { res.status(500).json({ error: err.message ?? 'Server error' }); }
+});
+
+app.delete('/api/task-fields/:id', async (req, res) => {
+  try {
+    await runStartupMigrations();
+    const gate = await taskActor(req, res);
+    if (!gate.ok) return;
+    if (!TASK_LIST_MANAGER_ROLES.includes(gate.user.role)) return res.status(403).json({ error: 'Admin / HR / project coordinator only.' });
+    await sql`DELETE FROM task_custom_fields WHERE id=${req.params.id}`; // values cascade
+    res.json({ ok: true });
+  } catch (err: any) { res.status(500).json({ error: err.message ?? 'Server error' }); }
+});
+
+// PUT /api/tasks/:taskId/field-values/:fieldId  body: { value }
+// Value is stored as JSONB — the client sends whatever the field's
+// kind expects. Any authenticated task actor can set values.
+app.put('/api/tasks/:taskId/field-values/:fieldId', async (req, res) => {
+  try {
+    await runStartupMigrations();
+    const gate = await taskActor(req, res);
+    if (!gate.ok) return;
+    const field = (await sql`SELECT id FROM task_custom_fields WHERE id=${req.params.fieldId}` as any[])[0];
+    if (!field) return res.status(404).json({ error: 'Field not found' });
+    const task = (await sql`SELECT id FROM tasks WHERE id=${req.params.taskId}` as any[])[0];
+    if (!task) return res.status(404).json({ error: 'Task not found' });
+    const value = req.body?.value ?? null;
+    if (value === null || value === undefined || value === '') {
+      await sql`DELETE FROM task_custom_field_values WHERE task_id=${req.params.taskId} AND field_id=${req.params.fieldId}`;
+      return res.json({ ok: true, value: null });
+    }
+    const rows = await sql`
+      INSERT INTO task_custom_field_values (task_id, field_id, value, updated_by_id)
+      VALUES (${req.params.taskId}, ${req.params.fieldId}, ${JSON.stringify(value)}::jsonb, ${gate.user.id})
+      ON CONFLICT (task_id, field_id) DO UPDATE SET
+        value = EXCLUDED.value,
+        updated_at = NOW(),
+        updated_by_id = EXCLUDED.updated_by_id
+      RETURNING *`;
+    res.json(rows[0]);
+  } catch (err: any) { res.status(500).json({ error: err.message ?? 'Server error' }); }
+});
+
+// ── Project templates (Phase 5b) ─────────────────────────────────────
+app.get('/api/project-templates', async (_req, res) => {
+  try {
+    await runStartupMigrations();
+    const rows = await sql`SELECT * FROM project_templates ORDER BY name`;
+    res.json(rows);
+  } catch (err: any) { res.status(500).json({ error: err.message ?? 'Server error' }); }
+});
+
+app.post('/api/project-templates', async (req, res) => {
+  try {
+    await runStartupMigrations();
+    const gate = await taskActor(req, res);
+    if (!gate.ok) return;
+    if (!TASK_LIST_MANAGER_ROLES.includes(gate.user.role)) return res.status(403).json({ error: 'Admin / HR / project coordinator only.' });
+    const name = String(req.body?.name ?? '').trim();
+    if (!name) return res.status(400).json({ error: 'name is required' });
+    const description = req.body?.description ? String(req.body.description).slice(0, 2000) : null;
+    const structure = req.body?.structure;
+    if (!structure || typeof structure !== 'object' || !Array.isArray(structure.lists)) {
+      return res.status(400).json({ error: 'structure must include a lists array' });
+    }
+    const id = newId('tpl');
+    const rows = await sql`
+      INSERT INTO project_templates (id, name, description, structure, created_by_id, created_by_name)
+      VALUES (${id}, ${name}, ${description}, ${JSON.stringify(structure)}::jsonb, ${gate.user.id}, ${gate.user.name})
+      RETURNING *`;
+    res.status(201).json(rows[0]);
+  } catch (err: any) { res.status(500).json({ error: err.message ?? 'Server error' }); }
+});
+
+app.patch('/api/project-templates/:id', async (req, res) => {
+  try {
+    await runStartupMigrations();
+    const gate = await taskActor(req, res);
+    if (!gate.ok) return;
+    if (!TASK_LIST_MANAGER_ROLES.includes(gate.user.role)) return res.status(403).json({ error: 'Admin / HR / project coordinator only.' });
+    const cur = (await sql`SELECT * FROM project_templates WHERE id=${req.params.id}` as any[])[0];
+    if (!cur) return res.status(404).json({ error: 'Template not found' });
+    const b = req.body ?? {};
+    const next: Record<string, any> = {};
+    if (b.name !== undefined) {
+      const t = String(b.name).trim();
+      if (!t) return res.status(400).json({ error: 'name cannot be empty' });
+      next.name = t;
+    }
+    if (b.description !== undefined) next.description = b.description ?? null;
+    if (b.structure !== undefined) {
+      if (!b.structure || !Array.isArray(b.structure.lists)) return res.status(400).json({ error: 'structure must include a lists array' });
+      next.structure = b.structure;
+    }
+    if (!Object.keys(next).length) return res.json(cur);
+    const rows = await sql`
+      UPDATE project_templates SET
+        name        = COALESCE(${next.name ?? null}::text, name),
+        description = ${'description' in next ? next.description : cur.description}::text,
+        structure   = ${'structure' in next ? JSON.stringify(next.structure) : JSON.stringify(cur.structure)}::jsonb,
+        updated_at  = NOW()
+      WHERE id = ${req.params.id}
+      RETURNING *`;
+    res.json(rows[0]);
+  } catch (err: any) { res.status(500).json({ error: err.message ?? 'Server error' }); }
+});
+
+app.delete('/api/project-templates/:id', async (req, res) => {
+  try {
+    await runStartupMigrations();
+    const gate = await taskActor(req, res);
+    if (!gate.ok) return;
+    if (!TASK_LIST_MANAGER_ROLES.includes(gate.user.role)) return res.status(403).json({ error: 'Admin / HR / project coordinator only.' });
+    await sql`DELETE FROM project_templates WHERE id=${req.params.id}`;
+    res.json({ ok: true });
+  } catch (err: any) { res.status(500).json({ error: err.message ?? 'Server error' }); }
+});
+
+// Capture an existing project as a template. Walks all task_lists +
+// tasks + subtasks for that project and freezes them into structure.
+// Assignees are NOT copied — templates are structural blueprints, not
+// people assignments.
+app.post('/api/project-templates/from-project', async (req, res) => {
+  try {
+    await runStartupMigrations();
+    const gate = await taskActor(req, res);
+    if (!gate.ok) return;
+    if (!TASK_LIST_MANAGER_ROLES.includes(gate.user.role)) return res.status(403).json({ error: 'Admin / HR / project coordinator only.' });
+    const projectId = String(req.body?.project_id ?? '').trim();
+    const name = String(req.body?.name ?? '').trim();
+    const description = req.body?.description ? String(req.body.description).slice(0, 2000) : null;
+    if (!projectId || !name) return res.status(400).json({ error: 'project_id and name are required' });
+    const lists = await sql`SELECT id, name, statuses FROM task_lists WHERE project_id=${projectId} AND archived=FALSE ORDER BY sort_order, name` as any[];
+    const allTasks = await sql`SELECT id, list_id, parent_id, title, description, priority, tags, estimate_hours FROM tasks WHERE list_id = ANY(${lists.map(l => l.id)}::text[]) ORDER BY sort_order` as any[];
+    const parents = allTasks.filter(t => !t.parent_id);
+    const subsByParent: Record<string, any[]> = {};
+    for (const t of allTasks.filter(t => t.parent_id)) (subsByParent[t.parent_id] ??= []).push(t);
+    const structure = {
+      lists: lists.map(l => ({
+        name: l.name,
+        statuses: l.statuses,
+        tasks: parents.filter(t => t.list_id === l.id).map(t => ({
+          title: t.title,
+          description: t.description,
+          priority: t.priority,
+          tags: t.tags ?? [],
+          estimate_hours: t.estimate_hours,
+          subtasks: (subsByParent[t.id] ?? []).map(s => ({ title: s.title })),
+        })),
+      })),
+    };
+    const id = newId('tpl');
+    const rows = await sql`
+      INSERT INTO project_templates (id, name, description, structure, created_by_id, created_by_name)
+      VALUES (${id}, ${name}, ${description}, ${JSON.stringify(structure)}::jsonb, ${gate.user.id}, ${gate.user.name})
+      RETURNING *`;
+    res.status(201).json(rows[0]);
+  } catch (err: any) { res.status(500).json({ error: err.message ?? 'Server error' }); }
+});
+
+// Apply a template to an EXISTING project — creates lists + tasks +
+// subtasks from the template's structure. Nothing is overwritten;
+// duplicate list names get " (copy)" suffixes. Returns a summary.
+app.post('/api/project-templates/:id/apply', async (req, res) => {
+  try {
+    await runStartupMigrations();
+    const gate = await taskActor(req, res);
+    if (!gate.ok) return;
+    if (!TASK_LIST_MANAGER_ROLES.includes(gate.user.role)) return res.status(403).json({ error: 'Admin / HR / project coordinator only.' });
+    const projectId = String(req.body?.project_id ?? '').trim();
+    if (!projectId) return res.status(400).json({ error: 'project_id is required' });
+    const tpl = (await sql`SELECT * FROM project_templates WHERE id=${req.params.id}` as any[])[0];
+    if (!tpl) return res.status(404).json({ error: 'Template not found' });
+    const proj = (await sql`SELECT id FROM projects WHERE id=${projectId}` as any[])[0];
+    if (!proj) return res.status(404).json({ error: 'Project not found' });
+    const existingNames = new Set(((await sql`SELECT name FROM task_lists WHERE project_id=${projectId}` as any[])).map((r: any) => r.name));
+    let createdLists = 0, createdTasks = 0, createdSubs = 0;
+    let sortBase = Number((await sql`SELECT COALESCE(MAX(sort_order), 0) + 1024 AS n FROM task_lists WHERE project_id=${projectId}` as any[])[0]?.n ?? 1024);
+    for (const list of (tpl.structure?.lists ?? []) as any[]) {
+      let listName = list.name;
+      while (existingNames.has(listName)) listName = `${list.name} (copy)`;
+      existingNames.add(listName);
+      const listId = newId('tlst');
+      const listStatuses = Array.isArray(list.statuses) ? list.statuses : DEFAULT_TASK_STATUSES;
+      await sql`
+        INSERT INTO task_lists (id, project_id, name, statuses, sort_order, created_by_id, created_by_name)
+        VALUES (${listId}, ${projectId}, ${listName}, ${JSON.stringify(listStatuses)}::jsonb, ${sortBase}, ${gate.user.id}, ${gate.user.name})`;
+      sortBase += 1024;
+      createdLists++;
+      const openCol = listStatuses.find((c: any) => c.type !== 'done') ?? listStatuses[0];
+      let taskSort = 1024;
+      for (const t of (list.tasks ?? []) as any[]) {
+        const taskId = newId('task');
+        await sql`
+          INSERT INTO tasks (id, list_id, parent_id, title, description, status, priority,
+                             tags, estimate_hours, sort_order, created_by_id, created_by_name)
+          VALUES (${taskId}, ${listId}, NULL, ${t.title ?? '(untitled)'}, ${t.description ?? null},
+                  ${openCol.id}, ${['urgent','high','normal','low','none'].includes(t.priority) ? t.priority : 'none'},
+                  ${JSON.stringify(Array.isArray(t.tags) ? t.tags.slice(0, 8) : [])}::jsonb,
+                  ${Number.isFinite(Number(t.estimate_hours)) ? Number(t.estimate_hours) : null},
+                  ${taskSort}, ${gate.user.id}, ${gate.user.name})`;
+        taskSort += 1024;
+        createdTasks++;
+        let subSort = 1024;
+        for (const s of (t.subtasks ?? []) as any[]) {
+          await sql`
+            INSERT INTO tasks (id, list_id, parent_id, title, status, priority, sort_order, created_by_id, created_by_name, tags)
+            VALUES (${newId('task')}, ${listId}, ${taskId}, ${s.title ?? '(subtask)'}, ${openCol.id}, 'none', ${subSort}, ${gate.user.id}, ${gate.user.name}, '[]'::jsonb)`;
+          subSort += 1024;
+          createdSubs++;
+        }
+      }
+    }
+    res.status(201).json({ ok: true, template: tpl.name, lists_created: createdLists, tasks_created: createdTasks, subtasks_created: createdSubs });
   } catch (err: any) { res.status(500).json({ error: err.message ?? 'Server error' }); }
 });
 
