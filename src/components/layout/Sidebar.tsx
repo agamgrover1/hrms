@@ -43,6 +43,7 @@ const projectGroup: NavGroup = {
   items: [
     { to: '/projects', icon: Briefcase, label: 'Projects' },
     { to: '/tasks', icon: KanbanSquare, label: 'Tasks' },
+    { to: '/workload', icon: Activity, label: 'Workload' },
     { to: '/hours', icon: Layers, label: 'Hours grid' },
     { to: '/hours/allocation', icon: CalendarDays, label: 'Allocation' },
     { to: '/hours/compliance', icon: AlertTriangle, label: 'Compliance' },
@@ -281,6 +282,7 @@ export default function Sidebar({ mobileOpen = false, onMobileClose }: { mobileO
       { to: '/my', icon: User, label: 'My portal', end: true },
       ...(role === 'admin' || isCoord ? [] : [{ to: '/tasks', icon: KanbanSquare, label: 'My tasks' } as NavItem]),
       ...(isManager ? [{ to: '/my-team', icon: Users, label: 'My team' } as NavItem] : []),
+      ...(isManager ? [{ to: '/workload', icon: Activity, label: 'Team workload' } as NavItem] : []),
       // Team leads (project_reporting OR project_lead on any project) need to see
       // all the projects they own, not just hours from their direct reports.
       // /hours's Mine tab is the right view for that.

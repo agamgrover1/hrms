@@ -1544,6 +1544,39 @@ export const api = {
     request<null | { id: string; task_id: string; task_title: string; started_at: string; project_id: string | null }>(`/me/timer`),
   deleteTaskTime: (entryId: string) =>
     request<{ ok: true }>(`/task-time/${entryId}`, { method: 'DELETE' }),
+
+  // ── Workload + per-employee tasks (Phase 4b) ─────────────────────
+  // Both endpoints are read-only aggregates over task_time_entries +
+  // hour_log_days; nothing writes to either table.
+  getWorkload: (opts?: { range?: 'week' | 'month'; scope?: 'team' | 'all' }) => {
+    const qs = new URLSearchParams();
+    if (opts?.range) qs.set('range', opts.range);
+    if (opts?.scope) qs.set('scope', opts.scope);
+    return request<{
+      range: 'week' | 'month'; scope: 'team' | 'all';
+      start: string; end: string;
+      rows: Array<{
+        employee: { id: string; name: string; avatar: string | null; designation: string | null; department: string | null };
+        capacity_hours: number;
+        manual_logged_hours: number;
+        task_logged_hours: number;
+        total_logged_hours: number;
+        estimate_hours: number;
+        demand_hours: number;
+        overdue: number;
+        load_pct: number | null;
+        top_tasks: Array<{ id: string; title: string; due_date: string | null; status: string; project_name: string | null }>;
+      }>;
+    }>(`/workload${qs.toString() ? '?' + qs : ''}`);
+  },
+  getEmployeeTasks: (id: string) =>
+    request<{
+      employee_id: string;
+      month_start: string; month_end: string;
+      totals: { active_tasks: number; overdue: number; task_hours_month: number; manual_hours_month: number };
+      active: Array<{ id: string; title: string; status: string; priority: string; due_date: string | null; estimate_hours: number | null; logged_hours: string | number; project_id: string | null; project_name: string | null; project_client: string | null; completed_at: string | null }>;
+      recent: Array<{ id: string; title: string; status: string; completed_at: string; project_id: string | null; project_name: string | null }>;
+    }>(`/employees/${id}/tasks`),
 };
 
 export interface KpiTemplate {

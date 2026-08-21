@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useMemo } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import {
   ArrowLeft, Pencil, Trash2, Mail, Phone, MapPin, Calendar, Clock,
@@ -159,7 +159,7 @@ function ActionModal({ title, info, type, isIncentive, onClose, onConfirm }: {
 }
 
 // ── Tabs ──────────────────────────────────────────────────────────────────────
-const TABS = ['Overview','Attendance','Leave','Hours','Performance','KPIs','Incentives','Expenses','Salary','Warnings','Responsibilities','Onboarding','Offboarding','Documents'] as const;
+const TABS = ['Overview','Attendance','Leave','Hours','Tasks','Performance','KPIs','Incentives','Expenses','Salary','Warnings','Responsibilities','Onboarding','Offboarding','Documents'] as const;
 type Tab = typeof TABS[number];
 
 // ── Main page ─────────────────────────────────────────────────────────────────
@@ -1371,6 +1371,11 @@ export default function EmployeeProfile() {
         <HoursTabPanel employeeId={emp.id} employeeName={emp.name} />
       )}
 
+      {/* ── Tasks (Phase 4b) ─────────────────────────────────────────────── */}
+      {tab === 'Tasks' && emp && (
+        <EmployeeTasksPanel employeeId={emp.id} />
+      )}
+
       {/* ── Modals ─────────────────────────────────────────────────────────── */}
       {showEdit && (
         <EditEmployeeModal
@@ -1718,6 +1723,124 @@ function KpiTile({ label, value, sub, tone }: { label: string; value: string; su
       <p className="text-[10px] uppercase tracking-wider font-bold text-on-surface-subtle">{label}</p>
       <p className={`mt-1 text-xl font-bold tabular-nums num-mono ${tone}`}>{value}</p>
       <p className="mt-0.5 text-[11px] text-on-surface-subtle">{sub}</p>
+    </div>
+  );
+}
+
+// Employee profile → Tasks tab (Phase 4b). Read-only aggregation over
+// tasks + task_time_entries + hour_log_days. Groups active work by
+// project so a manager sees "what's on this person's plate" without
+// leaving the profile.
+function EmployeeTasksPanel({ employeeId }: { employeeId: string }) {
+  const [data, setData] = useState<Awaited<ReturnType<typeof api.getEmployeeTasks>> | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [err, setErr] = useState('');
+  const navigate = useNavigate();
+  useEffect(() => {
+    setLoading(true); setErr('');
+    api.getEmployeeTasks(employeeId)
+      .then(setData)
+      .catch((e: any) => setErr(e?.message ?? 'Failed to load tasks'))
+      .finally(() => setLoading(false));
+  }, [employeeId]);
+
+  const byProject = useMemo(() => {
+    if (!data) return [] as { project: string; client: string | null; tasks: typeof data.active }[];
+    const map = new Map<string, { project: string; client: string | null; tasks: typeof data.active }>();
+    for (const t of data.active) {
+      const key = t.project_id ?? 'internal';
+      const label = t.project_name ?? 'Internal';
+      if (!map.has(key)) map.set(key, { project: label, client: t.project_client ?? null, tasks: [] });
+      map.get(key)!.tasks.push(t);
+    }
+    return Array.from(map.values()).sort((a, b) => a.project.localeCompare(b.project));
+  }, [data]);
+
+  if (loading) return <div className="p-8 text-sm text-on-surface-muted">Loading tasks…</div>;
+  if (err) return <div className="p-8 text-sm text-danger">{err}</div>;
+  if (!data) return null;
+
+  const todayStr = new Date().toISOString().slice(0, 10);
+  return (
+    <div className="space-y-4">
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+        <div className="rounded-xl-2 border border-outline bg-surface p-3">
+          <p className="text-[10px] uppercase tracking-wider text-on-surface-subtle font-semibold">Active tasks</p>
+          <p className="font-display text-2xl font-bold mt-1">{data.totals.active_tasks}</p>
+        </div>
+        <div className="rounded-xl-2 border border-outline bg-surface p-3">
+          <p className="text-[10px] uppercase tracking-wider text-on-surface-subtle font-semibold">Overdue</p>
+          <p className={`font-display text-2xl font-bold mt-1 ${data.totals.overdue > 0 ? 'text-danger' : ''}`}>{data.totals.overdue}</p>
+        </div>
+        <div className="rounded-xl-2 border border-outline bg-surface p-3">
+          <p className="text-[10px] uppercase tracking-wider text-on-surface-subtle font-semibold">Task hours · month</p>
+          <p className="font-display text-2xl font-bold mt-1">{data.totals.task_hours_month}h</p>
+          <p className="text-[10px] text-on-surface-subtle mt-0.5">from task time entries</p>
+        </div>
+        <div className="rounded-xl-2 border border-outline bg-surface p-3">
+          <p className="text-[10px] uppercase tracking-wider text-on-surface-subtle font-semibold">Timesheet · month</p>
+          <p className="font-display text-2xl font-bold mt-1">{data.totals.manual_hours_month}h</p>
+          <p className="text-[10px] text-on-surface-subtle mt-0.5">from hour_log_days (unchanged)</p>
+        </div>
+      </div>
+
+      {byProject.length === 0 && data.recent.length === 0 && (
+        <div className="rounded-xl-2 border border-outline bg-surface p-10 text-center text-sm text-on-surface-subtle">
+          No tasks assigned yet.
+        </div>
+      )}
+
+      {byProject.map(grp => (
+        <div key={grp.project} className="rounded-xl-2 border border-outline bg-surface overflow-hidden">
+          <div className="px-4 py-2.5 border-b border-outline bg-surface-2 flex items-center justify-between">
+            <div>
+              <p className="text-sm font-bold text-on-surface">{grp.project}</p>
+              {grp.client && <p className="text-[10px] text-on-surface-subtle">{grp.client}</p>}
+            </div>
+            <span className="text-[10px] font-mono text-on-surface-muted">{grp.tasks.length} open</span>
+          </div>
+          <div className="divide-y divide-outline">
+            {grp.tasks.map(t => {
+              const overdue = t.due_date && t.due_date < todayStr;
+              return (
+                <button key={t.id} onClick={() => navigate(`/tasks?task=${t.id}`)}
+                  className="w-full text-left grid grid-cols-[1fr_100px_80px_60px] items-center gap-3 px-4 py-2 hover:bg-surface-2 text-sm">
+                  <span className="text-on-surface truncate">{t.title}</span>
+                  <span className="text-[11px] text-on-surface-muted font-mono">{t.status}</span>
+                  <span className={`text-[11px] font-mono ${overdue ? 'text-danger font-semibold' : 'text-on-surface-muted'}`}>
+                    {t.due_date ? new Date(t.due_date).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' }) : '—'}
+                  </span>
+                  <span className="text-[11px] font-mono text-on-surface-subtle text-right">
+                    {Number(t.logged_hours ?? 0) > 0
+                      ? `${Number(t.logged_hours).toFixed(1)}h${t.estimate_hours ? `/${t.estimate_hours}` : ''}`
+                      : t.estimate_hours ? `est ${t.estimate_hours}h` : ''}
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      ))}
+
+      {data.recent.length > 0 && (
+        <div className="rounded-xl-2 border border-outline bg-surface overflow-hidden">
+          <div className="px-4 py-2.5 border-b border-outline bg-surface-2">
+            <p className="text-sm font-bold text-on-surface">Recently shipped · last 30d</p>
+          </div>
+          <div className="divide-y divide-outline">
+            {data.recent.map(t => (
+              <button key={t.id} onClick={() => navigate(`/tasks?task=${t.id}`)}
+                className="w-full text-left grid grid-cols-[1fr_140px_80px] items-center gap-3 px-4 py-2 hover:bg-surface-2 text-sm">
+                <span className="text-on-surface-muted line-through truncate">{t.title}</span>
+                <span className="text-[11px] text-on-surface-subtle truncate">{t.project_name ?? 'Internal'}</span>
+                <span className="text-[11px] font-mono text-success text-right">
+                  {new Date(t.completed_at).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' })}
+                </span>
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
     </div>
   );
 }

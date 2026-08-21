@@ -20393,6 +20393,227 @@ app.delete('/api/task-time/:entryId', async (req, res) => {
   } catch (err: any) { res.status(500).json({ error: err.message ?? 'Server error' }); }
 });
 
+// ── Workload (Phase 4b) ──────────────────────────────────────────────
+// GET /api/workload?range=week|month&scope=team|all
+// One-shot summary: for each in-scope employee, returns capacity vs
+// demand plus the top few active tasks. Reads task_time_entries AND
+// hour_log_days SIDE BY SIDE — both remain read-only in every path.
+//
+// scope='team' → employees reporting to the caller (direct reports only)
+// scope='all'  → admin / hr_manager / project_coordinator only
+app.get('/api/workload', async (req, res) => {
+  try {
+    await runStartupMigrations();
+    const gate = await taskActor(req, res);
+    if (!gate.ok) return;
+    const range = req.query.range === 'month' ? 'month' : 'week';
+    const scope = req.query.scope === 'all' ? 'all' : 'team';
+    const now = new Date();
+    // Window in IST. Week is Monday → Sunday (matches ProjectHours).
+    let startDate: Date, endDate: Date;
+    if (range === 'week') {
+      const dow = now.getDay() || 7; // Sun=0 → 7
+      startDate = new Date(now); startDate.setDate(now.getDate() - (dow - 1));
+      endDate   = new Date(startDate); endDate.setDate(startDate.getDate() + 6);
+    } else {
+      startDate = new Date(now.getFullYear(), now.getMonth(), 1);
+      endDate   = new Date(now.getFullYear(), now.getMonth() + 1, 0);
+    }
+    const startISO = startDate.toISOString().slice(0, 10);
+    const endISO   = endDate.toISOString().slice(0, 10);
+    const todayISO = now.toISOString().slice(0, 10);
+    const capacityMonth  = now.getMonth() + 1;
+    const capacityYear   = now.getFullYear();
+
+    // Scope resolution.
+    if (scope === 'all' && !['admin', 'hr_manager', 'project_coordinator'].includes(gate.user.role)) {
+      return res.status(403).json({ error: 'scope=all is restricted to admin / HR / coordinators.' });
+    }
+    // 'team' needs a linked employee record to pivot on.
+    let employees: any[] = [];
+    if (scope === 'all') {
+      employees = await sql`SELECT id, name, avatar, designation, department, reporting_manager_id FROM employees WHERE status='active' ORDER BY name` as any[];
+    } else {
+      const managerEid = gate.user.employeeId;
+      if (!managerEid) return res.json({ range, scope, start: startISO, end: endISO, rows: [] });
+      employees = await sql`SELECT id, name, avatar, designation, department, reporting_manager_id FROM employees WHERE reporting_manager_id=${managerEid} AND status='active' ORDER BY name` as any[];
+    }
+    if (!employees.length) return res.json({ range, scope, start: startISO, end: endISO, rows: [] });
+    const empIds = employees.map(e => e.id);
+
+    // Capacity — sum of project_assignments.monthly_hours for the
+    // current month. Not perfectly aligned with a WEEK window, but this
+    // is what ProjectHours already treats as capacity, and rebalancing
+    // decisions are made at that grain anyway. Weekly view scales down
+    // implicitly (a busy month reads busy on any of its weeks).
+    const capacityRows = await sql`
+      SELECT employee_id, COALESCE(SUM(monthly_hours), 0)::numeric AS capacity
+      FROM project_assignments
+      WHERE month=${capacityMonth} AND year=${capacityYear} AND employee_id = ANY(${empIds}::text[])
+      GROUP BY employee_id` as any[];
+
+    // Manual (approved-day-agnostic) logged hours from hour_log_days in
+    // the window. Read-only.
+    const manualLogRows = await sql`
+      SELECT employee_id, COALESCE(SUM(hours), 0)::numeric AS h
+      FROM hour_log_days
+      WHERE log_date BETWEEN ${startISO}::date AND ${endISO}::date
+        AND employee_id = ANY(${empIds}::text[])
+      GROUP BY employee_id` as any[];
+
+    // Task time in the window (both timer + manual). Read-only.
+    const taskLogRows = await sql`
+      SELECT employee_id, COALESCE(SUM(hours), 0)::numeric AS h
+      FROM task_time_entries
+      WHERE log_date BETWEEN ${startISO}::date AND ${endISO}::date
+        AND employee_id = ANY(${empIds}::text[])
+      GROUP BY employee_id` as any[];
+
+    // Estimate demand — sum of estimate_hours on open tasks whose due
+    // falls in the window. Missing estimates contribute 0.
+    const estRows = await sql`
+      SELECT assignee_id AS employee_id, COALESCE(SUM(estimate_hours), 0)::numeric AS h
+      FROM tasks
+      WHERE completed_at IS NULL AND assignee_id = ANY(${empIds}::text[])
+        AND due_date BETWEEN ${startISO}::date AND ${endISO}::date
+      GROUP BY assignee_id` as any[];
+
+    // Overdue count — anything past due and unfinished.
+    const overdueRows = await sql`
+      SELECT assignee_id AS employee_id, COUNT(*)::int AS n
+      FROM tasks
+      WHERE completed_at IS NULL AND assignee_id = ANY(${empIds}::text[])
+        AND due_date < ${todayISO}::date
+      GROUP BY assignee_id` as any[];
+
+    // Top 5 active tasks per employee via ROW_NUMBER.
+    const topTaskRows = await sql`
+      SELECT * FROM (
+        SELECT t.id, t.title, t.assignee_id AS employee_id, t.due_date, t.status,
+               p.name AS project_name,
+               ROW_NUMBER() OVER (PARTITION BY t.assignee_id ORDER BY
+                 (CASE WHEN t.due_date IS NULL THEN 1 ELSE 0 END),
+                 t.due_date NULLS LAST, t.updated_at DESC) AS rn
+        FROM tasks t
+        JOIN task_lists l ON l.id = t.list_id
+        LEFT JOIN projects p ON p.id = l.project_id
+        WHERE t.completed_at IS NULL AND t.assignee_id = ANY(${empIds}::text[])
+      ) x
+      WHERE rn <= 5
+      ORDER BY employee_id, rn` as any[];
+
+    const byEmp = <T>(rows: any[]): Record<string, T> => {
+      const out: Record<string, any> = {};
+      for (const r of rows) out[r.employee_id] = r;
+      return out;
+    };
+    const cap   = byEmp<any>(capacityRows);
+    const man   = byEmp<any>(manualLogRows);
+    const task  = byEmp<any>(taskLogRows);
+    const est   = byEmp<any>(estRows);
+    const over  = byEmp<any>(overdueRows);
+    const tasksByEmp: Record<string, any[]> = {};
+    for (const r of topTaskRows) (tasksByEmp[r.employee_id] ??= []).push({ id: r.id, title: r.title, due_date: r.due_date, status: r.status, project_name: r.project_name });
+
+    const rows = employees.map((e: any) => {
+      const capacity = Number(cap[e.id]?.capacity ?? 0);
+      const manualLogged = Number(man[e.id]?.h ?? 0);
+      const taskLogged   = Number(task[e.id]?.h ?? 0);
+      const totalLogged  = manualLogged + taskLogged;
+      const estimate     = Number(est[e.id]?.h ?? 0);
+      const demand       = totalLogged + estimate;
+      const overdue      = Number(over[e.id]?.n ?? 0);
+      const loadPct      = capacity > 0 ? Math.round((demand / capacity) * 100) : null;
+      return {
+        employee: { id: e.id, name: e.name, avatar: e.avatar, designation: e.designation, department: e.department },
+        capacity_hours: Math.round(capacity * 10) / 10,
+        manual_logged_hours: Math.round(manualLogged * 10) / 10,
+        task_logged_hours: Math.round(taskLogged * 10) / 10,
+        total_logged_hours: Math.round(totalLogged * 10) / 10,
+        estimate_hours: Math.round(estimate * 10) / 10,
+        demand_hours: Math.round(demand * 10) / 10,
+        overdue,
+        load_pct: loadPct,
+        top_tasks: tasksByEmp[e.id] ?? [],
+      };
+    });
+    // Over-capacity to the top so managers scan red first.
+    rows.sort((a, b) => (b.load_pct ?? -1) - (a.load_pct ?? -1));
+    res.json({ range, scope, start: startISO, end: endISO, rows });
+  } catch (err: any) { res.status(500).json({ error: err.message ?? 'Server error' }); }
+});
+
+// GET /api/employees/:id/tasks — used by the employee profile Tasks tab.
+// Returns open + recently-shipped tasks grouped by project, plus a
+// this-month hours summary from BOTH task_time_entries and hour_log_days
+// (read-only union just for display).
+app.get('/api/employees/:id/tasks', async (req, res) => {
+  try {
+    await runStartupMigrations();
+    const gate = await taskActor(req, res);
+    if (!gate.ok) return;
+    const empId = req.params.id;
+    // Basic guard — a bare employee viewing someone else's tasks is odd;
+    // admins / HR / their own manager should be fine. Very lightweight.
+    const emp = (await sql`SELECT id, name, reporting_manager_id FROM employees WHERE id=${empId}` as any[])[0];
+    if (!emp) return res.status(404).json({ error: 'Employee not found' });
+    const canView = gate.user.employeeId === empId
+      || gate.user.employeeId === emp.reporting_manager_id
+      || ['admin', 'hr_manager', 'hr_intern', 'project_coordinator'].includes(gate.user.role);
+    if (!canView) return res.status(403).json({ error: 'Not authorised to view this employee\'s tasks.' });
+
+    const now = new Date();
+    const monthStart = new Date(now.getFullYear(), now.getMonth(), 1).toISOString().slice(0, 10);
+    const monthEnd   = new Date(now.getFullYear(), now.getMonth() + 1, 0).toISOString().slice(0, 10);
+
+    const activeTasks = await sql`
+      SELECT t.id, t.title, t.status, t.priority, t.due_date, t.estimate_hours, t.completed_at,
+             l.project_id, p.name AS project_name, p.client_name AS project_client,
+             COALESCE((SELECT SUM(hours) FROM task_time_entries te WHERE te.task_id = t.id), 0)::numeric AS logged_hours
+      FROM tasks t
+      JOIN task_lists l ON l.id = t.list_id
+      LEFT JOIN projects p ON p.id = l.project_id
+      WHERE t.assignee_id=${empId} AND t.completed_at IS NULL
+      ORDER BY (CASE WHEN t.due_date IS NULL THEN 1 ELSE 0 END), t.due_date NULLS LAST, t.updated_at DESC
+      LIMIT 60` as any[];
+
+    const recentlyDone = await sql`
+      SELECT t.id, t.title, t.status, t.completed_at,
+             l.project_id, p.name AS project_name
+      FROM tasks t
+      JOIN task_lists l ON l.id = t.list_id
+      LEFT JOIN projects p ON p.id = l.project_id
+      WHERE t.assignee_id=${empId} AND t.completed_at IS NOT NULL
+        AND t.completed_at >= NOW() - INTERVAL '30 days'
+      ORDER BY t.completed_at DESC
+      LIMIT 30` as any[];
+
+    const taskLoggedMonth = Number(((await sql`
+      SELECT COALESCE(SUM(hours), 0)::numeric AS h FROM task_time_entries
+      WHERE employee_id=${empId} AND log_date BETWEEN ${monthStart}::date AND ${monthEnd}::date` as any[])[0]?.h ?? 0));
+    const manualLoggedMonth = Number(((await sql`
+      SELECT COALESCE(SUM(hours), 0)::numeric AS h FROM hour_log_days
+      WHERE employee_id=${empId} AND log_date BETWEEN ${monthStart}::date AND ${monthEnd}::date` as any[])[0]?.h ?? 0));
+    const overdueCount = Number(((await sql`
+      SELECT COUNT(*)::int AS n FROM tasks
+      WHERE assignee_id=${empId} AND completed_at IS NULL AND due_date < NOW()` as any[])[0]?.n ?? 0));
+
+    res.json({
+      employee_id: empId,
+      month_start: monthStart,
+      month_end:   monthEnd,
+      totals: {
+        active_tasks: activeTasks.length,
+        overdue: overdueCount,
+        task_hours_month: Math.round(taskLoggedMonth * 10) / 10,
+        manual_hours_month: Math.round(manualLoggedMonth * 10) / 10,
+      },
+      active: activeTasks,
+      recent: recentlyDone,
+    });
+  } catch (err: any) { res.status(500).json({ error: err.message ?? 'Server error' }); }
+});
+
 app.post('/api/tasks', async (req, res) => {
   try {
     await runStartupMigrations();

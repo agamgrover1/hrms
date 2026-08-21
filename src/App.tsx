@@ -21,6 +21,7 @@ import MyPortal from './pages/employee/MyPortal';
 import MyTeam from './pages/employee/MyTeam';
 import Projects from './pages/Projects';
 import Tasks from './pages/Tasks';
+import Workload from './pages/Workload';
 import ProjectHours from './pages/ProjectHours';
 import HoursApproval from './pages/HoursApproval';
 import HoursCompliance from './pages/HoursCompliance';
@@ -106,6 +107,10 @@ function AppRoutes() {
             has work assigned to them, and the API decides what they may
             change (only admin / HR manager / coordinator create boards). */}
         <Route path="tasks" element={<ProtectedRoute><Tasks /></ProtectedRoute>} />
+        {/* Workload — open to anyone: employees with reports see their team,
+            admin/HR/coord see the whole org via the scope toggle. The API
+            enforces scope=all vs scope=team based on role. */}
+        <Route path="workload" element={<ProtectedRoute><Workload /></ProtectedRoute>} />
         {/* /hours: open to anyone. The page itself decides which tabs are visible
             based on role + whether the viewer leads/reviews any projects. Team
             leads (role=employee) need this to see all projects they lead. */}
