@@ -1577,7 +1577,62 @@ export const api = {
       active: Array<{ id: string; title: string; status: string; priority: string; due_date: string | null; estimate_hours: number | null; logged_hours: string | number; project_id: string | null; project_name: string | null; project_client: string | null; completed_at: string | null }>;
       recent: Array<{ id: string; title: string; status: string; completed_at: string; project_id: string | null; project_name: string | null }>;
     }>(`/employees/${id}/tasks`),
+
+  // ── Goals (Phase 4c) ─────────────────────────────────────────────
+  listGoals: (opts?: { scope?: 'all' | 'mine'; project_id?: string; status?: string }) => {
+    const qs = new URLSearchParams();
+    if (opts?.scope) qs.set('scope', opts.scope);
+    if (opts?.project_id) qs.set('project_id', opts.project_id);
+    if (opts?.status) qs.set('status', opts.status);
+    return request<Goal[]>(`/goals${qs.toString() ? '?' + qs : ''}`);
+  },
+  getGoal: (id: string) => request<Goal>(`/goals/${id}`),
+  createGoal: (data: { title: string; description?: string; owner_id?: string; project_id?: string; target_date?: string }) =>
+    request<Goal>('/goals', { method: 'POST', body: JSON.stringify(data) }),
+  patchGoal: (id: string, patch: Record<string, any>) =>
+    request<Goal>(`/goals/${id}`, { method: 'PATCH', body: JSON.stringify(patch) }),
+  deleteGoal: (id: string) => request<{ ok: true }>(`/goals/${id}`, { method: 'DELETE' }),
+  createKeyResult: (goalId: string, data: { title: string; unit?: string; start_value?: number; current_value?: number; target_value: number }) =>
+    request<KeyResult>(`/goals/${goalId}/key-results`, { method: 'POST', body: JSON.stringify(data) }),
+  patchKeyResult: (krId: string, patch: Record<string, any>) =>
+    request<KeyResult>(`/goal-key-results/${krId}`, { method: 'PATCH', body: JSON.stringify(patch) }),
+  deleteKeyResult: (krId: string) => request<{ ok: true }>(`/goal-key-results/${krId}`, { method: 'DELETE' }),
 };
+
+export interface KeyResult {
+  id: string;
+  goal_id: string;
+  title: string;
+  unit: string | null;
+  start_value: string | number;
+  current_value: string | number;
+  target_value: string | number;
+  sort_order: number;
+  progress: number;
+  updated_at: string;
+  updated_by_id: string | null;
+  updated_by_name: string | null;
+}
+export type GoalStatus = 'active' | 'on_track' | 'at_risk' | 'off_track' | 'complete' | 'archived';
+export interface Goal {
+  id: string;
+  title: string;
+  description: string | null;
+  owner_id: string | null;
+  owner_name: string | null;
+  project_id: string | null;
+  project_name?: string | null;
+  project_client?: string | null;
+  status: GoalStatus;
+  target_date: string | null;
+  progress: number;
+  health: 'on_track' | 'at_risk' | 'off_track' | 'complete' | 'archived';
+  key_results: KeyResult[];
+  created_at: string;
+  updated_at: string;
+  created_by_id: string | null;
+  created_by_name: string | null;
+}
 
 export interface KpiTemplate {
   id: string;

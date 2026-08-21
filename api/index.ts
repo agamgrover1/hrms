@@ -880,7 +880,7 @@ async function runStartupMigrations() {
     // For a *seed* (rows, not columns), we probe with EXISTS-style: an
     // empty result set means "still needs to run", so we don't set the
     // flag and fall through.
-    await sql`SELECT recurrence FROM tasks LIMIT 0`;
+    await sql`SELECT target_value FROM goal_key_results LIMIT 0`;
     _migrated = true;
     return;
   } catch {
@@ -3235,6 +3235,61 @@ async function runStartupMigrations() {
   // One live (unstopped) timer per employee at a time — enforced at the
   // DB layer so a duplicate /timer/start race can't leave two open.
   await sql`CREATE UNIQUE INDEX IF NOT EXISTS uq_task_time_live_per_emp ON task_time_entries(employee_id) WHERE stopped_at IS NULL AND source='timer'`.catch(()=>{});
+
+  // Goals (Phase 4c) — OKR-style objectives with a set of key results.
+  // Goals can be org-wide (project_id NULL) or scoped to a project.
+  // Progress is derived from the child KRs — no rollup column so we
+  // never have to worry about it going stale.
+  //
+  // status is HR-set (leadership can override the auto-computed health):
+  //   'active'    — in flight, health is auto-derived
+  //   'on_track'  — human override: this is fine
+  //   'at_risk'   — human override: needs attention
+  //   'off_track' — human override: failing
+  //   'complete'  — done, KRs frozen
+  //   'archived'  — hidden from default views
+  await sql`
+    CREATE TABLE IF NOT EXISTS goals (
+      id TEXT PRIMARY KEY,
+      title TEXT NOT NULL,
+      description TEXT,
+      owner_id TEXT,
+      owner_name TEXT,
+      project_id TEXT,
+      status TEXT NOT NULL DEFAULT 'active',
+      target_date DATE,
+      created_at TIMESTAMPTZ DEFAULT NOW(),
+      updated_at TIMESTAMPTZ DEFAULT NOW(),
+      created_by_id TEXT,
+      created_by_name TEXT
+    )`;
+  await sql`CREATE INDEX IF NOT EXISTS idx_goals_owner ON goals(owner_id)`.catch(()=>{});
+  await sql`CREATE INDEX IF NOT EXISTS idx_goals_project ON goals(project_id)`.catch(()=>{});
+  await sql`CREATE INDEX IF NOT EXISTS idx_goals_status ON goals(status)`.catch(()=>{});
+
+  // Key results — the measurable rungs of a goal. Progress % =
+  // (current - start) / (target - start), clamped 0..100. Baseline
+  // is stored so "increase from 50k to 80k" gives a real 0-100% arc
+  // rather than snapping to 62.5% at start.
+  //
+  // unit is free-text ("visits", "%", "keywords", "signups") — no
+  // enum, keeps the picker open. Sort_order is NUMERIC (not INT) so a
+  // drag-reorder is a single midpoint UPDATE.
+  await sql`
+    CREATE TABLE IF NOT EXISTS goal_key_results (
+      id TEXT PRIMARY KEY,
+      goal_id TEXT NOT NULL REFERENCES goals(id) ON DELETE CASCADE,
+      title TEXT NOT NULL,
+      unit TEXT,
+      start_value NUMERIC NOT NULL DEFAULT 0,
+      current_value NUMERIC NOT NULL DEFAULT 0,
+      target_value NUMERIC NOT NULL,
+      sort_order NUMERIC NOT NULL DEFAULT 0,
+      updated_at TIMESTAMPTZ DEFAULT NOW(),
+      updated_by_id TEXT,
+      updated_by_name TEXT
+    )`;
+  await sql`CREATE INDEX IF NOT EXISTS idx_krs_goal ON goal_key_results(goal_id, sort_order)`.catch(()=>{});
 
   _migrated = true;
 }
@@ -21008,6 +21063,280 @@ app.delete('/api/tasks/:id/watchers/:empId', async (req, res) => {
     const gate = await taskActor(req, res);
     if (!gate.ok) return;
     await sql`DELETE FROM task_watchers WHERE task_id=${req.params.id} AND employee_id=${req.params.empId}`;
+    res.json({ ok: true });
+  } catch (err: any) { res.status(500).json({ error: err.message ?? 'Server error' }); }
+});
+
+// ── Goals (Phase 4c) ────────────────────────────────────────────────
+// OKR-lite. A goal has 1+ key results. Progress % is derived on read
+// so nothing goes stale. Health defaults to auto-computed but a
+// leader can override it via status ('on_track' / 'at_risk' / etc).
+function goalKrProgress(kr: { start_value: number | string; current_value: number | string; target_value: number | string }): number {
+  const s = Number(kr.start_value);
+  const c = Number(kr.current_value);
+  const t = Number(kr.target_value);
+  if (!Number.isFinite(t) || t === s) return 0;
+  const pct = ((c - s) / (t - s)) * 100;
+  return Math.max(0, Math.min(100, Math.round(pct * 10) / 10));
+}
+function goalHealthFor(goalProgress: number, targetDate: string | null, status: string): 'on_track' | 'at_risk' | 'off_track' | 'complete' | 'archived' {
+  if (status === 'complete' || status === 'archived' || status === 'on_track' || status === 'at_risk' || status === 'off_track') {
+    // Human override wins.
+    if (status === 'complete' || status === 'archived') return status as any;
+    return status as any;
+  }
+  if (goalProgress >= 100) return 'complete';
+  if (!targetDate) return goalProgress >= 60 ? 'on_track' : 'at_risk';
+  // Time-elapsed vs progress-made rough sanity check.
+  // If we've burned more than 75% of the timeline and hit < 60%, that's off track.
+  const now = Date.now();
+  const due = new Date(targetDate).getTime();
+  if (due < now && goalProgress < 100) return 'off_track';
+  const start = new Date(new Date(targetDate).getFullYear(), 0, 1).getTime(); // rough
+  const elapsedFrac = (now - start) / (due - start);
+  if (elapsedFrac > 0.75 && goalProgress < 60) return 'off_track';
+  if (elapsedFrac > 0.5  && goalProgress < 40) return 'at_risk';
+  return 'on_track';
+}
+function enrichGoal(g: any, krs: any[]): any {
+  const progress = krs.length ? Math.round(krs.reduce((a, k) => a + goalKrProgress(k), 0) / krs.length * 10) / 10 : 0;
+  return {
+    ...g,
+    progress,
+    health: goalHealthFor(progress, g.target_date, g.status),
+    key_results: krs.map(k => ({ ...k, progress: goalKrProgress(k) })),
+  };
+}
+
+// GET /api/goals?scope=all|mine&project_id=&status=
+app.get('/api/goals', async (req, res) => {
+  try {
+    await runStartupMigrations();
+    const gate = await taskActor(req, res);
+    if (!gate.ok) return;
+    const scope     = req.query.scope === 'mine' ? 'mine' : 'all';
+    const projectId = (req.query.project_id as string) || null;
+    const status    = (req.query.status as string) || null;
+    const mine = scope === 'mine' ? gate.user.employeeId : null;
+    if (scope === 'mine' && !mine) return res.json([]);
+
+    const goals = await sql`
+      SELECT g.*, p.name AS project_name, p.client_name AS project_client
+      FROM goals g
+      LEFT JOIN projects p ON p.id = g.project_id
+      WHERE (${projectId}::text IS NULL OR g.project_id = ${projectId})
+        AND (${status}::text IS NULL OR g.status = ${status})
+        AND (${mine}::text IS NULL OR g.owner_id = ${mine})
+        AND g.status <> 'archived'
+      ORDER BY
+        CASE g.status WHEN 'active' THEN 0 WHEN 'on_track' THEN 1 WHEN 'at_risk' THEN 2 WHEN 'off_track' THEN 3 WHEN 'complete' THEN 4 ELSE 5 END,
+        g.target_date NULLS LAST,
+        g.created_at DESC` as any[];
+    if (!goals.length) return res.json([]);
+    const goalIds = goals.map(g => g.id);
+    const krs = await sql`SELECT * FROM goal_key_results WHERE goal_id = ANY(${goalIds}::text[]) ORDER BY sort_order, id` as any[];
+    const byGoal: Record<string, any[]> = {};
+    for (const k of krs) (byGoal[k.goal_id] ??= []).push(k);
+    res.json(goals.map(g => enrichGoal(g, byGoal[g.id] ?? [])));
+  } catch (err: any) { res.status(500).json({ error: err.message ?? 'Server error' }); }
+});
+
+app.get('/api/goals/:id', async (req, res) => {
+  try {
+    await runStartupMigrations();
+    const gate = await taskActor(req, res);
+    if (!gate.ok) return;
+    const g = (await sql`
+      SELECT g.*, p.name AS project_name, p.client_name AS project_client
+      FROM goals g
+      LEFT JOIN projects p ON p.id = g.project_id
+      WHERE g.id = ${req.params.id}` as any[])[0];
+    if (!g) return res.status(404).json({ error: 'Goal not found' });
+    const krs = await sql`SELECT * FROM goal_key_results WHERE goal_id=${req.params.id} ORDER BY sort_order, id` as any[];
+    res.json(enrichGoal(g, krs));
+  } catch (err: any) { res.status(500).json({ error: err.message ?? 'Server error' }); }
+});
+
+// POST body: { title, description?, owner_id?, project_id?, target_date? }
+// Owner defaults to the caller's employee id.
+app.post('/api/goals', async (req, res) => {
+  try {
+    await runStartupMigrations();
+    const gate = await taskActor(req, res);
+    if (!gate.ok) return;
+    const title = String(req.body?.title ?? '').trim();
+    if (!title) return res.status(400).json({ error: 'title is required' });
+    const ownerId   = String(req.body?.owner_id ?? gate.user.employeeId ?? '').trim() || null;
+    const projectId = req.body?.project_id ? String(req.body.project_id) : null;
+    const targetDate = req.body?.target_date || null;
+    const description = req.body?.description ? String(req.body.description).slice(0, 2000) : null;
+    let ownerName: string | null = null;
+    if (ownerId) {
+      const e = (await sql`SELECT name FROM employees WHERE id=${ownerId}` as any[])[0];
+      if (!e) return res.status(400).json({ error: 'Owner not found' });
+      ownerName = e.name;
+    }
+    const id = newId('goal');
+    const rows = await sql`
+      INSERT INTO goals (id, title, description, owner_id, owner_name, project_id, target_date, status, created_by_id, created_by_name)
+      VALUES (${id}, ${title}, ${description}, ${ownerId}, ${ownerName}, ${projectId}, ${targetDate}, 'active', ${gate.user.id}, ${gate.user.name})
+      RETURNING *`;
+    res.status(201).json(enrichGoal(rows[0], []));
+  } catch (err: any) { res.status(500).json({ error: err.message ?? 'Server error' }); }
+});
+
+app.patch('/api/goals/:id', async (req, res) => {
+  try {
+    await runStartupMigrations();
+    const gate = await taskActor(req, res);
+    if (!gate.ok) return;
+    const cur = (await sql`SELECT * FROM goals WHERE id=${req.params.id}` as any[])[0];
+    if (!cur) return res.status(404).json({ error: 'Goal not found' });
+    // Owner or manager-role can edit; owner-check is by employee_id.
+    const canEdit = cur.owner_id === gate.user.employeeId
+      || cur.created_by_id === gate.user.id
+      || TASK_LIST_MANAGER_ROLES.includes(gate.user.role);
+    if (!canEdit) return res.status(403).json({ error: 'Only the owner or a manager can edit this goal.' });
+    const b = req.body ?? {};
+    const next: Record<string, any> = {};
+    if (b.title !== undefined) {
+      const t = String(b.title).trim();
+      if (!t) return res.status(400).json({ error: 'title cannot be empty' });
+      next.title = t;
+    }
+    if (b.description !== undefined) next.description = b.description ?? null;
+    if (b.project_id !== undefined)  next.project_id = b.project_id || null;
+    if (b.target_date !== undefined) next.target_date = b.target_date || null;
+    if (b.status !== undefined) {
+      const ok = ['active', 'on_track', 'at_risk', 'off_track', 'complete', 'archived'];
+      if (!ok.includes(b.status)) return res.status(400).json({ error: 'unknown status' });
+      next.status = b.status;
+    }
+    if (b.owner_id !== undefined) {
+      next.owner_id = b.owner_id || null;
+      if (b.owner_id) {
+        const e = (await sql`SELECT name FROM employees WHERE id=${b.owner_id}` as any[])[0];
+        if (!e) return res.status(400).json({ error: 'Owner not found' });
+        next.owner_name = e.name;
+      } else {
+        next.owner_name = null;
+      }
+    }
+    if (!Object.keys(next).length) return res.json(cur);
+    const rows = await sql`
+      UPDATE goals SET
+        title       = COALESCE(${next.title ?? null}::text, title),
+        description = ${'description' in next ? next.description : cur.description}::text,
+        project_id  = ${'project_id' in next ? next.project_id : cur.project_id}::text,
+        target_date = ${'target_date' in next ? next.target_date : cur.target_date}::date,
+        status      = COALESCE(${next.status ?? null}::text, status),
+        owner_id    = ${'owner_id' in next ? next.owner_id : cur.owner_id}::text,
+        owner_name  = ${'owner_id' in next ? next.owner_name : cur.owner_name}::text,
+        updated_at  = NOW()
+      WHERE id = ${req.params.id}
+      RETURNING *`;
+    const krs = await sql`SELECT * FROM goal_key_results WHERE goal_id=${req.params.id} ORDER BY sort_order, id` as any[];
+    res.json(enrichGoal(rows[0], krs));
+  } catch (err: any) { res.status(500).json({ error: err.message ?? 'Server error' }); }
+});
+
+app.delete('/api/goals/:id', async (req, res) => {
+  try {
+    await runStartupMigrations();
+    const gate = await taskActor(req, res);
+    if (!gate.ok) return;
+    const cur = (await sql`SELECT owner_id, created_by_id FROM goals WHERE id=${req.params.id}` as any[])[0];
+    if (!cur) return res.status(404).json({ error: 'Goal not found' });
+    const canDelete = cur.owner_id === gate.user.employeeId || cur.created_by_id === gate.user.id || TASK_LIST_MANAGER_ROLES.includes(gate.user.role);
+    if (!canDelete) return res.status(403).json({ error: 'Only the owner or a manager can delete this goal.' });
+    await sql`DELETE FROM goals WHERE id=${req.params.id}`; // KRs cascade
+    res.json({ ok: true });
+  } catch (err: any) { res.status(500).json({ error: err.message ?? 'Server error' }); }
+});
+
+// ── Key Results ─────────────────────────────────────────────────────
+app.post('/api/goals/:id/key-results', async (req, res) => {
+  try {
+    await runStartupMigrations();
+    const gate = await taskActor(req, res);
+    if (!gate.ok) return;
+    const g = (await sql`SELECT owner_id, created_by_id FROM goals WHERE id=${req.params.id}` as any[])[0];
+    if (!g) return res.status(404).json({ error: 'Goal not found' });
+    const canEdit = g.owner_id === gate.user.employeeId || g.created_by_id === gate.user.id || TASK_LIST_MANAGER_ROLES.includes(gate.user.role);
+    if (!canEdit) return res.status(403).json({ error: 'Only the goal owner or a manager can add key results.' });
+    const title = String(req.body?.title ?? '').trim();
+    if (!title) return res.status(400).json({ error: 'title is required' });
+    const target = Number(req.body?.target_value);
+    if (!Number.isFinite(target)) return res.status(400).json({ error: 'target_value must be a number' });
+    const start   = Number.isFinite(Number(req.body?.start_value)) ? Number(req.body.start_value) : 0;
+    const current = Number.isFinite(Number(req.body?.current_value)) ? Number(req.body.current_value) : start;
+    const unit    = req.body?.unit ? String(req.body.unit).slice(0, 20) : null;
+    const nextOrder = Number((await sql`SELECT COALESCE(MAX(sort_order), 0) + 1024 AS n FROM goal_key_results WHERE goal_id=${req.params.id}` as any[])[0]?.n ?? 1024);
+    const id = newId('kr');
+    const rows = await sql`
+      INSERT INTO goal_key_results (id, goal_id, title, unit, start_value, current_value, target_value, sort_order, updated_by_id, updated_by_name)
+      VALUES (${id}, ${req.params.id}, ${title}, ${unit}, ${start}, ${current}, ${target}, ${nextOrder}, ${gate.user.id}, ${gate.user.name})
+      RETURNING *`;
+    res.status(201).json({ ...rows[0], progress: goalKrProgress(rows[0]) });
+  } catch (err: any) { res.status(500).json({ error: err.message ?? 'Server error' }); }
+});
+
+app.patch('/api/goal-key-results/:krId', async (req, res) => {
+  try {
+    await runStartupMigrations();
+    const gate = await taskActor(req, res);
+    if (!gate.ok) return;
+    const cur = (await sql`
+      SELECT kr.*, g.owner_id, g.created_by_id
+      FROM goal_key_results kr
+      JOIN goals g ON g.id = kr.goal_id
+      WHERE kr.id=${req.params.krId}` as any[])[0];
+    if (!cur) return res.status(404).json({ error: 'Key result not found' });
+    const canEdit = cur.owner_id === gate.user.employeeId || cur.created_by_id === gate.user.id || TASK_LIST_MANAGER_ROLES.includes(gate.user.role);
+    if (!canEdit) return res.status(403).json({ error: 'Only the goal owner or a manager can update key results.' });
+    const b = req.body ?? {};
+    const next: Record<string, any> = {};
+    if (b.title !== undefined) {
+      const t = String(b.title).trim();
+      if (!t) return res.status(400).json({ error: 'title cannot be empty' });
+      next.title = t;
+    }
+    if (b.unit !== undefined) next.unit = b.unit ? String(b.unit).slice(0, 20) : null;
+    if (b.start_value !== undefined) next.start_value = Number(b.start_value);
+    if (b.current_value !== undefined) next.current_value = Number(b.current_value);
+    if (b.target_value !== undefined) next.target_value = Number(b.target_value);
+    if (b.sort_order !== undefined) next.sort_order = Number(b.sort_order);
+    if (!Object.keys(next).length) return res.json(cur);
+    const rows = await sql`
+      UPDATE goal_key_results SET
+        title         = COALESCE(${next.title ?? null}::text, title),
+        unit          = ${'unit' in next ? next.unit : cur.unit}::text,
+        start_value   = COALESCE(${next.start_value ?? null}::numeric, start_value),
+        current_value = COALESCE(${next.current_value ?? null}::numeric, current_value),
+        target_value  = COALESCE(${next.target_value ?? null}::numeric, target_value),
+        sort_order    = COALESCE(${next.sort_order ?? null}::numeric, sort_order),
+        updated_at    = NOW(),
+        updated_by_id = ${gate.user.id},
+        updated_by_name = ${gate.user.name}
+      WHERE id = ${req.params.krId}
+      RETURNING *`;
+    res.json({ ...rows[0], progress: goalKrProgress(rows[0]) });
+  } catch (err: any) { res.status(500).json({ error: err.message ?? 'Server error' }); }
+});
+
+app.delete('/api/goal-key-results/:krId', async (req, res) => {
+  try {
+    await runStartupMigrations();
+    const gate = await taskActor(req, res);
+    if (!gate.ok) return;
+    const cur = (await sql`
+      SELECT kr.id, g.owner_id, g.created_by_id
+      FROM goal_key_results kr JOIN goals g ON g.id = kr.goal_id
+      WHERE kr.id=${req.params.krId}` as any[])[0];
+    if (!cur) return res.status(404).json({ error: 'Key result not found' });
+    const canDelete = cur.owner_id === gate.user.employeeId || cur.created_by_id === gate.user.id || TASK_LIST_MANAGER_ROLES.includes(gate.user.role);
+    if (!canDelete) return res.status(403).json({ error: 'Only the goal owner or a manager can delete key results.' });
+    await sql`DELETE FROM goal_key_results WHERE id=${req.params.krId}`;
     res.json({ ok: true });
   } catch (err: any) { res.status(500).json({ error: err.message ?? 'Server error' }); }
 });
