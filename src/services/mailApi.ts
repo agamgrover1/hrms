@@ -147,4 +147,36 @@ export const mailApi = {
     call<MailMessage>('GET', `/accounts/${accountId}/folders/${encodeURIComponent(folder)}/messages/${uid}`),
   markRead: (accountId: string, folder: string, uid: number, seen: boolean) =>
     call<{ ok: true; seen: boolean }>('POST', `/accounts/${accountId}/folders/${encodeURIComponent(folder)}/messages/${uid}/read`, { seen }),
+
+  // ── M3 send ─────────────────────────────────────────────────────
+  // Multipart because attachments would blow past a JSON body; the
+  // metadata rides as a JSON string in the `payload` field.
+  sendMessage: async (accountId: string, data: {
+    from_name?: string;
+    to: string[]; cc?: string[]; bcc?: string[];
+    subject: string;
+    text?: string; html?: string;
+    in_reply_to?: string; references?: string[];
+    attachments?: File[];
+  }): Promise<{ ok: true; message_id: string; appended: boolean }> => {
+    const tb = await (await import('./api')).api.getMailToken();
+    const fd = new FormData();
+    const { attachments, ...meta } = data;
+    fd.append('payload', JSON.stringify(meta));
+    (attachments ?? []).forEach(f => fd.append('attachments', f, f.name));
+    const res = await fetch(`${tb.api_base}/accounts/${accountId}/send`, {
+      method: 'POST',
+      headers: { 'Authorization': `Bearer ${tb.token}` },
+      body: fd,
+    });
+    const text = await res.text();
+    let d: any = {};
+    try { d = text ? JSON.parse(text) : {}; } catch { d = { error: text }; }
+    if (!res.ok) {
+      const err = new Error(d?.error ?? `Send failed (${res.status})`) as any;
+      err.status = res.status; err.body = d;
+      throw err;
+    }
+    return d;
+  },
 };

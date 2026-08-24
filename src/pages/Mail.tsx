@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Mail as MailIcon, Plus, X, Loader2, CheckCircle2, Star, Trash2, ShieldCheck,
   Inbox, Send, Archive, AlertOctagon, FileText, Folder as FolderIcon, RefreshCw,
-  Paperclip, ChevronLeft, ChevronRight, Settings2,
+  Paperclip, ChevronLeft, ChevronRight, Settings2, Reply, ReplyAll, Forward,
 } from 'lucide-react';
 import { mailApi, mailAttachmentUrl, type MailAccount, type MailFolder, type MailEnvelope, type MailMessage } from '../services/mailApi';
 import { toast } from '../components/Toaster';
@@ -27,6 +27,9 @@ export default function Mail() {
   const [listTotal, setListTotal] = useState(0);
   const [showAdd, setShowAdd] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
+  const [composeSeed, setComposeSeed] = useState<Partial<ComposeSeed> | null>(null);
+  const openCompose = (seed: Partial<ComposeSeed> = {}) => setComposeSeed(seed);
+  const closeCompose = () => setComposeSeed(null);
 
   const loadAccounts = () => {
     setLoadingAccounts(true);
@@ -102,13 +105,16 @@ export default function Mail() {
           ))}
         </select>
         <div className="ml-auto flex items-center gap-1">
+          <button onClick={() => openCompose()}
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-accent text-on-accent text-xs font-semibold hover:opacity-90">
+            <Plus size={12} /> Compose
+          </button>
           <button onClick={() => { loadFolders(); loadMessages(); }}
             title="Refresh"
             className="p-2 rounded-lg hover:bg-surface-2 text-on-surface-muted"><RefreshCw size={14} className={loadingList ? 'animate-spin' : ''} /></button>
           <button onClick={() => setShowAdd(true)}
-            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-accent text-on-accent text-xs font-semibold hover:opacity-90">
-            <Plus size={12} /> Add mailbox
-          </button>
+            title="Add mailbox"
+            className="p-2 rounded-lg hover:bg-surface-2 text-on-surface-muted"><MailIcon size={14} /></button>
           <button onClick={() => setShowSettings(true)}
             title="Mailbox settings"
             className="p-2 rounded-lg hover:bg-surface-2 text-on-surface-muted"><Settings2 size={14} /></button>
@@ -173,11 +179,20 @@ export default function Mail() {
             </div>
           )}
           {message && !loadingMessage && (
-            <MessageReader message={message} accountId={selectedAccountId!} folder={selectedFolder} onRefresh={loadMessages} />
+            <MessageReader message={message} accountId={selectedAccountId!} folder={selectedFolder} onRefresh={loadMessages} onCompose={openCompose} account={currentAccount} />
           )}
         </section>
       </div>
 
+      {composeSeed !== null && selectedAccountId && (
+        <ComposeModal
+          accountId={selectedAccountId}
+          fromLabel={currentAccount?.display_name ? `${currentAccount.display_name} <${currentAccount.email_address}>` : currentAccount?.email_address ?? ''}
+          seed={composeSeed}
+          onClose={closeCompose}
+          onSent={() => { closeCompose(); loadMessages(); loadFolders(); }}
+        />
+      )}
       {showAdd && <AddMailboxModal onClose={() => setShowAdd(false)} onAdded={() => { setShowAdd(false); loadAccounts(); }} />}
       {showSettings && currentAccount && (
         <SettingsModal
@@ -192,8 +207,10 @@ export default function Mail() {
 
 // ── Reader ────────────────────────────────────────────────────────────
 
-function MessageReader({ message, accountId, folder, onRefresh }: {
+function MessageReader({ message, accountId, folder, onRefresh, onCompose, account }: {
   message: MailMessage; accountId: string; folder: string; onRefresh: () => void;
+  onCompose: (seed: Partial<ComposeSeed>) => void;
+  account: MailAccount | null;
 }) {
   // Use an iframe for HTML bodies — isolates untrusted CSS + JS from
   // the HRMS shell. sandbox="" strips scripts + top-nav; allow-popups
@@ -242,6 +259,22 @@ function MessageReader({ message, accountId, folder, onRefresh }: {
             ))}
           </div>
         )}
+        <div className="mt-3 flex items-center gap-1.5">
+          <button onClick={() => onCompose(buildReplySeed(message, account, false))}
+            className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg border border-outline text-xs font-semibold text-on-surface hover:bg-surface-2">
+            <Reply size={12} /> Reply
+          </button>
+          {(message.to.length + message.cc.length) > 1 && (
+            <button onClick={() => onCompose(buildReplySeed(message, account, true))}
+              className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg border border-outline text-xs font-semibold text-on-surface hover:bg-surface-2">
+              <ReplyAll size={12} /> Reply all
+            </button>
+          )}
+          <button onClick={() => onCompose(buildForwardSeed(message))}
+            className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg border border-outline text-xs font-semibold text-on-surface hover:bg-surface-2">
+            <Forward size={12} /> Forward
+          </button>
+        </div>
       </div>
 
       <div className="flex-1 min-h-0 overflow-hidden">
@@ -509,4 +542,195 @@ function AddMailboxModal({ onClose, onAdded }: { onClose: () => void; onAdded: (
       </div>
     </div>
   );
+}
+
+// ── Compose ──────────────────────────────────────────────────────────
+
+interface ComposeSeed {
+  to: string;
+  cc: string;
+  bcc: string;
+  subject: string;
+  body: string;
+  in_reply_to?: string;
+  references?: string[];
+}
+
+// Build a reply seed from a message. Reply = to the sender only;
+// Reply-all = original To + Cc, minus the current user's own address.
+function buildReplySeed(m: MailMessage, account: MailAccount | null, all: boolean): Partial<ComposeSeed> {
+  const myAddr = account?.email_address.toLowerCase();
+  const senderAddr = m.from?.address ?? '';
+  const to = [senderAddr].filter(Boolean);
+  let cc: string[] = [];
+  if (all) {
+    const extras = [...m.to, ...m.cc]
+      .map(a => a.address)
+      .filter(a => a && a.toLowerCase() !== myAddr && a.toLowerCase() !== senderAddr.toLowerCase());
+    cc = Array.from(new Set(extras));
+  }
+  const subj = /^re:\s/i.test(m.subject) ? m.subject : `Re: ${m.subject}`;
+  const quoted = quoteBody(m);
+  return {
+    to: to.join(', '),
+    cc: cc.join(', '),
+    bcc: '',
+    subject: subj,
+    body: `\n\n${quoted}`,
+    // Message-id chaining lives on the raw source; we don't fetch that
+    // here so best-effort: pass an empty in_reply_to unless we captured
+    // it. A follow-up slice can pull the raw Message-Id via IMAP FETCH.
+  };
+}
+function buildForwardSeed(m: MailMessage): Partial<ComposeSeed> {
+  const subj = /^fwd?:\s/i.test(m.subject) ? m.subject : `Fwd: ${m.subject}`;
+  const quoted = quoteBody(m, true);
+  return { to: '', cc: '', bcc: '', subject: subj, body: `\n\n${quoted}` };
+}
+function quoteBody(m: MailMessage, forward = false): string {
+  const dateStr = m.date ? new Date(m.date).toLocaleString('en-IN') : '';
+  const sender = m.from?.name ? `${m.from.name} <${m.from.address}>` : (m.from?.address ?? '');
+  const header = forward
+    ? `----- Forwarded message -----\nFrom: ${sender}\nDate: ${dateStr}\nSubject: ${m.subject}\nTo: ${m.to.map(t => t.address).join(', ')}\n`
+    : `On ${dateStr}, ${sender} wrote:`;
+  const text = (m.text ?? m.html?.replace(/<[^>]+>/g, '').replace(/\n{3,}/g, '\n\n') ?? '(no body)').trim();
+  return `${header}\n${text.split('\n').map(l => '> ' + l).join('\n')}`;
+}
+
+function ComposeModal({ accountId, fromLabel, seed, onClose, onSent }: {
+  accountId: string;
+  fromLabel: string;
+  seed: Partial<ComposeSeed>;
+  onClose: () => void;
+  onSent: () => void;
+}) {
+  const [to, setTo]           = useState(seed.to ?? '');
+  const [cc, setCc]           = useState(seed.cc ?? '');
+  const [bcc, setBcc]         = useState(seed.bcc ?? '');
+  const [subject, setSubject] = useState(seed.subject ?? '');
+  const [body, setBody]       = useState(seed.body ?? '');
+  const [showCcBcc, setShowCcBcc] = useState(!!(seed.cc || seed.bcc));
+  const [files, setFiles]     = useState<File[]>([]);
+  const [busy, setBusy]       = useState(false);
+
+  const totalSize = files.reduce((s, f) => s + f.size, 0);
+  const overCap = totalSize > 25 * 1024 * 1024 || files.length > 10;
+
+  const onFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const added = Array.from(e.target.files ?? []);
+    setFiles(prev => [...prev, ...added].slice(0, 10));
+    e.target.value = '';
+  };
+  const removeFile = (i: number) => setFiles(prev => prev.filter((_, j) => j !== i));
+
+  const send = async () => {
+    if (!to.trim()) { toast.error('Missing recipient', 'Add at least one To address.'); return; }
+    if (overCap)   { toast.error('Attachments too large', '25 MB total, 10 files max.'); return; }
+    setBusy(true);
+    try {
+      await mailApi.sendMessage(accountId, {
+        to: splitAddresses(to),
+        cc: splitAddresses(cc),
+        bcc: splitAddresses(bcc),
+        subject: subject.trim(),
+        text: body,
+        in_reply_to: seed.in_reply_to,
+        references: seed.references,
+        attachments: files,
+      });
+      toast.success('Sent', `Delivered · copy saved to Sent`);
+      onSent();
+    } catch (e: any) {
+      toast.error('Send failed', e?.body?.error ?? e?.message ?? 'Please try again.');
+    } finally { setBusy(false); }
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 bg-black/50 flex items-end sm:items-center justify-center p-0 sm:p-4" onClick={onClose}>
+      <div onClick={e => e.stopPropagation()}
+        className="w-full sm:max-w-2xl bg-surface border border-outline sm:rounded-xl-3 shadow-elev-4 flex flex-col max-h-[90vh]">
+        <div className="px-4 py-3 border-b border-outline flex items-center justify-between">
+          <h2 className="font-display text-base font-bold text-on-surface">New message</h2>
+          <button onClick={onClose} className="text-on-surface-subtle hover:text-on-surface"><X size={18} /></button>
+        </div>
+        <div className="flex-1 min-h-0 overflow-y-auto p-4 space-y-2">
+          <ComposeField label="From">
+            <span className="text-sm text-on-surface-muted">{fromLabel}</span>
+          </ComposeField>
+          <ComposeField label="To">
+            <input value={to} onChange={e => setTo(e.target.value)}
+              placeholder="Recipient (comma-separated)"
+              className="flex-1 min-w-0 px-1 py-0.5 bg-transparent border-none text-sm focus:outline-none" />
+            {!showCcBcc && (
+              <button onClick={() => setShowCcBcc(true)} className="text-[11px] text-brand font-semibold hover:opacity-80 flex-shrink-0">Cc / Bcc</button>
+            )}
+          </ComposeField>
+          {showCcBcc && (
+            <>
+              <ComposeField label="Cc">
+                <input value={cc} onChange={e => setCc(e.target.value)}
+                  className="flex-1 min-w-0 px-1 py-0.5 bg-transparent border-none text-sm focus:outline-none" />
+              </ComposeField>
+              <ComposeField label="Bcc">
+                <input value={bcc} onChange={e => setBcc(e.target.value)}
+                  className="flex-1 min-w-0 px-1 py-0.5 bg-transparent border-none text-sm focus:outline-none" />
+              </ComposeField>
+            </>
+          )}
+          <ComposeField label="Subject">
+            <input value={subject} onChange={e => setSubject(e.target.value)}
+              className="flex-1 min-w-0 px-1 py-0.5 bg-transparent border-none text-sm focus:outline-none" />
+          </ComposeField>
+          <textarea autoFocus={!seed.body} value={body} onChange={e => setBody(e.target.value)}
+            placeholder="Write your message…"
+            rows={14}
+            className="w-full px-3 py-2 rounded-lg border border-outline bg-surface text-sm resize-y focus:outline-none focus:ring-2 focus:ring-accent/30" />
+          {files.length > 0 && (
+            <div className="flex flex-wrap gap-1.5 pt-1">
+              {files.map((f, i) => (
+                <span key={i} className="inline-flex items-center gap-1.5 px-2 py-1 rounded border border-outline bg-surface-2 text-[11px]">
+                  <Paperclip size={11} />
+                  <span className="truncate max-w-[220px]">{f.name}</span>
+                  <span className="text-[10px] font-mono text-on-surface-subtle">{humanSize(f.size)}</span>
+                  <button onClick={() => removeFile(i)} className="text-on-surface-subtle hover:text-danger p-0.5">
+                    <X size={10} />
+                  </button>
+                </span>
+              ))}
+              {overCap && (
+                <span className="text-[11px] text-danger self-center">Over 25 MB / 10 files</span>
+              )}
+            </div>
+          )}
+        </div>
+        <div className="px-4 py-3 border-t border-outline flex items-center gap-2 bg-surface-2/40">
+          <label className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg border border-outline text-xs font-semibold text-on-surface-muted hover:bg-surface-2 cursor-pointer">
+            <Paperclip size={12} /> Attach
+            <input type="file" multiple onChange={onFileChange} className="hidden" />
+          </label>
+          <span className="text-[10px] text-on-surface-subtle ml-1">Max 25 MB / 10 files</span>
+          <button onClick={onClose}
+            className="ml-auto px-3 py-1.5 rounded-lg border border-outline text-xs font-semibold hover:bg-surface">
+            Cancel
+          </button>
+          <button onClick={send} disabled={busy || !to.trim() || overCap}
+            className="inline-flex items-center gap-1.5 px-4 py-1.5 rounded-lg bg-accent text-on-accent text-xs font-semibold hover:opacity-90 disabled:opacity-60">
+            {busy && <Loader2 size={12} className="animate-spin" />} <Send size={12} /> Send
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function ComposeField({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <div className="flex items-center gap-2 border-b border-outline py-1.5">
+      <span className="text-[10px] uppercase tracking-wider text-on-surface-muted font-bold w-14 flex-shrink-0">{label}</span>
+      {children}
+    </div>
+  );
+}
+function splitAddresses(raw: string): string[] {
+  return raw.split(/[,;]/).map(s => s.trim()).filter(Boolean);
 }
