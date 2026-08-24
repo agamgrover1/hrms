@@ -3,6 +3,7 @@ import {
   Mail as MailIcon, Plus, X, Loader2, CheckCircle2, Star, Trash2, ShieldCheck,
   Inbox, Send, Archive, AlertOctagon, FileText, Folder as FolderIcon, RefreshCw,
   Paperclip, ChevronLeft, ChevronRight, Settings2, Reply, ReplyAll, Forward,
+  Search, FolderInput, Save, Pencil,
 } from 'lucide-react';
 import { mailApi, mailAttachmentUrl, type MailAccount, type MailFolder, type MailEnvelope, type MailMessage } from '../services/mailApi';
 import { toast } from '../components/Toaster';
@@ -25,6 +26,8 @@ export default function Mail() {
   const [loadingList, setLoadingList] = useState(false);
   const [loadingMessage, setLoadingMessage] = useState(false);
   const [listTotal, setListTotal] = useState(0);
+  const [search, setSearch] = useState('');
+  const [searching, setSearching] = useState(false);
   const [showAdd, setShowAdd] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
   const [composeSeed, setComposeSeed] = useState<Partial<ComposeSeed> | null>(null);
@@ -66,7 +69,23 @@ export default function Mail() {
       .catch(e => toast.error('Could not load messages', e?.body?.error ?? e?.message))
       .finally(() => setLoadingList(false));
   };
-  useEffect(loadMessages, [selectedAccountId, selectedFolder]);
+  // On folder change: reset search + reload. On account change: same.
+  useEffect(() => { setSearch(''); loadMessages(); }, [selectedAccountId, selectedFolder]);
+
+  // Debounced live search. Empty query falls back to the plain listing.
+  useEffect(() => {
+    if (!selectedAccountId) return;
+    const q = search.trim();
+    if (!q) { loadMessages(); return; }
+    const t = setTimeout(() => {
+      setSearching(true);
+      mailApi.searchMessages(selectedAccountId, selectedFolder, q, 60)
+        .then(r => { setMessages(r.messages); setListTotal(r.total); })
+        .catch(e => toast.error('Search failed', e?.body?.error ?? e?.message))
+        .finally(() => setSearching(false));
+    }, 400);
+    return () => clearTimeout(t);
+  }, [search, selectedAccountId, selectedFolder]);
 
   useEffect(() => {
     if (!selectedAccountId || selectedUid == null) { setMessage(null); return; }
@@ -142,11 +161,22 @@ export default function Mail() {
         </aside>
 
         {/* Message list */}
-        <section className="rounded-xl-2 border border-outline bg-surface overflow-y-auto">
-          <div className="px-3 py-2 text-[10px] uppercase tracking-wider text-on-surface-muted font-bold border-b border-outline flex items-center justify-between">
-            <span>{friendlyFolderName(folders.find(f => f.path === selectedFolder))} · {listTotal}</span>
-            {loadingList && <Loader2 size={10} className="animate-spin" />}
+        <section className="rounded-xl-2 border border-outline bg-surface overflow-y-auto flex flex-col">
+          <div className="px-3 py-2 text-[10px] uppercase tracking-wider text-on-surface-muted font-bold border-b border-outline flex items-center justify-between flex-shrink-0">
+            <span>{friendlyFolderName(folders.find(f => f.path === selectedFolder))} · {search.trim() ? `${messages.length} found` : listTotal}</span>
+            {(loadingList || searching) && <Loader2 size={10} className="animate-spin" />}
           </div>
+          <div className="px-2.5 py-1.5 border-b border-outline flex-shrink-0 flex items-center gap-1.5">
+            <Search size={12} className="text-on-surface-subtle" />
+            <input value={search} onChange={e => setSearch(e.target.value)}
+              placeholder="Search this folder…"
+              className="flex-1 bg-transparent border-0 text-xs focus:outline-none placeholder:text-on-surface-subtle" />
+            {search && (
+              <button onClick={() => setSearch('')}
+                className="p-0.5 rounded text-on-surface-subtle hover:text-on-surface"><X size={11} /></button>
+            )}
+          </div>
+          <div className="flex-1 min-h-0 overflow-y-auto">
           {messages.length === 0 && !loadingList && (
             <p className="p-8 text-center text-xs text-on-surface-subtle italic">This folder is empty.</p>
           )}
@@ -166,6 +196,7 @@ export default function Mail() {
               </div>
             </button>
           ))}
+          </div>
         </section>
 
         {/* Reader */}
@@ -179,7 +210,7 @@ export default function Mail() {
             </div>
           )}
           {message && !loadingMessage && (
-            <MessageReader message={message} accountId={selectedAccountId!} folder={selectedFolder} onRefresh={loadMessages} onCompose={openCompose} account={currentAccount} />
+            <MessageReader message={message} accountId={selectedAccountId!} folder={selectedFolder} onRefresh={loadMessages} onCompose={openCompose} account={currentAccount} folders={folders} />
           )}
         </section>
       </div>
@@ -207,11 +238,40 @@ export default function Mail() {
 
 // ── Reader ────────────────────────────────────────────────────────────
 
-function MessageReader({ message, accountId, folder, onRefresh, onCompose, account }: {
+function MessageReader({ message, accountId, folder, onRefresh, onCompose, account, folders }: {
   message: MailMessage; accountId: string; folder: string; onRefresh: () => void;
   onCompose: (seed: Partial<ComposeSeed>) => void;
   account: MailAccount | null;
+  folders: MailFolder[];
 }) {
+  const isDraft = /drafts?/i.test(folder) || folder.toLowerCase().includes('drafts');
+  const doDelete = async () => {
+    if (!window.confirm('Delete this message? Moves to Trash (or hard-deletes if already in Trash).')) return;
+    try {
+      const r = await mailApi.deleteMessage(accountId, folder, message.uid);
+      toast.success(r.purged ? 'Permanently deleted' : 'Moved to Trash');
+      onRefresh();
+    } catch (e: any) { toast.error('Delete failed', e?.body?.error ?? e?.message); }
+  };
+  const doMove = async (destination: string) => {
+    try {
+      await mailApi.moveMessage(accountId, folder, message.uid, destination);
+      toast.success('Moved', destination);
+      onRefresh();
+    } catch (e: any) { toast.error('Move failed', e?.body?.error ?? e?.message); }
+  };
+  const continueDraft = () => {
+    onCompose({
+      to: message.to.map(t => t.address).join(', '),
+      cc: message.cc.map(t => t.address).join(', '),
+      bcc: '',
+      subject: message.subject,
+      body: message.text ?? '',
+      replaces_uid: message.uid,
+    });
+  };
+  const moveTargets = folders.filter(f => f.path !== folder && f.special_use !== '\\Drafts');
+  const [moveOpen, setMoveOpen] = useState(false);
   // Use an iframe for HTML bodies — isolates untrusted CSS + JS from
   // the HRMS shell. sandbox="" strips scripts + top-nav; allow-popups
   // opens links in a new window when the user clicks them.
@@ -259,21 +319,55 @@ function MessageReader({ message, accountId, folder, onRefresh, onCompose, accou
             ))}
           </div>
         )}
-        <div className="mt-3 flex items-center gap-1.5">
-          <button onClick={() => onCompose(buildReplySeed(message, account, false))}
-            className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg border border-outline text-xs font-semibold text-on-surface hover:bg-surface-2">
-            <Reply size={12} /> Reply
-          </button>
-          {(message.to.length + message.cc.length) > 1 && (
-            <button onClick={() => onCompose(buildReplySeed(message, account, true))}
-              className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg border border-outline text-xs font-semibold text-on-surface hover:bg-surface-2">
-              <ReplyAll size={12} /> Reply all
+        <div className="mt-3 flex items-center gap-1.5 flex-wrap">
+          {isDraft ? (
+            <button onClick={continueDraft}
+              className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-accent text-on-accent text-xs font-semibold hover:opacity-90">
+              <Pencil size={12} /> Continue editing
             </button>
+          ) : (
+            <>
+              <button onClick={() => onCompose(buildReplySeed(message, account, false))}
+                className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg border border-outline text-xs font-semibold text-on-surface hover:bg-surface-2">
+                <Reply size={12} /> Reply
+              </button>
+              {(message.to.length + message.cc.length) > 1 && (
+                <button onClick={() => onCompose(buildReplySeed(message, account, true))}
+                  className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg border border-outline text-xs font-semibold text-on-surface hover:bg-surface-2">
+                  <ReplyAll size={12} /> Reply all
+                </button>
+              )}
+              <button onClick={() => onCompose(buildForwardSeed(message))}
+                className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg border border-outline text-xs font-semibold text-on-surface hover:bg-surface-2">
+                <Forward size={12} /> Forward
+              </button>
+            </>
           )}
-          <button onClick={() => onCompose(buildForwardSeed(message))}
-            className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg border border-outline text-xs font-semibold text-on-surface hover:bg-surface-2">
-            <Forward size={12} /> Forward
-          </button>
+          <div className="ml-auto flex items-center gap-1.5 relative">
+            <button onClick={() => setMoveOpen(v => !v)}
+              className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg border border-outline text-xs font-semibold text-on-surface-muted hover:bg-surface-2">
+              <FolderInput size={12} /> Move
+            </button>
+            <button onClick={doDelete}
+              className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg border border-outline text-xs font-semibold text-danger hover:bg-danger/10">
+              <Trash2 size={12} /> Delete
+            </button>
+            {moveOpen && (
+              <div className="absolute right-0 top-full mt-1 z-10 min-w-52 rounded-lg border border-outline bg-surface shadow-elev-3 py-1 max-h-72 overflow-auto"
+                onMouseLeave={() => setMoveOpen(false)}>
+                {moveTargets.length === 0 && (
+                  <p className="px-3 py-2 text-[11px] text-on-surface-subtle italic">No other folders.</p>
+                )}
+                {moveTargets.map(f => (
+                  <button key={f.path}
+                    onClick={() => { setMoveOpen(false); doMove(f.path); }}
+                    className="w-full text-left px-3 py-1.5 text-xs hover:bg-surface-2 text-on-surface">
+                    {friendlyFolderName(f)}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
         </div>
       </div>
 
@@ -554,6 +648,7 @@ interface ComposeSeed {
   body: string;
   in_reply_to?: string;
   references?: string[];
+  replaces_uid?: number;   // set when resuming a draft
 }
 
 // Build a reply seed from a message. Reply = to the sender only;
@@ -611,7 +706,8 @@ function ComposeModal({ accountId, fromLabel, seed, onClose, onSent }: {
   const [body, setBody]       = useState(seed.body ?? '');
   const [showCcBcc, setShowCcBcc] = useState(!!(seed.cc || seed.bcc));
   const [files, setFiles]     = useState<File[]>([]);
-  const [busy, setBusy]       = useState(false);
+  const [busy, setBusy]       = useState<'idle' | 'sending' | 'saving'>('idle');
+  const [replacesUid, setReplacesUid] = useState<number | undefined>(seed.replaces_uid);
 
   const totalSize = files.reduce((s, f) => s + f.size, 0);
   const overCap = totalSize > 25 * 1024 * 1024 || files.length > 10;
@@ -626,7 +722,7 @@ function ComposeModal({ accountId, fromLabel, seed, onClose, onSent }: {
   const send = async () => {
     if (!to.trim()) { toast.error('Missing recipient', 'Add at least one To address.'); return; }
     if (overCap)   { toast.error('Attachments too large', '25 MB total, 10 files max.'); return; }
-    setBusy(true);
+    setBusy('sending');
     try {
       await mailApi.sendMessage(accountId, {
         to: splitAddresses(to),
@@ -638,11 +734,40 @@ function ComposeModal({ accountId, fromLabel, seed, onClose, onSent }: {
         references: seed.references,
         attachments: files,
       });
+      // If this was a draft being sent, delete the draft copy so it
+      // doesn't linger in Drafts. Best-effort — the send already
+      // succeeded so we don't error if this fails.
+      if (replacesUid) {
+        try {
+          const dfolder = (await mailApi.listFolders(accountId)).find(f => f.special_use === '\\Drafts' || /drafts?/i.test(f.name));
+          if (dfolder) await mailApi.deleteMessage(accountId, dfolder.path, replacesUid);
+        } catch { /* leave draft in place */ }
+      }
       toast.success('Sent', `Delivered · copy saved to Sent`);
       onSent();
     } catch (e: any) {
       toast.error('Send failed', e?.body?.error ?? e?.message ?? 'Please try again.');
-    } finally { setBusy(false); }
+    } finally { setBusy('idle'); }
+  };
+
+  const saveDraft = async () => {
+    setBusy('saving');
+    try {
+      const r = await mailApi.saveDraft(accountId, {
+        to: splitAddresses(to),
+        cc: splitAddresses(cc),
+        bcc: splitAddresses(bcc),
+        subject: subject.trim(),
+        text: body,
+        in_reply_to: seed.in_reply_to,
+        references: seed.references,
+        replaces_uid: replacesUid,
+      });
+      setReplacesUid(r.uid);
+      toast.success('Draft saved', 'You can close this window and continue later from the Drafts folder.');
+    } catch (e: any) {
+      toast.error('Draft save failed', e?.body?.error ?? e?.message ?? 'Please try again.');
+    } finally { setBusy('idle'); }
   };
 
   return (
@@ -709,13 +834,18 @@ function ComposeModal({ accountId, fromLabel, seed, onClose, onSent }: {
             <input type="file" multiple onChange={onFileChange} className="hidden" />
           </label>
           <span className="text-[10px] text-on-surface-subtle ml-1">Max 25 MB / 10 files</span>
+          <button onClick={saveDraft} disabled={busy !== 'idle'}
+            title="Save this message to Drafts (no send)"
+            className="ml-auto inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg border border-outline text-xs font-semibold text-on-surface-muted hover:bg-surface-2 disabled:opacity-60">
+            {busy === 'saving' ? <Loader2 size={12} className="animate-spin" /> : <Save size={12} />} Save draft
+          </button>
           <button onClick={onClose}
-            className="ml-auto px-3 py-1.5 rounded-lg border border-outline text-xs font-semibold hover:bg-surface">
+            className="px-3 py-1.5 rounded-lg border border-outline text-xs font-semibold hover:bg-surface">
             Cancel
           </button>
-          <button onClick={send} disabled={busy || !to.trim() || overCap}
+          <button onClick={send} disabled={busy !== 'idle' || !to.trim() || overCap}
             className="inline-flex items-center gap-1.5 px-4 py-1.5 rounded-lg bg-accent text-on-accent text-xs font-semibold hover:opacity-90 disabled:opacity-60">
-            {busy && <Loader2 size={12} className="animate-spin" />} <Send size={12} /> Send
+            {busy === 'sending' && <Loader2 size={12} className="animate-spin" />} <Send size={12} /> Send
           </button>
         </div>
       </div>

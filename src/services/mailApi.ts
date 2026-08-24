@@ -148,6 +148,25 @@ export const mailApi = {
   markRead: (accountId: string, folder: string, uid: number, seen: boolean) =>
     call<{ ok: true; seen: boolean }>('POST', `/accounts/${accountId}/folders/${encodeURIComponent(folder)}/messages/${uid}/read`, { seen }),
 
+  // ── M4 ─────────────────────────────────────────────────────────
+  searchMessages: (accountId: string, folder: string, q: string, limit = 60) => {
+    const qs = new URLSearchParams({ q, limit: String(limit) });
+    return call<{ messages: MailEnvelope[]; total: number; unread: number }>(
+      'GET', `/accounts/${accountId}/folders/${encodeURIComponent(folder)}/search?${qs}`
+    );
+  },
+  moveMessage: (accountId: string, folder: string, uid: number, destination: string) =>
+    call<{ ok: true }>('POST', `/accounts/${accountId}/folders/${encodeURIComponent(folder)}/messages/${uid}/move`, { destination }),
+  deleteMessage: (accountId: string, folder: string, uid: number) =>
+    call<{ ok: true; purged: boolean }>('DELETE', `/accounts/${accountId}/folders/${encodeURIComponent(folder)}/messages/${uid}`),
+  saveDraft: (accountId: string, data: {
+    from_name?: string;
+    to: string[]; cc?: string[]; bcc?: string[];
+    subject: string; text?: string; html?: string;
+    in_reply_to?: string; references?: string[];
+    replaces_uid?: number;
+  }) => call<{ ok: true; uid: number; folder: string }>('POST', `/accounts/${accountId}/drafts`, data),
+
   // ── M3 send ─────────────────────────────────────────────────────
   // Multipart because attachments would blow past a JSON body; the
   // metadata rides as a JSON string in the `payload` field.
