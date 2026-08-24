@@ -1,4 +1,5 @@
-import { Bell, ChevronDown, LogOut, CheckCircle, Calendar, TrendingUp, FileText, Target, X, XCircle, Award, Check, Trash2, AlertTriangle, ShieldAlert, KeyRound, Eye, EyeOff, Wrench, Clock as ClockIcon, Search, Megaphone, Sparkles, Menu, AtSign, Zap, Send, UserPlus } from 'lucide-react';
+import { Bell, ChevronDown, LogOut, CheckCircle, Calendar, TrendingUp, FileText, Target, X, XCircle, Award, Check, Trash2, AlertTriangle, ShieldAlert, KeyRound, Eye, EyeOff, Wrench, Clock as ClockIcon, Search, Megaphone, Sparkles, Menu, AtSign, Zap, Send, UserPlus, Settings } from 'lucide-react';
+import NotificationPrefsModal from '../NotificationPrefsModal';
 import { isActionRequired } from '../../lib/notificationTypes';
 import { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
@@ -328,6 +329,7 @@ export default function TopBar({ title, onMenuClick }: Props) {
   const navigate = useNavigate();
   const [showMenu, setShowMenu] = useState(false);
   const [showNotifs, setShowNotifs] = useState(false);
+  const [showPrefs, setShowPrefs] = useState(false);
   const [notifActionOnly, setNotifActionOnly] = useState(false);
   const [showChangePw, setShowChangePw] = useState(false);
   const [pwForm, setPwForm] = useState({ current: '', next: '', confirm: '' });
@@ -551,20 +553,25 @@ export default function TopBar({ title, onMenuClick }: Props) {
                     </span>
                   )}
                 </div>
-                {notifications.length > 0 && (
-                  <div className="flex items-center gap-2">
-                    {unread > 0 && (
-                      <button onClick={handleMarkAll}
-                        className="flex items-center gap-1 text-xs font-semibold text-on-surface-muted hover:text-on-surface transition-colors">
-                        <Check size={11} /> Mark all read
-                      </button>
-                    )}
+                <div className="flex items-center gap-2">
+                  {unread > 0 && (
+                    <button onClick={handleMarkAll}
+                      className="flex items-center gap-1 text-xs font-semibold text-on-surface-muted hover:text-on-surface transition-colors">
+                      <Check size={11} /> Mark all read
+                    </button>
+                  )}
+                  {notifications.length > 0 && (
                     <button onClick={handleClearAll}
                       className="flex items-center gap-1 text-xs font-semibold text-danger hover:opacity-70 transition-opacity">
                       <Trash2 size={11} /> Clear all
                     </button>
-                  </div>
-                )}
+                  )}
+                  <button onClick={() => { setShowNotifs(false); setShowPrefs(true); }}
+                    title="Notification preferences"
+                    className="p-1 rounded-md text-on-surface-muted hover:text-on-surface hover:bg-surface-2 transition-colors">
+                    <Settings size={13} />
+                  </button>
+                </div>
               </div>
               {/* Action-required toggle row — one tap cuts FYI noise
                   down to just items still waiting on the viewer. */}
@@ -713,6 +720,9 @@ export default function TopBar({ title, onMenuClick }: Props) {
         </div>
       </div>
     </header>
+
+    {/* ── Notification preferences modal ─────────────────────────────────────── */}
+    {showPrefs && <NotificationPrefsModal onClose={() => setShowPrefs(false)} />}
 
     {/* ── Change Password Modal ─────────────────────────────────────────────── */}
     {showChangePw && (

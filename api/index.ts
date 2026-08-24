@@ -118,6 +118,11 @@ app.use((req: any, res: any, next: any) => {
 // ── Notification helpers ──────────────────────────────────────────────────
 async function notifyUser(userId: string, type: string, title: string, body?: string, link?: string) {
   try {
+    // Respect per-user mutes — the row exists ⇒ user opted out of
+    // this type ⇒ skip the insert entirely. History stays intact,
+    // nothing appears in the bell going forward.
+    const muted = await sql`SELECT 1 FROM user_notification_mutes WHERE user_id=${userId} AND type=${type} LIMIT 1`.catch(() => [] as any[]);
+    if ((muted as any[]).length) return;
     await sql`INSERT INTO notifications (user_id, type, title, body, link)
               VALUES (${userId}, ${type}, ${title}, ${body ?? null}, ${link ?? null})`;
     // Purge the user's notifications cache so the next bell fetch
@@ -880,7 +885,7 @@ async function runStartupMigrations() {
     // For a *seed* (rows, not columns), we probe with EXISTS-style: an
     // empty result set means "still needs to run", so we don't set the
     // flag and fall through.
-    await sql`SELECT structure FROM project_templates LIMIT 0`;
+    await sql`SELECT type FROM user_notification_mutes LIMIT 0`;
     _migrated = true;
     return;
   } catch {
@@ -3370,6 +3375,19 @@ async function runStartupMigrations() {
       created_by_name TEXT
     )`;
   await sql`CREATE INDEX IF NOT EXISTS idx_project_templates_name ON project_templates(name)`.catch(()=>{});
+
+  // Per-user notification mutes. Presence of a row means "don't ping
+  // this user with this type" — notifyUser skips inserts that match.
+  // Users still see any historical notifications they had; the mute
+  // only affects future fan-out.
+  await sql`
+    CREATE TABLE IF NOT EXISTS user_notification_mutes (
+      user_id TEXT NOT NULL,
+      type TEXT NOT NULL,
+      muted_at TIMESTAMPTZ DEFAULT NOW(),
+      PRIMARY KEY (user_id, type)
+    )`;
+  await sql`CREATE INDEX IF NOT EXISTS idx_notif_mutes_user ON user_notification_mutes(user_id)`.catch(()=>{});
 
   _migrated = true;
 }
@@ -21762,6 +21780,38 @@ app.post('/api/project-templates/from-project', async (req, res) => {
       VALUES (${id}, ${name}, ${description}, ${JSON.stringify(structure)}::jsonb, ${gate.user.id}, ${gate.user.name})
       RETURNING *`;
     res.status(201).json(rows[0]);
+  } catch (err: any) { res.status(500).json({ error: err.message ?? 'Server error' }); }
+});
+
+// ── Notification preferences ────────────────────────────────────────
+// Per-user mutes. Presence of a (user_id, type) row means "don't ping
+// me with this type". The check happens inside notifyUser before every
+// insert, so the mute is authoritative for every fan-out path.
+app.get('/api/me/notification-mutes', async (req, res) => {
+  try {
+    await runStartupMigrations();
+    const uid = req.header('x-user-id');
+    if (!uid) return res.status(401).json({ error: 'Not authenticated' });
+    const rows = await sql`SELECT type, muted_at FROM user_notification_mutes WHERE user_id=${uid} ORDER BY type`;
+    res.json(rows);
+  } catch (err: any) { res.status(500).json({ error: err.message ?? 'Server error' }); }
+});
+
+// PUT body: { types: string[] }  → replaces the full set for this user.
+// Empty array clears every mute.
+app.put('/api/me/notification-mutes', async (req, res) => {
+  try {
+    await runStartupMigrations();
+    const uid = req.header('x-user-id');
+    if (!uid) return res.status(401).json({ error: 'Not authenticated' });
+    const types = Array.isArray(req.body?.types)
+      ? Array.from(new Set(req.body.types.map((t: any) => String(t).trim()).filter(Boolean))) as string[]
+      : [];
+    await sql`DELETE FROM user_notification_mutes WHERE user_id=${uid}`;
+    for (const t of types) {
+      await sql`INSERT INTO user_notification_mutes (user_id, type) VALUES (${uid}, ${t}) ON CONFLICT DO NOTHING`;
+    }
+    res.json({ ok: true, muted: types });
   } catch (err: any) { res.status(500).json({ error: err.message ?? 'Server error' }); }
 });
 

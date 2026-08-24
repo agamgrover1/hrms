@@ -754,6 +754,11 @@ export const api = {
   markAllNotificationsRead: (userId: string) => request<any>(`/notifications/read-all?user_id=${userId}`, { method: 'PATCH' }),
   deleteNotification: (id: number) => request<any>(`/notifications/${id}`, { method: 'DELETE' }),
   clearAllNotifications: (userId: string) => request<any>(`/notifications/clear-all?user_id=${userId}`, { method: 'DELETE' }),
+  // Notification preferences — the muted-types list for the signed-in user.
+  getMyNotificationMutes: () =>
+    request<Array<{ type: string; muted_at: string }>>(`/me/notification-mutes`),
+  setMyNotificationMutes: (types: string[]) =>
+    request<{ ok: true; muted: string[] }>(`/me/notification-mutes`, { method: 'PUT', body: JSON.stringify({ types }) }),
 
   // Users
   getUsers: () => request<any[]>('/users'),
