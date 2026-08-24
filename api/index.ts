@@ -3389,6 +3389,54 @@ async function runStartupMigrations() {
     )`;
   await sql`CREATE INDEX IF NOT EXISTS idx_notif_mutes_user ON user_notification_mutes(user_id)`.catch(()=>{});
 
+  // One-time backfill: legacy attendance_note_pending notifications
+  // predate the notification.link column being populated for this type,
+  // so clicking them fell through to the /my-team root instead of
+  // opening the specific member on the specific date. Reconstruct the
+  // deep link by parsing the ISO/YYYY-MM-DD date from the body and
+  // looking up the note in attendance_notes to recover the employee_id.
+  // Runs once per Lambda cold start; the UPDATE narrows on `link IS NULL`
+  // so it's a no-op on subsequent runs after every row is filled.
+  await sql`
+    WITH src AS (
+      SELECT n.id,
+             -- YYYY-MM-DD anywhere in the body (matches both raw ISO
+             -- "2026-08-21T00:00:00.000Z" leaks and the newer human form).
+             (regexp_matches(n.body, '(\\d{4}-\\d{2}-\\d{2})'))[1] AS iso_date,
+             -- The body reads "<Author Name> added a note …" — the author
+             -- hint disambiguates when two people have notes on the same
+             -- date. Falls back to a NULL author on non-standard bodies.
+             (regexp_matches(n.body, '^([^:]+?) added a note'))[1] AS author_hint
+      FROM notifications n
+      WHERE n.type = 'attendance_note_pending' AND n.link IS NULL
+    ),
+    matched AS (
+      SELECT DISTINCT ON (s.id) s.id, an.employee_id, s.iso_date
+      FROM src s
+      JOIN attendance_notes an
+        ON an.date::text = s.iso_date
+       AND (s.author_hint IS NULL OR an.author_name = s.author_hint)
+      WHERE s.iso_date IS NOT NULL
+      ORDER BY s.id, an.updated_at DESC
+    )
+    UPDATE notifications n
+    SET link = '/my-team?member=' || m.employee_id || '&date=' || m.iso_date
+    FROM matched m
+    WHERE n.id = m.id`.catch(() => {});
+
+  // Same-shape body cleanup: legacy notifications embed a full ISO
+  // datetime ("2026-08-21T00:00:00.000Z") instead of a readable date.
+  // Rewrite in place — no schema change, just a nicer bell entry.
+  await sql`
+    UPDATE notifications
+    SET body = regexp_replace(
+      body,
+      '(\\d{4})-(\\d{2})-(\\d{2})T[0-9:.\\-+Z]+',
+      to_char(to_date(substring(body FROM '\\d{4}-\\d{2}-\\d{2}'), 'YYYY-MM-DD'), 'DD Mon YYYY')
+    )
+    WHERE type = 'attendance_note_pending'
+      AND body LIKE '%T00:00:00%'`.catch(() => {});
+
   _migrated = true;
 }
 
@@ -7990,7 +8038,12 @@ app.put('/api/attendance-notes', async (req, res) => {
     if (!uid) return res.status(401).json({ error: 'Sign in required' });
     const u = (await sql`SELECT id, name, role FROM app_users WHERE id=${uid}`)[0] as any;
     if (!u) return res.status(401).json({ error: 'Unknown user' });
-    const { employee_id, date, note } = req.body ?? {};
+    const { employee_id, note } = req.body ?? {};
+    // Clients sometimes send the field as a full ISO datetime
+    // ("2026-08-21T00:00:00.000Z"). Normalise to a bare YYYY-MM-DD so
+    // the notification body, the deep-link URL and the DATE column all
+    // agree; otherwise the raw ISO leaks into the bell.
+    const date = String(req.body?.date ?? '').slice(0, 10);
     if (!employee_id || !date) return res.status(400).json({ error: 'employee_id and date are required' });
 
     const actorEmpId = await resolveUserToEmployee(u);
@@ -8034,8 +8087,9 @@ app.put('/api/attendance-notes', async (req, res) => {
     // they know there's something to approve.
     if (isSelfEmployeeAuthor) {
       try {
+        const humanDate = new Date(date + 'T00:00:00').toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' });
         notifyManagerOfEmployee(employee_id, 'attendance_note_pending', 'Attendance note awaiting approval',
-          `${u.name} added a note on ${date} that needs your review: ${note.trim().slice(0, 140)}`,
+          `${u.name} added a note for ${humanDate} that needs your review: ${note.trim().slice(0, 140)}`,
           `/my-team?member=${employee_id}&date=${date}`).catch(()=>{});
       } catch {}
     }
