@@ -69,6 +69,53 @@ export interface VerifyResult {
   smtp_ok: boolean;
 }
 
+export interface MailFolder {
+  path: string;
+  name: string;
+  special_use: string | null;
+  messages: number;
+  unread: number;
+}
+export interface MailEnvelope {
+  uid: number;
+  seq: number;
+  subject: string;
+  from: { name: string; address: string } | null;
+  to: Array<{ name: string; address: string }>;
+  date: string | null;
+  snippet: string;
+  flags: string[];
+  seen: boolean;
+  flagged: boolean;
+  answered: boolean;
+  size: number;
+  has_attachments: boolean;
+}
+export interface MailMessage {
+  uid: number;
+  subject: string;
+  from: { name: string; address: string } | null;
+  to: Array<{ name: string; address: string }>;
+  cc: Array<{ name: string; address: string }>;
+  date: string | null;
+  html: string | null;
+  text: string | null;
+  attachments: Array<{ index: number; filename: string; content_type: string; size: number; content_id?: string }>;
+  flags: string[];
+}
+
+// Attachment download URL — includes the JWT as a query param since
+// <a download> can't set headers. Token is short-lived (15 min) so
+// leakage via referrer/history is bounded.
+export async function mailAttachmentUrl(accountId: string, folder: string, uid: number, index: number): Promise<string> {
+  const tb = await (async () => {
+    // Reuse the token cache inside `call`.
+    const r = await (await import('./api')).api.getMailToken();
+    return r;
+  })();
+  return `${tb.api_base}/accounts/${accountId}/folders/${encodeURIComponent(folder)}/messages/${uid}/attachments/${index}?t=${encodeURIComponent(tb.token)}`;
+}
+
 export const mailApi = {
   listAccounts: () => call<MailAccount[]>('GET', '/accounts'),
   testAccount: (data: {
@@ -84,4 +131,20 @@ export const mailApi = {
   }) => call<VerifyResult & { account: MailAccount }>('POST', '/accounts', data),
   setDefault: (id: string) => call<{ ok: true }>('PATCH', `/accounts/${id}`, { is_default: true }),
   deleteAccount: (id: string) => call<{ ok: boolean }>('DELETE', `/accounts/${id}`),
+
+  // ── M2 inbox reader ────────────────────────────────────────────
+  listFolders: (accountId: string) =>
+    call<MailFolder[]>('GET', `/accounts/${accountId}/folders`),
+  listMessages: (accountId: string, folder: string, opts?: { limit?: number; before_uid?: number }) => {
+    const q = new URLSearchParams();
+    if (opts?.limit) q.set('limit', String(opts.limit));
+    if (opts?.before_uid) q.set('before_uid', String(opts.before_uid));
+    return call<{ messages: MailEnvelope[]; total: number; unread: number }>(
+      'GET', `/accounts/${accountId}/folders/${encodeURIComponent(folder)}/messages${q.toString() ? '?' + q : ''}`
+    );
+  },
+  fetchMessage: (accountId: string, folder: string, uid: number) =>
+    call<MailMessage>('GET', `/accounts/${accountId}/folders/${encodeURIComponent(folder)}/messages/${uid}`),
+  markRead: (accountId: string, folder: string, uid: number, seen: boolean) =>
+    call<{ ok: true; seen: boolean }>('POST', `/accounts/${accountId}/folders/${encodeURIComponent(folder)}/messages/${uid}/read`, { seen }),
 };
