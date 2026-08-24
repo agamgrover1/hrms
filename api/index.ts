@@ -885,7 +885,7 @@ async function runStartupMigrations() {
     // For a *seed* (rows, not columns), we probe with EXISTS-style: an
     // empty result set means "still needs to run", so we don't set the
     // flag and fall through.
-    await sql`SELECT type FROM user_notification_mutes LIMIT 0`;
+    await sql`SELECT screening_outcome FROM candidates LIMIT 0`;
     _migrated = true;
     return;
   } catch {
@@ -2987,6 +2987,13 @@ async function runStartupMigrations() {
   await sql`CREATE INDEX IF NOT EXISTS idx_candidates_stage ON candidates(stage, created_at DESC)`.catch(()=>{});
   await sql`CREATE INDEX IF NOT EXISTS idx_candidates_status ON candidates(status)`.catch(()=>{});
   await sql`CREATE INDEX IF NOT EXISTS idx_candidates_reviewer ON candidates(tech_reviewer_id, tech_review_status)`.catch(()=>{});
+  // Experience fields relaxed from NUMERIC → TEXT so HR can write
+  // "6 months" / "1 year 6 months" / "fresher" verbatim. Existing
+  // NUMERIC values become their string form ("3", "0.5") — acceptable.
+  await sql`ALTER TABLE candidates ALTER COLUMN total_experience_years TYPE TEXT USING total_experience_years::text`.catch(() => {});
+  await sql`ALTER TABLE candidates ALTER COLUMN relevant_experience_years TYPE TEXT USING relevant_experience_years::text`.catch(() => {});
+  await sql`ALTER TABLE candidates ADD COLUMN IF NOT EXISTS experience_type TEXT`.catch(() => {});
+  await sql`ALTER TABLE candidates ADD COLUMN IF NOT EXISTS screening_outcome TEXT`.catch(() => {});
 
   await sql`
     CREATE TABLE IF NOT EXISTS candidate_stage_events (
@@ -13350,6 +13357,7 @@ const CANDIDATE_MUTABLE_FIELDS = [
   'tech_review_needed', 'tech_reviewer_id', 'tech_review_status', 'tech_review_remarks',
   'call_status', 'called_by_id', 'call_remarks', 'follow_up_date',
   'total_experience_years', 'relevant_experience_years',
+  'experience_type', 'screening_outcome',
   'current_salary', 'current_ctc', 'expected_salary', 'expected_ctc',
   'last_increment_date', 'last_increment_amount',
   'reason_for_change', 'current_location', 'notice_period_days', 'face_to_face_available',
@@ -13518,6 +13526,8 @@ app.patch('/api/candidates/:id', async (req, res) => {
         case 'follow_up_date': row = (await sql`UPDATE candidates SET follow_up_date=${value || null}, updated_at=NOW() WHERE id=${req.params.id} RETURNING *`)[0]; break;
         case 'total_experience_years': row = (await sql`UPDATE candidates SET total_experience_years=${value === '' ? null : value}, updated_at=NOW() WHERE id=${req.params.id} RETURNING *`)[0]; break;
         case 'relevant_experience_years': row = (await sql`UPDATE candidates SET relevant_experience_years=${value === '' ? null : value}, updated_at=NOW() WHERE id=${req.params.id} RETURNING *`)[0]; break;
+        case 'experience_type': row = (await sql`UPDATE candidates SET experience_type=${value === '' ? null : value}, updated_at=NOW() WHERE id=${req.params.id} RETURNING *`)[0]; break;
+        case 'screening_outcome': row = (await sql`UPDATE candidates SET screening_outcome=${value === '' ? null : value}, updated_at=NOW() WHERE id=${req.params.id} RETURNING *`)[0]; break;
         case 'current_salary': row = (await sql`UPDATE candidates SET current_salary=${value === '' ? null : value}, updated_at=NOW() WHERE id=${req.params.id} RETURNING *`)[0]; break;
         case 'current_ctc': row = (await sql`UPDATE candidates SET current_ctc=${value === '' ? null : value}, updated_at=NOW() WHERE id=${req.params.id} RETURNING *`)[0]; break;
         case 'expected_salary': row = (await sql`UPDATE candidates SET expected_salary=${value === '' ? null : value}, updated_at=NOW() WHERE id=${req.params.id} RETURNING *`)[0]; break;
@@ -13638,23 +13648,65 @@ app.post('/api/candidates/:id/log-screening-call', async (req, res) => {
   try {
     const gate = await requireHROrAbove(req, res);
     if (!gate.ok) return;
-    const { call_status, call_remarks, follow_up_date } = req.body ?? {};
+    const { call_status, call_remarks, follow_up_date, screening_outcome, rejection_reason } = req.body ?? {};
     if (!call_status) return res.status(400).json({ error: 'call_status is required' });
+    // If HR is issuing a Reject outcome, the reason field is mandatory
+    // so the audit trail and rejection-reasons report make sense.
+    if (screening_outcome === 'reject' && !String(rejection_reason ?? '').trim()) {
+      return res.status(400).json({ error: 'Rejection reason is required when the outcome is Reject.' });
+    }
+
+    // Persist the call fields first — screening_outcome column carries
+    // the last-selected outcome for HR to see + a follow-up UI to render.
     await sql`
       UPDATE candidates SET
         call_status = ${call_status},
         called_by_id = ${gate.user?.id ?? null},
         call_remarks = ${call_remarks ?? null},
         follow_up_date = ${follow_up_date || null},
+        screening_outcome = ${screening_outcome ?? null},
         stage = CASE
           WHEN stage IN ('sourced','screening_pending','tech_review') THEN 'screening_call'
           ELSE stage
         END,
         updated_at = NOW()
       WHERE id = ${req.params.id}`;
+
+    // Apply pipeline move based on the outcome. Only three explicit
+    // outcomes touch stage/status — anything else (or none) leaves
+    // the candidate where they were.
+    if (screening_outcome === 'move_to_interview') {
+      // Advance stage forward but never REGRESS — someone already in
+      // 'interviewing' shouldn't rewind to 'interview_scheduled'.
+      await sql`
+        UPDATE candidates SET
+          stage = CASE
+            WHEN stage IN ('sourced','screening_pending','tech_review','screening_call','details_captured')
+              THEN 'interview_scheduled'
+            ELSE stage
+          END,
+          status = 'active',
+          updated_at = NOW()
+        WHERE id = ${req.params.id}`;
+    } else if (screening_outcome === 'hold') {
+      await sql`UPDATE candidates SET status='hold', updated_at=NOW() WHERE id=${req.params.id}`;
+    } else if (screening_outcome === 'reject') {
+      await sql`
+        UPDATE candidates SET
+          status='rejected',
+          rejection_reason=${String(rejection_reason).trim()},
+          updated_at=NOW()
+        WHERE id=${req.params.id}`;
+    }
+
     await logCandidateEvent(req.params.id, 'call_logged', gate.user, {
       body: call_remarks || null,
-      metadata: { call_status, follow_up_date: follow_up_date || null },
+      metadata: {
+        call_status,
+        follow_up_date: follow_up_date || null,
+        screening_outcome: screening_outcome ?? null,
+        rejection_reason: screening_outcome === 'reject' ? String(rejection_reason).trim() : null,
+      },
     });
     res.json({ ok: true });
   } catch (err: any) { res.status(500).json({ error: err.message ?? 'Server error' }); }
@@ -13736,20 +13788,40 @@ app.patch('/api/candidate-interviews/:id', async (req, res) => {
     if (meeting_link !== undefined && gate.role === 'hr') row = (await sql`UPDATE candidate_interviews SET meeting_link=${meeting_link}, updated_at=NOW() WHERE id=${req.params.id} RETURNING *`)[0];
     if (mode !== undefined && gate.role === 'hr') row = (await sql`UPDATE candidate_interviews SET mode=${mode}, updated_at=NOW() WHERE id=${req.params.id} RETURNING *`)[0];
     // On any completed round or decision, log an event + advance the
-    // candidate to 'interviewing' or 'decision_pending' as appropriate.
+    // candidate's stage AND status based on what the interviewer decided.
+    // Previously every non-'next_round' decision collapsed to
+    // 'decision_pending' — so the hero pill kept reading "Decision
+    // Pending" even after the interviewer clicked Selected / Rejected /
+    // Hold. Fix maps each decision to its actual downstream state.
     if (status === 'completed' || decision !== undefined) {
       const cand = ((await sql`SELECT id, name FROM candidates WHERE id=${intv.candidate_id}` as any[])[0]);
       await logCandidateEvent(intv.candidate_id, 'interview_feedback', gate.user, {
         body: feedback || null,
         metadata: { round_no: intv.round_no, decision, status: status ?? row.status },
       });
-      // Auto-advance candidate stage based on decision. 'next_round' keeps
-      // them in 'interviewing'; anything else moves to 'decision_pending'.
-      let nextStage: string | null = null;
-      if (decision === 'next_round') nextStage = 'interviewing';
-      else if (decision) nextStage = 'decision_pending';
-      if (nextStage) {
-        await sql`UPDATE candidates SET stage=${nextStage}, updated_at=NOW() WHERE id=${intv.candidate_id}`;
+      if (decision === 'selected') {
+        // Selected → jump straight to Offer stage. Status stays 'active'.
+        // The Offer tab surfaces the draft/release + Hire flow from here.
+        await sql`UPDATE candidates SET stage='offer', status='active', updated_at=NOW() WHERE id=${intv.candidate_id}`;
+      } else if (decision === 'rejected') {
+        // Rejected → status flips terminal. Use the feedback as the
+        // rejection reason if HR hasn't set one already.
+        await sql`
+          UPDATE candidates SET
+            status='rejected',
+            rejection_reason=COALESCE(NULLIF(rejection_reason, ''), ${feedback || null}),
+            updated_at=NOW()
+          WHERE id=${intv.candidate_id}`;
+      } else if (decision === 'hold') {
+        await sql`UPDATE candidates SET status='hold', updated_at=NOW() WHERE id=${intv.candidate_id}`;
+      } else if (decision === 'next_round') {
+        // Still in the pipeline — put them back into 'interviewing' so
+        // the next scheduled round advances stage normally.
+        await sql`UPDATE candidates SET stage='interviewing', status='active', updated_at=NOW() WHERE id=${intv.candidate_id}`;
+      } else if (status === 'completed') {
+        // Round marked completed with no decision yet — legitimate
+        // "waiting to hear back" state. Keep them in decision_pending.
+        await sql`UPDATE candidates SET stage='decision_pending', updated_at=NOW() WHERE id=${intv.candidate_id}`;
       }
       // Ping HR — they need to know the round is done + the decision.
       if (cand) {

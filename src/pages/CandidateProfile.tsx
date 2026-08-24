@@ -92,7 +92,22 @@ export default function CandidateProfile() {
   if (err) return <div className="p-8 text-sm text-danger">{err}</div>;
   if (!candidate) return null;
 
-  const color = STAGE_COLOR[candidate.stage] ?? STAGE_COLOR.sourced;
+  // Display pill: the latest human decision wins over the raw stage
+  // so a Selected/Rejected/Hold candidate never keeps reading
+  // "Decision Pending". Order matters — status is terminal, stage is
+  // pipeline-position, and offer_status splits "Selected but no offer
+  // yet" from "Offer released".
+  const displayed = (() => {
+    if (candidate.status === 'rejected')  return { key: 'rejected', label: 'Rejected' };
+    if (candidate.status === 'hold')      return { key: 'hold',     label: 'On Hold' };
+    if (candidate.status === 'joined' || candidate.final_status === 'joined')
+                                          return { key: 'final',    label: 'Joined' };
+    if (candidate.status === 'withdrawn') return { key: 'rejected', label: 'Withdrawn' };
+    if (candidate.stage === 'offer' && !candidate.offered_salary && !candidate.offer_status)
+                                          return { key: 'offer',    label: 'Selected' };
+    return { key: candidate.stage, label: stageLabel(candidate.stage) };
+  })();
+  const color = STAGE_COLOR[displayed.key] ?? STAGE_COLOR.sourced;
 
   return (
     <div className="p-6 space-y-5 max-w-5xl">
@@ -138,7 +153,7 @@ export default function CandidateProfile() {
               <button onClick={() => setStageMenuOpen(v => !v)}
                 disabled={!isHR}
                 className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-bold uppercase tracking-wider ${color.bg} ${color.text} ring-1 ${color.ring} ${isHR ? 'hover:opacity-90' : 'cursor-default'}`}>
-                {stageLabel(candidate.stage)} {isHR && <ChevronDown size={12} />}
+                {displayed.label} {isHR && <ChevronDown size={12} />}
               </button>
               {stageMenuOpen && isHR && (
                 <div className="absolute right-0 top-full mt-1 z-10 min-w-52 rounded-lg border border-outline bg-surface shadow-elev-3 py-1 max-h-72 overflow-auto">
@@ -288,10 +303,17 @@ function ScreeningTab({ candidate, onSaved }: { candidate: any; onSaved: () => v
     call_status: candidate.call_status ?? '',
     call_remarks: candidate.call_remarks ?? '',
     follow_up_date: candidate.follow_up_date?.slice(0, 10) ?? '',
+    // Screening-call outcome + rejection reason. Outcome maps to a
+    // pipeline move on save: move_to_interview → stage jumps forward;
+    // hold → status=hold; reject → status=rejected (reason required).
+    screening_outcome: candidate.screening_outcome ?? '',
+    rejection_reason: candidate.rejection_reason ?? '',
   });
   const [details, setDetails] = useState({
+    // Experience is text now — "6 months" / "1 year 6 months" / "fresher"
     total_experience_years: candidate.total_experience_years ?? '',
     relevant_experience_years: candidate.relevant_experience_years ?? '',
+    experience_type: candidate.experience_type ?? '',
     current_salary: candidate.current_salary ?? '',
     current_ctc: candidate.current_ctc ?? '',
     expected_salary: candidate.expected_salary ?? '',
@@ -309,16 +331,25 @@ function ScreeningTab({ candidate, onSaved }: { candidate: any; onSaved: () => v
 
   const saveCall = async () => {
     if (!call.call_status) { toast.error('Missing', 'Set a call status.'); return; }
+    if (call.screening_outcome === 'reject' && !call.rejection_reason.trim()) {
+      toast.error('Missing rejection reason', 'Say why you\'re rejecting.'); return;
+    }
     setBusyCall(true);
     try {
       await api.logScreeningCall(candidate.id, {
         call_status: call.call_status,
         call_remarks: call.call_remarks || undefined,
         follow_up_date: call.follow_up_date || undefined,
-      });
-      toast.success('Call logged', 'Screening call details saved.');
+        screening_outcome: call.screening_outcome || undefined,
+        rejection_reason: call.screening_outcome === 'reject' ? call.rejection_reason.trim() : undefined,
+      } as any);
+      const outMsg = call.screening_outcome === 'move_to_interview' ? 'Moved to Interview Scheduling.'
+        : call.screening_outcome === 'hold' ? 'Candidate placed on Hold.'
+        : call.screening_outcome === 'reject' ? 'Candidate marked Rejected.'
+        : 'Screening call details saved.';
+      toast.success('Call logged', outMsg);
       onSaved();
-    } catch (e: any) { toast.error('Save failed', e?.message ?? 'Please try again.'); }
+    } catch (e: any) { toast.error('Save failed', e?.body?.error ?? e?.message ?? 'Please try again.'); }
     finally { setBusyCall(false); }
   };
 
@@ -364,6 +395,44 @@ function ScreeningTab({ candidate, onSaved }: { candidate: any; onSaved: () => v
               className="mt-1 w-full px-2 py-1.5 rounded border border-outline bg-surface text-sm resize-none" />
           </label>
         </div>
+
+        {/* Screening-call outcome — the pipeline move happens on save. */}
+        <div className="pt-3 mt-2 border-t border-outline">
+          <p className="text-xs font-semibold text-on-surface-muted mb-2">After-call outcome</p>
+          <div className="flex flex-wrap gap-2">
+            {[
+              { id: 'move_to_interview', label: 'Move to Interview', tone: 'bg-brand text-on-accent border-brand' },
+              { id: 'hold',              label: 'Hold',              tone: 'bg-warning text-on-accent border-warning' },
+              { id: 'reject',            label: 'Reject',            tone: 'bg-danger text-on-accent border-danger' },
+            ].map(o => {
+              const active = call.screening_outcome === o.id;
+              return (
+                <button key={o.id} type="button"
+                  onClick={() => setCall(c => ({ ...c, screening_outcome: active ? '' : o.id }))}
+                  className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold border ${active ? o.tone : 'bg-surface text-on-surface-muted border-outline hover:bg-surface-2'}`}>
+                  {o.label}
+                </button>
+              );
+            })}
+          </div>
+          {call.screening_outcome === 'reject' && (
+            <label className="block mt-3">
+              <span className="text-xs font-semibold text-on-surface-muted">Rejection reason <span className="text-danger">*</span></span>
+              <textarea autoFocus rows={2} value={call.rejection_reason}
+                onChange={e => setCall(c => ({ ...c, rejection_reason: e.target.value }))}
+                placeholder="Why isn't this candidate a fit? (visible in HR reports)"
+                className="mt-1 w-full px-2 py-1.5 rounded border border-danger/40 bg-surface text-sm resize-none focus:outline-none focus:ring-2 focus:ring-danger/30" />
+            </label>
+          )}
+          {call.screening_outcome && (
+            <p className="text-[11px] text-on-surface-subtle mt-2 italic">
+              {call.screening_outcome === 'move_to_interview' && 'Saving will move the candidate to Interview Scheduling.'}
+              {call.screening_outcome === 'hold' && 'Saving will set the candidate\'s status to On Hold.'}
+              {call.screening_outcome === 'reject' && 'Saving will mark the candidate Rejected and record the reason.'}
+            </p>
+          )}
+        </div>
+
         <div className="flex justify-end">
           <button onClick={saveCall} disabled={busyCall}
             className="px-3 py-1.5 rounded-md text-xs font-semibold bg-accent text-on-accent hover:opacity-90 disabled:opacity-50">
@@ -379,8 +448,23 @@ function ScreeningTab({ candidate, onSaved }: { candidate: any; onSaved: () => v
           <span className="text-xs text-on-surface-subtle">Fill after the screening call</span>
         </div>
         <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-          <NumInput label="Total experience (yrs)" value={details.total_experience_years} onChange={v => setDetails(d => ({ ...d, total_experience_years: v }))} />
-          <NumInput label="Relevant experience (yrs)" value={details.relevant_experience_years} onChange={v => setDetails(d => ({ ...d, relevant_experience_years: v }))} />
+          <TextInput label="Total experience" placeholder="e.g. 1 year 6 months, 6 months, fresher"
+            value={details.total_experience_years}
+            onChange={v => setDetails(d => ({ ...d, total_experience_years: v }))} />
+          <TextInput label="Relevant experience" placeholder="e.g. 1 year, 3 years"
+            value={details.relevant_experience_years}
+            onChange={v => setDetails(d => ({ ...d, relevant_experience_years: v }))} />
+          <label className="block">
+            <span className="text-xs font-semibold text-on-surface-muted">Experience type</span>
+            <select value={details.experience_type} onChange={e => setDetails(d => ({ ...d, experience_type: e.target.value }))}
+              className="mt-1 w-full px-2 py-1.5 rounded border border-outline bg-surface text-sm">
+              <option value="">—</option>
+              <option value="Job">Job</option>
+              <option value="Internship">Internship</option>
+              <option value="Fresher">Fresher</option>
+            </select>
+          </label>
+          <div />
           <NumInput label="Current salary (₹/mo)" value={details.current_salary} onChange={v => setDetails(d => ({ ...d, current_salary: v }))} />
           <NumInput label="Current CTC (₹/yr)" value={details.current_ctc} onChange={v => setDetails(d => ({ ...d, current_ctc: v }))} />
           <NumInput label="Expected salary (₹/mo)" value={details.expected_salary} onChange={v => setDetails(d => ({ ...d, expected_salary: v }))} />
@@ -428,6 +512,16 @@ function NumInput({ label, value, onChange }: { label: string; value: any; onCha
       <span className="text-xs font-semibold text-on-surface-muted">{label}</span>
       <input type="number" value={value ?? ''} onChange={e => onChange(e.target.value)}
         className="mt-1 w-full px-2 py-1.5 rounded border border-outline bg-surface text-sm num-mono" />
+    </label>
+  );
+}
+function TextInput({ label, value, placeholder, onChange }: { label: string; value: any; placeholder?: string; onChange: (v: string) => void }) {
+  return (
+    <label className="block">
+      <span className="text-xs font-semibold text-on-surface-muted">{label}</span>
+      <input type="text" value={value ?? ''} onChange={e => onChange(e.target.value)}
+        placeholder={placeholder}
+        className="mt-1 w-full px-2 py-1.5 rounded border border-outline bg-surface text-sm" />
     </label>
   );
 }
