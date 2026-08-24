@@ -5,7 +5,8 @@ import {
   Paperclip, ChevronLeft, ChevronRight, Settings2, Reply, ReplyAll, Forward,
   Search, FolderInput, Save, Pencil,
 } from 'lucide-react';
-import { mailApi, mailAttachmentUrl, type MailAccount, type MailFolder, type MailEnvelope, type MailMessage } from '../services/mailApi';
+import { mailApi, mailAttachmentUrl, type MailAccount, type MailFolder, type MailEnvelope, type MailMessage, type MailTemplate } from '../services/mailApi';
+import MailPrefsModal from '../components/mail/MailPrefsModal';
 import { toast } from '../components/Toaster';
 import { useMailStream, type NewMailPush } from '../hooks/useMailStream';
 import { resetMailBadge } from '../hooks/useMailBadge';
@@ -263,10 +264,10 @@ export default function Mail() {
       )}
       {showAdd && <AddMailboxModal onClose={() => setShowAdd(false)} onAdded={() => { setShowAdd(false); loadAccounts(); }} />}
       {showSettings && currentAccount && (
-        <SettingsModal
+        <MailPrefsModal
           account={currentAccount}
+          folders={folders}
           onClose={() => setShowSettings(false)}
-          onChanged={() => { setShowSettings(false); loadAccounts(); }}
         />
       )}
     </div>
@@ -294,6 +295,13 @@ function MessageReader({ message, accountId, folder, onRefresh, onCompose, accou
     try {
       await mailApi.moveMessage(accountId, folder, message.uid, destination);
       toast.success('Moved', destination);
+      onRefresh();
+    } catch (e: any) { toast.error('Move failed', e?.body?.error ?? e?.message); }
+  };
+  const doSpam = async () => {
+    try {
+      const r = await mailApi.markSpam(accountId, folder, message.uid);
+      toast.success('Marked as spam', `Moved to ${r.moved_to}`);
       onRefresh();
     } catch (e: any) { toast.error('Move failed', e?.body?.error ?? e?.message); }
   };
@@ -385,6 +393,13 @@ function MessageReader({ message, accountId, folder, onRefresh, onCompose, accou
               className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg border border-outline text-xs font-semibold text-on-surface-muted hover:bg-surface-2">
               <FolderInput size={12} /> Move
             </button>
+            {!/junk|spam/i.test(folder) && (
+              <button onClick={doSpam}
+                title="Move to Junk / Spam folder"
+                className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg border border-outline text-xs font-semibold text-warning hover:bg-warning/10">
+                <AlertOctagon size={12} /> Spam
+              </button>
+            )}
             <button onClick={doDelete}
               className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg border border-outline text-xs font-semibold text-danger hover:bg-danger/10">
               <Trash2 size={12} /> Delete
@@ -745,6 +760,29 @@ function ComposeModal({ accountId, fromLabel, seed, onClose, onSent }: {
   const [files, setFiles]     = useState<File[]>([]);
   const [busy, setBusy]       = useState<'idle' | 'sending' | 'saving'>('idle');
   const [replacesUid, setReplacesUid] = useState<number | undefined>(seed.replaces_uid);
+  const [templates, setTemplates] = useState<MailTemplate[]>([]);
+  const [templatePickerOpen, setTemplatePickerOpen] = useState(false);
+  // Auto-append the account's signature to a NEW compose (not replies /
+  // forwards / drafts — those already include their own trailing text).
+  useEffect(() => {
+    if (seed.body || seed.replaces_uid) return;   // don't touch existing bodies
+    mailApi.getSignature(accountId).then(s => {
+      const sig = s.body_text?.trim();
+      if (sig) setBody(prev => `${prev}\n\n${sig}`);
+    }).catch(() => {});
+  }, [accountId]);
+  // Load templates lazily on first picker open.
+  const openTemplatePicker = async () => {
+    setTemplatePickerOpen(true);
+    if (templates.length === 0) {
+      try { setTemplates(await mailApi.listTemplates()); } catch { /* leave empty */ }
+    }
+  };
+  const applyTemplate = (t: MailTemplate) => {
+    if (t.subject && !subject.trim()) setSubject(t.subject);
+    setBody(prev => (prev.trim() ? prev + '\n\n' : '') + t.body);
+    setTemplatePickerOpen(false);
+  };
 
   const totalSize = files.reduce((s, f) => s + f.size, 0);
   const overCap = totalSize > 25 * 1024 * 1024 || files.length > 10;
@@ -865,11 +903,29 @@ function ComposeModal({ accountId, fromLabel, seed, onClose, onSent }: {
             </div>
           )}
         </div>
-        <div className="px-4 py-3 border-t border-outline flex items-center gap-2 bg-surface-2/40">
+        <div className="px-4 py-3 border-t border-outline flex items-center gap-2 bg-surface-2/40 relative">
           <label className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg border border-outline text-xs font-semibold text-on-surface-muted hover:bg-surface-2 cursor-pointer">
             <Paperclip size={12} /> Attach
             <input type="file" multiple onChange={onFileChange} className="hidden" />
           </label>
+          <button onClick={openTemplatePicker}
+            className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg border border-outline text-xs font-semibold text-on-surface-muted hover:bg-surface-2">
+            <FileText size={12} /> Template
+          </button>
+          {templatePickerOpen && (
+            <div className="absolute bottom-full left-4 mb-2 min-w-56 max-h-72 overflow-y-auto rounded-lg border border-outline bg-surface shadow-elev-4 py-1 z-10">
+              {templates.length === 0 && (
+                <p className="px-3 py-2 text-[11px] text-on-surface-subtle italic">No templates yet — add one in Mail preferences.</p>
+              )}
+              {templates.map(t => (
+                <button key={t.id} onClick={() => applyTemplate(t)}
+                  className="w-full text-left px-3 py-1.5 text-xs hover:bg-surface-2 text-on-surface">
+                  <div className="font-semibold">{t.name}</div>
+                  {t.subject && <div className="text-[10px] text-on-surface-subtle truncate">subject · {t.subject}</div>}
+                </button>
+              ))}
+            </div>
+          )}
           <span className="text-[10px] text-on-surface-subtle ml-1">Max 25 MB / 10 files</span>
           <button onClick={saveDraft} disabled={busy !== 'idle'}
             title="Save this message to Drafts (no send)"

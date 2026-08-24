@@ -69,6 +69,29 @@ export interface VerifyResult {
   smtp_ok: boolean;
 }
 
+export interface MailTemplate {
+  id: string;
+  user_id: string;
+  name: string;
+  subject: string | null;
+  body: string;
+  created_at: string;
+  updated_at: string;
+}
+export interface MailFilter {
+  id: string;
+  account_id: string;
+  name: string;
+  match_field: 'from' | 'to' | 'subject' | 'body';
+  match_op: 'contains' | 'equals' | 'starts_with';
+  match_value: string;
+  action: 'move' | 'delete' | 'seen' | 'flag';
+  action_target: string | null;
+  enabled: boolean;
+  sort_order: number;
+  created_at: string;
+}
+
 export interface MailFolder {
   path: string;
   name: string;
@@ -166,6 +189,33 @@ export const mailApi = {
     in_reply_to?: string; references?: string[];
     replaces_uid?: number;
   }) => call<{ ok: true; uid: number; folder: string }>('POST', `/accounts/${accountId}/drafts`, data),
+
+  // ── M6 ─────────────────────────────────────────────────────────
+  getSignature: (accountId: string) =>
+    call<{ account_id: string; body_text: string; body_html: string; updated_at: string }>('GET', `/accounts/${accountId}/signature`),
+  saveSignature: (accountId: string, body_text: string, body_html: string) =>
+    call<any>('PUT', `/accounts/${accountId}/signature`, { body_text, body_html }),
+
+  listTemplates: () =>
+    call<MailTemplate[]>('GET', `/templates`),
+  createTemplate: (data: { name: string; subject?: string | null; body: string }) =>
+    call<MailTemplate>('POST', `/templates`, data),
+  patchTemplate: (id: string, patch: Partial<{ name: string; subject: string | null; body: string }>) =>
+    call<MailTemplate>('PATCH', `/templates/${id}`, patch),
+  deleteTemplate: (id: string) =>
+    call<{ ok: boolean }>('DELETE', `/templates/${id}`),
+
+  listFilters: (accountId: string) =>
+    call<MailFilter[]>('GET', `/accounts/${accountId}/filters`),
+  createFilter: (accountId: string, data: Omit<MailFilter, 'id' | 'account_id' | 'created_at'>) =>
+    call<MailFilter>('POST', `/accounts/${accountId}/filters`, data),
+  patchFilter: (accountId: string, id: string, patch: Partial<Omit<MailFilter, 'id' | 'account_id' | 'created_at'>>) =>
+    call<MailFilter>('PATCH', `/accounts/${accountId}/filters/${id}`, patch),
+  deleteFilter: (accountId: string, id: string) =>
+    call<{ ok: boolean }>('DELETE', `/accounts/${accountId}/filters/${id}`),
+
+  markSpam: (accountId: string, folder: string, uid: number) =>
+    call<{ ok: true; moved_to: string }>('POST', `/accounts/${accountId}/folders/${encodeURIComponent(folder)}/messages/${uid}/spam`),
 
   // ── M3 send ─────────────────────────────────────────────────────
   // Multipart because attachments would blow past a JSON body; the
