@@ -2995,6 +2995,54 @@ async function runStartupMigrations() {
   await sql`ALTER TABLE candidates ADD COLUMN IF NOT EXISTS experience_type TEXT`.catch(() => {});
   await sql`ALTER TABLE candidates ADD COLUMN IF NOT EXISTS screening_outcome TEXT`.catch(() => {});
 
+  // Recovery: portal manual clock-ins that were clobbered by a
+  // biometric sync (the bug where a broken/quiet biometric returned an
+  // 'A' absent row and the UPSERT overwrote the real check_in with
+  // null). attendance_sessions is per-session and NEVER touched by the
+  // sync, so it's the source of truth for restoring the wiped rows.
+  //
+  // Rule: for every day an employee has at least one open/closed
+  // session, if the corresponding attendance_records row has no
+  // check_in (i.e. was wiped), rebuild it from the earliest/latest
+  // session times + sum of session duration. Leave/WFH/holiday rows are
+  // never touched — those statuses ARE authoritative.
+  //
+  // Idempotent: narrowed on check_in IS NULL, so healed rows are
+  // excluded on subsequent runs. Runs on every cold start.
+  await sql`
+    WITH per_day AS (
+      SELECT s.employee_id,
+             s.date::text AS d,
+             MIN(s.clock_in)  AS earliest_in,
+             MAX(s.clock_out) AS latest_out,
+             COALESCE(SUM(s.duration_minutes), 0) AS total_min
+      FROM attendance_sessions s
+      WHERE s.clock_in IS NOT NULL
+      GROUP BY s.employee_id, s.date
+    ),
+    enriched AS (
+      SELECT pd.*,
+             COALESCE(cs.late_after, '10:00') AS late_after
+      FROM per_day pd
+      LEFT JOIN employees e     ON e.id = pd.employee_id
+      LEFT JOIN config_shifts cs ON cs.id = COALESCE(e.shift, 'day')
+    )
+    UPDATE attendance_records ar SET
+      check_in    = en.earliest_in,
+      check_out   = COALESCE(ar.check_out, en.latest_out),
+      total_hours = ROUND((en.total_min / 60.0)::numeric, 2),
+      status      = CASE
+        WHEN en.earliest_in > en.late_after THEN 'late'
+        ELSE 'present'
+      END,
+      source      = 'manual',
+      updated_at  = NOW()
+    FROM enriched en
+    WHERE ar.employee_id = en.employee_id
+      AND ar.date::text  = en.d
+      AND (ar.check_in IS NULL OR ar.check_in = '')
+      AND ar.status NOT IN ('on_leave','half-day','short_leave','unpaid_leave','wfh','wfh_half','holiday')`.catch(() => {});
+
   // One-time backfill: candidates stuck on stage='decision_pending' &
   // status='active' whose latest interview already carried a decision
   // (selected / rejected / hold / next_round) — the old PATCH handler
@@ -4960,17 +5008,22 @@ async function runBiometricSyncV(trigger: string, triggeredBy?: string, fromDate
       ${upHours}::numeric[]
     ) AS t(e, d, ci, co, st, hr)
     ON CONFLICT (employee_id, date) DO UPDATE SET
-      check_in = EXCLUDED.check_in,
-      check_out = EXCLUDED.check_out,
-      -- Preserve statuses that were set by a leave / WFH approval.
-      -- The biometric device doesn't know about leaves; if we let it
-      -- overwrite here, an approved leave gets silently flipped to
-      -- 'absent' the next time the sync runs, and downstream (payroll
-      -- LOP) reads that as a deduction. The employee is on approved
-      -- leave — leave wins, biometric loses.
+      -- Never wipe a non-null punch with a null. The biometric machine
+      -- returns null INTime/OUTTime when it has NO record of the
+      -- employee that day (device broken, employee didn't tap, punch
+      -- didn't sync). Overwriting a portal manual clock-in with null
+      -- silently deleted real attendance data — that was the bug.
+      check_in = COALESCE(EXCLUDED.check_in, attendance_records.check_in),
+      check_out = COALESCE(EXCLUDED.check_out, attendance_records.check_out),
+      -- Preserve statuses set by a leave / WFH approval (leave wins),
+      -- AND preserve portal-manual attendance when the biometric had
+      -- no punch (device didn't see the employee ⇒ don't mark 'absent'
+      -- when the portal already recorded them present).
       status = CASE
         WHEN attendance_records.status IN
           ('on_leave','half-day','short_leave','unpaid_leave','wfh','wfh_half','holiday')
+        THEN attendance_records.status
+        WHEN EXCLUDED.check_in IS NULL AND attendance_records.check_in IS NOT NULL
         THEN attendance_records.status
         ELSE EXCLUDED.status
       END,
@@ -4978,11 +5031,15 @@ async function runBiometricSyncV(trigger: string, triggeredBy?: string, fromDate
         WHEN attendance_records.status IN
           ('on_leave','half-day','short_leave','unpaid_leave','wfh','wfh_half','holiday')
         THEN attendance_records.total_hours
+        WHEN EXCLUDED.check_in IS NULL AND attendance_records.check_in IS NOT NULL
+        THEN attendance_records.total_hours
         ELSE EXCLUDED.total_hours
       END,
       source = CASE
         WHEN attendance_records.status IN
           ('on_leave','half-day','short_leave','unpaid_leave','wfh','wfh_half','holiday')
+        THEN attendance_records.source
+        WHEN EXCLUDED.check_in IS NULL AND attendance_records.check_in IS NOT NULL
         THEN attendance_records.source
         ELSE 'biometric'
       END,
