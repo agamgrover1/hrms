@@ -2,7 +2,7 @@ import { NavLink, useLocation } from 'react-router-dom';
 import {
   LayoutDashboard, Users, Clock3, CalendarDays, Wallet, Sparkles,
   ChevronLeft, ChevronRight, ChevronDown, UserCog, User, SlidersHorizontal, TrendingUp, Wrench,
-  Briefcase, ClipboardCheck, Layers, LineChart, AlertTriangle, Activity, Megaphone, BookOpen, HelpCircle, Mail, UserPlus, FileText, UserSearch, KanbanSquare, Target, BarChart3, type LucideIcon,
+  Briefcase, ClipboardCheck, Layers, LineChart, AlertTriangle, Activity, Megaphone, BookOpen, HelpCircle, Mail, UserPlus, FileText, UserSearch, KanbanSquare, Target, BarChart3, Inbox, type LucideIcon,
 } from 'lucide-react';
 import { useState, useEffect, useRef } from 'react';
 import { useAuth } from '../../context/AuthContext';
@@ -282,6 +282,7 @@ export default function Sidebar({ mobileOpen = false, onMobileClose }: { mobileO
       // HR Intern already has Overview in her Workspace group above — no Home duplicate here.
       ...(isEmployee || isCoord ? [{ to: '/', icon: LayoutDashboard, label: 'Home', end: true } as NavItem] : []),
       { to: '/my', icon: User, label: 'My portal', end: true },
+      { to: '/mail', icon: Inbox, label: 'Mail' },
       ...(role === 'admin' || isCoord ? [] : [{ to: '/tasks', icon: KanbanSquare, label: 'My tasks' } as NavItem]),
       ...(isManager ? [{ to: '/my-team', icon: Users, label: 'My team' } as NavItem] : []),
       ...(isManager ? [{ to: '/workload', icon: Activity, label: 'Team workload' } as NavItem] : []),

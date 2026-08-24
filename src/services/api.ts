@@ -763,6 +763,9 @@ export const api = {
     request<Array<{ type: string; muted_at: string }>>(`/me/notification-mutes`),
   setMyNotificationMutes: (types: string[]) =>
     request<{ ok: true; muted: string[] }>(`/me/notification-mutes`, { method: 'PUT', body: JSON.stringify({ types }) }),
+  // Short-lived JWT for the VPS mail service. Used by mailApi.ts.
+  getMailToken: () =>
+    request<{ token: string; expires_in: number; api_base: string }>(`/me/mail-token`),
 
   // Users
   getUsers: () => request<any[]>('/users'),

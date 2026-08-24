@@ -22114,6 +22114,35 @@ app.get('/api/me/notification-mutes', async (req, res) => {
   } catch (err: any) { res.status(500).json({ error: err.message ?? 'Server error' }); }
 });
 
+// ── Mail-service bridge ─────────────────────────────────────────────
+// Mints a short-lived JWT that the browser sends to the mail service
+// (mail-api.srv1802162.hstgr.cloud) on the VPS. The signing secret is
+// shared between this backend and the mail service via env var
+// MAIL_JWT_SECRET (32+ chars). Token lifetime is 15 min so a stolen
+// token can't be replayed indefinitely — the frontend just re-fetches
+// when it expires.
+app.get('/api/me/mail-token', async (req, res) => {
+  try {
+    const uid = req.header('x-user-id');
+    if (!uid) return res.status(401).json({ error: 'Not authenticated' });
+    const u = (await sql`SELECT id, name, email, role, active FROM app_users WHERE id=${uid} LIMIT 1` as any[])[0];
+    if (!u || u.active !== true) return res.status(403).json({ error: 'Not permitted' });
+    const secret = process.env.MAIL_JWT_SECRET;
+    if (!secret) return res.status(503).json({ error: 'Mail service not configured (MAIL_JWT_SECRET missing on server).' });
+    const { SignJWT } = await import('jose');
+    const key = new TextEncoder().encode(secret);
+    const token = await new SignJWT({ email: u.email, role: u.role })
+      .setProtectedHeader({ alg: 'HS256' })
+      .setSubject(u.id)
+      .setIssuer('hrms')
+      .setAudience('hrms-mail-service')
+      .setIssuedAt()
+      .setExpirationTime('15m')
+      .sign(key);
+    res.json({ token, expires_in: 900, api_base: process.env.MAIL_API_BASE ?? 'https://mail-api.srv1802162.hstgr.cloud' });
+  } catch (err: any) { res.status(500).json({ error: err.message ?? 'Server error' }); }
+});
+
 // PUT body: { types: string[] }  → replaces the full set for this user.
 // Empty array clears every mute.
 app.put('/api/me/notification-mutes', async (req, res) => {
