@@ -3035,8 +3035,7 @@ async function runStartupMigrations() {
         WHEN en.earliest_in > en.late_after THEN 'late'
         ELSE 'present'
       END,
-      source      = 'manual',
-      updated_at  = NOW()
+      source      = 'manual'
     FROM enriched en
     WHERE ar.employee_id = en.employee_id
       AND ar.date::text  = en.d
@@ -5136,8 +5135,7 @@ app.post('/api/attendance/repair-from-sessions', async (req, res) => {
         check_out   = COALESCE(ar.check_out, en.latest_out),
         total_hours = ROUND((en.total_min / 60.0)::numeric, 2),
         status      = CASE WHEN en.earliest_in > en.late_after THEN 'late' ELSE 'present' END,
-        source      = 'manual',
-        updated_at  = NOW()
+        source      = 'manual'
       FROM enriched en
       WHERE ar.employee_id = en.employee_id
         AND ar.date::text  = en.d
