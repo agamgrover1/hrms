@@ -6,6 +6,7 @@ import CommandPalette from '../CommandPalette';
 import FeaturePopup from '../FeaturePopup';
 import GlobalQuickActionsFab from '../GlobalQuickActionsFab';
 import Toaster from '../Toaster';
+import GlobalMailStream from '../GlobalMailStream';
 
 const pageTitles: Record<string, string> = {
   '/': 'Dashboard',
@@ -82,6 +83,7 @@ export default function Layout() {
       <CommandPalette />
       <FeaturePopup />
       <GlobalQuickActionsFab />
+      <GlobalMailStream />
       <Toaster />
     </div>
   );

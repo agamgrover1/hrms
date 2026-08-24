@@ -7,6 +7,8 @@ import {
 } from 'lucide-react';
 import { mailApi, mailAttachmentUrl, type MailAccount, type MailFolder, type MailEnvelope, type MailMessage } from '../services/mailApi';
 import { toast } from '../components/Toaster';
+import { useMailStream, type NewMailPush } from '../hooks/useMailStream';
+import { resetMailBadge } from '../hooks/useMailBadge';
 
 // M2 — Inbox reader.
 // 3-panel layout: mailbox+folder rail | message list | reader.
@@ -47,6 +49,41 @@ export default function Mail() {
       .finally(() => setLoadingAccounts(false));
   };
   useEffect(loadAccounts, []);
+
+  // Real-time push (M5). Subscribe to every connected account; when a
+  // new message lands and it's on the folder we're currently viewing,
+  // prepend it to the list. Otherwise just bump the folder's unread
+  // count so the folder rail badge updates without a full refresh.
+  useEffect(() => { resetMailBadge(); }, []);
+  useMailStream(accounts.map(a => a.id), (evt: NewMailPush) => {
+    // Refresh folder counts (cheap — one round-trip; the rail bases
+    // its badge on this).
+    if (selectedAccountId === evt.account_id) {
+      // If the user is looking at INBOX for this account, prepend
+      // optimistically so the new message appears instantly.
+      if (evt.folder === selectedFolder) {
+        setMessages(prev => {
+          if (prev.some(m => m.uid === evt.uid)) return prev;
+          const stub: MailEnvelope = {
+            uid: evt.uid, seq: 0,
+            subject: evt.subject,
+            from: evt.from,
+            to: [],
+            date: evt.date,
+            snippet: '',
+            flags: evt.seen ? ['\\Seen'] : [],
+            seen: evt.seen,
+            flagged: false, answered: false,
+            size: 0, has_attachments: false,
+          };
+          return [stub, ...prev];
+        });
+        setListTotal(t => t + 1);
+      }
+      // Always refetch folder counts so the rail badge is honest.
+      mailApi.listFolders(selectedAccountId).then(setFolders).catch(() => {});
+    }
+  });
 
   const loadFolders = () => {
     if (!selectedAccountId) return;

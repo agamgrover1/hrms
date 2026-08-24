@@ -7,6 +7,7 @@ import {
 import { useState, useEffect, useRef } from 'react';
 import { useAuth } from '../../context/AuthContext';
 import { api } from '../../services/api';
+import { useMailBadge } from '../../hooks/useMailBadge';
 
 type NavItem = { to: string; icon: LucideIcon; label: string; end?: boolean };
 type NavGroup = { id: string; label: string; items: NavItem[] };
@@ -445,6 +446,7 @@ function SidebarGroup({ group, collapsed, pathname, groupCollapsed, onToggleGrou
   groupCollapsed: boolean;
   onToggleGroup: () => void;
 }) {
+  const mailBadge = useMailBadge();
   // Track the active item index for the morphing pill background.
   // Pick the LONGEST prefix match so that on `/hours/approvals`, the
   // "Approvals" item wins over the parent "Hours grid" (/hours) — otherwise
@@ -496,6 +498,7 @@ function SidebarGroup({ group, collapsed, pathname, groupCollapsed, onToggleGrou
         {group.items.map((item, i) => {
           const Icon = item.icon;
           const active = i === activeIndex;
+          const showMailBadge = item.to === '/mail' && mailBadge > 0 && !active;
           return (
             <NavLink
               key={item.to}
@@ -524,6 +527,15 @@ function SidebarGroup({ group, collapsed, pathname, groupCollapsed, onToggleGrou
               )}
               {active && !collapsed && (
                 <span className="ml-auto w-1.5 h-1.5 rounded-full bg-accent" style={{ background: '#EE2770', boxShadow: '0 0 8px #EE2770' }} />
+              )}
+              {showMailBadge && !collapsed && (
+                <span className="ml-auto inline-flex items-center justify-center min-w-[18px] h-[18px] px-1 rounded-full text-[10px] font-bold text-white"
+                  style={{ background: '#EE2770' }} title={`${mailBadge} new`}>
+                  {mailBadge > 99 ? '99+' : mailBadge}
+                </span>
+              )}
+              {showMailBadge && collapsed && (
+                <span className="absolute top-1 right-1 w-2 h-2 rounded-full" style={{ background: '#EE2770' }} title={`${mailBadge} new`} />
               )}
             </NavLink>
           );
