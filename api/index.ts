@@ -2995,6 +2995,46 @@ async function runStartupMigrations() {
   await sql`ALTER TABLE candidates ADD COLUMN IF NOT EXISTS experience_type TEXT`.catch(() => {});
   await sql`ALTER TABLE candidates ADD COLUMN IF NOT EXISTS screening_outcome TEXT`.catch(() => {});
 
+  // One-time backfill: candidates stuck on stage='decision_pending' &
+  // status='active' whose latest interview already carried a decision
+  // (selected / rejected / hold / next_round) — the old PATCH handler
+  // collapsed every non-next_round decision to decision_pending and
+  // never propagated the outcome to the candidate. Apply the same
+  // mapping the new handler uses. Narrowed on stage/status so it's a
+  // safe no-op after every stuck row is healed.
+  await sql`
+    WITH latest_dec AS (
+      SELECT DISTINCT ON (candidate_id) candidate_id, decision, feedback
+      FROM candidate_interviews
+      WHERE decision IS NOT NULL AND decision <> ''
+      ORDER BY candidate_id, decided_at DESC NULLS LAST, updated_at DESC
+    ),
+    target AS (
+      SELECT c.id, ld.decision, ld.feedback
+      FROM candidates c
+      JOIN latest_dec ld ON ld.candidate_id = c.id
+      WHERE c.stage = 'decision_pending' AND c.status = 'active'
+    )
+    UPDATE candidates c SET
+      stage = CASE
+        WHEN t.decision = 'selected'   THEN 'offer'
+        WHEN t.decision = 'next_round' THEN 'interviewing'
+        ELSE c.stage
+      END,
+      status = CASE
+        WHEN t.decision = 'rejected' THEN 'rejected'
+        WHEN t.decision = 'hold'     THEN 'hold'
+        ELSE c.status
+      END,
+      rejection_reason = CASE
+        WHEN t.decision = 'rejected' AND (c.rejection_reason IS NULL OR c.rejection_reason = '')
+          THEN t.feedback
+        ELSE c.rejection_reason
+      END,
+      updated_at = NOW()
+    FROM target t
+    WHERE c.id = t.id`.catch(() => {});
+
   await sql`
     CREATE TABLE IF NOT EXISTS candidate_stage_events (
       id SERIAL PRIMARY KEY,
