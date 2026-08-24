@@ -3028,7 +3028,7 @@ async function runStartupMigrations() {
       LEFT JOIN config_shifts cs ON cs.id = COALESCE(e.shift, 'day')
     )
     UPDATE attendance_records ar SET
-      check_in    = en.earliest_in,
+      check_in    = COALESCE(NULLIF(ar.check_in, ''), en.earliest_in),
       check_out   = COALESCE(ar.check_out, en.latest_out),
       total_hours = ROUND((en.total_min / 60.0)::numeric, 2),
       status      = CASE
@@ -3040,7 +3040,11 @@ async function runStartupMigrations() {
     FROM enriched en
     WHERE ar.employee_id = en.employee_id
       AND ar.date::text  = en.d
-      AND (ar.check_in IS NULL OR ar.check_in = '')
+      -- Heal any row where a session exists AND (check_in is missing
+      -- OR the record is still saying 'absent'/'no_record' despite
+      -- having sessions). Leave / WFH / holiday statuses stay
+      -- authoritative and are never touched.
+      AND (ar.check_in IS NULL OR ar.check_in = '' OR ar.status IN ('absent','no_record'))
       AND ar.status NOT IN ('on_leave','half-day','short_leave','unpaid_leave','wfh','wfh_half','holiday')`.catch(() => {});
 
   // One-time backfill: candidates stuck on stage='decision_pending' &
@@ -4463,6 +4467,19 @@ async function recalcAttendanceTotals(employeeId: string, date: string) {
   const totalActiveMin = rows.reduce((s, r) => s + Number(r.active_minutes || 0), 0);
   const activityScore  = totalMin > 0 ? Math.min(100, Math.round((totalActiveMin / totalMin) * 100)) : null;
 
+  // Also recompute status when sessions exist AND the record is stuck
+  // on 'absent' (e.g. biometric sync ran before the portal clock).
+  // Late vs present is derived from firstIn against the employee's
+  // shift late_after. Leave/WFH/holiday statuses stay authoritative.
+  const shiftRow = await sql`SELECT COALESCE(cs.late_after, '10:00') AS late_after
+    FROM employees e LEFT JOIN config_shifts cs ON cs.id = COALESCE(e.shift, 'day')
+    WHERE e.id=${employeeId}`.catch(() => [] as any[]) as any[];
+  const lateAfterCol = shiftRow[0]?.late_after ?? '10:00';
+  const shouldFlipStatus = firstIn && rows.length > 0;
+  const recomputedStatus = shouldFlipStatus
+    ? (firstIn > lateAfterCol ? 'late' : 'present')
+    : null;
+
   // Update total_hours first — this MUST succeed for the admin view to show correct hours.
   // Separate from extension_hours so that a missing column on extension_hours
   // does NOT silently swallow the total_hours update.
@@ -4470,7 +4487,21 @@ async function recalcAttendanceTotals(employeeId: string, date: string) {
     UPDATE attendance_records
     SET total_hours=${totalHrs},
         check_in=COALESCE(${firstIn}, check_in),
-        check_out=${lastOut}
+        check_out=${lastOut},
+        status = CASE
+          WHEN status IN ('on_leave','half-day','short_leave','unpaid_leave','wfh','wfh_half','holiday')
+            THEN status
+          WHEN ${recomputedStatus}::text IS NOT NULL AND status IN ('absent','no_record')
+            THEN ${recomputedStatus}::text
+          ELSE status
+        END,
+        source = CASE
+          WHEN status IN ('on_leave','half-day','short_leave','unpaid_leave','wfh','wfh_half','holiday')
+            THEN source
+          WHEN ${recomputedStatus}::text IS NOT NULL AND source = 'biometric'
+            THEN 'manual'
+          ELSE source
+        END
     WHERE employee_id=${employeeId} AND date::date=${date}::date
   `;
   // extension_hours + activity_score — columns created in runStartupMigrations.
@@ -4679,12 +4710,34 @@ app.post('/api/attendance/clock-in', async (req, res) => {
       RETURNING *
     `;
 
-    // Create attendance_records for today if not already present.
-    // ON CONFLICT DO NOTHING avoids race condition from concurrent clock-in requests.
+    // Upsert attendance_records. On conflict, we UPDATE — the previous
+    // ON CONFLICT DO NOTHING silently dropped the portal check-in when
+    // a biometric row had already been inserted (e.g. auto-sync
+    // marked the day 'absent' because the device didn't see the
+    // employee). Rules for the UPDATE branch:
+    //   * check_in wins the earlier of (existing, portal-time) but
+    //     never gets wiped by a null.
+    //   * status flips from 'absent' → present/late when the portal
+    //     records a real clock-in. Leave / WFH / holiday statuses are
+    //     preserved — those ARE authoritative.
+    //   * source flips to 'manual' since the portal owns this record now.
     await sql`
       INSERT INTO attendance_records (employee_id, date, check_in, status, total_hours, extension_hours, source)
       VALUES (${employee_id}, ${today}, ${time}, ${status}, 0, 0, ${clockSource})
-      ON CONFLICT (employee_id, date) DO NOTHING
+      ON CONFLICT (employee_id, date) DO UPDATE SET
+        check_in = LEAST(COALESCE(attendance_records.check_in, EXCLUDED.check_in), EXCLUDED.check_in),
+        status = CASE
+          WHEN attendance_records.status IN
+            ('on_leave','half-day','short_leave','unpaid_leave','wfh','wfh_half','holiday')
+          THEN attendance_records.status
+          ELSE EXCLUDED.status
+        END,
+        source = CASE
+          WHEN attendance_records.status IN
+            ('on_leave','half-day','short_leave','unpaid_leave','wfh','wfh_half','holiday')
+          THEN attendance_records.source
+          ELSE ${clockSource}
+        END
     `.catch(() => {});
 
     res.json({ session: (session as any[])[0], time, status, geo_status: geoStatus });
@@ -5051,6 +5104,49 @@ async function runBiometricSyncV(trigger: string, triggeredBy?: string, fromDate
     VALUES(${syncId},${trigger},${triggeredBy??null},${label},${updated},${created},'success')`;
   return { sync_id: syncId, records_updated: updated, records_created: created, synced_at: new Date().toISOString(), date_range: label };
 }
+
+// POST /api/attendance/repair-from-sessions — admin-only manual trigger
+// that runs the session-based recovery immediately. Same UPDATE as the
+// startup migration but on-demand, so HR doesn't have to wait for
+// warm Lambdas to recycle after a sync accidentally wipes real punches.
+// Returns a count of rows healed.
+app.post('/api/attendance/repair-from-sessions', async (req, res) => {
+  try {
+    if (!(await requireAdmin(req, res))) return;
+    const rows = await sql`
+      WITH per_day AS (
+        SELECT s.employee_id,
+               s.date::text AS d,
+               MIN(s.clock_in)  AS earliest_in,
+               MAX(s.clock_out) AS latest_out,
+               COALESCE(SUM(s.duration_minutes), 0) AS total_min
+        FROM attendance_sessions s
+        WHERE s.clock_in IS NOT NULL
+        GROUP BY s.employee_id, s.date
+      ),
+      enriched AS (
+        SELECT pd.*,
+               COALESCE(cs.late_after, '10:00') AS late_after
+        FROM per_day pd
+        LEFT JOIN employees e     ON e.id = pd.employee_id
+        LEFT JOIN config_shifts cs ON cs.id = COALESCE(e.shift, 'day')
+      )
+      UPDATE attendance_records ar SET
+        check_in    = COALESCE(NULLIF(ar.check_in, ''), en.earliest_in),
+        check_out   = COALESCE(ar.check_out, en.latest_out),
+        total_hours = ROUND((en.total_min / 60.0)::numeric, 2),
+        status      = CASE WHEN en.earliest_in > en.late_after THEN 'late' ELSE 'present' END,
+        source      = 'manual',
+        updated_at  = NOW()
+      FROM enriched en
+      WHERE ar.employee_id = en.employee_id
+        AND ar.date::text  = en.d
+        AND (ar.check_in IS NULL OR ar.check_in = '' OR ar.status IN ('absent','no_record'))
+        AND ar.status NOT IN ('on_leave','half-day','short_leave','unpaid_leave','wfh','wfh_half','holiday')
+      RETURNING ar.employee_id, ar.date::text AS date`;
+    res.json({ ok: true, healed: (rows as any[]).length, rows });
+  } catch (err: any) { res.status(500).json({ error: err.message || 'Server error' }); }
+});
 
 app.get('/api/attendance/biometric-sync/history', async (_req, res) => {
   try {

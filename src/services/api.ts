@@ -214,6 +214,10 @@ export const api = {
     request<any>('/attendance/biometric-sync', { method: 'POST', body: JSON.stringify({ triggered_by: triggeredBy, from_date: fromDate, to_date: toDate }) }),
   getBiometricSyncHistory: () =>
     request<any[]>('/attendance/biometric-sync/history'),
+  // Admin-only: heal any attendance_records that show absent/no check-in
+  // despite the employee having real portal sessions for that day.
+  repairAttendanceFromSessions: () =>
+    request<{ ok: true; healed: number; rows: Array<{ employee_id: string; date: string }> }>(`/attendance/repair-from-sessions`, { method: 'POST' }),
 
   // Leave
   getLeaveRequests: (params?: { employee_id?: string; status?: string; reporting_manager_id?: string }) => {
