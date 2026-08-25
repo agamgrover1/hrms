@@ -191,7 +191,31 @@ export default function TaskDetailModal({ taskId, employees, onClose, onChanged 
   // Live tick for the running-timer clock — only runs while there IS
   // an open timer belonging to the current user on this task, so an
   // idle drawer never re-renders.
-  const openTimer = timeEntries.find(e => e.source === 'timer' && !e.stopped_at && e.employee_id === myEmpId);
+  //
+  // Source-of-truth for "am I timing this task" is /api/me/timer
+  // (authoritative for the signed-in user across the whole app),
+  // not the task's own timeEntries list — which can be stale or miss
+  // the row if myEmpId drifts from the server-side resolveUserToEmployee.
+  // We keep the timeEntries fallback so a manually-inserted running
+  // entry still surfaces.
+  const [myGlobalTimer, setMyGlobalTimer] = useState<{ task_id: string; started_at: string; id: string } | null>(null);
+  const refreshMyTimer = useCallback(() => {
+    api.getRunningTimer()
+      .then(t => setMyGlobalTimer(t as any))
+      .catch(() => setMyGlobalTimer(null));
+  }, []);
+  useEffect(() => {
+    refreshMyTimer();
+    const onChange = () => refreshMyTimer();
+    window.addEventListener('hrms-task-timer-changed', onChange);
+    return () => window.removeEventListener('hrms-task-timer-changed', onChange);
+  }, [refreshMyTimer]);
+  const openTimerFromMe = myGlobalTimer && myGlobalTimer.task_id === taskId ? myGlobalTimer : null;
+  const openTimerFromEntries = timeEntries.find(e => e.source === 'timer' && !e.stopped_at && e.employee_id === myEmpId);
+  const openTimer = openTimerFromMe ?? openTimerFromEntries ?? null;
+  // Also expose "I'm timing a DIFFERENT task" so the modal can offer a
+  // stop-anywhere path instead of leaving the user with no button.
+  const timingOtherTask = !openTimer && myGlobalTimer && myGlobalTimer.task_id !== taskId ? myGlobalTimer : null;
   useEffect(() => {
     if (!openTimer) return;
     const t = setInterval(() => setNowTick(Date.now()), 1000);
@@ -206,18 +230,24 @@ export default function TaskDetailModal({ taskId, employees, onClose, onChanged 
       const fresh = await api.getTaskTime(taskId);
       setTimeEntries(fresh);
       notifyTaskTimerChanged();
+      refreshMyTimer();
     } catch (e: any) { toast.error('Could not start timer', e?.message ?? 'Please try again.'); }
     finally { setTimerBusy(false); }
   };
   const stopTimer = async () => {
     if (timerBusy) return;
+    // Stop whichever task we actually have a running timer on. If the
+    // page still thinks it's this task but /api/me/timer says another
+    // one, we send stop to the real one.
+    const activeTaskId = myGlobalTimer?.task_id ?? taskId;
     setTimerBusy(true);
     try {
-      await api.stopTaskTimer(taskId);
+      await api.stopTaskTimer(activeTaskId);
       const fresh = await api.getTaskTime(taskId);
       setTimeEntries(fresh);
       load();
       notifyTaskTimerChanged();
+      refreshMyTimer();
     } catch (e: any) { toast.error('Could not stop timer', e?.message ?? 'Please try again.'); }
     finally { setTimerBusy(false); }
   };
@@ -718,7 +748,7 @@ export default function TaskDetailModal({ taskId, employees, onClose, onChanged 
                   </span>
                 </div>
 
-                <div className="flex items-center gap-2 mb-3">
+                <div className="flex items-center gap-2 mb-3 flex-wrap">
                   {openTimer ? (
                     <button onClick={stopTimer} disabled={timerBusy}
                       className="inline-flex items-center gap-2 h-9 px-3 rounded-lg text-sm font-semibold bg-danger-container/40 border border-danger/40 text-danger hover:bg-danger-container/60 disabled:opacity-60">
@@ -733,6 +763,26 @@ export default function TaskDetailModal({ taskId, employees, onClose, onChanged 
                       title={!myEmpId ? 'You have no linked employee record.' : 'Start a timer on this task'}
                       className="inline-flex items-center gap-1.5 h-9 px-3 rounded-lg text-sm font-semibold bg-success-container/40 border border-success/40 text-success hover:bg-success-container/60 disabled:opacity-60">
                       <Play size={12} className="fill-current" /> Start timer
+                    </button>
+                  )}
+                  {/* Belt-and-braces: if the caller is currently timing
+                      a DIFFERENT task (e.g. they picked the wrong task
+                      to time), offer to stop that one from here so
+                      they aren't stuck opening the other modal. */}
+                  {timingOtherTask && (
+                    <button
+                      onClick={async () => {
+                        try {
+                          await api.stopTaskTimer(timingOtherTask.task_id);
+                          window.dispatchEvent(new Event('hrms-task-timer-changed'));
+                          const fresh = await api.getTaskTime(taskId).catch(() => timeEntries);
+                          setTimeEntries(fresh);
+                          load();
+                        } catch (e: any) { toast.error('Could not stop timer', e?.message ?? 'Please try again.'); }
+                      }}
+                      className="inline-flex items-center gap-1.5 h-9 px-3 rounded-lg text-xs font-semibold bg-warning-container/40 border border-warning/40 text-warning hover:bg-warning-container/60"
+                      title="You have a timer running on another task — click to stop it">
+                      <Square size={11} className="fill-current" /> Stop other timer
                     </button>
                   )}
                   <div className="flex items-center gap-1.5 ml-auto">
