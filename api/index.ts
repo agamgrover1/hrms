@@ -4688,9 +4688,15 @@ function haversineMeters(lat1: number, lng1: number, lat2: number, lng2: number)
 // Hard-block mode: no GPS OR outside radius → blocked. Employee must be
 // physically inside the fence to punch. WFH-approved for the day → exempt.
 // Returns { ok, status, distance } on success, { ok:false, http, body } on block.
-async function evaluateGeofence(employee_id: string, today: string, latNum: number | null, lngNum: number | null): Promise<
+async function evaluateGeofence(
+  employee_id: string,
+  today: string,
+  latNum: number | null,
+  lngNum: number | null,
+  accuracyM: number | null = null,
+): Promise<
   | { ok: true; status: string; distance: number | null }
-  | { ok: false; http: number; body: { error: string; reason: string; office_label?: string; radius_m?: number; distance_m?: number } }
+  | { ok: false; http: number; body: { error: string; reason: string; office_label?: string; radius_m?: number; distance_m?: number; accuracy_m?: number } }
 > {
   const rows = await sql`SELECT enabled, latitude, longitude, radius_meters, office_label FROM attendance_geo_config WHERE id='default' LIMIT 1` as any[];
   const cfg = rows[0];
@@ -4709,10 +4715,26 @@ async function evaluateGeofence(employee_id: string, today: string, latNum: numb
     };
   }
   const distance = haversineMeters(Number(cfg.latitude), Number(cfg.longitude), latNum, lngNum);
-  if (distance > radius) {
+  // GPS accuracy tolerance. Consumer GPS on a laptop / phone can easily
+  // report ±30–100 m of drift, especially indoors or right after wake.
+  // Without this, a user physically AT the office can be told they're
+  // 20 m outside the fence just because their reported accuracy is 50.
+  // Cap at 100 m so a wildly-inaccurate reading (500+ m indoor) can't
+  // let someone punch in from across town.
+  const ACCURACY_CAP_M = 100;
+  const tolerance = Math.min(Math.max(accuracyM ?? 0, 0), ACCURACY_CAP_M);
+  const effectiveDistance = Math.max(0, distance - tolerance);
+  if (effectiveDistance > radius) {
     return {
       ok: false, http: 403,
-      body: { error: `You are about ${Math.round(distance)}m from ${label} (allowed ${radius}m). Move within the radius and try again.`, reason: 'outside_fence', office_label: cfg.office_label ?? 'Office', radius_m: radius, distance_m: Math.round(distance) },
+      body: {
+        error: `You are about ${Math.round(distance)}m from ${label} (allowed ${radius}m, GPS accuracy ±${Math.round(accuracyM ?? 0)}m). Move within the radius and try again.`,
+        reason: 'outside_fence',
+        office_label: cfg.office_label ?? 'Office',
+        radius_m: radius,
+        distance_m: Math.round(distance),
+        accuracy_m: accuracyM != null ? Math.round(accuracyM) : undefined,
+      },
     };
   }
   return { ok: true, status: 'inside', distance };
@@ -4758,7 +4780,7 @@ app.post('/api/attendance/clock-in', async (req, res) => {
     const latNum: number | null = lat != null ? Number(lat) : null;
     const lngNum: number | null = lng != null ? Number(lng) : null;
     const accNum: number | null = accuracy != null ? Number(accuracy) : null;
-    const fence = await evaluateGeofence(employee_id, today, latNum, lngNum);
+    const fence = await evaluateGeofence(employee_id, today, latNum, lngNum, accNum);
     if (!fence.ok) return res.status(fence.http).json(fence.body);
     const geoStatus = fence.status;
     const distance = fence.distance;
@@ -4874,7 +4896,7 @@ app.post('/api/attendance/mark', async (req, res) => {
 
 app.post('/api/attendance/clock-out', async (req, res) => {
   try {
-    const { employee_id, lat, lng } = req.body;
+    const { employee_id, lat, lng, accuracy } = req.body;
     const { date: today, time } = istNow();
 
     // Find the open session
@@ -4891,7 +4913,8 @@ app.post('/api/attendance/clock-out', async (req, res) => {
     // in the audit trail.
     const latNum: number | null = lat != null ? Number(lat) : null;
     const lngNum: number | null = lng != null ? Number(lng) : null;
-    const fence = await evaluateGeofence(employee_id, today, latNum, lngNum);
+    const accNum: number | null = accuracy != null ? Number(accuracy) : null;
+    const fence = await evaluateGeofence(employee_id, today, latNum, lngNum, accNum);
     if (!fence.ok) return res.status(fence.http).json(fence.body);
 
     // Calculate session duration in minutes — handle midnight crossover for night shifts
