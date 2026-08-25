@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { Timer, Square } from 'lucide-react';
 import { api } from '../../services/api';
 import { useAuth } from '../../context/AuthContext';
+import { firePromptForStoppedTimer } from '../hours/TimerStopPrompt';
 
 // TaskTimerChip — a persistent "you are timing a task right now" indicator
 // on the TopBar. Renders nothing when no timer is running. The task
@@ -84,8 +85,21 @@ export default function TaskTimerChip() {
     if (stopping) return;
     setStopping(true);
     try {
-      await api.stopTaskTimer(timer.task_id);
+      const stopped = await api.stopTaskTimer(timer.task_id);
       setTimer(null);
+      firePromptForStoppedTimer({
+        entry_id: stopped.id,
+        task_id: stopped.task_id,
+        task_title: stopped.task_title,
+        project_id: stopped.project_id,
+        project_name: stopped.project_name,
+        project_client: stopped.project_client,
+        assignment_id: stopped.assignment_id,
+        log_date: stopped.log_date,
+        hours: Number(stopped.hours),
+        employee_id: stopped.employee_id,
+        employee_name: stopped.employee_name ?? user?.name ?? null,
+      });
     } catch { /* if stop fails, keep the chip so the user notices and can retry from the task */ }
     finally { setStopping(false); }
   };

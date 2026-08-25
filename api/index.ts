@@ -21233,7 +21233,34 @@ app.post('/api/tasks/:id/timer/stop', async (req, res) => {
     const rounded = Math.round(derivedHours * 100) / 100;
     const rows = await sql`UPDATE task_time_entries SET stopped_at=NOW(), hours=${rounded}, updated_at=NOW() WHERE id=${open.id} RETURNING *`;
     await logTaskActivity(req.params.id, gate.user, 'time_logged', null, null, String(rounded), `Timer stopped (${rounded}h)`);
-    res.json(rows[0]);
+    // Enrich with task title + project name + whether an assignment
+    // exists for this month, so the "log this to your weekly hour
+    // sheet?" prompt on the client can render everything from one hop.
+    const stopped = rows[0] as any;
+    const enrich = (await sql`
+      SELECT t.title AS task_title, p.id AS project_id, p.name AS project_name, p.client_name AS project_client
+      FROM tasks t
+      LEFT JOIN task_lists l ON l.id = t.list_id
+      LEFT JOIN projects p ON p.id = l.project_id
+      WHERE t.id=${req.params.id} LIMIT 1` as any[])[0] ?? {};
+    let assignment_id: string | null = null;
+    if (enrich.project_id) {
+      const d = new Date(stopped.log_date);
+      const m = d.getMonth() + 1;
+      const y = d.getFullYear();
+      const a = (await sql`
+        SELECT id FROM assignments
+        WHERE employee_id=${empId} AND project_id=${enrich.project_id}
+          AND month=${m} AND year=${y} LIMIT 1` as any[])[0];
+      assignment_id = a?.id ?? null;
+    }
+    res.json({
+      ...stopped,
+      task_title:   enrich.task_title ?? null,
+      project_name: enrich.project_name ?? null,
+      project_client: enrich.project_client ?? null,
+      assignment_id,
+    });
   } catch (err: any) { res.status(500).json({ error: err.message ?? 'Server error' }); }
 });
 

@@ -99,10 +99,27 @@ export default function Tasks() {
   }, [refreshRunningTimer]);
   const stopRunningTimer = async (taskId: string) => {
     try {
-      await api.stopTaskTimer(taskId);
+      const stopped = await api.stopTaskTimer(taskId);
       setRunningTimerTaskId(null);
       window.dispatchEvent(new Event('hrms-task-timer-changed'));
       loadTasks();
+      // Fire the global "log this to your hour sheet?" prompt so the
+      // employee gets the same one-click flow whether they stopped
+      // from the card, the modal, or the TopBar chip.
+      const detail = {
+        entry_id: stopped.id,
+        task_id: stopped.task_id,
+        task_title: stopped.task_title,
+        project_id: stopped.project_id,
+        project_name: stopped.project_name,
+        project_client: stopped.project_client,
+        assignment_id: stopped.assignment_id,
+        log_date: stopped.log_date,
+        hours: Number(stopped.hours),
+        employee_id: stopped.employee_id,
+        employee_name: stopped.employee_name ?? user?.name ?? null,
+      };
+      window.dispatchEvent(new CustomEvent('hrms-timer-stopped', { detail }));
     } catch (e: any) { toast.error('Could not stop timer', e?.body?.error ?? e?.message); }
   };
 

@@ -5,6 +5,7 @@ import {
 } from 'lucide-react';
 import { taskFilesApi, type TaskAttachment } from '../../services/taskFilesApi';
 import { notifyTaskTimerChanged } from '../layout/TaskTimerChip';
+import { firePromptForStoppedTimer } from '../hours/TimerStopPrompt';
 import { api } from '../../services/api';
 import type { Task, TaskActivity, TaskComment, TaskPriority, TaskStatus, TaskCustomField } from '../../services/api';
 import { useAuth } from '../../context/AuthContext';
@@ -242,12 +243,28 @@ export default function TaskDetailModal({ taskId, employees, onClose, onChanged 
     const activeTaskId = myGlobalTimer?.task_id ?? taskId;
     setTimerBusy(true);
     try {
-      await api.stopTaskTimer(activeTaskId);
+      const stopped = await api.stopTaskTimer(activeTaskId);
       const fresh = await api.getTaskTime(taskId);
       setTimeEntries(fresh);
       load();
       notifyTaskTimerChanged();
       refreshMyTimer();
+      // Ask whether to also record this against the weekly hour log
+      // (global overlay listens for this event; skipped for non-project
+      // tasks and sub-minute stops).
+      firePromptForStoppedTimer({
+        entry_id: stopped.id,
+        task_id: stopped.task_id,
+        task_title: stopped.task_title,
+        project_id: stopped.project_id,
+        project_name: stopped.project_name,
+        project_client: stopped.project_client,
+        assignment_id: stopped.assignment_id,
+        log_date: stopped.log_date,
+        hours: Number(stopped.hours),
+        employee_id: stopped.employee_id,
+        employee_name: stopped.employee_name ?? user?.name ?? null,
+      });
     } catch (e: any) { toast.error('Could not stop timer', e?.message ?? 'Please try again.'); }
     finally { setTimerBusy(false); }
   };

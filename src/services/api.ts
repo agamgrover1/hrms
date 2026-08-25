@@ -1577,7 +1577,21 @@ export const api = {
   startTaskTimer: (id: string) =>
     request<{ id: string; started_at: string }>(`/tasks/${id}/timer/start`, { method: 'POST' }),
   stopTaskTimer: (id: string) =>
-    request<any>(`/tasks/${id}/timer/stop`, { method: 'POST' }),
+    request<{
+      id: string;
+      task_id: string;
+      task_title: string | null;
+      employee_id: string;
+      employee_name: string | null;
+      project_id: string | null;
+      project_name: string | null;
+      project_client: string | null;
+      assignment_id: string | null;
+      log_date: string;
+      hours: number;
+      started_at: string;
+      stopped_at: string;
+    }>(`/tasks/${id}/timer/stop`, { method: 'POST' }),
   getRunningTimer: () =>
     request<null | { id: string; task_id: string; task_title: string; started_at: string; project_id: string | null }>(`/me/timer`),
   deleteTaskTime: (entryId: string) =>

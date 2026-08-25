@@ -7,6 +7,7 @@ import FeaturePopup from '../FeaturePopup';
 import GlobalQuickActionsFab from '../GlobalQuickActionsFab';
 import Toaster from '../Toaster';
 import GlobalMailStream from '../GlobalMailStream';
+import TimerStopPrompt from '../hours/TimerStopPrompt';
 
 const pageTitles: Record<string, string> = {
   '/': 'Dashboard',
@@ -84,6 +85,7 @@ export default function Layout() {
       <FeaturePopup />
       <GlobalQuickActionsFab />
       <GlobalMailStream />
+      <TimerStopPrompt />
       <Toaster />
     </div>
   );
