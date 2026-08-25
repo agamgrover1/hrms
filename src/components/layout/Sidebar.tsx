@@ -44,6 +44,7 @@ const projectGroup: NavGroup = {
   items: [
     { to: '/projects', icon: Briefcase, label: 'Projects' },
     { to: '/tasks', icon: KanbanSquare, label: 'Tasks' },
+    { to: '/tasks/analytics', icon: BarChart3, label: 'Task analytics' },
     { to: '/workload', icon: Activity, label: 'Workload' },
     { to: '/goals', icon: Target, label: 'Goals' },
     { to: '/reports', icon: BarChart3, label: 'Reports' },

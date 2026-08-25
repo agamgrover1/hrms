@@ -3,7 +3,7 @@ import { useSearchParams } from 'react-router-dom';
 import {
   KanbanSquare, Plus, Search, Loader2, LayoutList, Columns3, Inbox,
   MessageSquare, GitBranch, Archive, X, Briefcase, ChevronDown, CalendarDays,
-  ChevronLeft, ChevronRight, Diamond, Repeat, GanttChartSquare, MoreVertical, Trash2, Lock, Globe, Users2, Settings,
+  ChevronLeft, ChevronRight, Diamond, Repeat, GanttChartSquare, MoreVertical, Trash2, Lock, Globe, Users2, Settings, BarChart3,
 } from 'lucide-react';
 import { api } from '../services/api';
 import type { Task, TaskBoard, TaskFilters, TaskSavedView } from '../services/api';
@@ -229,6 +229,11 @@ export default function Tasks() {
             </div>
           )}
           <TaskFieldsAndTemplatesMenu board={activeBoard ?? null} canManage={canManageBoards} onApplied={() => { reloadBoards(); loadTasks(); }} />
+          <a href="/tasks/analytics"
+            title="Cross-organisation task analytics"
+            className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg border border-outline text-xs font-semibold text-on-surface-muted hover:bg-surface-2 hover:text-on-surface">
+            <BarChart3 size={13} /> Analytics
+          </a>
           {canManageBoards && (
             <button onClick={() => setShowNewBoard(true)}
               className="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg bg-accent text-on-accent text-sm font-semibold hover:opacity-90">
