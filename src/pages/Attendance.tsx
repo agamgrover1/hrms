@@ -477,26 +477,6 @@ export default function Attendance() {
               </div>
 
               <div className="flex items-center gap-2 flex-shrink-0">
-                {/* Repair from portal clocks — rescues any day where an
-                    employee clocked in via the portal but attendance
-                    still shows Absent (e.g. after a biometric sync
-                    marked them absent because the device didn't punch
-                    them). Reads attendance_sessions, never touches
-                    leave/WFH/holiday rows. Safe to run repeatedly. */}
-                <button
-                  onClick={async () => {
-                    if (syncing) return;
-                    if (!window.confirm('Rebuild attendance from portal clock-ins?\n\nAny day where an employee has a real clock-in session but is showing Absent gets healed. Leave / WFH / holiday statuses are never touched.')) return;
-                    try {
-                      const r = await api.repairAttendanceFromSessions();
-                      toast.success('Attendance repaired', `${r.healed} row${r.healed === 1 ? '' : 's'} healed from portal sessions.`);
-                      // Reload the visible page
-                      window.location.reload();
-                    } catch (e: any) { toast.error('Repair failed', e?.body?.error ?? e?.message ?? 'Please try again.'); }
-                  }}
-                  className="flex items-center gap-1.5 px-3 py-2 text-xs font-semibold rounded-xl-2 border border-warning/40 bg-warning-container/40 text-warning hover:bg-warning-container/60 transition-colors">
-                  <RefreshCw size={13} /> Repair from portal clocks
-                </button>
                 {/* Sync This Month button */}
                 <button
                   onClick={() => handleSyncNow(true)}
