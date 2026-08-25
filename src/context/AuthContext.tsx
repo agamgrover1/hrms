@@ -1,6 +1,7 @@
 import { createContext, useContext, useEffect, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import { api } from '../services/api';
+import { clearPersistedMailCache } from '../services/mailApi';
 
 // Inactivity policy. The session auto-logs-out after this many ms of no
 // keyboard/mouse/touch activity. Activity in any tab resets the clock for
@@ -135,6 +136,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setUsers([]);
     localStorage.removeItem(SESSION_KEY);
     localStorage.removeItem(ACTIVITY_KEY);
+    // Purge any cached mail bodies + folder lists — otherwise the
+    // next person to log in on this browser could see them.
+    clearPersistedMailCache();
   };
 
   // ── Inactivity tracking ────────────────────────────────────────────────

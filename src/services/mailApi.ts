@@ -32,6 +32,105 @@ interface ListSlice { messages: MailEnvelope[]; total: number; unread: number }
 const listCache = new Map<string, ListSlice>();
 const listKey = (accountId: string, folder: string) => `${accountId}|${folder}`;
 
+// ── Persistence to localStorage ─────────────────────────────────────
+// Survives hard refresh + browser restart. Scoped to the current
+// HRMS user id so switching users on the same machine can't leak.
+// Size-capped to ~2 MB (localStorage per-origin is ~5 MB and we
+// share it with everything else in the app).
+
+const LS_KEY_PREFIX = 'hrms_mail_cache_v1:';
+const LS_MAX_BYTES = 2_000_000;
+const HRMS_SESSION_KEY = 'digitalleap_hrms_session';
+
+function currentUserKey(): string | null {
+  try {
+    const raw = localStorage.getItem(HRMS_SESSION_KEY);
+    if (!raw) return null;
+    const id = JSON.parse(raw)?.id;
+    return typeof id === 'string' && id ? id : null;
+  } catch { return null; }
+}
+function lsKey(): string | null {
+  const u = currentUserKey();
+  return u ? LS_KEY_PREFIX + u : null;
+}
+
+interface Persisted {
+  v: 1;
+  savedAt: number;
+  accounts: MailAccount[] | null;
+  folders: Array<[string, MailFolder[]]>;
+  lists: Array<[string, ListSlice]>;
+  messages: Array<[string, MailMessage]>;
+}
+
+function hydrateFromStorage() {
+  const k = lsKey();
+  if (!k) return;
+  let raw: string | null = null;
+  try { raw = localStorage.getItem(k); } catch { return; }
+  if (!raw) return;
+  try {
+    const p = JSON.parse(raw) as Persisted;
+    if (p?.v !== 1) return;
+    accountsCache = p.accounts ?? null;
+    for (const [id, fs] of (p.folders ?? [])) foldersCache.set(id, fs);
+    for (const [key, slice] of (p.lists ?? [])) listCache.set(key, slice);
+    for (const [mk, msg] of (p.messages ?? [])) messageCache.set(mk, msg);
+  } catch { /* corrupt payload — ignore, we'll overwrite on next save */ }
+}
+
+// Debounced writer. Coalesces bursts (a full page load fires many
+// setters in a beat) into one localStorage.setItem.
+let saveTimer: any = null;
+function schedulePersist() {
+  if (saveTimer) return;
+  saveTimer = setTimeout(() => { saveTimer = null; persistNow(); }, 500);
+}
+function persistNow() {
+  const k = lsKey();
+  if (!k) return;   // not logged in — don't create an orphan key
+  // Serialise message cache newest-first (insertion order in our Map
+  // — we re-insert on touch), then trim from the tail until we fit.
+  let msgs = Array.from(messageCache.entries());
+  const payload: Persisted = {
+    v: 1,
+    savedAt: Date.now(),
+    accounts: accountsCache,
+    folders: Array.from(foldersCache.entries()),
+    lists: Array.from(listCache.entries()),
+    messages: msgs,
+  };
+  let json = JSON.stringify(payload);
+  // If oversized, evict oldest messages until we fit (or the message
+  // cache is empty). Non-message caches are tiny by comparison.
+  while (json.length > LS_MAX_BYTES && msgs.length > 0) {
+    msgs = msgs.slice(Math.ceil(msgs.length * 0.2));   // drop oldest 20%
+    payload.messages = msgs;
+    json = JSON.stringify(payload);
+  }
+  try { localStorage.setItem(k, json); }
+  catch { /* QuotaExceeded, private mode — silently give up */ }
+}
+
+// Clears every mail-cache key across all users. Called on logout.
+export function clearPersistedMailCache() {
+  accountsCache = null;
+  foldersCache.clear();
+  listCache.clear();
+  messageCache.clear();
+  try {
+    for (let i = localStorage.length - 1; i >= 0; i--) {
+      const key = localStorage.key(i);
+      if (key && key.startsWith(LS_KEY_PREFIX)) localStorage.removeItem(key);
+    }
+  } catch { /* private mode */ }
+}
+
+// Load persisted data at module init. First `import` of this module
+// triggers this; subsequent imports are no-ops.
+hydrateFromStorage();
+
 async function getToken(force = false): Promise<TokenBundle> {
   if (!force && cached && cached.expires_at > Date.now() + 30_000) return cached;
   const r = await api.getMailToken();
@@ -167,6 +266,7 @@ export const mailApi = {
   listAccounts: async () => {
     const r = await call<MailAccount[]>('GET', '/accounts');
     accountsCache = r;
+    schedulePersist();
     return r;
   },
   testAccount: (data: {
@@ -187,6 +287,7 @@ export const mailApi = {
   listFolders: async (accountId: string) => {
     const r = await call<MailFolder[]>('GET', `/accounts/${accountId}/folders`);
     foldersCache.set(accountId, r);
+    schedulePersist();
     return r;
   },
   listMessages: async (accountId: string, folder: string, opts?: { limit?: number; before_uid?: number }) => {
@@ -198,7 +299,10 @@ export const mailApi = {
     );
     // Only cache the default first-page view; pagination + explicit
     // before_uid queries are transient and not worth caching.
-    if (!opts?.before_uid) listCache.set(listKey(accountId, folder), r);
+    if (!opts?.before_uid) {
+      listCache.set(listKey(accountId, folder), r);
+      schedulePersist();
+    }
     return r;
   },
   fetchMessage: async (accountId: string, folder: string, uid: number, opts?: { fresh?: boolean }): Promise<MailMessage> => {
@@ -219,6 +323,7 @@ export const mailApi = {
       const oldest = messageCache.keys().next().value;
       if (oldest) messageCache.delete(oldest);
     }
+    schedulePersist();
     return msg;
   },
   peekMessage: (accountId: string, folder: string, uid: number): MailMessage | null => {
@@ -226,12 +331,14 @@ export const mailApi = {
   },
   evictMessage: (accountId: string, folder: string, uid: number) => {
     messageCache.delete(`${accountId}|${folder}|${uid}`);
+    schedulePersist();
   },
   evictFolder: (accountId: string, folder: string) => {
     const prefix = `${accountId}|${folder}|`;
     for (const k of Array.from(messageCache.keys())) {
       if (k.startsWith(prefix)) messageCache.delete(k);
     }
+    schedulePersist();
   },
   markRead: (accountId: string, folder: string, uid: number, seen: boolean) =>
     call<{ ok: true; seen: boolean }>('POST', `/accounts/${accountId}/folders/${encodeURIComponent(folder)}/messages/${uid}/read`, { seen }),
