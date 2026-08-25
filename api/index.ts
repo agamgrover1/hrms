@@ -904,7 +904,7 @@ async function runStartupMigrations() {
     // For a *seed* (rows, not columns), we probe with EXISTS-style: an
     // empty result set means "still needs to run", so we don't set the
     // flag and fall through.
-    await sql`SELECT screening_outcome FROM candidates LIMIT 0`;
+    await sql`SELECT visibility FROM task_lists LIMIT 0`;
     _migrated = true;
     return;
   } catch {
@@ -3214,6 +3214,14 @@ async function runStartupMigrations() {
       created_by_name TEXT
     )`;
   await sql`CREATE INDEX IF NOT EXISTS idx_task_lists_project ON task_lists(project_id, archived, sort_order)`.catch(()=>{});
+  // Visibility columns — added Aug 2026. 'public' means every signed-in
+  // staff member sees the board (legacy behaviour). 'restricted' means
+  // only the explicitly-listed employee ids OR members of the listed
+  // department names can see it. Admins + the board creator always see
+  // their own boards regardless.
+  await sql`ALTER TABLE task_lists ADD COLUMN IF NOT EXISTS visibility TEXT NOT NULL DEFAULT 'public'`.catch(()=>{});
+  await sql`ALTER TABLE task_lists ADD COLUMN IF NOT EXISTS member_employee_ids TEXT[] NOT NULL DEFAULT '{}'::text[]`.catch(()=>{});
+  await sql`ALTER TABLE task_lists ADD COLUMN IF NOT EXISTS member_departments  TEXT[] NOT NULL DEFAULT '{}'::text[]`.catch(()=>{});
 
   // One row per task AND per subtask — a subtask is just a task with
   // parent_id set. That keeps assignee / due date / comments working on
@@ -20530,7 +20538,29 @@ async function taskActor(req: any, res: any): Promise<{ ok: boolean; user?: any 
   const u = (await sql`SELECT id, name, email, role, employee_id_ref FROM app_users WHERE id=${uid} LIMIT 1` as any[])[0];
   if (!u) { res.status(401).json({ error: 'Not signed in' }); return { ok: false }; }
   const employeeId = await resolveUserToEmployee(u).catch(() => null);
-  return { ok: true, user: { id: u.id, name: u.name, role: u.role, employeeId } };
+  let department: string | null = null;
+  if (employeeId) {
+    const emp = (await sql`SELECT department FROM employees WHERE id=${employeeId} LIMIT 1` as any[])[0];
+    department = emp?.department ?? null;
+  }
+  return { ok: true, user: { id: u.id, name: u.name, role: u.role, employeeId, department } };
+}
+
+// Board visibility check — applied in JS after a permissive fetch,
+// used by GET /task-lists and by task queries. 'public' boards are
+// visible to all; a 'restricted' board is only visible if the caller
+// is admin OR the board's creator OR listed in member_employee_ids OR
+// their department is in member_departments.
+function canUserSeeBoard(user: any, board: any): boolean {
+  if (!board) return false;
+  if ((board.visibility ?? 'public') === 'public') return true;
+  if (user?.role === 'admin') return true;
+  if (board.created_by_id && board.created_by_id === user?.id) return true;
+  const members: string[] = Array.isArray(board.member_employee_ids) ? board.member_employee_ids : [];
+  if (user?.employeeId && members.includes(user.employeeId)) return true;
+  const depts: string[] = Array.isArray(board.member_departments) ? board.member_departments : [];
+  if (user?.department && depts.includes(user.department)) return true;
+  return false;
 }
 
 function normalizeStatuses(input: any): Array<{ id: string; label: string; color: string; type: string }> | null {
@@ -20591,7 +20621,9 @@ app.get('/api/task-lists', async (req, res) => {
       WHERE (${projectId}::text IS NULL OR l.project_id = ${projectId})
         AND (${includeArchived}::boolean OR l.archived = FALSE)
       ORDER BY l.sort_order, l.created_at`;
-    res.json(rows);
+    // Filter restricted boards the caller can't see.
+    const visible = (rows as any[]).filter(b => canUserSeeBoard(gate.user, b));
+    res.json(visible);
   } catch (err: any) { res.status(500).json({ error: err.message ?? 'Server error' }); }
 });
 
@@ -20633,7 +20665,22 @@ app.patch('/api/task-lists/:id', async (req, res) => {
     }
     const cur = (await sql`SELECT * FROM task_lists WHERE id=${req.params.id}` as any[])[0];
     if (!cur) return res.status(404).json({ error: 'Board not found' });
-    const { name, description, color, archived, sort_order, statuses } = req.body ?? {};
+    const { name, description, color, archived, sort_order, statuses, visibility, member_employee_ids, member_departments } = req.body ?? {};
+
+    // Visibility. Only 'public' or 'restricted' allowed; anything else
+    // is treated as no-op. Members / departments are sanitised into
+    // deduped string arrays; an empty visibility=restricted board with
+    // no members effectively hides itself from everyone except admin
+    // and its creator — deliberate, so a half-configured board doesn't
+    // leak.
+    let nextVisibility: string = cur.visibility ?? 'public';
+    if (visibility === 'public' || visibility === 'restricted') nextVisibility = visibility;
+    const cleanIds = Array.isArray(member_employee_ids)
+      ? Array.from(new Set(member_employee_ids.map((x: any) => String(x ?? '').trim()).filter(Boolean)))
+      : (cur.member_employee_ids ?? []);
+    const cleanDepts = Array.isArray(member_departments)
+      ? Array.from(new Set(member_departments.map((x: any) => String(x ?? '').trim()).filter(Boolean)))
+      : (cur.member_departments ?? []);
 
     // Editing columns can't be a blind overwrite: any task sitting in a
     // column the caller removed would become unreachable on the board.
@@ -20661,13 +20708,16 @@ app.patch('/api/task-lists/:id', async (req, res) => {
 
     const rows = await sql`
       UPDATE task_lists SET
-        name        = COALESCE(${name ?? null}::text, name),
-        description = ${description === undefined ? cur.description : description}::text,
-        color       = COALESCE(${color ?? null}::text, color),
-        archived    = COALESCE(${archived === undefined ? null : !!archived}::boolean, archived),
-        sort_order  = COALESCE(${sort_order === undefined ? null : Number(sort_order)}::integer, sort_order),
-        statuses    = ${JSON.stringify(nextStatuses)}::jsonb,
-        updated_at  = NOW()
+        name                = COALESCE(${name ?? null}::text, name),
+        description         = ${description === undefined ? cur.description : description}::text,
+        color               = COALESCE(${color ?? null}::text, color),
+        archived            = COALESCE(${archived === undefined ? null : !!archived}::boolean, archived),
+        sort_order          = COALESCE(${sort_order === undefined ? null : Number(sort_order)}::integer, sort_order),
+        statuses            = ${JSON.stringify(nextStatuses)}::jsonb,
+        visibility          = ${nextVisibility}::text,
+        member_employee_ids = ${cleanIds}::text[],
+        member_departments  = ${cleanDepts}::text[],
+        updated_at          = NOW()
       WHERE id=${cur.id}
       RETURNING *`;
     res.json(rows[0]);
@@ -20723,6 +20773,8 @@ app.get('/api/tasks', async (req, res) => {
     const includeSubtasks = req.query.include_subtasks === '1';
     const rows = await sql`
       SELECT t.*, l.name AS list_name, l.color AS list_color, l.statuses AS list_statuses,
+             l.visibility AS list_visibility, l.member_employee_ids AS list_member_employee_ids,
+             l.member_departments AS list_member_departments, l.created_by_id AS list_created_by_id,
              l.project_id, p.name AS project_name, p.client_name AS project_client,
              (SELECT COUNT(*) FROM tasks s WHERE s.parent_id = t.id)::int AS subtask_count,
              (SELECT COUNT(*) FROM tasks s WHERE s.parent_id = t.id AND s.completed_at IS NOT NULL)::int AS subtask_done_count,
@@ -20738,7 +20790,15 @@ app.get('/api/tasks', async (req, res) => {
         AND (${q}::text IS NULL OR LOWER(t.title) LIKE '%' || LOWER(${q}) || '%'
              OR LOWER(COALESCE(t.description,'')) LIKE '%' || LOWER(${q}) || '%')
       ORDER BY t.sort_order, t.created_at`;
-    res.json(rows);
+    // Strip tasks whose board the caller can't see. Reuses the shared
+    // canUserSeeBoard() helper by re-mapping the joined columns.
+    const visible = (rows as any[]).filter(t => canUserSeeBoard(gate.user, {
+      visibility: t.list_visibility,
+      created_by_id: t.list_created_by_id,
+      member_employee_ids: t.list_member_employee_ids,
+      member_departments: t.list_member_departments,
+    }));
+    res.json(visible);
   } catch (err: any) { res.status(500).json({ error: err.message ?? 'Server error' }); }
 });
 
@@ -20750,6 +20810,8 @@ app.get('/api/tasks/:id', async (req, res) => {
     if (!gate.ok) return;
     const rows = await sql`
       SELECT t.*, l.name AS list_name, l.statuses AS list_statuses, l.project_id,
+             l.visibility AS list_visibility, l.member_employee_ids AS list_member_employee_ids,
+             l.member_departments AS list_member_departments, l.created_by_id AS list_created_by_id,
              p.name AS project_name, p.client_name AS project_client,
              COALESCE((SELECT SUM(hours) FROM task_time_entries te WHERE te.task_id = t.id), 0)::numeric AS logged_hours
       FROM tasks t
@@ -20757,6 +20819,16 @@ app.get('/api/tasks/:id', async (req, res) => {
       LEFT JOIN projects p ON p.id = l.project_id
       WHERE t.id=${req.params.id}` as any[];
     if (!rows.length) return res.status(404).json({ error: 'Task not found' });
+    // Restricted-board gate: 404 rather than 403 so we don't confirm the
+    // task exists to a user who shouldn't see it.
+    if (!canUserSeeBoard(gate.user, {
+      visibility: rows[0].list_visibility,
+      created_by_id: rows[0].list_created_by_id,
+      member_employee_ids: rows[0].list_member_employee_ids,
+      member_departments: rows[0].list_member_departments,
+    })) {
+      return res.status(404).json({ error: 'Task not found' });
+    }
     const [subtasks, comments, activity, depsOut, depsIn, cfDefs, cfValues] = await Promise.all([
       sql`SELECT * FROM tasks WHERE parent_id=${req.params.id} ORDER BY sort_order, created_at`,
       sql`SELECT * FROM task_comments WHERE task_id=${req.params.id} ORDER BY created_at`,

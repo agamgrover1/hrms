@@ -926,6 +926,11 @@ export default function TaskDetailModal({ taskId, employees, onClose, onChanged 
                   className={field} />
               </div>
 
+              <TagsField
+                tags={task.tags ?? []}
+                onChange={next => patch({ tags: next })}
+              />
+
               <button onClick={() => patch({ is_milestone: !task.is_milestone })}
                 className={`inline-flex items-center gap-2 px-2 py-1.5 rounded-lg text-[11px] font-semibold border ${task.is_milestone ? 'bg-accent/10 text-accent border-accent/30' : 'bg-surface text-on-surface-muted border-outline hover:bg-surface-2'}`}
                 title="Milestones mark a headline delivery on the calendar + timeline.">
@@ -1149,6 +1154,51 @@ function CustomFieldEditor({ field, taskId, onChanged }: {
           <option value="">— none —</option>
           {(field.options?.choices ?? []).map((c: string) => <option key={c} value={c}>{c}</option>)}
         </select>
+      )}
+    </div>
+  );
+}
+
+// TagsField — freeform tag input. Type + Enter (or comma) to add,
+// click × to remove. Server caps at 8 tags per task; we mirror that
+// here so the user isn't confused when a 9th silently disappears.
+function TagsField({ tags, onChange }: { tags: string[]; onChange: (next: string[]) => void }) {
+  const [draft, setDraft] = useState('');
+  const MAX_TAGS = 8;
+  const clean = (t: string) => t.trim().toLowerCase().replace(/[,\s]+/g, '-').slice(0, 32);
+  const commit = () => {
+    const raw = draft.split(',').map(clean).filter(Boolean);
+    if (!raw.length) return;
+    const next = Array.from(new Set([...(tags ?? []), ...raw])).slice(0, MAX_TAGS);
+    if (next.length !== (tags ?? []).length || next.some((t, i) => t !== tags?.[i])) onChange(next);
+    setDraft('');
+  };
+  const remove = (t: string) => onChange((tags ?? []).filter(x => x !== t));
+  return (
+    <div>
+      <label className="block text-[11px] font-semibold text-on-surface-muted mb-1">Tags</label>
+      <div className="flex flex-wrap gap-1 mb-1">
+        {(tags ?? []).map(t => (
+          <span key={t} className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-accent/10 text-accent text-[11px] font-semibold">
+            {t}
+            <button onClick={() => remove(t)} className="text-accent/70 hover:text-accent" title="Remove tag">
+              <X size={9} />
+            </button>
+          </span>
+        ))}
+      </div>
+      {(tags ?? []).length < MAX_TAGS && (
+        <input value={draft} onChange={e => setDraft(e.target.value)}
+          onKeyDown={e => {
+            if (e.key === 'Enter' || e.key === ',') { e.preventDefault(); commit(); }
+            if (e.key === 'Backspace' && !draft && tags?.length) remove(tags[tags.length - 1]);
+          }}
+          onBlur={commit}
+          placeholder={tags?.length ? 'Add another…' : 'design, urgent, bug…'}
+          className="text-sm w-full px-2 py-1 rounded border border-outline bg-surface focus:outline-none focus:ring-1 focus:ring-accent/40" />
+      )}
+      {tags?.length >= MAX_TAGS && (
+        <p className="text-[10px] text-on-surface-subtle italic">Max {MAX_TAGS} tags. Remove one to add another.</p>
       )}
     </div>
   );

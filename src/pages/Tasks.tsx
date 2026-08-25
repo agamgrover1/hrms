@@ -3,7 +3,7 @@ import { useSearchParams } from 'react-router-dom';
 import {
   KanbanSquare, Plus, Search, Loader2, LayoutList, Columns3, Inbox,
   MessageSquare, GitBranch, Archive, X, Briefcase, ChevronDown, CalendarDays,
-  ChevronLeft, ChevronRight, Diamond, Repeat, GanttChartSquare,
+  ChevronLeft, ChevronRight, Diamond, Repeat, GanttChartSquare, MoreVertical, Trash2, Lock, Globe, Users2, Settings,
 } from 'lucide-react';
 import { api } from '../services/api';
 import type { Task, TaskBoard, TaskFilters, TaskSavedView } from '../services/api';
@@ -41,6 +41,7 @@ export default function Tasks() {
   const [view, setView] = useState<View>('board');
   const [search, setSearch] = useState('');
   const [showNewBoard, setShowNewBoard] = useState(false);
+  const [boardSettings, setBoardSettings] = useState<TaskBoard | null>(null);
   const [dragging, setDragging] = useState<string | null>(null);
   const [dragOverCol, setDragOverCol] = useState<string | null>(null);
 
@@ -283,13 +284,25 @@ export default function Tasks() {
               {list.map(b => {
                 const total = b.task_count ?? 0;
                 const done = b.done_count ?? 0;
+                const restricted = b.visibility === 'restricted';
                 return (
-                  <button key={b.id} onClick={() => setBoardParam(b.id)}
-                    className={`w-full flex items-center gap-2 px-3 py-2 rounded-lg text-sm text-left ${b.id === boardParam ? 'bg-accent-container text-on-accent-container font-semibold' : 'text-on-surface hover:bg-surface-2'}`}>
-                    <span className="w-1.5 h-1.5 rounded-full flex-shrink-0" style={{ background: b.color ?? '#94a3b8' }} />
-                    <span className="flex-1 truncate">{b.name}</span>
-                    <span className="text-[10px] text-on-surface-subtle tabular-nums flex-shrink-0">{done}/{total}</span>
-                  </button>
+                  <div key={b.id} className={`group relative flex items-stretch rounded-lg ${b.id === boardParam ? 'bg-accent-container text-on-accent-container font-semibold' : 'hover:bg-surface-2'}`}>
+                    <button onClick={() => setBoardParam(b.id)}
+                      className="flex-1 min-w-0 flex items-center gap-2 px-3 py-2 text-sm text-left text-on-surface">
+                      <span className="w-1.5 h-1.5 rounded-full flex-shrink-0" style={{ background: b.color ?? '#94a3b8' }} />
+                      <span className="flex-1 truncate">{b.name}</span>
+                      {restricted && <Lock size={10} className="text-on-surface-subtle flex-shrink-0" />}
+                      <span className="text-[10px] text-on-surface-subtle tabular-nums flex-shrink-0">{done}/{total}</span>
+                    </button>
+                    {canManageBoards && (
+                      <button
+                        onClick={(e) => { e.stopPropagation(); setBoardSettings(b); }}
+                        title="Board settings"
+                        className="opacity-0 group-hover:opacity-100 focus:opacity-100 px-2 py-2 text-on-surface-muted hover:text-on-surface transition-opacity">
+                        <MoreVertical size={14} />
+                      </button>
+                    )}
+                  </div>
                 );
               })}
             </div>
@@ -350,6 +363,231 @@ export default function Tasks() {
           onCreated={(b) => { setBoards(bs => [...bs, b]); setShowNewBoard(false); setBoardParam(b.id); }}
         />
       )}
+
+      {boardSettings && (
+        <BoardSettingsModal
+          board={boardSettings}
+          employees={employees}
+          isAdmin={user?.role === 'admin'}
+          onClose={() => setBoardSettings(null)}
+          onSaved={(updated) => {
+            setBoards(prev => prev.map(b => b.id === updated.id ? { ...b, ...updated } : b));
+            setBoardSettings(null);
+          }}
+          onDeleted={(id) => {
+            setBoards(prev => prev.filter(b => b.id !== id));
+            if (boardParam === id) setBoardParam(null);
+            setBoardSettings(null);
+          }}
+        />
+      )}
+    </div>
+  );
+}
+
+// ── BoardSettingsModal ───────────────────────────────────────────────────
+// Rename, recolor, retitle, archive, delete, and configure visibility
+// (public vs restricted to specific members / departments). Backend
+// endpoints already exist (patchTaskBoard + deleteTaskBoard) — this is
+// the missing UI surface.
+function BoardSettingsModal({ board, employees, isAdmin, onClose, onSaved, onDeleted }: {
+  board: TaskBoard;
+  employees: any[];
+  isAdmin: boolean;
+  onClose: () => void;
+  onSaved: (b: TaskBoard) => void;
+  onDeleted: (id: string) => void;
+}) {
+  const [name, setName] = useState(board.name);
+  const [description, setDescription] = useState(board.description ?? '');
+  const [color, setColor] = useState(board.color ?? '#94a3b8');
+  const [visibility, setVisibility] = useState<'public' | 'restricted'>(board.visibility ?? 'public');
+  const [members, setMembers] = useState<Set<string>>(new Set(board.member_employee_ids ?? []));
+  const [departments, setDepartments] = useState<Set<string>>(new Set(board.member_departments ?? []));
+  const [empSearch, setEmpSearch] = useState('');
+  const [saving, setSaving] = useState(false);
+  const [busy, setBusy] = useState(false);
+
+  const allDepartments = useMemo(() => (
+    Array.from(new Set((employees ?? []).map((e: any) => e.department).filter(Boolean))).sort()
+  ), [employees]);
+  const filteredEmployees = useMemo(() => {
+    const q = empSearch.trim().toLowerCase();
+    return (employees ?? [])
+      .filter((e: any) => !q || e.name?.toLowerCase().includes(q) || e.email?.toLowerCase().includes(q))
+      .slice(0, 200);
+  }, [employees, empSearch]);
+  const toggle = (set: Set<string>, key: string, setter: (s: Set<string>) => void) => {
+    const next = new Set(set);
+    if (next.has(key)) next.delete(key); else next.add(key);
+    setter(next);
+  };
+
+  const save = async () => {
+    if (!name.trim()) { toast.error('Board needs a name'); return; }
+    setSaving(true);
+    try {
+      const patch = {
+        name: name.trim(),
+        description: description.trim() || null,
+        color,
+        visibility,
+        member_employee_ids: Array.from(members),
+        member_departments: Array.from(departments),
+      };
+      const updated = await api.patchTaskBoard(board.id, patch);
+      onSaved(updated);
+      toast.success('Board updated');
+    } catch (e: any) { toast.error('Save failed', e?.body?.error ?? e?.message); }
+    finally { setSaving(false); }
+  };
+  const archive = async () => {
+    setBusy(true);
+    try {
+      const updated = await api.patchTaskBoard(board.id, { archived: !board.archived });
+      onSaved(updated);
+      toast.success(board.archived ? 'Board un-archived' : 'Board archived');
+    } catch (e: any) { toast.error('Failed', e?.body?.error ?? e?.message); }
+    finally { setBusy(false); }
+  };
+  const del = async () => {
+    if (!window.confirm(`Delete board "${board.name}"?\n\nIf it holds tasks you'll be asked again to force-delete.`)) return;
+    setBusy(true);
+    try {
+      await api.deleteTaskBoard(board.id);
+      onDeleted(board.id);
+      toast.success('Board deleted');
+    } catch (e: any) {
+      if (e?.body?.task_count != null) {
+        if (window.confirm(`This board still holds ${e.body.task_count} task${e.body.task_count === 1 ? '' : 's'}. Delete anyway (permanent)?`)) {
+          try {
+            await api.deleteTaskBoard(board.id, true);
+            onDeleted(board.id);
+            toast.success('Board + tasks deleted');
+          } catch (e2: any) { toast.error('Delete failed', e2?.body?.error ?? e2?.message); }
+        }
+      } else {
+        toast.error('Delete failed', e?.body?.error ?? e?.message);
+      }
+    } finally { setBusy(false); }
+  };
+
+  return (
+    <div className="fixed inset-0 z-40 bg-black/40 flex items-start justify-center p-4 overflow-y-auto" onMouseDown={onClose}>
+      <div className="bg-surface rounded-xl-2 w-full max-w-lg shadow-elev-4 border border-outline my-8" onMouseDown={e => e.stopPropagation()}>
+        <div className="px-5 py-4 border-b border-outline flex items-center justify-between">
+          <h2 className="text-lg font-display font-bold text-on-surface">Board settings</h2>
+          <button onClick={onClose} className="p-1 rounded hover:bg-surface-2 text-on-surface-muted"><X size={16} /></button>
+        </div>
+        <div className="p-5 space-y-5 max-h-[75vh] overflow-y-auto">
+          <div>
+            <label className="text-[11px] font-bold uppercase tracking-wider text-on-surface-muted">Name</label>
+            <input value={name} onChange={e => setName(e.target.value)}
+              className="mt-1 w-full px-3 py-2 rounded-lg border border-outline bg-surface-2 text-sm text-on-surface focus:outline-none focus:ring-2 focus:ring-accent/30" />
+          </div>
+          <div>
+            <label className="text-[11px] font-bold uppercase tracking-wider text-on-surface-muted">Description</label>
+            <textarea value={description} onChange={e => setDescription(e.target.value)} rows={2}
+              className="mt-1 w-full px-3 py-2 rounded-lg border border-outline bg-surface-2 text-sm text-on-surface focus:outline-none focus:ring-2 focus:ring-accent/30" />
+          </div>
+          <div>
+            <label className="text-[11px] font-bold uppercase tracking-wider text-on-surface-muted">Colour</label>
+            <div className="mt-1 flex items-center gap-2 flex-wrap">
+              {['#94a3b8', '#EE2770', '#7c3aed', '#2563eb', '#0891b2', '#15803d', '#d97706', '#dc2626'].map(c => (
+                <button key={c} onClick={() => setColor(c)}
+                  className={`w-6 h-6 rounded-full border-2 ${color === c ? 'border-on-surface' : 'border-transparent'}`}
+                  style={{ background: c }} />
+              ))}
+            </div>
+          </div>
+
+          {/* Visibility */}
+          <div>
+            <label className="text-[11px] font-bold uppercase tracking-wider text-on-surface-muted">Who can see this board</label>
+            <div className="mt-1 grid grid-cols-2 gap-2">
+              <button onClick={() => setVisibility('public')}
+                className={`px-3 py-2 rounded-lg border text-left ${visibility === 'public' ? 'border-accent bg-accent/10' : 'border-outline hover:bg-surface-2'}`}>
+                <div className="flex items-center gap-1.5 text-sm font-semibold text-on-surface"><Globe size={12} /> Everyone</div>
+                <p className="text-[11px] text-on-surface-muted mt-0.5">Any signed-in staff member.</p>
+              </button>
+              <button onClick={() => setVisibility('restricted')}
+                className={`px-3 py-2 rounded-lg border text-left ${visibility === 'restricted' ? 'border-accent bg-accent/10' : 'border-outline hover:bg-surface-2'}`}>
+                <div className="flex items-center gap-1.5 text-sm font-semibold text-on-surface"><Lock size={12} /> Restricted</div>
+                <p className="text-[11px] text-on-surface-muted mt-0.5">Only picked members + departments. Admin + creator always see it.</p>
+              </button>
+            </div>
+          </div>
+
+          {visibility === 'restricted' && (
+            <>
+              <div>
+                <label className="text-[11px] font-bold uppercase tracking-wider text-on-surface-muted flex items-center gap-1"><Users2 size={11} /> Departments allowed</label>
+                {allDepartments.length === 0 ? (
+                  <p className="mt-1 text-[11px] text-on-surface-subtle italic">No departments configured.</p>
+                ) : (
+                  <div className="mt-1 flex flex-wrap gap-1.5">
+                    {allDepartments.map(d => {
+                      const active = departments.has(d);
+                      return (
+                        <button key={d} onClick={() => toggle(departments, d, setDepartments)}
+                          className={`px-2.5 py-1 rounded-full text-[11px] font-semibold border transition-colors ${
+                            active ? 'bg-accent text-on-accent border-accent' : 'bg-surface border-outline text-on-surface-muted hover:text-on-surface'
+                          }`}>
+                          {d}
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+              <div>
+                <label className="text-[11px] font-bold uppercase tracking-wider text-on-surface-muted flex items-center gap-1">
+                  <Users2 size={11} /> Members allowed <span className="normal-case font-normal text-on-surface-subtle">({members.size} picked)</span>
+                </label>
+                <input value={empSearch} onChange={e => setEmpSearch(e.target.value)}
+                  placeholder="Search employees…"
+                  className="mt-1 w-full px-3 py-2 rounded-lg border border-outline bg-surface-2 text-sm placeholder:text-on-surface-subtle focus:outline-none focus:ring-2 focus:ring-accent/30" />
+                <div className="mt-2 max-h-52 overflow-y-auto rounded-lg border border-outline divide-y divide-outline">
+                  {filteredEmployees.length === 0 && (
+                    <p className="p-3 text-xs text-on-surface-subtle italic">No matches.</p>
+                  )}
+                  {filteredEmployees.map((emp: any) => {
+                    const active = members.has(emp.id);
+                    return (
+                      <label key={emp.id} className="flex items-center gap-2 px-3 py-2 hover:bg-surface-2 cursor-pointer">
+                        <input type="checkbox" checked={active}
+                          onChange={() => toggle(members, emp.id, setMembers)}
+                          className="rounded border-outline" />
+                        <span className="text-sm text-on-surface flex-1 truncate">{emp.name}</span>
+                        <span className="text-[10px] text-on-surface-subtle">{emp.department ?? '—'}</span>
+                      </label>
+                    );
+                  })}
+                </div>
+              </div>
+            </>
+          )}
+        </div>
+        <div className="px-5 py-3 border-t border-outline flex items-center gap-2">
+          <button onClick={archive} disabled={busy}
+            className="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg text-xs font-semibold border border-outline text-on-surface-muted hover:bg-surface-2 disabled:opacity-50">
+            <Archive size={12} /> {board.archived ? 'Un-archive' : 'Archive'}
+          </button>
+          {isAdmin && (
+            <button onClick={del} disabled={busy}
+              className="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg text-xs font-semibold text-danger border border-danger/30 hover:bg-danger/10 disabled:opacity-50">
+              <Trash2 size={12} /> Delete
+            </button>
+          )}
+          <div className="ml-auto flex items-center gap-2">
+            <button onClick={onClose} className="px-3 py-1.5 rounded-lg text-sm text-on-surface-muted hover:text-on-surface">Cancel</button>
+            <button onClick={save} disabled={saving}
+              className="inline-flex items-center gap-1 px-4 py-1.5 rounded-lg bg-accent text-on-accent text-sm font-semibold disabled:opacity-60">
+              {saving && <Loader2 size={12} className="animate-spin" />} Save
+            </button>
+          </div>
+        </div>
+      </div>
     </div>
   );
 }
@@ -447,6 +685,19 @@ function TaskCard({ task, onDragStart, onOpen }: { task: Task; onDragStart: () =
           {task.title}
         </p>
       </div>
+
+      {(task.tags ?? []).length > 0 && (
+        <div className="mt-1.5 flex flex-wrap gap-1">
+          {(task.tags ?? []).slice(0, 4).map(t => (
+            <span key={t} className="px-1.5 py-0.5 rounded-full bg-accent/10 text-accent text-[10px] font-semibold">
+              {t}
+            </span>
+          ))}
+          {(task.tags ?? []).length > 4 && (
+            <span className="text-[10px] text-on-surface-subtle">+{(task.tags ?? []).length - 4}</span>
+          )}
+        </div>
+      )}
 
       {(due || task.assignee_name || (task.subtask_count ?? 0) > 0 || (task.comment_count ?? 0) > 0) && (
         <div className="mt-2 flex items-center gap-1.5 flex-wrap">

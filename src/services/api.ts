@@ -1491,7 +1491,7 @@ export const api = {
   },
   createTaskBoard: (data: { project_id?: string | null; name: string; description?: string; color?: string; statuses?: TaskStatus[] }) =>
     request<TaskBoard>('/task-lists', { method: 'POST', body: JSON.stringify(data) }),
-  patchTaskBoard: (id: string, patch: Partial<{ name: string; description: string | null; color: string; archived: boolean; sort_order: number; statuses: TaskStatus[] }>) =>
+  patchTaskBoard: (id: string, patch: Partial<{ name: string; description: string | null; color: string; archived: boolean; sort_order: number; statuses: TaskStatus[]; visibility: 'public' | 'restricted'; member_employee_ids: string[]; member_departments: string[] }>) =>
     request<TaskBoard>(`/task-lists/${id}`, { method: 'PATCH', body: JSON.stringify(patch) }),
   deleteTaskBoard: (id: string, force?: boolean) =>
     request<{ ok: true; deleted_tasks: number }>(`/task-lists/${id}${force ? '?force=1' : ''}`, { method: 'DELETE' }),
@@ -1871,6 +1871,10 @@ export interface TaskBoard {
   sort_order: number;
   task_count?: number;
   done_count?: number;
+  // Visibility (added Aug 2026)
+  visibility: 'public' | 'restricted';
+  member_employee_ids: string[];
+  member_departments: string[];
   created_at: string;
   updated_at: string;
   created_by_id: string | null;
