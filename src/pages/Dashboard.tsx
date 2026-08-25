@@ -515,7 +515,7 @@ export default function Dashboard() {
   };
 
   const stats: Array<{ label: string; value: ReactNode; sub: string; icon: any; iconBg: string; iconColor: string }> = [
-    { label: 'Total Employees',   value: employees.length ? <CountUp to={employees.length} /> : '—', sub: `${activeEmployees} active`, icon: Users, iconBg: 'bg-brand-container', iconColor: 'text-on-brand-container' },
+    { label: 'Active Employees',  value: activeEmployees ? <CountUp to={activeEmployees} /> : '—', sub: 'Currently on the roster', icon: Users, iconBg: 'bg-brand-container', iconColor: 'text-on-brand-container' },
     { label: "Today's Attendance", value: activeEmployees ? <><CountUp to={todayPresent} /><span className="text-on-surface-subtle">/{activeEmployees}</span></> : '—', sub: activeEmployees ? `${attendanceRate}% attendance rate` : 'No employees', icon: UserCheck, iconBg: 'bg-success-container', iconColor: 'text-success' },
     { label: 'Pending Leaves',    value: <CountUp to={pendingLeaves.length} />, sub: 'Awaiting approval', icon: Calendar, iconBg: 'bg-warning-container', iconColor: 'text-warning' },
     { label: 'Monthly Payroll',   value: totalNetPay ? <CountUp to={totalNetPay / 100000} decimals={1} prefix="₹" suffix="L" /> : '—', sub: `${currentMonthName} ${currentYear} · Net`, icon: DollarSign, iconBg: 'bg-accent-container', iconColor: 'text-on-accent-container' },
@@ -621,8 +621,8 @@ export default function Dashboard() {
             <div className="space-y-3 flex-1 min-w-0">
               <div className="rounded-xl-2 px-4 py-3 bg-white/8 border border-white/10 backdrop-blur-sm animate-fade-up stagger-2">
                 <p className="text-[10px] uppercase tracking-[0.16em] text-white/55 font-semibold">People</p>
-                <p className="num-mono text-2xl font-semibold mt-0.5 leading-none"><CountUp to={employees.length} /></p>
-                <p className="text-[11px] text-white/55 mt-1"><CountUp to={activeEmployees} /> active</p>
+                <p className="num-mono text-2xl font-semibold mt-0.5 leading-none"><CountUp to={activeEmployees} /></p>
+                <p className="text-[11px] text-white/55 mt-1">Active</p>
               </div>
               <div className="rounded-xl-2 px-4 py-3 bg-white/8 border border-white/10 backdrop-blur-sm animate-fade-up stagger-3">
                 <p className="text-[10px] uppercase tracking-[0.16em] text-white/55 font-semibold">Net payroll</p>
