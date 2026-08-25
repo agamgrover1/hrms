@@ -7,6 +7,7 @@ import { useAuth } from '../../context/AuthContext';
 import { api } from '../../services/api';
 import ThemeToggle from '../ThemeToggle';
 import ClockWidget from './ClockWidget';
+import TaskTimerChip from './TaskTimerChip';
 
 // Map notification type + user role → destination route
 export function getNotifRoute(type: string, role: string): string {
@@ -515,6 +516,10 @@ export default function TopBar({ title, onMenuClick }: Props) {
             page for any user with an underlying employee record. Hides
             itself gracefully for admin-only users. */}
         <ClockWidget />
+
+        {/* Task-timer chip — appears only while a task timer is running.
+            Click to jump to the task, X to stop. */}
+        <TaskTimerChip />
 
         {/* Theme toggle */}
         <ThemeToggle />

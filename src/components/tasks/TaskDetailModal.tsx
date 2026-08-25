@@ -4,6 +4,7 @@ import {
   Link2, Flag, Diamond, Play, Square, Clock, Repeat, Paperclip, Download, Upload,
 } from 'lucide-react';
 import { taskFilesApi, type TaskAttachment } from '../../services/taskFilesApi';
+import { notifyTaskTimerChanged } from '../layout/TaskTimerChip';
 import { api } from '../../services/api';
 import type { Task, TaskActivity, TaskComment, TaskPriority, TaskStatus, TaskCustomField } from '../../services/api';
 import { useAuth } from '../../context/AuthContext';
@@ -204,6 +205,7 @@ export default function TaskDetailModal({ taskId, employees, onClose, onChanged 
       await api.startTaskTimer(taskId);
       const fresh = await api.getTaskTime(taskId);
       setTimeEntries(fresh);
+      notifyTaskTimerChanged();
     } catch (e: any) { toast.error('Could not start timer', e?.message ?? 'Please try again.'); }
     finally { setTimerBusy(false); }
   };
@@ -215,6 +217,7 @@ export default function TaskDetailModal({ taskId, employees, onClose, onChanged 
       const fresh = await api.getTaskTime(taskId);
       setTimeEntries(fresh);
       load();
+      notifyTaskTimerChanged();
     } catch (e: any) { toast.error('Could not stop timer', e?.message ?? 'Please try again.'); }
     finally { setTimerBusy(false); }
   };
