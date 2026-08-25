@@ -24,6 +24,27 @@ export const DEFAULT_STATUSES: TaskStatus[] = [
   { id: 'done',        label: 'Done',        color: '#34d399', type: 'done'   },
 ];
 
+/**
+ * Human-readable duration from a decimal-hours number. Rules:
+ *   0                → "0m"
+ *   < 1 minute       → "<1m"
+ *   < 1 hour         → "45m"
+ *   >= 1 hour, exact → "2h"
+ *   >= 1 hour, partial → "1h 30m"
+ * Rounds to the nearest minute, never surfaces "0.04h" style output.
+ */
+export function formatHoursHuman(h: number | string | null | undefined): string {
+  const num = Number(h ?? 0);
+  if (!Number.isFinite(num) || num <= 0) return '0m';
+  const totalMin = Math.round(num * 60);
+  if (totalMin < 1) return '<1m';
+  const H = Math.floor(totalMin / 60);
+  const M = totalMin % 60;
+  if (H === 0) return `${M}m`;
+  if (M === 0) return `${H}h`;
+  return `${H}h ${M}m`;
+}
+
 /** Today in the browser's local date, as YYYY-MM-DD — same basis the date inputs use. */
 export function todayISO(): string {
   const d = new Date();

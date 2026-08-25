@@ -3,7 +3,7 @@ import { useSearchParams } from 'react-router-dom';
 import {
   KanbanSquare, Plus, Search, Loader2, LayoutList, Columns3, Inbox,
   MessageSquare, GitBranch, Archive, X, Briefcase, ChevronDown, CalendarDays,
-  ChevronLeft, ChevronRight, Diamond, Repeat, GanttChartSquare, MoreVertical, Trash2, Lock, Globe, Users2, Settings, BarChart3,
+  ChevronLeft, ChevronRight, Diamond, Repeat, GanttChartSquare, MoreVertical, Trash2, Lock, Globe, Users2, Settings, BarChart3, Square,
 } from 'lucide-react';
 import { api } from '../services/api';
 import type { Task, TaskBoard, TaskFilters, TaskSavedView, BoardPermission, BoardPermissionLevel } from '../services/api';
@@ -13,7 +13,7 @@ import TaskDetailModal from '../components/tasks/TaskDetailModal';
 import TaskFilterBar from '../components/tasks/TaskFilterBar';
 import TaskFieldsAndTemplatesMenu from '../components/tasks/TaskFieldsAndTemplatesMenu';
 import {
-  PRIORITY_META, DEFAULT_STATUSES, dueMeta, DUE_TONE_CLASS, midpoint, initials, todayISO, defaultBoardParams } from '../lib/taskMeta';
+  PRIORITY_META, DEFAULT_STATUSES, dueMeta, DUE_TONE_CLASS, midpoint, initials, todayISO, defaultBoardParams, formatHoursHuman } from '../lib/taskMeta';
 
 // Tasks — ClickUp-style boards layered on top of the projects the agency
 // already runs. A board ("list") hangs off a project, or stands alone for
@@ -42,6 +42,10 @@ export default function Tasks() {
   const [search, setSearch] = useState('');
   const [showNewBoard, setShowNewBoard] = useState(false);
   const [boardSettings, setBoardSettings] = useState<TaskBoard | null>(null);
+  // Which task currently has a running timer for the signed-in user. Used
+  // by TaskCard to show an inline Stop button so people don't need to
+  // open the modal to end their timer.
+  const [runningTimerTaskId, setRunningTimerTaskId] = useState<string | null>(null);
   const [dragging, setDragging] = useState<string | null>(null);
   const [dragOverCol, setDragOverCol] = useState<string | null>(null);
 
@@ -78,6 +82,29 @@ export default function Tasks() {
       .catch((e: any) => setErr(e?.message ?? 'Failed to load boards'))
       .finally(() => setLoading(false));
   }, []);
+
+  // Track the current user's running-timer task so the board can render
+  // an inline Stop button on that card. Same event bus as the TopBar
+  // chip, so start/stop from anywhere refreshes both surfaces.
+  const refreshRunningTimer = useCallback(() => {
+    api.getRunningTimer()
+      .then(r => setRunningTimerTaskId(r?.task_id ?? null))
+      .catch(() => setRunningTimerTaskId(null));
+  }, []);
+  useEffect(() => {
+    refreshRunningTimer();
+    const onChange = () => refreshRunningTimer();
+    window.addEventListener('hrms-task-timer-changed', onChange);
+    return () => window.removeEventListener('hrms-task-timer-changed', onChange);
+  }, [refreshRunningTimer]);
+  const stopRunningTimer = async (taskId: string) => {
+    try {
+      await api.stopTaskTimer(taskId);
+      setRunningTimerTaskId(null);
+      window.dispatchEvent(new Event('hrms-task-timer-changed'));
+      loadTasks();
+    } catch (e: any) { toast.error('Could not stop timer', e?.body?.error ?? e?.message); }
+  };
 
   // Default the selection once boards arrive. Someone who runs boards wants
   // to land on one; everyone else opens Tasks to see what's on their plate,
@@ -341,6 +368,8 @@ export default function Tasks() {
                         onDragStartCard={setDragging}
                         onOpen={setOpenTask}
                         onQuickAdd={(title) => quickAdd(s.id, title)}
+                        runningTimerTaskId={runningTimerTaskId}
+                        onStopTimer={stopRunningTimer}
                       />
                     ))}
                   </div>
@@ -677,6 +706,7 @@ function EmptyPane({ label }: { label: string }) {
 
 function BoardColumn({
   status, tasks, isDragOver, onDragOver, onDragLeave, onDrop, onDragStartCard, onOpen, onQuickAdd,
+  runningTimerTaskId, onStopTimer,
 }: {
   status: { id: string; label: string; color: string; type: string };
   tasks: Task[];
@@ -687,6 +717,8 @@ function BoardColumn({
   onDragStartCard: (id: string) => void;
   onOpen: (id: string) => void;
   onQuickAdd: (title: string) => void;
+  runningTimerTaskId: string | null;
+  onStopTimer: (id: string) => void;
 }) {
   const [adding, setAdding] = useState(false);
   const [draft, setDraft] = useState('');
@@ -711,7 +743,9 @@ function BoardColumn({
 
       <div className="flex-1 min-h-0 overflow-y-auto p-2 space-y-2">
         {tasks.map(t => (
-          <TaskCard key={t.id} task={t} onDragStart={() => onDragStartCard(t.id)} onOpen={() => onOpen(t.id)} />
+          <TaskCard key={t.id} task={t} onDragStart={() => onDragStartCard(t.id)} onOpen={() => onOpen(t.id)}
+            timerRunning={runningTimerTaskId === t.id}
+            onStopTimer={() => onStopTimer(t.id)} />
         ))}
 
         {adding ? (
@@ -737,7 +771,13 @@ function BoardColumn({
   );
 }
 
-function TaskCard({ task, onDragStart, onOpen }: { task: Task; onDragStart: () => void; onOpen: () => void }) {
+function TaskCard({ task, onDragStart, onOpen, timerRunning = false, onStopTimer }: {
+  task: Task;
+  onDragStart: () => void;
+  onOpen: () => void;
+  timerRunning?: boolean;
+  onStopTimer?: () => void;
+}) {
   const prio = PRIORITY_META[task.priority];
   const due = dueMeta(task.due_date, !!task.completed_at);
   return (
@@ -756,9 +796,17 @@ function TaskCard({ task, onDragStart, onOpen }: { task: Task; onDragStart: () =
         {!task.is_milestone && task.priority !== 'none' && (
           <span className="mt-1.5 w-1.5 h-1.5 rounded-full flex-shrink-0" style={{ background: prio.color }} title={`${prio.label} priority`} />
         )}
-        <p className={`text-sm leading-snug text-on-surface ${task.completed_at ? 'line-through text-on-surface-subtle' : ''}`}>
+        <p className={`text-sm leading-snug text-on-surface flex-1 ${task.completed_at ? 'line-through text-on-surface-subtle' : ''}`}>
           {task.title}
         </p>
+        {timerRunning && (
+          <button
+            onClick={e => { e.stopPropagation(); onStopTimer?.(); }}
+            title="Stop your running timer on this task"
+            className="ml-1 inline-flex items-center gap-1 shrink-0 h-6 px-1.5 rounded-full text-[10px] font-bold bg-danger text-white hover:bg-danger/90">
+            <Square size={9} className="fill-current animate-pulse" /> Stop
+          </button>
+        )}
       </div>
 
       {(task.tags ?? []).length > 0 && (
@@ -796,8 +844,8 @@ function TaskCard({ task, onDragStart, onOpen }: { task: Task; onDragStart: () =
           )}
           {Number(task.logged_hours ?? 0) > 0 && (
             <span className="inline-flex items-center gap-0.5 text-[10px] text-on-surface-subtle font-mono tabular-nums"
-              title={task.estimate_hours ? `${Number(task.logged_hours).toFixed(1)}h logged of ${task.estimate_hours}h estimate` : `${Number(task.logged_hours).toFixed(1)}h logged`}>
-              ⏱ {Number(task.logged_hours).toFixed(1)}h{task.estimate_hours ? `/${task.estimate_hours}` : ''}
+              title={task.estimate_hours ? `${formatHoursHuman(task.logged_hours)} logged of ${formatHoursHuman(task.estimate_hours)} estimate` : `${formatHoursHuman(task.logged_hours)} logged`}>
+              ⏱ {formatHoursHuman(task.logged_hours)}{task.estimate_hours ? ` / ${formatHoursHuman(task.estimate_hours)}` : ''}
             </span>
           )}
           {task.assignee_name && (

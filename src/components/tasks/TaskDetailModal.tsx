@@ -9,7 +9,7 @@ import { api } from '../../services/api';
 import type { Task, TaskActivity, TaskComment, TaskPriority, TaskStatus, TaskCustomField } from '../../services/api';
 import { useAuth } from '../../context/AuthContext';
 import { toast } from '../Toaster';
-import { TASK_PRIORITIES, PRIORITY_META, initials } from '../../lib/taskMeta';
+import { TASK_PRIORITIES, PRIORITY_META, initials, formatHoursHuman } from '../../lib/taskMeta';
 
 type DepKind = 'blocks' | 'waiting_on' | 'related_to';
 type DepEdge = { kind: DepKind; other_id: string; other_title: string; other_status: string; other_completed_at: string | null };
@@ -713,8 +713,8 @@ export default function TaskDetailModal({ taskId, employees, onClose, onChanged 
                   <Clock size={13} className="text-on-surface-muted" />
                   <span className="text-xs font-semibold text-on-surface-muted">Time</span>
                   <span className="ml-auto text-[11px] font-mono text-on-surface-muted">
-                    {totalWithRunningH.toFixed(2)}h logged
-                    {task.estimate_hours ? <> · est {task.estimate_hours}h</> : null}
+                    {formatHoursHuman(totalWithRunningH)} logged
+                    {task.estimate_hours ? <> · est {formatHoursHuman(task.estimate_hours)}</> : null}
                   </span>
                 </div>
 
@@ -723,7 +723,7 @@ export default function TaskDetailModal({ taskId, employees, onClose, onChanged 
                     <button onClick={stopTimer} disabled={timerBusy}
                       className="inline-flex items-center gap-2 h-9 px-3 rounded-lg text-sm font-semibold bg-danger-container/40 border border-danger/40 text-danger hover:bg-danger-container/60 disabled:opacity-60">
                       <Square size={12} className="fill-current" />
-                      <span className="hidden sm:inline">Stop</span>
+                      <span>Stop timer</span>
                       <span className="font-mono tabular-nums text-[12px] px-1.5 py-0.5 rounded bg-danger/10 border border-danger/30">
                         {fmtDuration(runningHours)}
                       </span>
@@ -771,7 +771,7 @@ export default function TaskDetailModal({ taskId, employees, onClose, onChanged 
                           <span className="font-mono text-[11px] text-on-surface tabular-nums text-right">
                             {isOpen
                               ? <span className="text-danger font-semibold">running…</span>
-                              : `${Number(e.hours).toFixed(2)}h`}
+                              : formatHoursHuman(e.hours)}
                           </span>
                           <span className={`text-[9px] font-semibold uppercase tracking-wider text-center px-1 py-0.5 rounded ${e.source === 'timer' ? 'bg-brand-container text-on-brand-container' : 'bg-surface-2 text-on-surface-muted'}`}>
                             {e.source === 'timer' ? 'timer' : 'manual'}
