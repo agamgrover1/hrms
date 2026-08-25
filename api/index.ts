@@ -16480,6 +16480,125 @@ app.get('/api/hour-log-days/queue', async (req, res) => {
   } catch (err: any) { res.status(500).json({ error: err.message || 'Server error' }); }
 });
 
+// GET /api/hour-log-days/suggestions — aggregate the caller's (or the
+// specified employee's) task_time_entries into per-project per-day
+// buckets for a month, alongside what's currently in hour_log_days for
+// the same slot. Powers the "Sync from task timers" modal on
+// ProjectHours, so an employee can review and one-click-apply their
+// timer data into the weekly log instead of retyping it.
+//
+// Only stopped timer entries + manual task-time logs count — a live
+// timer would keep shifting the suggested number under the user.
+//
+// A suggestion is considered actionable when:
+//   * task hours > 0 for that (project, day)
+//   * an active assignment exists for (employee, project, month, year)
+//     — the hour_log_days INSERT requires assignment_id, so without one
+//     the client can't apply the suggestion without adding a plan first
+//     (the response surfaces that state so the UI can nudge).
+app.get('/api/hour-log-days/suggestions', async (req, res) => {
+  try {
+    await runStartupMigrations();
+    const employeeIdRaw = (req.query.employee_id as string) || null;
+    const month = req.query.month ? Number(req.query.month) : null;
+    const year  = req.query.year  ? Number(req.query.year)  : null;
+    if (!month || !year) return res.status(400).json({ error: 'month + year are required.' });
+
+    // Auth: resolve the caller. Non-admins can only fetch their own.
+    const uid = req.header('x-user-id');
+    if (!uid) return res.status(401).json({ error: 'Not signed in' });
+    const u = (await sql`SELECT id, role, employee_id_ref FROM app_users WHERE id=${uid} LIMIT 1` as any[])[0];
+    if (!u) return res.status(401).json({ error: 'Session invalid' });
+    const callerEmpId = await resolveUserToEmployee(u).catch(() => null);
+    const targetEmpId = employeeIdRaw ?? callerEmpId;
+    if (!targetEmpId) return res.status(400).json({ error: 'employee_id is required (or link an employee to your login).' });
+    const isPrivileged = ['admin', 'hr_manager', 'project_coordinator'].includes(u.role);
+    if (targetEmpId !== callerEmpId && !isPrivileged) {
+      return res.status(403).json({ error: 'You can only pull suggestions for your own hour log.' });
+    }
+
+    const monthStart = new Date(Date.UTC(year, month - 1, 1)).toISOString().slice(0, 10);
+    const monthEnd   = new Date(Date.UTC(year, month, 0)).toISOString().slice(0, 10);
+
+    // Per-project-per-day timer totals. Excludes live timers (stopped_at
+    // NULL AND source='timer') so a currently-running entry doesn't
+    // whipsaw the suggestion.
+    const timerRows = await sql`
+      SELECT te.project_id, te.log_date::text AS log_date,
+             ROUND(SUM(te.hours)::numeric, 2) AS timer_hours,
+             COUNT(*)::int AS entries,
+             ARRAY_AGG(DISTINCT t.title) AS task_titles
+      FROM task_time_entries te
+      JOIN tasks t ON t.id = te.task_id
+      WHERE te.employee_id=${targetEmpId}
+        AND te.project_id IS NOT NULL
+        AND te.log_date BETWEEN ${monthStart}::date AND ${monthEnd}::date
+        AND NOT (te.source='timer' AND te.stopped_at IS NULL)
+      GROUP BY te.project_id, te.log_date
+      ORDER BY te.log_date ASC, te.project_id ASC` as any[];
+
+    if (!timerRows.length) return res.json({ suggestions: [] });
+
+    const projectIds = Array.from(new Set(timerRows.map(r => r.project_id)));
+
+    // Current hour_log_days rows for the same slots. LEFT-joined in JS
+    // so the diff (timer vs manual) is visible in the UI.
+    const existingRows = await sql`
+      SELECT d.project_id, d.log_date::text AS log_date, d.hours::numeric AS existing_hours,
+             d.id AS existing_id, d.status
+      FROM hour_log_days d
+      WHERE d.employee_id=${targetEmpId}
+        AND d.project_id = ANY(${projectIds}::text[])
+        AND d.log_date BETWEEN ${monthStart}::date AND ${monthEnd}::date` as any[];
+    const existingByKey = new Map<string, any>();
+    for (const e of existingRows) existingByKey.set(`${e.project_id}|${e.log_date}`, e);
+
+    // Assignments that exist for (employee, project) in this month —
+    // required to write an hour_log_days row.
+    const assignmentRows = await sql`
+      SELECT id, project_id
+      FROM assignments
+      WHERE employee_id=${targetEmpId}
+        AND month=${month} AND year=${year}
+        AND project_id = ANY(${projectIds}::text[])` as any[];
+    const assignmentByProject = new Map<string, string>();
+    for (const a of assignmentRows) assignmentByProject.set(a.project_id, a.id);
+
+    // Project name lookup — cheap; a handful of ids.
+    const projectRows = await sql`
+      SELECT id, name, client_name FROM projects WHERE id = ANY(${projectIds}::text[])` as any[];
+    const projectMeta = new Map<string, any>();
+    for (const p of projectRows) projectMeta.set(p.id, p);
+
+    const suggestions = timerRows.map(r => {
+      const key = `${r.project_id}|${r.log_date}`;
+      const existing = existingByKey.get(key) ?? null;
+      const meta = projectMeta.get(r.project_id) ?? null;
+      const assignmentId = assignmentByProject.get(r.project_id) ?? null;
+      const timerH = Number(r.timer_hours ?? 0);
+      const existingH = existing ? Number(existing.existing_hours ?? 0) : 0;
+      const delta = Math.round((timerH - existingH) * 100) / 100;
+      return {
+        project_id: r.project_id,
+        project_name: meta?.name ?? 'Unknown project',
+        project_client: meta?.client_name ?? null,
+        log_date: r.log_date,
+        timer_hours: timerH,
+        entry_count: Number(r.entries ?? 0),
+        task_titles: Array.isArray(r.task_titles) ? r.task_titles.slice(0, 5) : [],
+        existing_hours: existing ? existingH : null,
+        existing_id: existing?.existing_id ?? null,
+        existing_status: existing?.status ?? null,
+        assignment_id: assignmentId,
+        actionable: assignmentId != null && delta !== 0 && (existing?.status !== 'approved'),
+        delta_hours: delta,
+      };
+    });
+
+    res.json({ suggestions });
+  } catch (err: any) { res.status(500).json({ error: err.message || 'Server error' }); }
+});
+
 // GET /api/hour-log-days/counts — 4-status KPI counts at day grain.
 // Same filter surface as the queue minus `status`. Feeds the top cards
 // on the Approvals page.

@@ -915,6 +915,29 @@ export const api = {
       project_client_name?: string | null;
     }>>(`/hour-log-days?${qs}`);
   },
+  // Sync-from-task-timers suggestions. Returns per-project per-day
+  // aggregates from the employee's task_time_entries in the given month,
+  // alongside what's already on hour_log_days so the UI can show a diff
+  // and only surface the actionable rows.
+  getHourLogSuggestions: (opts: { employee_id?: string; month: number; year: number }) => {
+    const qs = new URLSearchParams({ month: String(opts.month), year: String(opts.year) });
+    if (opts.employee_id) qs.set('employee_id', opts.employee_id);
+    return request<{ suggestions: Array<{
+      project_id: string;
+      project_name: string;
+      project_client: string | null;
+      log_date: string;
+      timer_hours: number;
+      entry_count: number;
+      task_titles: string[];
+      existing_hours: number | null;
+      existing_id: string | null;
+      existing_status: 'pending' | 'submitted' | 'approved' | 'rejected' | 'on_hold' | null;
+      assignment_id: string | null;
+      actionable: boolean;
+      delta_hours: number;
+    }> }>(`/hour-log-days/suggestions?${qs}`);
+  },
   upsertHourLogDay: (data: { assignment_id: string; log_date: string; hours: number; notes?: string; employee_id?: string; employee_name?: string }) =>
     request<{ assignment_id: string; log_date: string; week_num: number; hours: number; hour_log_id: string | null }>('/hour-log-days', { method: 'POST', body: JSON.stringify(data) }),
   editHourLogDay: (id: string, data: { hours: number; notes?: string }) =>

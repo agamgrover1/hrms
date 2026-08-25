@@ -5,6 +5,8 @@ import { api } from '../services/api';
 import { useAuth } from '../context/AuthContext';
 import { formatWeekDays, isCurrentWeekOfMonth, isEmptyWeek } from '../utils/weekRange';
 import EmployeeHoursDetailModal from '../components/EmployeeHoursDetailModal';
+import SyncTimersModal from '../components/hours/SyncTimersModal';
+import { Timer } from 'lucide-react';
 import { ProjectDailyActivityModal } from './Projects';
 
 interface Assignment {
@@ -81,6 +83,7 @@ export default function ProjectHours() {
   const { user } = useAuth();
   const today = new Date();
   const [month, setMonth] = useState(today.getMonth() + 1);
+  const [showSyncTimers, setShowSyncTimers] = useState(false);
   const [year, setYear] = useState(today.getFullYear());
   const [assignments, setAssignments] = useState<Assignment[]>([]);
   const [projects, setProjects] = useState<any[]>([]);
@@ -416,6 +419,23 @@ export default function ProjectHours() {
         );
       })()}
 
+      {/* Sync-from-task-timers CTA — available to anyone with an
+          underlying employee record so they can pull their own
+          timers. Admins can also open it (we default the target to
+          themselves; other-employee sync happens from that person's
+          profile page). */}
+      {user?.employee_id_ref && (
+        <div className="flex items-center gap-2">
+          <button onClick={() => setShowSyncTimers(true)}
+            className="inline-flex items-center gap-2 px-3 py-2 rounded-lg text-xs font-semibold bg-accent/10 border border-accent/30 text-accent hover:bg-accent/20">
+            <Timer size={12} /> Sync from task timers
+          </button>
+          <p className="text-[11px] text-on-surface-subtle">
+            Pull your task-timer hours into this month's log instead of typing them.
+          </p>
+        </div>
+      )}
+
       {/* Tab bar — non-admin viewers (team leads who got here because they
           lead/review a project) only see the Mine tab. Capacity & Plan are
           for admin / HR / coordinator. */}
@@ -640,6 +660,17 @@ export default function ProjectHours() {
           year={year}
           focusWeek={detail.focusWeek}
           onClose={() => setDetail(null)}
+        />
+      )}
+
+      {showSyncTimers && user?.employee_id_ref && (
+        <SyncTimersModal
+          employeeId={user.employee_id_ref}
+          employeeName={user.name}
+          month={month}
+          year={year}
+          onClose={() => setShowSyncTimers(false)}
+          onApplied={() => load()}
         />
       )}
     </div>
