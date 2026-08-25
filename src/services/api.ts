@@ -199,7 +199,7 @@ export const api = {
   getAttendanceGeofence: () => request<{ enabled: boolean; latitude: number | null; longitude: number | null; radius_meters: number; office_label: string | null }>('/config/attendance-geofence'),
   saveAttendanceGeofence: (data: { enabled: boolean; latitude: number | null; longitude: number | null; radius_meters: number; office_label?: string }) =>
     request<any>('/config/attendance-geofence', { method: 'PUT', body: JSON.stringify(data) }),
-  clockOut: (employee_id: string, geo?: { lat?: number; lng?: number }) =>
+  clockOut: (employee_id: string, geo?: { lat?: number; lng?: number; accuracy?: number }) =>
     request<any>('/attendance/clock-out', { method: 'POST', body: JSON.stringify({ employee_id, ...(geo ?? {}) }) }),
   getAttendanceSessions: (employee_id: string, date: string) =>
     request<any[]>(`/attendance/sessions?employee_id=${encodeURIComponent(employee_id)}&date=${encodeURIComponent(date)}`),

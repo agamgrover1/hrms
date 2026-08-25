@@ -71,15 +71,56 @@ export default function ClockWidget() {
     return () => { if (timerRef.current) clearInterval(timerRef.current); timerRef.current = null; };
   }, [openSession?.id]);
 
-  const readGeo = (): Promise<{ lat?: number; lng?: number; accuracy?: number }> => {
-    return new Promise((resolve) => {
-      if (!('geolocation' in navigator)) return resolve({});
-      const timer = setTimeout(() => resolve({}), 10_000);
-      navigator.geolocation.getCurrentPosition(
-        (pos) => { clearTimeout(timer); resolve({ lat: pos.coords.latitude, lng: pos.coords.longitude, accuracy: pos.coords.accuracy }); },
-        () => { clearTimeout(timer); resolve({}); },
-        { enableHighAccuracy: true, timeout: 10_000, maximumAge: 60_000 }
-      );
+  // Reads the browser's position with a specific rejection reason on
+  // failure, so the caller can show a real error instead of swallowing
+  // to `{}` and letting the server produce a generic "Location is
+  // required". Tries high-accuracy first (real GPS on phones), falls
+  // back to low-accuracy (network geolocation) on timeout — indoor
+  // laptops often can't get a high-accuracy fix at all and would
+  // otherwise fail every single time.
+  const readGeo = (): Promise<{ lat: number; lng: number; accuracy: number }> => {
+    return new Promise((resolve, reject) => {
+      if (!('geolocation' in navigator)) {
+        return reject(new Error('This browser does not support location.'));
+      }
+      const tryOnce = (highAccuracy: boolean, timeoutMs: number, onFail: () => void) => {
+        navigator.geolocation.getCurrentPosition(
+          (pos) => resolve({
+            lat: pos.coords.latitude,
+            lng: pos.coords.longitude,
+            accuracy: pos.coords.accuracy,
+          }),
+          (err) => {
+            if (err.code === err.PERMISSION_DENIED) {
+              reject(new Error(
+                'Location permission is blocked for this site. ' +
+                'Click the padlock in the address bar → Site settings → Location → Allow, then reload.'
+              ));
+              return;
+            }
+            if (err.code === err.POSITION_UNAVAILABLE) {
+              reject(new Error(
+                'Location unavailable. On desktop, check your OS Location Services (System Settings → Privacy → Location). ' +
+                'On a phone, make sure GPS is on and the browser has location access.'
+              ));
+              return;
+            }
+            // TIMEOUT (or any other) — hand off to the fallback path.
+            onFail();
+          },
+          { enableHighAccuracy: highAccuracy, timeout: timeoutMs, maximumAge: 30_000 }
+        );
+      };
+      // Attempt 1: high-accuracy GPS, 20s. Fallback: low-accuracy
+      // network-based, 8s. If both time out we tell the user.
+      tryOnce(true, 20_000, () => {
+        tryOnce(false, 8_000, () => {
+          reject(new Error(
+            'Could not read your location within 30 seconds. Move somewhere with a clearer view of the sky and try again — ' +
+            'first location fix on a laptop indoors can be slow.'
+          ));
+        });
+      });
     });
   };
 
@@ -102,7 +143,7 @@ export default function ClockWidget() {
     setBusy('out');
     try {
       const geo = await readGeo();
-      await api.clockOut(empDbId, { lat: geo.lat, lng: geo.lng });
+      await api.clockOut(empDbId, { lat: geo.lat, lng: geo.lng, accuracy: geo.accuracy });
       toast.success('Clocked out', formatDuration(elapsedSec));
       refetch();
     } catch (e: any) {
