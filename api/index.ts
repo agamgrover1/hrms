@@ -16,26 +16,45 @@ function getSql() {
 const sql = ((...a: any[]) => (getSql() as any)(...a)) as (...args: any[]) => Promise<any[]>;
 
 const app = express();
-// Build the set of allowed origins — hardcoded + any extras from CORS_ORIGIN env var
+// Allowed origins — exact match (no substring/regex). The previous check
+// trusted every `*.vercel.app` and every `chrome-extension://` and
+// substring-matched `digitalleapmarketing.com`, which is a CSRF hole
+// waiting for cookies. Add more via CORS_ORIGIN env (comma-separated).
 const ALLOWED_ORIGINS = new Set([
   'https://hr.digitalleapmarketing.com',
   'https://hrms.digitalleapmarketing.com',
+  'https://hrms-eta-five.vercel.app',
   ...(process.env.CORS_ORIGIN
     ? process.env.CORS_ORIGIN.split(',').map(s => s.trim().replace(/\/$/, ''))
     : []),
+  ...(process.env.NODE_ENV !== 'production' ? ['http://localhost:5173', 'http://127.0.0.1:5173'] : []),
 ]);
 
 function isAllowedOrigin(origin: string | undefined): boolean {
   if (!origin) return true; // same-origin / server-to-server
   const o = origin.replace(/\/$/, ''); // strip trailing slash
-  return (
-    o.endsWith('.vercel.app') ||
-    o.startsWith('http://localhost') ||
-    o.startsWith('http://127.0.0.1') ||
-    o.includes('digitalleapmarketing.com') ||
-    o.startsWith('chrome-extension://') || // Digital Leap HRMS Chrome extension
-    ALLOWED_ORIGINS.has(o)
-  );
+  return ALLOWED_ORIGINS.has(o);
+}
+
+// ── In-memory rate limiter for auth-sensitive endpoints ──────────────
+// Vercel serverless has no shared memory across instances, so this is
+// only a per-instance defence — a determined attacker can still get
+// N attempts * M instances. Redis/DB-backed limiter is queued for
+// Track B. Good enough for now to defeat a naive single-IP bruteforce.
+const RATE_WINDOW_MS = 60_000;        // 1 minute
+const RATE_MAX_ATTEMPTS = 8;          // per key per window
+const rateBuckets = new Map<string, number[]>();
+function isRateLimited(key: string): boolean {
+  const now = Date.now();
+  const arr = (rateBuckets.get(key) ?? []).filter(t => now - t < RATE_WINDOW_MS);
+  rateBuckets.set(key, arr);
+  return arr.length >= RATE_MAX_ATTEMPTS;
+}
+function recordFailedAttempt(key: string): void {
+  const now = Date.now();
+  const arr = (rateBuckets.get(key) ?? []).filter(t => now - t < RATE_WINDOW_MS);
+  arr.push(now);
+  rateBuckets.set(key, arr);
 }
 
 app.use(cors({
@@ -307,7 +326,7 @@ async function notifyInternalHoursReviewerOf(employeeDbId: string, type: string,
 // caller is an active admin before returning any financial data.
 async function requireAdmin(req: any, res: any): Promise<boolean> {
   try {
-    const userId = req.header('x-user-id') || req.query.__uid;
+    const userId = req.header('x-user-id');
     if (!userId) { res.status(401).json({ error: 'Not authenticated' }); return false; }
     const rows = await sql`SELECT role, active FROM app_users WHERE id = ${userId} LIMIT 1`;
     const u = (rows as any[])[0];
@@ -326,7 +345,7 @@ async function requireAdmin(req: any, res: any): Promise<boolean> {
 // which a coordinator may add against the projects they run).
 async function requireAdminOrCoord(req: any, res: any): Promise<{ ok: boolean; user?: any }> {
   try {
-    const userId = req.header('x-user-id') || req.query.__uid;
+    const userId = req.header('x-user-id');
     if (!userId) { res.status(401).json({ error: 'Not authenticated' }); return { ok: false }; }
     const rows = await sql`SELECT id, name, role, active FROM app_users WHERE id = ${userId} LIMIT 1`;
     const u = (rows as any[])[0];
@@ -351,7 +370,7 @@ async function requireAdminOrCoord(req: any, res: any): Promise<{ ok: boolean; u
 //    performance review writes, role/password admin).
 async function requireHROrAbove(req: any, res: any): Promise<{ ok: boolean; user?: any }> {
   try {
-    const userId = req.header('x-user-id') || req.query.__uid;
+    const userId = req.header('x-user-id');
     if (!userId) { res.status(401).json({ error: 'Not authenticated' }); return { ok: false }; }
     const rows = await sql`SELECT id, name, role, active FROM app_users WHERE id = ${userId} LIMIT 1`;
     const u = (rows as any[])[0];
@@ -368,7 +387,7 @@ async function requireHROrAbove(req: any, res: any): Promise<{ ok: boolean; user
 
 async function requireFullHR(req: any, res: any): Promise<{ ok: boolean; user?: any }> {
   try {
-    const userId = req.header('x-user-id') || req.query.__uid;
+    const userId = req.header('x-user-id');
     if (!userId) { res.status(401).json({ error: 'Not authenticated' }); return { ok: false }; }
     const rows = await sql`SELECT id, name, role, active FROM app_users WHERE id = ${userId} LIMIT 1`;
     const u = (rows as any[])[0];
@@ -412,7 +431,7 @@ function stripSalaryForIntern<T extends Record<string, any>>(
 // top of an endpoint than to redo the join in stripSalaryForIntern.
 async function actorOwnEmployeeId(req: any): Promise<string | null> {
   try {
-    const userId = req.header('x-user-id') || req.query.__uid;
+    const userId = req.header('x-user-id');
     if (!userId) return null;
     // 5-minute memo — the user's employee record almost never moves and
     // this helper is hit by every salary-stripped /api/employees call.
@@ -3538,6 +3557,30 @@ async function runStartupMigrations() {
   _migrated = true;
 }
 
+// One-shot: bcrypt-hash any app_users.password that is still plaintext.
+// Lives OUTSIDE runStartupMigrations() so it survives that function's
+// fast-path early-return. Guarded by its own flag so it costs one small
+// SELECT per lambda instance lifetime. Bounded to 200 rows per pass.
+let _pwdHashedOnce = false;
+async function hashLegacyPasswordsOnce() {
+  if (_pwdHashedOnce) return;
+  _pwdHashedOnce = true;
+  try {
+    const legacy = await sql`
+      SELECT id, password FROM app_users
+      WHERE password IS NOT NULL
+        AND password <> ''
+        AND password NOT LIKE '$2%'
+      LIMIT 200`;
+    for (const row of legacy as any[]) {
+      try {
+        const h = await bcrypt.hash(String(row.password), 10);
+        await sql`UPDATE app_users SET password=${h} WHERE id=${row.id} AND password=${row.password}`;
+      } catch { /* best-effort */ }
+    }
+  } catch { /* best-effort */ }
+}
+
 // ── Health / diagnostics ──────────────────────────────────────────────────
 app.get('/api/health', async (_, res) => {
   const dbSet = !!process.env.DATABASE_URL;
@@ -3573,16 +3616,35 @@ async function buildLoginSession(user: any): Promise<any> {
 app.post('/api/auth/login', async (req, res) => {
   try {
     await runStartupMigrations();
+    // Fire-and-forget on the first login per lambda instance. Closes the
+    // "plaintext-in-DB" window from any legacy rows still around.
+    hashLegacyPasswordsOnce().catch(() => {});
     const { email, password } = req.body;
     if (!email || !password) return res.status(400).json({ error: 'Email and password required' });
+    // Rate limit by lowercased email — deterrent against credential stuffing
+    // and single-account brute-force. Instance-scoped (see helper comment).
+    const emailKey = `login:${String(email).toLowerCase()}`;
+    const ipKey = `loginip:${req.header('x-forwarded-for')?.split(',')[0]?.trim() || req.ip || 'unknown'}`;
+    if (isRateLimited(emailKey) || isRateLimited(ipKey)) {
+      return res.status(429).json({ error: 'Too many login attempts. Try again in a minute.' });
+    }
     const rows = await sql`SELECT * FROM app_users WHERE LOWER(email) = LOWER(${email}) LIMIT 1`;
-    if (!rows.length) return res.status(401).json({ error: 'Invalid email or password.' });
+    if (!rows.length) {
+      recordFailedAttempt(emailKey); recordFailedAttempt(ipKey);
+      return res.status(401).json({ error: 'Invalid email or password.' });
+    }
     const user = rows[0] as any;
     if (!user.active) return res.status(403).json({ error: 'Your account has been deactivated. Contact HR.' });
     const isHashed = typeof user.password === 'string' && user.password.startsWith('$2');
+    // Legacy plaintext rows still exist for a handful of seed / test accounts.
+    // The startup migration below rehashes them opportunistically; until then
+    // we still accept a raw compare BUT immediately rehash on success. New
+    // accounts always land bcrypt-hashed (see POST /api/employees).
     const valid = isHashed ? await bcrypt.compare(password, user.password) : user.password === password;
-    if (!valid) return res.status(401).json({ error: 'Invalid email or password.' });
-    // Auto-upgrade plain-text to bcrypt
+    if (!valid) {
+      recordFailedAttempt(emailKey); recordFailedAttempt(ipKey);
+      return res.status(401).json({ error: 'Invalid email or password.' });
+    }
     if (!isHashed) { const h = await bcrypt.hash(password, 10); await sql`UPDATE app_users SET password=${h} WHERE id=${user.id}`.catch(()=>{}); }
     // Password verified. If 2FA is enabled on this account, DO NOT issue
     // the session yet — return a short-lived challenge token the client
@@ -3766,7 +3828,7 @@ app.get('/api/auth/2fa/status', async (req, res) => {
 // "no special handling" rather than blocking.
 async function actorRoleOf(req: any): Promise<string> {
   try {
-    const userId = req.header('x-user-id') || req.query.__uid;
+    const userId = req.header('x-user-id');
     if (!userId) return '';
     // Cache the role lookup for 5 minutes per user. The auth gate runs on
     // EVERY request that scopes by role (employees, stripSalary, etc.) —
@@ -3920,9 +3982,13 @@ app.post('/api/employees', async (req, res) => {
     if (password) {
       const existing = await sql`SELECT id FROM app_users WHERE LOWER(email)=LOWER(${email})`;
       if (!existing.length) {
+        // Always bcrypt-hash before insert. The previous version wrote the
+        // plaintext straight into app_users.password, which was then
+        // accepted by the login fallback below.
+        const hashed = await bcrypt.hash(String(password), 10);
         await sql`
           INSERT INTO app_users (id, employee_id_ref, name, email, password, role, department, designation, avatar, active)
-          VALUES (${`u_${id}`}, ${employee_id}, ${name}, ${email}, ${password}, ${role ?? 'employee'}, ${department}, ${designation}, ${avatar}, true)
+          VALUES (${`u_${id}`}, ${employee_id}, ${name}, ${email}, ${hashed}, ${role ?? 'employee'}, ${department}, ${designation}, ${avatar}, true)
         `.catch(() => {});
       }
     }
@@ -10682,8 +10748,14 @@ app.patch('/api/performance/monthly/:id/lock', async (req, res) => {
   try {
     if (!(await requireFullHR(req, res)).ok) return;
     // Columns exist per CREATE TABLE monthly_performance at boot.
-    const { lock, locked_by, requester_role } = req.body;
-    if (!lock && requester_role !== 'admin') return res.status(403).json({ error: 'Only admins can unlock a review' });
+    const { lock, locked_by } = req.body;
+    // Unlock is admin-only. Role must come from the DB, NEVER the request body —
+    // trusting a client-supplied `requester_role` let any authenticated user
+    // promote themselves to admin for this call.
+    if (!lock) {
+      const actorRole = await actorRoleOf(req);
+      if (actorRole !== 'admin') return res.status(403).json({ error: 'Only admins can unlock a review' });
+    }
     const rows = await sql`
       UPDATE monthly_performance SET
         is_locked = ${lock ?? true},
@@ -10709,7 +10781,7 @@ app.post('/api/performance/monthly', async (req, res) => {
       client_satisfaction, ai_usage,
       // Phase 1 additions — dimensions the old 7 missed.
       communication, ownership, planning_accuracy, learning_growth,
-      overall_score, comments, parameter_notes, requester_role,
+      overall_score, comments, parameter_notes,
     } = req.body;
     const paramNotesJson = JSON.stringify(parameter_notes ?? {});
     // Server-side enforcement of the "note required per rated pillar"
@@ -10736,9 +10808,10 @@ app.post('/api/performance/monthly', async (req, res) => {
     }
     // Columns come from runStartupMigrations at boot; no per-request DDL.
     await runStartupMigrations();
-    // Block edits on locked reviews for non-admins
+    // Block edits on locked reviews for non-admins.
+    // `actorRole` was resolved server-side above; never trust the client body.
     const existing = await sql`SELECT is_locked FROM monthly_performance WHERE employee_id=${employee_id} AND month=${month} AND year=${year}`;
-    if ((existing[0] as any)?.is_locked && requester_role !== 'admin') {
+    if ((existing[0] as any)?.is_locked && actorRole !== 'admin') {
       return res.status(403).json({ error: 'This review has been locked by HR and cannot be modified' });
     };
     // Sliders can now come in as null (N/A — the reviewer explicitly
@@ -11604,7 +11677,7 @@ type RespCallerCheck = {
   user?: { id: string; name: string; role: string; employee_id_ref: string | null };
 };
 async function respAccessCheck(req: any, employeeId: string): Promise<RespCallerCheck> {
-  const userId = req.header('x-user-id') || req.query.__uid;
+  const userId = req.header('x-user-id');
   if (!userId) return { ok: false, canWrite: false, canAudit: false };
   const userRows = await sql`SELECT id, name, role, employee_id_ref, active FROM app_users WHERE id=${userId} LIMIT 1`;
   const u = (userRows as any[])[0];
@@ -11934,7 +12007,7 @@ function generateBackupCodes(): string[] {
 }
 
 async function isAdminOrHR(req: any): Promise<boolean> {
-  const userId = req.header('x-user-id') || req.query.__uid;
+  const userId = req.header('x-user-id');
   if (!userId) return false;
   const rows = await sql`SELECT role, active FROM app_users WHERE id=${userId} LIMIT 1`;
   const u = (rows as any[])[0];
@@ -11948,7 +12021,7 @@ async function isAdminOrHR(req: any): Promise<boolean> {
 // history entry entirely.
 async function resolveActor(req: any): Promise<{ id: string | null; name: string | null; role: string | null }> {
   try {
-    const userId = req.header('x-user-id') || req.query.__uid;
+    const userId = req.header('x-user-id');
     if (!userId) return { id: null, name: null, role: null };
     const rows = await sql`SELECT id, name, role FROM app_users WHERE id=${userId} LIMIT 1` as any[];
     const u = rows[0];
@@ -13562,7 +13635,7 @@ const CANDIDATE_MUTABLE_FIELDS = [
 // use this path — they land on the profile via a bell link and only see
 // their action items. Returns `{ok, user, role: 'hr'|'reviewer'|'interviewer'}`.
 async function requireCandidateAccess(req: any, res: any, candidateId: string): Promise<{ ok: boolean; user?: any; role?: string }> {
-  const userId = req.header('x-user-id') || req.query.__uid;
+  const userId = req.header('x-user-id');
   if (!userId) { res.status(401).json({ error: 'Not authenticated' }); return { ok: false }; }
   const u = ((await sql`SELECT id, name, role, active, employee_id_ref FROM app_users WHERE id=${userId} LIMIT 1`) as any[])[0];
   if (!u || u.active !== true) { res.status(403).json({ error: 'Not permitted' }); return { ok: false }; }
@@ -15157,6 +15230,20 @@ app.put('/api/users/:id', async (req, res) => {
 
 app.patch('/api/users/:id/change-password', async (req, res) => {
   try {
+    // Auth: caller must be signed in AND either be the target user or an admin.
+    // Previously this endpoint had no session check at all — anyone on the
+    // internet could brute-force any account's password via current_password.
+    const actorId = req.header('x-user-id');
+    if (!actorId) return res.status(401).json({ error: 'Sign in required' });
+    const actorRows = await sql`SELECT id, role, active FROM app_users WHERE id=${actorId} LIMIT 1`;
+    const actor = (actorRows as any[])[0];
+    if (!actor || actor.active !== true) return res.status(401).json({ error: 'Session invalid' });
+    const isSelf = actor.id === req.params.id;
+    const isAdmin = actor.role === 'admin';
+    if (!isSelf && !isAdmin) return res.status(403).json({ error: 'You can only change your own password' });
+    const attemptKey = `changepw:${req.params.id}`;
+    if (isRateLimited(attemptKey)) return res.status(429).json({ error: 'Too many attempts. Try again in a minute.' });
+
     const { current_password, new_password } = req.body;
     if (!current_password || !new_password) return res.status(400).json({ error: 'current_password and new_password are required' });
     if (new_password.length < 6) return res.status(400).json({ error: 'New password must be at least 6 characters' });
@@ -15164,8 +15251,9 @@ app.patch('/api/users/:id/change-password', async (req, res) => {
     if (!(userRows as any[]).length) return res.status(404).json({ error: 'User not found' });
     const storedPw = (userRows as any[])[0].password;
     const isHashed = typeof storedPw === 'string' && storedPw.startsWith('$2');
-    const valid = isHashed ? await bcrypt.compare(current_password, storedPw) : storedPw === current_password;
-    if (!valid) return res.status(401).json({ error: 'Current password is incorrect' });
+    // Admins acting on someone else's account can skip the current-password check.
+    let valid = isSelf ? (isHashed ? await bcrypt.compare(current_password, storedPw) : storedPw === current_password) : true;
+    if (!valid) { recordFailedAttempt(attemptKey); return res.status(401).json({ error: 'Current password is incorrect' }); }
     const hashed = await bcrypt.hash(new_password, 10);
     await sql`UPDATE app_users SET password=${hashed} WHERE id=${req.params.id}`;
     res.json({ success: true });
@@ -16982,7 +17070,7 @@ app.get('/api/hours-utilization', async (req, res) => {
     const week = weekParam && weekParam >= 1 && weekParam <= 5 ? weekParam : null;
 
     // Identify caller
-    const userId = req.header('x-user-id') || (req.query.__uid as string);
+    const userId = req.header('x-user-id');
     if (!userId) return res.status(401).json({ error: 'Not authenticated' });
     const userRows = await sql`SELECT id, role, employee_id_ref, active FROM app_users WHERE id=${userId} LIMIT 1`;
     const u = (userRows as any[])[0];
@@ -17336,7 +17424,7 @@ app.get('/api/hours-compliance', async (req, res) => {
 app.get('/api/hours/allocations', async (req, res) => {
   try {
     await runStartupMigrations();
-    const uid = req.header('x-user-id') || (req.query.__uid as string);
+    const uid = req.header('x-user-id');
     if (!uid) return res.status(401).json({ error: 'Not authenticated' });
     const month = Number(req.query.month);
     const year = Number(req.query.year);
@@ -20414,7 +20502,7 @@ const TASK_LIST_MANAGER_ROLES = ['admin', 'hr_manager', 'project_coordinator'];
 // holds either form). So `mine=1` filters on employeeId, and pings to an
 // assignee go through notifyEmployeeUser, which does the join.
 async function taskActor(req: any, res: any): Promise<{ ok: boolean; user?: any }> {
-  const uid = req.header('x-user-id') || req.query.__uid;
+  const uid = req.header('x-user-id');
   if (!uid) { res.status(401).json({ error: 'Not signed in' }); return { ok: false }; }
   const u = (await sql`SELECT id, name, email, role, employee_id_ref FROM app_users WHERE id=${uid} LIMIT 1` as any[])[0];
   if (!u) { res.status(401).json({ error: 'Not signed in' }); return { ok: false }; }
