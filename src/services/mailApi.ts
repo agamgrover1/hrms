@@ -12,6 +12,12 @@ interface TokenBundle {
 }
 let cached: TokenBundle | null = null;
 
+// Full-message cache keyed by `${accountId}|${folder}|${uid}`. Bodies
+// don't change once received, so we only ever pay the IMAP hop once.
+// Move flows evict the source entry; delete flows evict too. On a
+// forced reload the caller passes `{fresh: true}`.
+const messageCache = new Map<string, MailMessage>();
+
 async function getToken(force = false): Promise<TokenBundle> {
   if (!force && cached && cached.expires_at > Date.now() + 30_000) return cached;
   const r = await api.getMailToken();
@@ -166,8 +172,38 @@ export const mailApi = {
       'GET', `/accounts/${accountId}/folders/${encodeURIComponent(folder)}/messages${q.toString() ? '?' + q : ''}`
     );
   },
-  fetchMessage: (accountId: string, folder: string, uid: number) =>
-    call<MailMessage>('GET', `/accounts/${accountId}/folders/${encodeURIComponent(folder)}/messages/${uid}`),
+  fetchMessage: async (accountId: string, folder: string, uid: number, opts?: { fresh?: boolean }): Promise<MailMessage> => {
+    // Message bodies are immutable once received, so cache by
+    // (account, folder, uid) and short-circuit re-opens. Only bypass
+    // when the caller explicitly asks for a fresh fetch (Refresh
+    // button in the reader, or after a "replace draft" edit).
+    const k = `${accountId}|${folder}|${uid}`;
+    if (!opts?.fresh) {
+      const hit = messageCache.get(k);
+      if (hit) return hit;
+    }
+    const msg = await call<MailMessage>('GET', `/accounts/${accountId}/folders/${encodeURIComponent(folder)}/messages/${uid}`);
+    // Simple bounded LRU: newest to end, evict oldest when >200.
+    messageCache.delete(k);
+    messageCache.set(k, msg);
+    if (messageCache.size > 200) {
+      const oldest = messageCache.keys().next().value;
+      if (oldest) messageCache.delete(oldest);
+    }
+    return msg;
+  },
+  peekMessage: (accountId: string, folder: string, uid: number): MailMessage | null => {
+    return messageCache.get(`${accountId}|${folder}|${uid}`) ?? null;
+  },
+  evictMessage: (accountId: string, folder: string, uid: number) => {
+    messageCache.delete(`${accountId}|${folder}|${uid}`);
+  },
+  evictFolder: (accountId: string, folder: string) => {
+    const prefix = `${accountId}|${folder}|`;
+    for (const k of Array.from(messageCache.keys())) {
+      if (k.startsWith(prefix)) messageCache.delete(k);
+    }
+  },
   markRead: (accountId: string, folder: string, uid: number, seen: boolean) =>
     call<{ ok: true; seen: boolean }>('POST', `/accounts/${accountId}/folders/${encodeURIComponent(folder)}/messages/${uid}/read`, { seen }),
 

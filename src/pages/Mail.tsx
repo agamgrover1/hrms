@@ -127,6 +127,21 @@ export default function Mail() {
 
   useEffect(() => {
     if (!selectedAccountId || selectedUid == null) { setMessage(null); return; }
+    // Cache hit: hydrate immediately, no spinner, no network hop.
+    const cached = mailApi.peekMessage(selectedAccountId, selectedFolder, selectedUid);
+    if (cached) {
+      setMessage(cached);
+      setLoadingMessage(false);
+      // Still fire the (auto mark-read) side-effect on cache hit.
+      const env = messages.find(m => m.uid === selectedUid);
+      if (env && !env.seen) {
+        setMessages(prev => prev.map(m => m.uid === selectedUid ? { ...m, seen: true } : m));
+        setFolders(prev => prev.map(f => f.path === selectedFolder ? { ...f, unread: Math.max(0, f.unread - 1) } : f));
+        mailApi.markRead(selectedAccountId, selectedFolder, selectedUid, true).catch(() => {});
+      }
+      return;
+    }
+    setMessage(null);
     setLoadingMessage(true);
     mailApi.fetchMessage(selectedAccountId, selectedFolder, selectedUid)
       .then(async msg => {
@@ -287,6 +302,7 @@ function MessageReader({ message, accountId, folder, onRefresh, onCompose, accou
     if (!window.confirm('Delete this message? Moves to Trash (or hard-deletes if already in Trash).')) return;
     try {
       const r = await mailApi.deleteMessage(accountId, folder, message.uid);
+      mailApi.evictMessage(accountId, folder, message.uid);
       toast.success(r.purged ? 'Permanently deleted' : 'Moved to Trash');
       onRefresh();
     } catch (e: any) { toast.error('Delete failed', e?.body?.error ?? e?.message); }
@@ -294,6 +310,7 @@ function MessageReader({ message, accountId, folder, onRefresh, onCompose, accou
   const doMove = async (destination: string) => {
     try {
       await mailApi.moveMessage(accountId, folder, message.uid, destination);
+      mailApi.evictMessage(accountId, folder, message.uid);
       toast.success('Moved', destination);
       onRefresh();
     } catch (e: any) { toast.error('Move failed', e?.body?.error ?? e?.message); }
@@ -301,6 +318,7 @@ function MessageReader({ message, accountId, folder, onRefresh, onCompose, accou
   const doSpam = async () => {
     try {
       const r = await mailApi.markSpam(accountId, folder, message.uid);
+      mailApi.evictMessage(accountId, folder, message.uid);
       toast.success('Marked as spam', `Moved to ${r.moved_to}`);
       onRefresh();
     } catch (e: any) { toast.error('Move failed', e?.body?.error ?? e?.message); }
