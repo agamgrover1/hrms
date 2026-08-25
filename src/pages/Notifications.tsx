@@ -30,18 +30,42 @@ function timeAgo(d: string): string {
   return new Date(d).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' });
 }
 
-// Bucket the type strings into a few human-readable categories so the filter
-// dropdown is short. Keys map to a label + a predicate over the type string.
-const CATEGORY_RULES: Array<{ key: string; label: string; match: (t: string) => boolean }> = [
-  { key: 'leave',    label: 'Leave',           match: t => t.startsWith('leave_') },
-  { key: 'wfh',      label: 'WFH',             match: t => t.startsWith('wfh_') },
-  { key: 'hours',    label: 'Project Hours',   match: t => t.startsWith('hours_') },
-  { key: 'invoice',  label: 'Invoices',        match: t => t.startsWith('invoice_') },
-  { key: 'expense',  label: 'Expense Claims',  match: t => t.startsWith('expense_') },
-  { key: 'upsell',   label: 'Incentives',      match: t => t.startsWith('upsell_') },
-  { key: 'repair',   label: 'IT Repairs',      match: t => t.startsWith('repair_') },
-  { key: 'review',   label: 'Performance',     match: t => t.startsWith('review_') || t.startsWith('appraisal_') || t === 'self_assessment_updated' },
-  { key: 'discipline', label: 'Warnings & PIP', match: t => t === 'warning_issued' || t === 'pip_assigned' },
+// Top-level bucket: is this notification about the person's work / tasks /
+// projects, or about HR-side lifecycle (leave, attendance, appraisals,
+// hiring, expenses, etc.)? Everything not explicitly work-related falls
+// into HR — new types default to HR, which is the safer place to surface
+// them (people read HR more often than tasks).
+function isTaskLike(t: string): boolean {
+  return (
+    t.startsWith('task_') ||
+    t.startsWith('hours_') ||
+    t.startsWith('allocation_') ||
+    t.startsWith('invoice_') ||
+    t === 'announcement_comment'
+  );
+}
+
+// Within a bucket, offer a per-type category chip filter so the user can
+// zoom in ("show me only leave" or "show me only mentions"). Keys map
+// to a label + a predicate + which bucket they belong to.
+const CATEGORY_RULES: Array<{ key: string; label: string; bucket: 'tasks' | 'hr'; match: (t: string) => boolean }> = [
+  // Task bucket
+  { key: 'task',       label: 'Tasks',           bucket: 'tasks', match: t => t.startsWith('task_') },
+  { key: 'hours',      label: 'Project Hours',   bucket: 'tasks', match: t => t.startsWith('hours_') },
+  { key: 'allocation', label: 'Allocation',      bucket: 'tasks', match: t => t.startsWith('allocation_') },
+  { key: 'invoice',    label: 'Invoices',        bucket: 'tasks', match: t => t.startsWith('invoice_') },
+  // HR bucket
+  { key: 'leave',      label: 'Leave',           bucket: 'hr',    match: t => t.startsWith('leave_') },
+  { key: 'wfh',        label: 'WFH',             bucket: 'hr',    match: t => t.startsWith('wfh_') },
+  { key: 'attendance', label: 'Attendance',      bucket: 'hr',    match: t => t.startsWith('attendance_') },
+  { key: 'expense',    label: 'Expenses',        bucket: 'hr',    match: t => t.startsWith('expense_') },
+  { key: 'upsell',     label: 'Incentives',      bucket: 'hr',    match: t => t.startsWith('upsell_') },
+  { key: 'repair',     label: 'IT Repairs',      bucket: 'hr',    match: t => t.startsWith('repair_') },
+  { key: 'review',     label: 'Performance',     bucket: 'hr',    match: t => t.startsWith('review_') || t.startsWith('appraisal_') || t === 'self_assessment_updated' },
+  { key: 'pulse',      label: 'Pulse',           bucket: 'hr',    match: t => t.startsWith('pulse_') },
+  { key: 'discipline', label: 'Warnings & PIP',  bucket: 'hr',    match: t => t === 'warning_issued' || t === 'pip_assigned' },
+  { key: 'hiring',     label: 'Hiring',          bucket: 'hr',    match: t => t.startsWith('candidate_') || t === 'interview_scheduled' || t === 'interview_feedback_submitted' || t === 'offer_released' },
+  { key: 'feature',    label: 'Features',        bucket: 'hr',    match: t => t.startsWith('feature_') },
 ];
 
 export default function Notifications() {
@@ -56,6 +80,9 @@ export default function Notifications() {
   const [actionOnly, setActionOnly] = useState(false);
   const [search, setSearch] = useState('');
   const [selected, setSelected] = useState<Set<number>>(new Set());
+  // Top-level split. Defaults to "all" so an existing session's URL still
+  // shows everything; user picks Tasks / HR to zoom in.
+  const [bucket, setBucket] = useState<'all' | 'tasks' | 'hr'>('all');
 
   const load = () => {
     if (!user?.id) return;
@@ -67,19 +94,37 @@ export default function Notifications() {
   };
   useEffect(load, [user?.id]);
 
+  // Items that survive only the top-level bucket filter — used both for
+  // per-bucket counts and as the input to the finer-grained filters below.
+  const bucketItems = useMemo(() => (
+    bucket === 'all' ? items
+      : bucket === 'tasks' ? items.filter(n => isTaskLike(n.type))
+      : items.filter(n => !isTaskLike(n.type))
+  ), [items, bucket]);
+
   const counts = useMemo(() => ({
-    all: items.length,
-    unread: items.filter(n => !n.is_read).length,
-    read: items.filter(n => n.is_read).length,
-    // Action-required + unread — headline number the toggle promises to
-    // surface, so admin sees the real work backlog at a glance.
-    actionUnread: items.filter(n => !n.is_read && isActionRequired(n.type)).length,
-  }), [items]);
+    // Bucket-scoped: drives the read/unread pill labels + header.
+    all: bucketItems.length,
+    unread: bucketItems.filter(n => !n.is_read).length,
+    read: bucketItems.filter(n => n.is_read).length,
+    actionUnread: bucketItems.filter(n => !n.is_read && isActionRequired(n.type)).length,
+    // Global tallies for the top-level tab pills.
+    totalAll: items.length,
+    totalTasks: items.filter(n => isTaskLike(n.type)).length,
+    totalHr: items.filter(n => !isTaskLike(n.type)).length,
+    unreadAll: items.filter(n => !n.is_read).length,
+    unreadTasks: items.filter(n => !n.is_read && isTaskLike(n.type)).length,
+    unreadHr: items.filter(n => !n.is_read && !isTaskLike(n.type)).length,
+  }), [items, bucketItems]);
+
+  // Reset the category chip when switching buckets — a "leave" chip has no
+  // meaning under the Tasks bucket and vice versa.
+  useEffect(() => { setCategoryFilter(''); }, [bucket]);
 
   const filtered = useMemo(() => {
     const term = search.trim().toLowerCase();
     const cat = CATEGORY_RULES.find(c => c.key === categoryFilter);
-    return items.filter(n => {
+    return bucketItems.filter(n => {
       if (readFilter === 'unread' && n.is_read) return false;
       if (readFilter === 'read' && !n.is_read) return false;
       if (cat && !cat.match(n.type)) return false;
@@ -91,7 +136,12 @@ export default function Notifications() {
         n.type.toLowerCase().includes(term)
       );
     });
-  }, [items, readFilter, categoryFilter, actionOnly, search]);
+  }, [bucketItems, readFilter, categoryFilter, actionOnly, search]);
+
+  // The chip filters visible under this bucket. All-bucket sees everything.
+  const visibleCategoryRules = useMemo(() => (
+    bucket === 'all' ? CATEGORY_RULES : CATEGORY_RULES.filter(c => c.bucket === bucket)
+  ), [bucket]);
 
   const allSelected = filtered.length > 0 && filtered.every(n => selected.has(n.id));
   const toggleAll = () => {
@@ -176,6 +226,31 @@ export default function Notifications() {
 
       {err && <div className="rounded-xl-2 border border-danger/30 bg-danger-container/40 p-3 text-sm text-danger">{err}</div>}
 
+      {/* Bucket tabs — top-level split between task-related and HR-related. */}
+      <div className="flex items-center gap-1 border-b border-outline">
+        {([
+          { key: 'all',   label: 'All',            unread: counts.unreadAll,   total: counts.totalAll },
+          { key: 'tasks', label: 'Task-related',   unread: counts.unreadTasks, total: counts.totalTasks },
+          { key: 'hr',    label: 'HR-related',     unread: counts.unreadHr,    total: counts.totalHr },
+        ] as const).map(t => {
+          const active = bucket === t.key;
+          return (
+            <button key={t.key} onClick={() => setBucket(t.key)}
+              className={`px-4 py-2.5 -mb-px border-b-2 text-sm font-semibold transition-colors ${
+                active ? 'border-accent text-accent' : 'border-transparent text-on-surface-muted hover:text-on-surface'
+              }`}>
+              {t.label}
+              {t.unread > 0 && (
+                <span className={`ml-2 num-mono text-[10px] px-1.5 py-0.5 rounded-full ${active ? 'bg-accent text-on-accent' : 'bg-warning/15 text-warning'}`}>
+                  {t.unread}
+                </span>
+              )}
+              <span className="ml-1.5 text-[10px] text-on-surface-subtle num-mono">{t.total}</span>
+            </button>
+          );
+        })}
+      </div>
+
       {/* Toolbar */}
       <div className="flex flex-wrap items-center gap-3">
         <div className="inline-flex items-center gap-1 bg-surface-2 border border-outline rounded-lg p-0.5">
@@ -203,15 +278,6 @@ export default function Notifications() {
             <span className="num-mono text-[10px] px-1.5 py-0.5 rounded-full bg-warning text-white">{counts.actionUnread}</span>
           )}
         </button>
-        <div className="relative">
-          <Filter size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-on-surface-subtle" />
-          <select value={categoryFilter} onChange={e => setCategoryFilter(e.target.value)}
-            className="appearance-none pl-9 pr-9 py-2 text-sm bg-surface border border-outline rounded-lg text-on-surface focus:outline-none focus:ring-2 focus:ring-accent/30">
-            <option value="">All categories</option>
-            {CATEGORY_RULES.map(c => <option key={c.key} value={c.key}>{c.label}</option>)}
-          </select>
-          <ChevronDown size={14} className="absolute right-3 top-1/2 -translate-y-1/2 text-on-surface-subtle pointer-events-none" />
-        </div>
         <div className="relative flex-1 min-w-48">
           <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-on-surface-subtle" />
           <input value={search} onChange={e => setSearch(e.target.value)}
@@ -220,6 +286,32 @@ export default function Notifications() {
         </div>
       </div>
 
+      {/* Category chips — scoped to the current bucket so admin/HR can drill
+          straight into a specific noise class without spelunking a dropdown. */}
+      {visibleCategoryRules.length > 0 && (
+        <div className="flex flex-wrap items-center gap-1.5">
+          <Filter size={12} className="text-on-surface-subtle mr-1" />
+          <button onClick={() => setCategoryFilter('')}
+            className={`px-2.5 py-1 rounded-full text-[11px] font-semibold border transition-colors ${
+              categoryFilter === '' ? 'bg-accent text-on-accent border-accent' : 'bg-surface border-outline text-on-surface-muted hover:text-on-surface'
+            }`}>
+            All
+          </button>
+          {visibleCategoryRules.map(c => {
+            const n = items.filter(it => c.match(it.type)).length;
+            if (!n) return null;
+            const active = categoryFilter === c.key;
+            return (
+              <button key={c.key} onClick={() => setCategoryFilter(c.key === categoryFilter ? '' : c.key)}
+                className={`px-2.5 py-1 rounded-full text-[11px] font-semibold border transition-colors ${
+                  active ? 'bg-accent text-on-accent border-accent' : 'bg-surface border-outline text-on-surface-muted hover:text-on-surface'
+                }`}>
+                {c.label} <span className="num-mono opacity-70 ml-0.5">{n}</span>
+              </button>
+            );
+          })}
+        </div>
+      )}
       {/* Bulk action bar */}
       {selected.size > 0 && (
         <div className="flex items-center justify-between gap-3 rounded-xl-2 bg-accent-container/40 border border-accent/30 px-4 py-2">

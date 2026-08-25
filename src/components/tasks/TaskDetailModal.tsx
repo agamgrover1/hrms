@@ -93,6 +93,12 @@ export default function TaskDetailModal({ taskId, employees, onClose, onChanged 
   const [mentionAnchor, setMentionAnchor] = useState<number | null>(null);
   const [mentionQuery, setMentionQuery] = useState('');
   const [mentionCursor, setMentionCursor] = useState(0);
+  // Every mention the user has picked in this compose session. On send
+  // we walk the composer text and re-wrap `@Name` occurrences back into
+  // the storage form `@[Name](id)` before hitting the API. Keeping the
+  // display clean (`@Name`) while preserving the id-carrying storage
+  // form is why we track them here instead of just parsing the text.
+  const [pickedMentions, setPickedMentions] = useState<Array<{ name: string; id: string }>>([]);
 
   const mentionMatches = useMemo(() => {
     if (mentionAnchor == null) return [];
@@ -275,12 +281,14 @@ export default function TaskDetailModal({ taskId, employees, onClose, onChanged 
     const caret = composerRef.current.selectionStart ?? comment.length;
     const before = comment.slice(0, mentionAnchor);
     const after = comment.slice(caret);
-    const insert = `@[${emp.name}](${emp.id}) `;
+    // Insert the clean "@Name " form the user actually wants to see.
+    // The id-carrying storage form is stitched back in during addComment.
+    const insert = `@${emp.name} `;
     const next = before + insert + after;
     setComment(next);
+    setPickedMentions(prev => prev.some(p => p.id === emp.id) ? prev : [...prev, { name: emp.name, id: emp.id }]);
     setMentionAnchor(null);
     setMentionQuery('');
-    // Restore caret just after the inserted mention.
     requestAnimationFrame(() => {
       const pos = (before + insert).length;
       composerRef.current?.setSelectionRange(pos, pos);
@@ -325,9 +333,40 @@ export default function TaskDetailModal({ taskId, employees, onClose, onChanged 
   const addComment = async () => {
     const body = comment.trim();
     if (!body || !task) return;
+    // Re-wrap picked mentions from the clean display form (`@Name`)
+    // into the id-carrying storage form (`@[Name](id)`) so the backend
+    // mention-fanout + the render pass on other clients still resolve.
+    // Longest names first so "@Anshum Sharma" doesn't get partially
+    // matched by a shorter "@Anshum" mention.
+    const wrapped = pickedMentions
+      .slice()
+      .sort((a, b) => b.name.length - a.name.length)
+      .reduce((acc, m) => {
+        const needle = `@${m.name}`;
+        // Only wrap occurrences that AREN'T already wrapped (idempotent
+        // if the user pastes a pre-formatted mention back in).
+        const parts: string[] = [];
+        let i = 0;
+        while (i < acc.length) {
+          const hit = acc.indexOf(needle, i);
+          if (hit < 0) { parts.push(acc.slice(i)); break; }
+          parts.push(acc.slice(i, hit));
+          const nextChar = acc[hit + needle.length] ?? '';
+          const alreadyWrapped = acc.slice(0, hit).endsWith('[') || acc.startsWith(`@[${m.name}]`, hit);
+          const followedByWordChar = /[A-Za-z0-9_]/.test(nextChar);
+          if (alreadyWrapped || followedByWordChar) {
+            parts.push(needle);
+          } else {
+            parts.push(`@[${m.name}](${m.id})`);
+          }
+          i = hit + needle.length;
+        }
+        return parts.join('');
+      }, body);
     setComment('');
+    setPickedMentions([]);
     try {
-      await api.addTaskComment(task.id, body);
+      await api.addTaskComment(task.id, wrapped);
       load();
     } catch (e: any) {
       setComment(body);
