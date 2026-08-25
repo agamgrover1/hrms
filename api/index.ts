@@ -22231,6 +22231,36 @@ app.get('/api/me/mail-token', async (req, res) => {
   } catch (err: any) { res.status(500).json({ error: err.message ?? 'Server error' }); }
 });
 
+// Task-scoped file token. Mints a JWT carrying `scope: 'tasks:<taskId>'`
+// so the VPS files module can accept upload / list / download / delete
+// on that single task and no other. Ownership check runs HERE — the
+// VPS only verifies the token + scope match, never re-checks Neon.
+app.post('/api/tasks/:taskId/file-token', async (req, res) => {
+  try {
+    const uid = req.header('x-user-id');
+    if (!uid) return res.status(401).json({ error: 'Not authenticated' });
+    const u = (await sql`SELECT id, email, role, active FROM app_users WHERE id=${uid} LIMIT 1` as any[])[0];
+    if (!u || u.active !== true) return res.status(403).json({ error: 'Not permitted' });
+    // Task must exist — matches how the rest of the task API works (any
+    // authenticated staff member can see/comment on any task).
+    const t = (await sql`SELECT id FROM tasks WHERE id=${req.params.taskId} LIMIT 1` as any[])[0];
+    if (!t) return res.status(404).json({ error: 'Task not found' });
+    const secret = process.env.MAIL_JWT_SECRET;
+    if (!secret) return res.status(503).json({ error: 'Mail service not configured (MAIL_JWT_SECRET missing on server).' });
+    const { SignJWT } = await import('jose');
+    const key = new TextEncoder().encode(secret);
+    const token = await new SignJWT({ email: u.email, role: u.role, scope: `tasks:${req.params.taskId}` })
+      .setProtectedHeader({ alg: 'HS256' })
+      .setSubject(u.id)
+      .setIssuer('hrms')
+      .setAudience('hrms-mail-service')
+      .setIssuedAt()
+      .setExpirationTime('15m')
+      .sign(key);
+    res.json({ token, expires_in: 900, api_base: process.env.MAIL_API_BASE ?? 'https://mail-api.srv1802162.hstgr.cloud' });
+  } catch (err: any) { res.status(500).json({ error: err.message ?? 'Server error' }); }
+});
+
 // PUT body: { types: string[] }  → replaces the full set for this user.
 // Empty array clears every mute.
 app.put('/api/me/notification-mutes', async (req, res) => {

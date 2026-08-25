@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   X, Loader2, Trash2, Send, Plus, MessageSquare, History, GitBranch, Check, Eye, EyeOff,
-  Link2, Flag, Diamond, Play, Square, Clock, Repeat,
+  Link2, Flag, Diamond, Play, Square, Clock, Repeat, Paperclip, Download, Upload,
 } from 'lucide-react';
+import { taskFilesApi, type TaskAttachment } from '../../services/taskFilesApi';
 import { api } from '../../services/api';
 import type { Task, TaskActivity, TaskComment, TaskPriority, TaskStatus, TaskCustomField } from '../../services/api';
 import { useAuth } from '../../context/AuthContext';
@@ -99,6 +100,65 @@ export default function TaskDetailModal({ taskId, employees, onClose, onChanged 
   // display clean (`@Name`) while preserving the id-carrying storage
   // form is why we track them here instead of just parsing the text.
   const [pickedMentions, setPickedMentions] = useState<Array<{ name: string; id: string }>>([]);
+
+  // Attachments (stored on the VPS files module, per-task scope).
+  const [attachments, setAttachments] = useState<TaskAttachment[]>([]);
+  const [attachmentsLoading, setAttachmentsLoading] = useState(false);
+  const [uploading, setUploading] = useState(false);
+  const [dragOver, setDragOver] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
+
+  const loadAttachments = useCallback(() => {
+    if (!taskId) return;
+    setAttachmentsLoading(true);
+    taskFilesApi.list(taskId)
+      .then(setAttachments)
+      .catch(() => { /* attachments are non-critical — swallow so the rest of the modal still renders */ })
+      .finally(() => setAttachmentsLoading(false));
+  }, [taskId]);
+  useEffect(() => { loadAttachments(); }, [loadAttachments]);
+
+  const handleFileUpload = async (files: FileList | File[]) => {
+    const arr = Array.from(files);
+    if (!arr.length || !task) return;
+    // Client-side cap that mirrors the VPS cap so the user hears about
+    // an oversize file before the round-trip.
+    const OVERSIZE = arr.find(f => f.size > 25 * 1024 * 1024);
+    if (OVERSIZE) {
+      toast.error('File too large', `${OVERSIZE.name} exceeds the 25 MB per-file limit.`);
+      return;
+    }
+    setUploading(true);
+    try {
+      const saved = await taskFilesApi.upload(task.id, arr);
+      setAttachments(prev => [...saved, ...prev]);
+    } catch (e: any) {
+      toast.error('Upload failed', e?.body?.error ?? e?.message ?? 'Please try again.');
+    } finally { setUploading(false); }
+  };
+  const deleteAttachment = async (att: TaskAttachment) => {
+    if (!task) return;
+    if (!window.confirm(`Delete "${att.filename}"?`)) return;
+    setAttachments(prev => prev.filter(a => a.id !== att.id));
+    try { await taskFilesApi.del(task.id, att.id); }
+    catch (e: any) {
+      // Roll back on failure so the UI stays truthful.
+      loadAttachments();
+      toast.error('Delete failed', e?.body?.error ?? e?.message ?? 'Please try again.');
+    }
+  };
+  const downloadAttachment = async (att: TaskAttachment) => {
+    if (!task) return;
+    try {
+      const url = await taskFilesApi.downloadUrl(task.id, att.id);
+      // Open in a new tab — the Content-Disposition header on the response
+      // will trigger the browser's Save dialog. Same tab would navigate
+      // the whole SPA away from the modal, which is worse UX.
+      window.open(url, '_blank', 'noopener,noreferrer');
+    } catch (e: any) {
+      toast.error('Download failed', e?.message ?? 'Please try again.');
+    }
+  };
 
   const mentionMatches = useMemo(() => {
     if (mentionAnchor == null) return [];
@@ -574,6 +634,74 @@ export default function TaskDetailModal({ taskId, employees, onClose, onChanged 
                     </button>
                   ))}
                 </div>
+              </div>
+
+              {/* Attachments — stored on the VPS files module. Drag files
+                  onto the drop zone or click Upload. Downloads open in a
+                  new tab via a signed short-lived URL. */}
+              <div
+                onDragOver={e => { e.preventDefault(); if (!dragOver) setDragOver(true); }}
+                onDragLeave={() => setDragOver(false)}
+                onDrop={e => {
+                  e.preventDefault(); setDragOver(false);
+                  if (e.dataTransfer.files?.length) handleFileUpload(e.dataTransfer.files);
+                }}>
+                <div className="flex items-center gap-1.5 mb-2">
+                  <Paperclip size={13} className="text-on-surface-muted" />
+                  <span className="text-xs font-semibold text-on-surface-muted">
+                    Attachments {attachments.length > 0 && `· ${attachments.length}`}
+                  </span>
+                  <button
+                    onClick={() => fileInputRef.current?.click()}
+                    disabled={uploading}
+                    className="ml-auto inline-flex items-center gap-1 px-2 py-0.5 rounded text-[11px] font-semibold text-accent hover:bg-accent/10 disabled:opacity-50">
+                    {uploading ? <Loader2 size={11} className="animate-spin" /> : <Upload size={11} />}
+                    {uploading ? 'Uploading…' : 'Upload'}
+                  </button>
+                  <input ref={fileInputRef} type="file" multiple className="hidden"
+                    onChange={e => { if (e.target.files?.length) { handleFileUpload(e.target.files); e.target.value = ''; } }} />
+                </div>
+
+                {dragOver && (
+                  <div className="mb-2 px-3 py-4 rounded-lg border-2 border-dashed border-accent bg-accent/5 text-center text-xs font-semibold text-accent">
+                    Drop files to upload
+                  </div>
+                )}
+
+                {attachmentsLoading && attachments.length === 0 ? (
+                  <p className="text-[11px] text-on-surface-subtle italic">Loading…</p>
+                ) : attachments.length === 0 && !dragOver ? (
+                  <p className="text-[11px] text-on-surface-subtle italic">
+                    No files yet. Drag files here or click Upload. Max 25 MB per file, 10 files at a time.
+                  </p>
+                ) : (
+                  <div className="space-y-1">
+                    {attachments.map(att => (
+                      <div key={att.id} className="flex items-center gap-2 px-2 py-1.5 rounded-md border border-outline bg-surface hover:bg-surface-2 group">
+                        <Paperclip size={12} className="text-on-surface-muted shrink-0" />
+                        <button onClick={() => downloadAttachment(att)}
+                          className="flex-1 text-left text-xs font-medium text-on-surface hover:text-accent truncate">
+                          {att.filename}
+                        </button>
+                        <span className="text-[10px] font-mono text-on-surface-subtle shrink-0">
+                          {att.size < 1024 ? `${att.size} B`
+                            : att.size < 1024 * 1024 ? `${(att.size / 1024).toFixed(1)} KB`
+                            : `${(att.size / (1024 * 1024)).toFixed(1)} MB`}
+                        </span>
+                        <button onClick={() => downloadAttachment(att)}
+                          title="Download"
+                          className="p-1 rounded hover:bg-surface-3 text-on-surface-muted hover:text-accent opacity-0 group-hover:opacity-100 transition-opacity">
+                          <Download size={12} />
+                        </button>
+                        <button onClick={() => deleteAttachment(att)}
+                          title="Delete"
+                          className="p-1 rounded hover:bg-surface-3 text-on-surface-muted hover:text-danger opacity-0 group-hover:opacity-100 transition-opacity">
+                          <Trash2 size={12} />
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                )}
               </div>
 
               {/* Time tracking */}

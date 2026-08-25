@@ -766,6 +766,9 @@ export const api = {
   // Short-lived JWT for the VPS mail service. Used by mailApi.ts.
   getMailToken: () =>
     request<{ token: string; expires_in: number; api_base: string }>(`/me/mail-token`),
+  // Task-scoped file token for the VPS files module (task attachments).
+  getTaskFileToken: (taskId: string) =>
+    request<{ token: string; expires_in: number; api_base: string }>(`/tasks/${taskId}/file-token`, { method: 'POST' }),
 
   // Users
   getUsers: () => request<any[]>('/users'),
