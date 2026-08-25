@@ -6,7 +6,7 @@ import {
   ChevronLeft, ChevronRight, Diamond, Repeat, GanttChartSquare, MoreVertical, Trash2, Lock, Globe, Users2, Settings, BarChart3,
 } from 'lucide-react';
 import { api } from '../services/api';
-import type { Task, TaskBoard, TaskFilters, TaskSavedView } from '../services/api';
+import type { Task, TaskBoard, TaskFilters, TaskSavedView, BoardPermission, BoardPermissionLevel } from '../services/api';
 import { useAuth } from '../context/AuthContext';
 import { toast } from '../components/Toaster';
 import TaskDetailModal from '../components/tasks/TaskDetailModal';
@@ -406,12 +406,28 @@ function BoardSettingsModal({ board, employees, isAdmin, onClose, onSaved, onDel
   const [name, setName] = useState(board.name);
   const [description, setDescription] = useState(board.description ?? '');
   const [color, setColor] = useState(board.color ?? '#94a3b8');
-  const [visibility, setVisibility] = useState<'public' | 'restricted'>(board.visibility ?? 'public');
-  const [members, setMembers] = useState<Set<string>>(new Set(board.member_employee_ids ?? []));
-  const [departments, setDepartments] = useState<Set<string>>(new Set(board.member_departments ?? []));
-  const [empSearch, setEmpSearch] = useState('');
   const [saving, setSaving] = useState(false);
   const [busy, setBusy] = useState(false);
+
+  // Permissions state. Seed from board.permissions if set, otherwise
+  // synthesise from the legacy visibility/member fields to match what
+  // the server does — so the modal always shows a truthful starting point.
+  const initialPermissions = useMemo<BoardPermission[]>(() => {
+    if (Array.isArray(board.permissions) && board.permissions.length) return board.permissions;
+    const out: BoardPermission[] = [];
+    if ((board.visibility ?? 'public') === 'public') {
+      out.push({ kind: 'everyone', ref: null, level: 'edit' });
+    }
+    for (const id of board.member_employee_ids ?? []) out.push({ kind: 'employee', ref: id, level: 'edit' });
+    for (const d  of board.member_departments  ?? []) out.push({ kind: 'department', ref: d,  level: 'edit' });
+    return out;
+  }, [board.permissions, board.visibility, board.member_employee_ids, board.member_departments]);
+  const [perms, setPerms] = useState<BoardPermission[]>(initialPermissions);
+  const [empSearch, setEmpSearch] = useState('');
+
+  const everyone = perms.find(p => p.kind === 'everyone');
+  const defaultLevel: BoardPermissionLevel | 'none' = everyone?.level ?? 'none';
+  const memberPerms = perms.filter(p => p.kind !== 'everyone');
 
   const allDepartments = useMemo(() => (
     Array.from(new Set((employees ?? []).map((e: any) => e.department).filter(Boolean))).sort()
@@ -420,25 +436,47 @@ function BoardSettingsModal({ board, employees, isAdmin, onClose, onSaved, onDel
     const q = empSearch.trim().toLowerCase();
     return (employees ?? [])
       .filter((e: any) => !q || e.name?.toLowerCase().includes(q) || e.email?.toLowerCase().includes(q))
-      .slice(0, 200);
-  }, [employees, empSearch]);
-  const toggle = (set: Set<string>, key: string, setter: (s: Set<string>) => void) => {
-    const next = new Set(set);
-    if (next.has(key)) next.delete(key); else next.add(key);
-    setter(next);
+      .filter((e: any) => !perms.some(p => p.kind === 'employee' && p.ref === e.id))
+      .slice(0, 100);
+  }, [employees, empSearch, perms]);
+  const remainingDepts = useMemo(() => (
+    allDepartments.filter(d => !perms.some(p => p.kind === 'department' && p.ref === d))
+  ), [allDepartments, perms]);
+
+  const setDefaultLevel = (level: BoardPermissionLevel | 'none') => {
+    setPerms(prev => {
+      const without = prev.filter(p => p.kind !== 'everyone');
+      return level === 'none' ? without : [{ kind: 'everyone', ref: null, level }, ...without];
+    });
+  };
+  const addMember = (kind: 'employee' | 'department', ref: string) => {
+    setPerms(prev => [...prev, { kind, ref, level: 'edit' }]);
+    if (kind === 'employee') setEmpSearch('');
+  };
+  const removeMember = (kind: 'employee' | 'department', ref: string | null) => {
+    setPerms(prev => prev.filter(p => !(p.kind === kind && p.ref === ref)));
+  };
+  const changeMemberLevel = (kind: 'employee' | 'department', ref: string | null, level: BoardPermissionLevel) => {
+    setPerms(prev => prev.map(p => (p.kind === kind && p.ref === ref) ? { ...p, level } : p));
   };
 
   const save = async () => {
     if (!name.trim()) { toast.error('Board needs a name'); return; }
     setSaving(true);
     try {
+      // Derive visibility from the presence of an 'everyone' entry so
+      // legacy consumers of the visibility column still work.
+      const derivedVisibility: 'public' | 'restricted' = everyone ? 'public' : 'restricted';
       const patch = {
         name: name.trim(),
         description: description.trim() || null,
         color,
-        visibility,
-        member_employee_ids: Array.from(members),
-        member_departments: Array.from(departments),
+        visibility: derivedVisibility,
+        // Keep the legacy arrays in sync too so any pre-permissions
+        // reader (e.g. an older tab still open) sees consistent data.
+        member_employee_ids: memberPerms.filter(p => p.kind === 'employee').map(p => p.ref!).filter(Boolean),
+        member_departments:  memberPerms.filter(p => p.kind === 'department').map(p => p.ref!).filter(Boolean),
+        permissions: perms,
       };
       const updated = await api.patchTaskBoard(board.id, patch);
       onSaved(updated);
@@ -506,72 +544,104 @@ function BoardSettingsModal({ board, employees, isAdmin, onClose, onSaved, onDel
             </div>
           </div>
 
-          {/* Visibility */}
+          {/* Default access — the level granted to anyone not in the
+              members list below. 'None' hides the board from everyone
+              except admins, the creator, and explicit members. */}
           <div>
-            <label className="text-[11px] font-bold uppercase tracking-wider text-on-surface-muted">Who can see this board</label>
-            <div className="mt-1 grid grid-cols-2 gap-2">
-              <button onClick={() => setVisibility('public')}
-                className={`px-3 py-2 rounded-lg border text-left ${visibility === 'public' ? 'border-accent bg-accent/10' : 'border-outline hover:bg-surface-2'}`}>
-                <div className="flex items-center gap-1.5 text-sm font-semibold text-on-surface"><Globe size={12} /> Everyone</div>
-                <p className="text-[11px] text-on-surface-muted mt-0.5">Any signed-in staff member.</p>
-              </button>
-              <button onClick={() => setVisibility('restricted')}
-                className={`px-3 py-2 rounded-lg border text-left ${visibility === 'restricted' ? 'border-accent bg-accent/10' : 'border-outline hover:bg-surface-2'}`}>
-                <div className="flex items-center gap-1.5 text-sm font-semibold text-on-surface"><Lock size={12} /> Restricted</div>
-                <p className="text-[11px] text-on-surface-muted mt-0.5">Only picked members + departments. Admin + creator always see it.</p>
-              </button>
+            <label className="text-[11px] font-bold uppercase tracking-wider text-on-surface-muted">Default access (everyone else)</label>
+            <div className="mt-1 grid grid-cols-4 gap-1">
+              {([
+                { key: 'none',    label: 'None',    icon: Lock,  hint: 'Only members' },
+                { key: 'view',    label: 'View',    icon: Globe, hint: 'Read-only' },
+                { key: 'comment', label: 'Comment', icon: Globe, hint: 'View + comment' },
+                { key: 'edit',    label: 'Edit',    icon: Globe, hint: 'Full edit' },
+              ] as const).map(opt => {
+                const active = defaultLevel === opt.key;
+                return (
+                  <button key={opt.key} onClick={() => setDefaultLevel(opt.key)}
+                    title={opt.hint}
+                    className={`px-2 py-2 rounded-lg border text-center ${active ? 'border-accent bg-accent/10 text-accent' : 'border-outline hover:bg-surface-2 text-on-surface-muted'}`}>
+                    <div className="text-xs font-semibold">{opt.label}</div>
+                    <div className="text-[10px] text-on-surface-subtle mt-0.5">{opt.hint}</div>
+                  </button>
+                );
+              })}
             </div>
+            <p className="mt-1.5 text-[10px] text-on-surface-subtle">Admins and the board's creator always have full access regardless of this setting.</p>
           </div>
 
-          {visibility === 'restricted' && (
-            <>
-              <div>
-                <label className="text-[11px] font-bold uppercase tracking-wider text-on-surface-muted flex items-center gap-1"><Users2 size={11} /> Departments allowed</label>
-                {allDepartments.length === 0 ? (
-                  <p className="mt-1 text-[11px] text-on-surface-subtle italic">No departments configured.</p>
-                ) : (
-                  <div className="mt-1 flex flex-wrap gap-1.5">
-                    {allDepartments.map(d => {
-                      const active = departments.has(d);
-                      return (
-                        <button key={d} onClick={() => toggle(departments, d, setDepartments)}
-                          className={`px-2.5 py-1 rounded-full text-[11px] font-semibold border transition-colors ${
-                            active ? 'bg-accent text-on-accent border-accent' : 'bg-surface border-outline text-on-surface-muted hover:text-on-surface'
-                          }`}>
-                          {d}
-                        </button>
-                      );
-                    })}
-                  </div>
-                )}
+          {/* Explicit members — each entry has a role dropdown. */}
+          <div>
+            <label className="text-[11px] font-bold uppercase tracking-wider text-on-surface-muted flex items-center gap-1">
+              <Users2 size={11} /> Members <span className="normal-case font-normal text-on-surface-subtle">({memberPerms.length})</span>
+            </label>
+
+            {memberPerms.length > 0 && (
+              <div className="mt-1 divide-y divide-outline rounded-lg border border-outline">
+                {memberPerms.map(p => {
+                  const label = p.kind === 'employee'
+                    ? (employees.find((e: any) => e.id === p.ref)?.name ?? p.ref ?? 'Unknown employee')
+                    : `Department: ${p.ref}`;
+                  const badge = p.kind === 'department' ? 'DEPT' : 'USER';
+                  return (
+                    <div key={`${p.kind}-${p.ref}`} className="flex items-center gap-2 px-3 py-2">
+                      <span className={`text-[9px] font-bold px-1.5 py-0.5 rounded ${p.kind === 'department' ? 'bg-info/10 text-info' : 'bg-surface-2 text-on-surface-muted'}`}>{badge}</span>
+                      <span className="flex-1 text-sm text-on-surface truncate">{label}</span>
+                      <select value={p.level} onChange={e => changeMemberLevel(p.kind as 'employee' | 'department', p.ref, e.target.value as BoardPermissionLevel)}
+                        className="text-xs px-2 py-1 rounded border border-outline bg-surface-2 text-on-surface">
+                        <option value="view">Viewer</option>
+                        <option value="comment">Commenter</option>
+                        <option value="edit">Editor</option>
+                        <option value="admin">Admin</option>
+                      </select>
+                      <button onClick={() => removeMember(p.kind as 'employee' | 'department', p.ref)}
+                        title="Remove"
+                        className="p-1 rounded hover:bg-danger/10 text-on-surface-muted hover:text-danger">
+                        <X size={12} />
+                      </button>
+                    </div>
+                  );
+                })}
               </div>
-              <div>
-                <label className="text-[11px] font-bold uppercase tracking-wider text-on-surface-muted flex items-center gap-1">
-                  <Users2 size={11} /> Members allowed <span className="normal-case font-normal text-on-surface-subtle">({members.size} picked)</span>
-                </label>
-                <input value={empSearch} onChange={e => setEmpSearch(e.target.value)}
-                  placeholder="Search employees…"
-                  className="mt-1 w-full px-3 py-2 rounded-lg border border-outline bg-surface-2 text-sm placeholder:text-on-surface-subtle focus:outline-none focus:ring-2 focus:ring-accent/30" />
-                <div className="mt-2 max-h-52 overflow-y-auto rounded-lg border border-outline divide-y divide-outline">
+            )}
+
+            {/* Department quick-add pills */}
+            {remainingDepts.length > 0 && (
+              <div className="mt-2">
+                <p className="text-[10px] uppercase tracking-wider text-on-surface-subtle mb-1">Add a department</p>
+                <div className="flex flex-wrap gap-1.5">
+                  {remainingDepts.map(d => (
+                    <button key={d} onClick={() => addMember('department', d)}
+                      className="px-2.5 py-1 rounded-full text-[11px] font-semibold border border-outline text-on-surface-muted hover:text-on-surface hover:bg-surface-2">
+                      + {d}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* Employee search + add */}
+            <div className="mt-2">
+              <p className="text-[10px] uppercase tracking-wider text-on-surface-subtle mb-1">Add a member</p>
+              <input value={empSearch} onChange={e => setEmpSearch(e.target.value)}
+                placeholder="Search employees…"
+                className="w-full px-3 py-2 rounded-lg border border-outline bg-surface-2 text-sm placeholder:text-on-surface-subtle focus:outline-none focus:ring-2 focus:ring-accent/30" />
+              {empSearch.trim() && (
+                <div className="mt-1 max-h-52 overflow-y-auto rounded-lg border border-outline divide-y divide-outline">
                   {filteredEmployees.length === 0 && (
                     <p className="p-3 text-xs text-on-surface-subtle italic">No matches.</p>
                   )}
-                  {filteredEmployees.map((emp: any) => {
-                    const active = members.has(emp.id);
-                    return (
-                      <label key={emp.id} className="flex items-center gap-2 px-3 py-2 hover:bg-surface-2 cursor-pointer">
-                        <input type="checkbox" checked={active}
-                          onChange={() => toggle(members, emp.id, setMembers)}
-                          className="rounded border-outline" />
-                        <span className="text-sm text-on-surface flex-1 truncate">{emp.name}</span>
-                        <span className="text-[10px] text-on-surface-subtle">{emp.department ?? '—'}</span>
-                      </label>
-                    );
-                  })}
+                  {filteredEmployees.map((emp: any) => (
+                    <button key={emp.id} onClick={() => addMember('employee', emp.id)}
+                      className="w-full flex items-center gap-2 px-3 py-2 hover:bg-surface-2 text-left">
+                      <span className="text-sm text-on-surface flex-1 truncate">{emp.name}</span>
+                      <span className="text-[10px] text-on-surface-subtle">{emp.department ?? '—'}</span>
+                    </button>
+                  ))}
                 </div>
-              </div>
-            </>
-          )}
+              )}
+            </div>
+          </div>
         </div>
         <div className="px-5 py-3 border-t border-outline flex items-center gap-2">
           <button onClick={archive} disabled={busy}

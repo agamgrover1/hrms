@@ -1491,7 +1491,7 @@ export const api = {
   },
   createTaskBoard: (data: { project_id?: string | null; name: string; description?: string; color?: string; statuses?: TaskStatus[] }) =>
     request<TaskBoard>('/task-lists', { method: 'POST', body: JSON.stringify(data) }),
-  patchTaskBoard: (id: string, patch: Partial<{ name: string; description: string | null; color: string; archived: boolean; sort_order: number; statuses: TaskStatus[]; visibility: 'public' | 'restricted'; member_employee_ids: string[]; member_departments: string[] }>) =>
+  patchTaskBoard: (id: string, patch: Partial<{ name: string; description: string | null; color: string; archived: boolean; sort_order: number; statuses: TaskStatus[]; visibility: 'public' | 'restricted'; member_employee_ids: string[]; member_departments: string[]; permissions: BoardPermission[] }>) =>
     request<TaskBoard>(`/task-lists/${id}`, { method: 'PATCH', body: JSON.stringify(patch) }),
   deleteTaskBoard: (id: string, force?: boolean) =>
     request<{ ok: true; deleted_tasks: number }>(`/task-lists/${id}${force ? '?force=1' : ''}`, { method: 'DELETE' }),
@@ -1858,6 +1858,13 @@ export interface TaskStatus {
 
 export type TaskPriority = 'urgent' | 'high' | 'normal' | 'low' | 'none';
 
+export type BoardPermissionLevel = 'view' | 'comment' | 'edit' | 'admin';
+export interface BoardPermission {
+  kind: 'everyone' | 'employee' | 'department';
+  ref: string | null;
+  level: BoardPermissionLevel;
+}
+
 export interface TaskBoard {
   id: string;
   project_id: string | null;
@@ -1875,6 +1882,10 @@ export interface TaskBoard {
   visibility: 'public' | 'restricted';
   member_employee_ids: string[];
   member_departments: string[];
+  // Per-member permission levels (Aug 2026). Nullable — a legacy
+  // board that only has the visibility/member fields serves as
+  // `[{everyone, edit}]` synthesised server-side.
+  permissions: BoardPermission[] | null;
   created_at: string;
   updated_at: string;
   created_by_id: string | null;

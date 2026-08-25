@@ -904,7 +904,7 @@ async function runStartupMigrations() {
     // For a *seed* (rows, not columns), we probe with EXISTS-style: an
     // empty result set means "still needs to run", so we don't set the
     // flag and fall through.
-    await sql`SELECT visibility FROM task_lists LIMIT 0`;
+    await sql`SELECT permissions FROM task_lists LIMIT 0`;
     _migrated = true;
     return;
   } catch {
@@ -3222,6 +3222,11 @@ async function runStartupMigrations() {
   await sql`ALTER TABLE task_lists ADD COLUMN IF NOT EXISTS visibility TEXT NOT NULL DEFAULT 'public'`.catch(()=>{});
   await sql`ALTER TABLE task_lists ADD COLUMN IF NOT EXISTS member_employee_ids TEXT[] NOT NULL DEFAULT '{}'::text[]`.catch(()=>{});
   await sql`ALTER TABLE task_lists ADD COLUMN IF NOT EXISTS member_departments  TEXT[] NOT NULL DEFAULT '{}'::text[]`.catch(()=>{});
+  // Per-member permission levels (Aug 2026). NULL is treated at read
+  // time as "synthesise from the legacy visibility/member fields" so
+  // existing boards keep working. Once a board is saved with the new
+  // UI, this array is authoritative.
+  await sql`ALTER TABLE task_lists ADD COLUMN IF NOT EXISTS permissions JSONB`.catch(()=>{});
 
   // One row per task AND per subtask — a subtask is just a task with
   // parent_id set. That keeps assignee / due date / comments working on
@@ -20546,21 +20551,68 @@ async function taskActor(req: any, res: any): Promise<{ ok: boolean; user?: any 
   return { ok: true, user: { id: u.id, name: u.name, role: u.role, employeeId, department } };
 }
 
-// Board visibility check — applied in JS after a permissive fetch,
-// used by GET /task-lists and by task queries. 'public' boards are
-// visible to all; a 'restricted' board is only visible if the caller
-// is admin OR the board's creator OR listed in member_employee_ids OR
-// their department is in member_departments.
+// Board permission levels — ranked so higher numbers include lower.
+// This lets every write endpoint gate with a single `>=` check.
+const BOARD_LEVELS = ['none', 'view', 'comment', 'edit', 'admin'] as const;
+type BoardLevel = typeof BOARD_LEVELS[number];
+const levelIndex = (l: BoardLevel): number => BOARD_LEVELS.indexOf(l);
+
+interface BoardPermEntry { kind: 'everyone' | 'employee' | 'department'; ref: string | null; level: BoardLevel }
+
+// If a board still has the old visibility/member columns and no
+// `permissions` array, synthesise the new shape so behaviour is
+// identical to what shipped in the prior commit. Once saved with
+// the new UI, `permissions` is authoritative.
+function normalisedPermissions(board: any): BoardPermEntry[] {
+  if (Array.isArray(board?.permissions)) return board.permissions as BoardPermEntry[];
+  const out: BoardPermEntry[] = [];
+  const vis = board?.visibility ?? 'public';
+  if (vis === 'public') {
+    out.push({ kind: 'everyone', ref: null, level: 'edit' });
+  }
+  for (const id of (board?.member_employee_ids ?? []) as string[]) {
+    if (id) out.push({ kind: 'employee', ref: id, level: 'edit' });
+  }
+  for (const d of (board?.member_departments ?? []) as string[]) {
+    if (d) out.push({ kind: 'department', ref: d, level: 'edit' });
+  }
+  return out;
+}
+
+// Compute the caller's effective level on this board. Admin (system
+// role) + the board creator ALWAYS get 'admin' — no way to lock
+// yourself out of a board you own.
+function boardPermissionOf(user: any, board: any): BoardLevel {
+  if (!board) return 'none';
+  if (user?.role === 'admin') return 'admin';
+  if (board.created_by_id && board.created_by_id === user?.id) return 'admin';
+  const perms = normalisedPermissions(board);
+  let best: BoardLevel = 'none';
+  const bump = (l: BoardLevel) => { if (levelIndex(l) > levelIndex(best)) best = l; };
+  for (const p of perms) {
+    if (p.kind === 'everyone') bump(p.level);
+    else if (p.kind === 'employee'   && user?.employeeId && p.ref === user.employeeId) bump(p.level);
+    else if (p.kind === 'department' && user?.department && p.ref === user.department)  bump(p.level);
+  }
+  return best;
+}
+
 function canUserSeeBoard(user: any, board: any): boolean {
-  if (!board) return false;
-  if ((board.visibility ?? 'public') === 'public') return true;
-  if (user?.role === 'admin') return true;
-  if (board.created_by_id && board.created_by_id === user?.id) return true;
-  const members: string[] = Array.isArray(board.member_employee_ids) ? board.member_employee_ids : [];
-  if (user?.employeeId && members.includes(user.employeeId)) return true;
-  const depts: string[] = Array.isArray(board.member_departments) ? board.member_departments : [];
-  if (user?.department && depts.includes(user.department)) return true;
-  return false;
+  return levelIndex(boardPermissionOf(user, board)) >= levelIndex('view');
+}
+
+// Fetch board + gate in one call. Returns { ok, board, level } on
+// success or writes a 403/404 and returns { ok:false }. `required`
+// is the minimum level (comment / edit / admin).
+async function requireBoardAccess(taskListId: string, user: any, required: BoardLevel, res: any): Promise<{ ok: true; board: any; level: BoardLevel } | { ok: false }> {
+  const board = (await sql`SELECT * FROM task_lists WHERE id=${taskListId} LIMIT 1` as any[])[0];
+  if (!board) { res.status(404).json({ error: 'Board not found' }); return { ok: false }; }
+  const level = boardPermissionOf(user, board);
+  if (levelIndex(level) < levelIndex(required)) {
+    res.status(403).json({ error: `You need ${required} access on this board (you have ${level}).` });
+    return { ok: false };
+  }
+  return { ok: true, board, level };
 }
 
 function normalizeStatuses(input: any): Array<{ id: string; label: string; color: string; type: string }> | null {
@@ -20665,7 +20717,15 @@ app.patch('/api/task-lists/:id', async (req, res) => {
     }
     const cur = (await sql`SELECT * FROM task_lists WHERE id=${req.params.id}` as any[])[0];
     if (!cur) return res.status(404).json({ error: 'Board not found' });
-    const { name, description, color, archived, sort_order, statuses, visibility, member_employee_ids, member_departments } = req.body ?? {};
+    // On top of the coarse manager-role gate above, also require
+    // 'admin' on THIS specific board — a project_coordinator who is
+    // not on the board's admin list can't edit it out from under
+    // the actual owners. System admins + creator always pass (see
+    // boardPermissionOf).
+    if (boardPermissionOf(gate.user, cur) !== 'admin') {
+      return res.status(403).json({ error: 'You need admin access on this board to change its settings.' });
+    }
+    const { name, description, color, archived, sort_order, statuses, visibility, member_employee_ids, member_departments, permissions } = req.body ?? {};
 
     // Visibility. Only 'public' or 'restricted' allowed; anything else
     // is treated as no-op. Members / departments are sanitised into
@@ -20681,6 +20741,27 @@ app.patch('/api/task-lists/:id', async (req, res) => {
     const cleanDepts = Array.isArray(member_departments)
       ? Array.from(new Set(member_departments.map((x: any) => String(x ?? '').trim()).filter(Boolean)))
       : (cur.member_departments ?? []);
+
+    // Sanitise the permissions array — drop bad entries rather than
+    // rejecting the whole save, so a stale client can't brick a board
+    // save with one malformed row. Undefined means "keep whatever's
+    // on the row" (matches every other field here).
+    let nextPermissions: BoardPermEntry[] | null = cur.permissions ?? null;
+    if (Array.isArray(permissions)) {
+      const clean: BoardPermEntry[] = [];
+      for (const raw of permissions) {
+        if (!raw || typeof raw !== 'object') continue;
+        const kind = raw.kind;
+        const level = raw.level;
+        if (!['everyone','employee','department'].includes(kind)) continue;
+        if (!BOARD_LEVELS.includes(level)) continue;
+        if (level === 'none') continue;   // useless entry — same as absent
+        const ref = kind === 'everyone' ? null : (typeof raw.ref === 'string' && raw.ref.trim() ? raw.ref.trim() : null);
+        if (kind !== 'everyone' && !ref) continue;
+        clean.push({ kind, ref, level });
+      }
+      nextPermissions = clean;
+    }
 
     // Editing columns can't be a blind overwrite: any task sitting in a
     // column the caller removed would become unreachable on the board.
@@ -20717,6 +20798,7 @@ app.patch('/api/task-lists/:id', async (req, res) => {
         visibility          = ${nextVisibility}::text,
         member_employee_ids = ${cleanIds}::text[],
         member_departments  = ${cleanDepts}::text[],
+        permissions         = ${nextPermissions === null ? null : JSON.stringify(nextPermissions)}::jsonb,
         updated_at          = NOW()
       WHERE id=${cur.id}
       RETURNING *`;
@@ -20987,6 +21069,14 @@ app.post('/api/tasks/:id/timer/start', async (req, res) => {
     if (!empId) return res.status(400).json({ error: 'You have no linked employee record, so a timer cannot be attributed to you.' });
     const empRow = (await sql`SELECT name FROM employees WHERE id=${empId}` as any[])[0];
     if (!empRow) return res.status(400).json({ error: 'Employee not found.' });
+    // Gate: starting a timer requires 'edit' on the board. Viewers can
+    // watch a task but can't log time against it.
+    const timerTask = (await sql`SELECT list_id FROM tasks WHERE id=${req.params.id} LIMIT 1` as any[])[0];
+    if (!timerTask) return res.status(404).json({ error: 'Task not found' });
+    const timerBoard = (await sql`SELECT * FROM task_lists WHERE id=${timerTask.list_id}` as any[])[0];
+    if (levelIndex(boardPermissionOf(gate.user, timerBoard)) < levelIndex('edit')) {
+      return res.status(403).json({ error: 'You need edit access on this board to log time on its tasks.' });
+    }
     // Close any existing open timer for this employee (regardless of which
     // task it's on) — this is what makes the partial-unique index safe.
     const openTimers = await sql`SELECT * FROM task_time_entries WHERE employee_id=${empId} AND stopped_at IS NULL AND source='timer'` as any[];
@@ -21306,6 +21396,9 @@ app.post('/api/tasks', async (req, res) => {
     if (!listId) return res.status(400).json({ error: 'list_id is required' });
     const list = (await sql`SELECT * FROM task_lists WHERE id=${listId}` as any[])[0];
     if (!list) return res.status(400).json({ error: 'Board not found' });
+    if (levelIndex(boardPermissionOf(gate.user, list)) < levelIndex('edit')) {
+      return res.status(403).json({ error: 'You need edit access on this board to create tasks.' });
+    }
 
     const cols = (list.statuses as any[]) ?? DEFAULT_TASK_STATUSES;
     const col = cols.find(c => c.id === status) ?? cols[0];
@@ -21356,6 +21449,9 @@ app.patch('/api/tasks/:id', async (req, res) => {
     if (!cur) return res.status(404).json({ error: 'Task not found' });
     const list = (await sql`SELECT * FROM task_lists WHERE id=${cur.list_id}` as any[])[0];
     const cols = (list?.statuses as any[]) ?? DEFAULT_TASK_STATUSES;
+    if (levelIndex(boardPermissionOf(gate.user, list)) < levelIndex('edit')) {
+      return res.status(403).json({ error: 'You need edit access on this board to modify tasks.' });
+    }
 
     const b = req.body ?? {};
     const next: Record<string, any> = {};
@@ -21548,10 +21644,16 @@ app.delete('/api/tasks/:id', async (req, res) => {
     if (!gate.ok) return;
     const cur = (await sql`SELECT * FROM tasks WHERE id=${req.params.id}` as any[])[0];
     if (!cur) return res.status(404).json({ error: 'Task not found' });
-    const allowed = cur.created_by_id === gate.user.id
+    // Board-level 'edit' is required to delete; ownership overrides
+    // preserved (creator OR assignee can also delete without needing
+    // 'edit' on the board — matches the prior behaviour).
+    const board = (await sql`SELECT * FROM task_lists WHERE id=${cur.list_id}` as any[])[0];
+    const hasBoardEdit = levelIndex(boardPermissionOf(gate.user, board)) >= levelIndex('edit');
+    const allowed = hasBoardEdit
+      || cur.created_by_id === gate.user.id
       || (!!gate.user.employeeId && cur.assignee_id === gate.user.employeeId)
       || TASK_LIST_MANAGER_ROLES.includes(gate.user.role);
-    if (!allowed) return res.status(403).json({ error: 'Only the creator, the assignee or a project coordinator can delete this task' });
+    if (!allowed) return res.status(403).json({ error: 'You need edit access on this board — or to be the task creator / assignee — to delete it.' });
     const ids = [cur.id, ...(await sql`SELECT id FROM tasks WHERE parent_id=${cur.id}` as any[]).map(r => r.id)];
     await sql`DELETE FROM task_comments WHERE task_id = ANY(${ids}::text[])`;
     await sql`DELETE FROM task_activity WHERE task_id = ANY(${ids}::text[])`;
@@ -21567,8 +21669,12 @@ app.post('/api/tasks/:id/comments', async (req, res) => {
     if (!gate.ok) return;
     const body = String(req.body?.body ?? '').trim();
     if (!body) return res.status(400).json({ error: 'Comment cannot be empty' });
-    const task = (await sql`SELECT id, title, assignee_id, created_by_id FROM tasks WHERE id=${req.params.id}` as any[])[0];
+    const task = (await sql`SELECT id, title, assignee_id, created_by_id, list_id FROM tasks WHERE id=${req.params.id}` as any[])[0];
     if (!task) return res.status(404).json({ error: 'Task not found' });
+    const commentBoard = (await sql`SELECT * FROM task_lists WHERE id=${task.list_id}` as any[])[0];
+    if (levelIndex(boardPermissionOf(gate.user, commentBoard)) < levelIndex('comment')) {
+      return res.status(403).json({ error: 'You need comment access on this board.' });
+    }
     const rows = await sql`
       INSERT INTO task_comments (id, task_id, author_id, author_name, body)
       VALUES (${newId('tcom')}, ${task.id}, ${gate.user.id}, ${gate.user.name}, ${body})
@@ -22336,10 +22442,18 @@ app.post('/api/tasks/:taskId/file-token', async (req, res) => {
     if (!uid) return res.status(401).json({ error: 'Not authenticated' });
     const u = (await sql`SELECT id, email, role, active FROM app_users WHERE id=${uid} LIMIT 1` as any[])[0];
     if (!u || u.active !== true) return res.status(403).json({ error: 'Not permitted' });
-    // Task must exist — matches how the rest of the task API works (any
-    // authenticated staff member can see/comment on any task).
-    const t = (await sql`SELECT id FROM tasks WHERE id=${req.params.taskId} LIMIT 1` as any[])[0];
+    // Task must exist AND caller must have at least 'edit' on the
+    // task's board — otherwise minting a scoped token would let
+    // anyone upload attachments to boards they can't see. Read the
+    // task + board together for the check.
+    const t = (await sql`SELECT id, list_id FROM tasks WHERE id=${req.params.taskId} LIMIT 1` as any[])[0];
     if (!t) return res.status(404).json({ error: 'Task not found' });
+    const gate = await taskActor(req, res);
+    if (!gate.ok) return;
+    const board = (await sql`SELECT * FROM task_lists WHERE id=${t.list_id}` as any[])[0];
+    if (levelIndex(boardPermissionOf(gate.user, board)) < levelIndex('edit')) {
+      return res.status(403).json({ error: 'You need edit access on this board to upload attachments.' });
+    }
     const secret = process.env.MAIL_JWT_SECRET;
     if (!secret) return res.status(503).json({ error: 'Mail service not configured (MAIL_JWT_SECRET missing on server).' });
     const { SignJWT } = await import('jose');
