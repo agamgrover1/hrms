@@ -16,15 +16,22 @@ import { resetMailBadge } from '../hooks/useMailBadge';
 // Kept deliberately quiet visually so long inboxes don't feel busy.
 
 export default function Mail() {
-  const [accounts, setAccounts] = useState<MailAccount[]>([]);
-  const [selectedAccountId, setSelectedAccountId] = useState<string | null>(null);
-  const [folders, setFolders] = useState<MailFolder[]>([]);
+  // Seed from module-scope caches so navigating away and back is
+  // instant — the loaders below still revalidate in the background.
+  const seedAccounts = mailApi.peekAccounts();
+  const seedAccountId = seedAccounts?.find(a => a.is_default)?.id ?? seedAccounts?.[0]?.id ?? null;
+  const seedFolders = seedAccountId ? mailApi.peekFolders(seedAccountId) : null;
+  const seedList = seedAccountId ? mailApi.peekList(seedAccountId, 'INBOX') : null;
+
+  const [accounts, setAccounts] = useState<MailAccount[]>(seedAccounts ?? []);
+  const [selectedAccountId, setSelectedAccountId] = useState<string | null>(seedAccountId);
+  const [folders, setFolders] = useState<MailFolder[]>(seedFolders ?? []);
   const [selectedFolder, setSelectedFolder] = useState<string>('INBOX');
-  const [messages, setMessages] = useState<MailEnvelope[]>([]);
+  const [messages, setMessages] = useState<MailEnvelope[]>(seedList?.messages ?? []);
   const [selectedUid, setSelectedUid] = useState<number | null>(null);
   const [message, setMessage] = useState<MailMessage | null>(null);
 
-  const [loadingAccounts, setLoadingAccounts] = useState(true);
+  const [loadingAccounts, setLoadingAccounts] = useState(!seedAccounts);
   const [loadingFolders, setLoadingFolders] = useState(false);
   const [loadingList, setLoadingList] = useState(false);
   const [loadingMessage, setLoadingMessage] = useState(false);
@@ -88,23 +95,34 @@ export default function Mail() {
 
   const loadFolders = () => {
     if (!selectedAccountId) return;
-    setLoadingFolders(true);
+    // If we have a cached folder list, render it first (no spinner)
+    // and refresh in the background.
+    const cached = mailApi.peekFolders(selectedAccountId);
+    if (cached) setFolders(cached);
+    else setLoadingFolders(true);
     mailApi.listFolders(selectedAccountId)
       .then(setFolders)
-      .catch(e => toast.error('Could not list folders', e?.body?.error ?? e?.message))
+      .catch(e => { if (!cached) toast.error('Could not list folders', e?.body?.error ?? e?.message); })
       .finally(() => setLoadingFolders(false));
   };
   useEffect(loadFolders, [selectedAccountId]);
 
   const loadMessages = () => {
     if (!selectedAccountId) return;
-    setLoadingList(true);
-    setMessages([]);
-    setSelectedUid(null);
-    setMessage(null);
+    const cached = mailApi.peekList(selectedAccountId, selectedFolder);
+    if (cached) {
+      // Hydrate from cache instantly; keep selection if it's still in the list.
+      setMessages(cached.messages);
+      setListTotal(cached.total);
+    } else {
+      setLoadingList(true);
+      setMessages([]);
+      setSelectedUid(null);
+      setMessage(null);
+    }
     mailApi.listMessages(selectedAccountId, selectedFolder, { limit: 40 })
       .then(r => { setMessages(r.messages); setListTotal(r.total); })
-      .catch(e => toast.error('Could not load messages', e?.body?.error ?? e?.message))
+      .catch(e => { if (!cached) toast.error('Could not load messages', e?.body?.error ?? e?.message); })
       .finally(() => setLoadingList(false));
   };
   // On folder change: reset search + reload. On account change: same.

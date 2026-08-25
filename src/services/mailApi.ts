@@ -18,6 +18,20 @@ let cached: TokenBundle | null = null;
 // forced reload the caller passes `{fresh: true}`.
 const messageCache = new Map<string, MailMessage>();
 
+// Module-scope caches for the *page shell* — accounts, folders per
+// account, and the default (limit=40) envelope list per folder. The
+// Mail page unmounts when the user navigates away and remounts when
+// they come back; without these caches, that remount cost a full
+// round-trip to the VPS for every list. Peek returns instantly for
+// hydration; the caller still fires a background refresh so IDLE-
+// arrived mail shows up. On paginated / non-default queries we
+// bypass the cache entirely.
+let accountsCache: MailAccount[] | null = null;
+const foldersCache = new Map<string, MailFolder[]>();
+interface ListSlice { messages: MailEnvelope[]; total: number; unread: number }
+const listCache = new Map<string, ListSlice>();
+const listKey = (accountId: string, folder: string) => `${accountId}|${folder}`;
+
 async function getToken(force = false): Promise<TokenBundle> {
   if (!force && cached && cached.expires_at > Date.now() + 30_000) return cached;
   const r = await api.getMailToken();
@@ -146,7 +160,15 @@ export async function mailAttachmentUrl(accountId: string, folder: string, uid: 
 }
 
 export const mailApi = {
-  listAccounts: () => call<MailAccount[]>('GET', '/accounts'),
+  peekAccounts: (): MailAccount[] | null => accountsCache,
+  peekFolders: (accountId: string): MailFolder[] | null => foldersCache.get(accountId) ?? null,
+  peekList: (accountId: string, folder: string): ListSlice | null => listCache.get(listKey(accountId, folder)) ?? null,
+
+  listAccounts: async () => {
+    const r = await call<MailAccount[]>('GET', '/accounts');
+    accountsCache = r;
+    return r;
+  },
   testAccount: (data: {
     email: string; password: string;
     imap_host?: string; imap_port?: number; imap_secure?: boolean;
@@ -162,15 +184,22 @@ export const mailApi = {
   deleteAccount: (id: string) => call<{ ok: boolean }>('DELETE', `/accounts/${id}`),
 
   // ── M2 inbox reader ────────────────────────────────────────────
-  listFolders: (accountId: string) =>
-    call<MailFolder[]>('GET', `/accounts/${accountId}/folders`),
-  listMessages: (accountId: string, folder: string, opts?: { limit?: number; before_uid?: number }) => {
+  listFolders: async (accountId: string) => {
+    const r = await call<MailFolder[]>('GET', `/accounts/${accountId}/folders`);
+    foldersCache.set(accountId, r);
+    return r;
+  },
+  listMessages: async (accountId: string, folder: string, opts?: { limit?: number; before_uid?: number }) => {
     const q = new URLSearchParams();
     if (opts?.limit) q.set('limit', String(opts.limit));
     if (opts?.before_uid) q.set('before_uid', String(opts.before_uid));
-    return call<{ messages: MailEnvelope[]; total: number; unread: number }>(
+    const r = await call<ListSlice>(
       'GET', `/accounts/${accountId}/folders/${encodeURIComponent(folder)}/messages${q.toString() ? '?' + q : ''}`
     );
+    // Only cache the default first-page view; pagination + explicit
+    // before_uid queries are transient and not worth caching.
+    if (!opts?.before_uid) listCache.set(listKey(accountId, folder), r);
+    return r;
   },
   fetchMessage: async (accountId: string, folder: string, uid: number, opts?: { fresh?: boolean }): Promise<MailMessage> => {
     // Message bodies are immutable once received, so cache by
