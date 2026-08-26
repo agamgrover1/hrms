@@ -81,6 +81,11 @@ export default function TaskDetailModal({ taskId, employees, onClose, onChanged 
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState('');
   const [saving, setSaving] = useState(false);
+  // Post-save "Saved" flash. Flips true right after a patch succeeds
+  // and reverts after ~2s so people who don't read spinners still see
+  // a green tick confirming their edit landed.
+  const [justSaved, setJustSaved] = useState(false);
+  const savedTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [watchBusy, setWatchBusy] = useState(false);
 
   const [title, setTitle] = useState('');
@@ -434,6 +439,10 @@ export default function TaskDetailModal({ taskId, employees, onClose, onChanged 
       await api.patchTask(task.id, data);
       load();
       onChanged();
+      // Flash "Saved" for 2s so the change is legibly acknowledged.
+      if (savedTimerRef.current) clearTimeout(savedTimerRef.current);
+      setJustSaved(true);
+      savedTimerRef.current = setTimeout(() => setJustSaved(false), 2000);
     } catch (e: any) {
       toast.error('Could not save', e?.message ?? 'Please try again.');
       load();
@@ -541,9 +550,25 @@ export default function TaskDetailModal({ taskId, employees, onClose, onChanged 
                 {task.project_name ? `${task.project_name} · ` : ''}{task.list_name}
               </p>
             )}
-            <p className="text-[10px] text-on-surface-subtle font-mono">{taskId}</p>
+            <div className="flex items-center gap-2 flex-wrap">
+              <p className="text-[10px] text-on-surface-subtle font-mono">{taskId}</p>
+              {/* Explicit auto-save affordance — replaces the previous
+                  bare spinner. Users don't expect an inline-save modal,
+                  so the label + state pill removes any doubt about
+                  whether their edits landed. */}
+              {saving ? (
+                <span className="inline-flex items-center gap-1 text-[10px] font-semibold text-accent">
+                  <Loader2 size={10} className="animate-spin" /> Saving…
+                </span>
+              ) : justSaved ? (
+                <span className="inline-flex items-center gap-1 text-[10px] font-semibold text-success">
+                  <Check size={10} /> Saved
+                </span>
+              ) : (
+                <span className="text-[10px] text-on-surface-subtle italic">Changes save automatically</span>
+              )}
+            </div>
           </div>
-          {saving && <Loader2 size={14} className="animate-spin text-on-surface-subtle" />}
           {task && (
             <button onClick={remove} title="Delete task"
               className="p-1.5 rounded-lg text-danger/70 hover:text-danger hover:bg-danger/10"><Trash2 size={16} /></button>
