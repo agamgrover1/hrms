@@ -48,6 +48,7 @@ export function getNotifRoute(type: string, role: string): string {
       return '/tasks';
 
     case 'meeting_invited':
+    case 'meeting_reminder':
     case 'meeting_rsvp':
     case 'meeting_cancelled':
       // Meeting notifications stamp `link` at emit time; this is only
@@ -247,6 +248,7 @@ export const TYPE_CONFIG: Record<string, { icon: any; color: string; bg: string 
   task_comment:            { icon: FileText,       color: '#0891b2', bg: '#f0f9ff' },
   task_assigned:           { icon: CheckCircle,    color: '#2563eb', bg: '#eff6ff' },
   meeting_invited:         { icon: Calendar,       color: '#7c3aed', bg: '#f5f3ff' },
+  meeting_reminder:        { icon: ClockIcon,      color: '#d97706', bg: '#fffbeb' },
   meeting_rsvp:            { icon: CheckCircle,    color: '#2563eb', bg: '#eff6ff' },
   meeting_cancelled:       { icon: XCircle,        color: '#dc2626', bg: '#fef2f2' },
   leave_applied:           { icon: Calendar,       color: '#d97706', bg: '#fffbeb' },

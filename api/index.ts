@@ -904,7 +904,7 @@ async function runStartupMigrations() {
     // For a *seed* (rows, not columns), we probe with EXISTS-style: an
     // empty result set means "still needs to run", so we don't set the
     // flag and fall through.
-    await sql`SELECT id FROM meetings LIMIT 0`;
+    await sql`SELECT reminder_sent_at FROM meetings LIMIT 0`;
     _migrated = true;
     return;
   } catch {
@@ -3603,6 +3603,12 @@ async function runStartupMigrations() {
       PRIMARY KEY (meeting_id, employee_id)
     )`;
   await sql`CREATE INDEX IF NOT EXISTS idx_meeting_attendees_emp ON meeting_attendees(employee_id, meeting_id)`.catch(()=>{});
+  // Reminder book-keeping — a single reminder per meeting for now.
+  // If we later want multi-reminder ("1 day before" + "15 min before"),
+  // move this to a separate meeting_reminders_sent table keyed by
+  // (meeting_id, kind). Single column is enough for the MVP.
+  await sql`ALTER TABLE meetings ADD COLUMN IF NOT EXISTS reminder_sent_at TIMESTAMPTZ`.catch(()=>{});
+  await sql`CREATE INDEX IF NOT EXISTS idx_meetings_reminder_due ON meetings(status, start_at) WHERE reminder_sent_at IS NULL`.catch(()=>{});
 
   _migrated = true;
 }
@@ -22847,6 +22853,89 @@ app.post('/api/meetings/:id/rsvp', async (req, res) => {
     }
     res.json({ ok: true });
   } catch (err: any) { res.status(500).json({ error: err.message ?? 'Server error' }); }
+});
+
+// ── Meeting reminder cron ─────────────────────────────────────────
+// Fires from Vercel Cron every 5 min. Picks scheduled meetings
+// starting in the next `MEETING_REMINDER_MIN` minutes (default 15)
+// whose reminder hasn't been sent yet, and notifies every invitee
+// who hasn't declined. Idempotent — reminder_sent_at is set inside
+// the same query so a second run in the same 5-min window can't
+// double-fire.
+//
+// Auth: accepts the platform's `x-vercel-cron` header OR a Bearer
+// token matching CRON_SECRET (same pattern as biometric-sync/cron
+// and pulse/cron).
+//
+// Also runnable manually by an admin for testing — POST from a
+// signed-in admin session skips the platform-cron check.
+app.all('/api/meetings/reminders/cron', async (req, res) => {
+  try {
+    const auth = req.header('authorization') || '';
+    const platformCron = !!req.header('x-vercel-cron');
+    const secret = process.env.CRON_SECRET;
+    const okToken = secret ? auth === `Bearer ${secret}` : false;
+    // Manual dev/admin invocation — accept a signed-in admin session.
+    const uid = req.header('x-user-id');
+    let adminOverride = false;
+    if (uid && !platformCron && !okToken) {
+      const u = (await sql`SELECT role, active FROM app_users WHERE id=${uid} LIMIT 1` as any[])[0];
+      adminOverride = !!(u && u.active === true && u.role === 'admin');
+    }
+    if (!platformCron && !okToken && !adminOverride) {
+      return res.status(401).json({ error: 'Unauthorized' });
+    }
+
+    await runStartupMigrations();
+    const windowMin = Number(process.env.MEETING_REMINDER_MIN ?? 15);
+
+    // Claim + read in one round-trip. Any meeting whose start is
+    // between now and now+windowMin AND status='scheduled' AND no
+    // reminder yet gets stamped with reminder_sent_at=NOW() and
+    // returned. Two concurrent runs can't hand the same meeting to
+    // two workers.
+    const claimed = await sql`
+      WITH picked AS (
+        SELECT id FROM meetings
+        WHERE status = 'scheduled'
+          AND reminder_sent_at IS NULL
+          AND start_at > NOW()
+          AND start_at <= NOW() + (${windowMin}::int || ' minutes')::interval
+        ORDER BY start_at ASC
+        LIMIT 100
+        FOR UPDATE SKIP LOCKED
+      )
+      UPDATE meetings m SET reminder_sent_at = NOW()
+      FROM picked
+      WHERE m.id = picked.id
+      RETURNING m.id, m.title, m.start_at, m.organizer_id, m.organizer_name,
+                m.location_kind, m.location, m.meeting_link` as any[];
+
+    let notified = 0;
+    for (const m of claimed) {
+      // Attendees who haven't declined get the reminder. Skip the
+      // organizer (they know — they scheduled it), unless they want
+      // their own reminder (nice touch, harmless — include them).
+      const invitees = await sql`
+        SELECT employee_id FROM meeting_attendees
+        WHERE meeting_id=${m.id} AND rsvp_status <> 'declined'` as any[];
+      const startsInMin = Math.max(1, Math.round((new Date(m.start_at).getTime() - Date.now()) / 60000));
+      const whereLine = m.location_kind === 'virtual'
+        ? (m.meeting_link ? 'Virtual meeting' : 'Virtual')
+        : m.location_kind === 'hybrid'
+          ? `${m.location ?? 'In office'} (also virtual)`
+          : (m.location ?? 'In office');
+      const body = `Starts in ~${startsInMin} min · ${whereLine}`;
+      for (const inv of invitees) {
+        await notifyEmployeeUser(inv.employee_id, 'meeting_reminder', `Coming up: ${m.title}`,
+          body, `/meetings?meeting=${m.id}`).catch(() => {});
+        notified++;
+      }
+    }
+    res.json({ ok: true, window_min: windowMin, meetings: claimed.length, notifications_sent: notified });
+  } catch (err: any) {
+    res.status(500).json({ error: err?.message ?? 'Reminder run failed' });
+  }
 });
 
 // ── Mail-service bridge ─────────────────────────────────────────────
