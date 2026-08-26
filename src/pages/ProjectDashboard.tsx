@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { Link, useParams, useNavigate } from 'react-router-dom';
 import {
   ArrowLeft, Users2, Clock, KanbanSquare, Calendar, Target, LineChart as LineIcon, Activity,
-  Wallet, ExternalLink, Video, MapPin, Loader2, Briefcase, ChevronRight, CheckCircle2, AlertTriangle,
+  Wallet, ExternalLink, Video, MapPin, Loader2, Briefcase, ChevronRight, CheckCircle2, AlertTriangle, Filter,
 } from 'lucide-react';
 import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid } from 'recharts';
 import { api } from '../services/api';
@@ -16,20 +16,45 @@ import { formatHoursHuman } from '../lib/taskMeta';
 
 type Data = Awaited<ReturnType<typeof api.getProjectDashboard>>;
 
+// Month-bounds helper — used to default the date filter to the current
+// calendar month. Kept out of the component so the render doesn't
+// build fresh Date objects on every re-render.
+function monthBounds(d = new Date()) {
+  const s = new Date(d.getFullYear(), d.getMonth(), 1);
+  const e = new Date(d.getFullYear(), d.getMonth() + 1, 0);
+  const iso = (x: Date) => `${x.getFullYear()}-${String(x.getMonth() + 1).padStart(2, '0')}-${String(x.getDate()).padStart(2, '0')}`;
+  return { from: iso(s), to: iso(e) };
+}
+
 export default function ProjectDashboard() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
   const [data, setData] = useState<Data | null>(null);
   const [loading, setLoading] = useState(true);
+  // Date range — defaults to the current month; server picks the
+  // same default if we send blanks, but keeping it in state lets us
+  // show + edit it in the header.
+  const initialRange = useMemo(() => monthBounds(), []);
+  const [fromDate, setFromDate] = useState<string>(initialRange.from);
+  const [toDate, setToDate] = useState<string>(initialRange.to);
+  // Quick presets keep the picker fast for the common cases.
+  const setPreset = (kind: 'this_month' | 'last_month' | 'last_30' | 'last_90') => {
+    const now = new Date();
+    if (kind === 'this_month') { const b = monthBounds(now); setFromDate(b.from); setToDate(b.to); return; }
+    if (kind === 'last_month') { const b = monthBounds(new Date(now.getFullYear(), now.getMonth() - 1, 1)); setFromDate(b.from); setToDate(b.to); return; }
+    const to = now; const from = new Date(now); from.setDate(from.getDate() - (kind === 'last_30' ? 30 : 90));
+    const iso = (x: Date) => `${x.getFullYear()}-${String(x.getMonth() + 1).padStart(2, '0')}-${String(x.getDate()).padStart(2, '0')}`;
+    setFromDate(iso(from)); setToDate(iso(to));
+  };
 
   useEffect(() => {
     if (!id) return;
     setLoading(true);
-    api.getProjectDashboard(id)
+    api.getProjectDashboard(id, { from: fromDate, to: toDate })
       .then(setData)
       .catch(e => toast.error('Failed to load project', e?.body?.error ?? e?.message))
       .finally(() => setLoading(false));
-  }, [id]);
+  }, [id, fromDate, toDate]);
 
   if (loading || !data) {
     return <div className="p-10 text-center text-sm text-on-surface-muted"><Loader2 size={14} className="inline animate-spin mr-1" /> Loading project…</div>;
@@ -42,10 +67,36 @@ export default function ProjectDashboard() {
     <div className="space-y-5">
       {/* Header */}
       <div>
-        <button onClick={() => navigate('/projects')}
-          className="inline-flex items-center gap-1 text-xs text-on-surface-muted hover:text-on-surface mb-2">
-          <ArrowLeft size={12} /> All projects
-        </button>
+        <div className="flex items-center justify-between gap-2 mb-2 flex-wrap">
+          <button onClick={() => navigate('/projects')}
+            className="inline-flex items-center gap-1 text-xs text-on-surface-muted hover:text-on-surface">
+            <ArrowLeft size={12} /> All projects
+          </button>
+          {/* Date range filter — scopes every card on the page. Presets
+              cover the common cases; the two date inputs let you pick
+              any window. Defaults to the current calendar month. */}
+          <div className="flex items-center gap-1.5 flex-wrap">
+            <Filter size={11} className="text-on-surface-subtle" />
+            <div className="inline-flex items-center gap-0.5 bg-surface border border-outline rounded-lg p-0.5">
+              {([
+                { key: 'this_month', label: 'This month' },
+                { key: 'last_month', label: 'Last month' },
+                { key: 'last_30',    label: '30d' },
+                { key: 'last_90',    label: '90d' },
+              ] as const).map(p => (
+                <button key={p.key} onClick={() => setPreset(p.key)}
+                  className="px-2 py-1 rounded text-[10px] font-semibold text-on-surface-muted hover:text-on-surface hover:bg-surface-2">
+                  {p.label}
+                </button>
+              ))}
+            </div>
+            <input type="date" value={fromDate} onChange={e => setFromDate(e.target.value)}
+              className="text-xs px-2 py-1 rounded-lg border border-outline bg-surface" />
+            <span className="text-xs text-on-surface-subtle">→</span>
+            <input type="date" value={toDate} onChange={e => setToDate(e.target.value)}
+              className="text-xs px-2 py-1 rounded-lg border border-outline bg-surface" />
+          </div>
+        </div>
         <div className="rounded-xl-2 border border-outline bg-surface p-5">
           <div className="flex items-start justify-between gap-3 flex-wrap">
             <div className="min-w-0">
@@ -61,9 +112,16 @@ export default function ProjectDashboard() {
               </div>
             </div>
             <div className="flex flex-col items-end gap-1">
-              <p className="text-[10px] uppercase tracking-wider font-bold text-on-surface-subtle">This month</p>
+              <p className="text-[10px] uppercase tracking-wider font-bold text-on-surface-subtle">
+                {data.range.is_default ? 'This month' : 'In range'}
+              </p>
               <p className="num-mono text-3xl font-bold text-on-surface">{formatHoursHuman(consumedMonth)}</p>
-              <p className="text-[11px] text-on-surface-muted">logged across the team</p>
+              <p className="text-[11px] text-on-surface-muted">
+                logged across the team
+                {!data.range.is_default && (
+                  <> · {new Date(data.range.from).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' })} → {new Date(data.range.to).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' })}</>
+                )}
+              </p>
             </div>
           </div>
         </div>
@@ -115,7 +173,7 @@ export default function ProjectDashboard() {
         </Card>
 
         {/* Top contributors */}
-        <Card icon={Activity} title="Top contributors · 30d">
+        <Card icon={Activity} title={`Top contributors · ${data.range.is_default ? 'this month' : 'in range'}`}>
           {data.top_contributors_30d.length === 0 ? (
             <EmptyLine text="No hours logged in the last 30 days." />
           ) : (
@@ -131,20 +189,86 @@ export default function ProjectDashboard() {
           )}
         </Card>
 
-        {/* Hours trend — spans 2 */}
-        <Card className="xl:col-span-2" icon={LineIcon} title="Hours · last 12 weeks">
+        {/* Hours trend — spans 2. Fixed to the last 12 weeks (not
+            scoped to the date filter) so the shape stays legible when
+            the filter is narrow; range-scoped detail lives in the
+            log-detail card below. */}
+        <Card className="xl:col-span-2" icon={LineIcon} title="Hours trend · last 12 weeks (team total)">
+          <p className="text-[11px] text-on-surface-muted mb-2">
+            Each point is one calendar week — sum of every attendee's approved + pending hours on this project.
+            Date-filtered details are in the "Hours log detail" card below.
+          </p>
           {data.hours_trend_weekly.length === 0 ? (
             <EmptyLine text="No hours history to chart yet." />
           ) : (
             <ResponsiveContainer width="100%" height={220}>
-              <LineChart data={data.hours_trend_weekly.map(r => ({ week: r.week.slice(5), hours: r.hours }))}>
+              <LineChart data={data.hours_trend_weekly.map(r => ({ week: new Date(r.week).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' }), hours: r.hours }))}>
                 <CartesianGrid strokeDasharray="3 3" />
-                <XAxis dataKey="week" tick={{ fontSize: 10 }} />
-                <YAxis tick={{ fontSize: 10 }} />
-                <Tooltip formatter={(v: any) => [`${v}h`, 'Hours']} />
+                <XAxis dataKey="week" tick={{ fontSize: 10 }} label={{ value: 'Week starting', position: 'insideBottom', offset: -2, fontSize: 10 }} />
+                <YAxis tick={{ fontSize: 10 }} label={{ value: 'Hours', angle: -90, position: 'insideLeft', fontSize: 10 }} />
+                <Tooltip formatter={(v: any) => [`${v}h`, 'Hours']} labelFormatter={(l: any) => `Week of ${l}`} />
                 <Line type="monotone" dataKey="hours" stroke="#EE2770" strokeWidth={2} dot={{ r: 3 }} />
               </LineChart>
             </ResponsiveContainer>
+          )}
+        </Card>
+
+        {/* Hours log detail — every row inside the filtered range with
+            date, employee, notes, and approval status. Cap of 300 rows
+            (server-side) — a header hint calls this out. */}
+        <Card className="xl:col-span-3" icon={Clock} title="Hours log detail"
+          right={<Link to={`/hours?project_id=${p.id}`} className="text-[11px] text-accent hover:underline inline-flex items-center gap-0.5">Open in Hours <ExternalLink size={10} /></Link>}>
+          {data.hours_detail.length === 0 ? (
+            <EmptyLine text="No hours logged in this date range." />
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="text-left border-b border-outline">
+                    <th className="pb-2 pr-3 text-[10px] uppercase tracking-wider font-bold text-on-surface-muted">Date</th>
+                    <th className="pb-2 pr-3 text-[10px] uppercase tracking-wider font-bold text-on-surface-muted">Employee</th>
+                    <th className="pb-2 pr-3 text-[10px] uppercase tracking-wider font-bold text-on-surface-muted">Hours</th>
+                    <th className="pb-2 pr-3 text-[10px] uppercase tracking-wider font-bold text-on-surface-muted">Status</th>
+                    <th className="pb-2 text-[10px] uppercase tracking-wider font-bold text-on-surface-muted">Notes</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-outline">
+                  {data.hours_detail.map(row => {
+                    const status = (row.day_status ?? row.weekly_status ?? 'pending').toLowerCase();
+                    const statusTone =
+                      status === 'approved' ? 'bg-success/10 text-success' :
+                      status === 'rejected' ? 'bg-danger/10 text-danger' :
+                      status === 'on_hold'  ? 'bg-info/10 text-info' :
+                                              'bg-warning/10 text-warning';
+                    return (
+                      <tr key={row.id} className="hover:bg-surface-2/50">
+                        <td className="py-1.5 pr-3 font-mono text-[11px] text-on-surface-muted whitespace-nowrap">
+                          {new Date(row.log_date + 'T00:00:00').toLocaleDateString('en-IN', { weekday: 'short', day: 'numeric', month: 'short' })}
+                        </td>
+                        <td className="py-1.5 pr-3 whitespace-nowrap">
+                          <span className="inline-flex items-center gap-1.5">
+                            <Avatar name={row.employee_name} avatar={row.avatar} size="sm" />
+                            <span className="text-on-surface">{row.employee_name}</span>
+                          </span>
+                        </td>
+                        <td className="py-1.5 pr-3 font-mono text-on-surface whitespace-nowrap">{formatHoursHuman(row.hours)}</td>
+                        <td className="py-1.5 pr-3 whitespace-nowrap">
+                          <span className={`inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider ${statusTone}`}>
+                            {status}
+                          </span>
+                        </td>
+                        <td className="py-1.5 text-[11px] text-on-surface-muted truncate max-w-[240px]" title={row.notes ?? ''}>{row.notes ?? '—'}</td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+              {data.hours_detail.length === 300 && (
+                <p className="text-[10px] text-on-surface-subtle italic mt-2">
+                  Showing the most recent 300 entries in this range — narrow the dates for a smaller slice.
+                </p>
+              )}
+            </div>
           )}
         </Card>
 
@@ -345,7 +469,17 @@ function EmptyLine({ text }: { text: string }) {
 function Avatar({ name, avatar, size = 'md' }: { name: string; avatar: string | null; size?: 'sm' | 'md' }) {
   const px = size === 'sm' ? 'w-6 h-6 text-[9px]' : 'w-7 h-7 text-[10px]';
   const initials = name.split(' ').map(w => w[0]).slice(0, 2).join('').toUpperCase();
-  if (avatar) return <img src={avatar} alt={name} className={`${px} rounded-full object-cover shrink-0`} />;
+  // Broken URLs land here as a normal `avatar` string, so the <img>
+  // renders a broken icon by default. Track load failure and swap
+  // to the initials tile so the row never shows a chrome-broken img.
+  const [broken, setBroken] = useState(false);
+  if (avatar && !broken) {
+    return (
+      <img src={avatar} alt={name}
+        onError={() => setBroken(true)}
+        className={`${px} rounded-full object-cover shrink-0`} />
+    );
+  }
   return <span className={`${px} rounded-full bg-brand-container text-on-brand-container font-bold grid place-items-center shrink-0`}>{initials}</span>;
 }
 function StatusPill({ status }: { status: string }) {

@@ -766,13 +766,21 @@ export const api = {
   // Project dashboard — one aggregated payload for the /projects/:id
   // screen: team, hours, boards, tasks, meetings, goals, financials,
   // activity. Financials is null unless the caller is admin / coord.
-  getProjectDashboard: (id: string) =>
-    request<{
+  // Optional from/to (YYYY-MM-DD) scope every card to that range;
+  // default is the current calendar month.
+  getProjectDashboard: (id: string, opts?: { from?: string; to?: string }) => {
+    const qs = new URLSearchParams();
+    if (opts?.from) qs.set('from', opts.from);
+    if (opts?.to)   qs.set('to',   opts.to);
+    const suffix = qs.toString() ? `?${qs}` : '';
+    return request<{
       project: any;
       as_of: { month: number; year: number; timezone: string };
+      range: { from: string; to: string; is_default: boolean };
       team: Array<{ employee_id: string; employee_name: string; monthly_hours: number; logged_hours: number; avatar: string | null }>;
       top_contributors_30d: Array<{ employee_id: string; employee_name: string; hours: number; avatar: string | null }>;
       hours_this_month: number;
+      hours_detail: Array<{ id: string; employee_id: string; employee_name: string; log_date: string; hours: number; notes: string | null; week_num: number; day_status: string | null; weekly_status: string | null; avatar: string | null }>;
       hours_trend_weekly: Array<{ week: string; hours: number }>;
       boards: Array<{ id: string; name: string; color: string | null; statuses: any[]; task_count: number; done_count: number; by_status: Record<string, number> | null }>;
       my_open_tasks: Array<{ id: string; title: string; status: string; priority: string; due_date: string | null; list_id: string; list_name: string }>;
@@ -782,7 +790,8 @@ export const api = {
       recent_activity: Array<{ action: string; actor_name: string | null; body: string | null; metadata: any; created_at: string }>;
       financials: null | { invoiced_pending: number; received: number; pending_count: number; cleared_count: number };
       viewer: { role: string; is_privileged: boolean; employee_id: string | null };
-    }>(`/projects/${id}/dashboard`),
+    }>(`/projects/${id}/dashboard${suffix}`);
+  },
 
   // ── Meetings (Aug 2026) ────────────────────────────────────────
   listMeetings: (opts?: { scope?: 'mine' | 'all'; project_id?: string; from?: string; to?: string; status?: string }) => {

@@ -15475,12 +15475,26 @@ app.get('/api/projects/:id/dashboard', async (req, res) => {
     const project = (await sql`SELECT * FROM projects WHERE id=${projectId} LIMIT 1` as any[])[0];
     if (!project) return res.status(404).json({ error: 'Project not found' });
 
+    // Optional date-range filter — every hours / activity / meetings /
+    // task-driven card in the response is scoped to this window when
+    // the client passes it. Falls back to the current calendar month
+    // for backward compat with the previous default view.
     const now = new Date();
     const month = now.getMonth() + 1;
     const year  = now.getFullYear();
     const monthStart = new Date(Date.UTC(year, month - 1, 1)).toISOString().slice(0, 10);
     const monthEnd   = new Date(Date.UTC(year, month, 0)).toISOString().slice(0, 10);
+    const validDate = (s: any) => typeof s === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(s) ? s : null;
+    const fromParam = validDate(req.query.from);
+    const toParam   = validDate(req.query.to);
+    const rangeStart = fromParam ?? monthStart;
+    const rangeEnd   = toParam   ?? monthEnd;
+
     const rolling30Start = new Date(Date.now() - 30 * 86400000).toISOString().slice(0, 10);
+    // The trend line stretches to a longer window than the main range
+    // so people can eyeball the "before the range" context; when the
+    // caller narrows the range aggressively, this still shows the last
+    // 12 weeks so the chart is legible.
     const trendStart = new Date(Date.now() - 12 * 7 * 86400000).toISOString().slice(0, 10);
     const upcomingEnd = new Date(Date.now() + 7 * 86400000).toISOString();
 
@@ -15490,6 +15504,7 @@ app.get('/api/projects/:id/dashboard', async (req, res) => {
       topContributors,
       hoursThisMonth,
       hoursTrendWeekly,
+      hoursDetail,
       boardsWithCounts,
       myOpenTasks,
       upcomingMeetings,
@@ -15498,35 +15513,58 @@ app.get('/api/projects/:id/dashboard', async (req, res) => {
       recentActivity,
       financials,
     ] = await Promise.all([
+      // Team + planned/logged uses the RANGE if given. When it collapses
+      // to a partial month we still show the assignment (monthly plan)
+      // so the row exists — the logged number just reflects the range.
       sql`
         SELECT a.employee_id, a.employee_name, a.monthly_hours,
                COALESCE((SELECT SUM(hours) FROM hour_log_days d
                          WHERE d.employee_id=a.employee_id AND d.project_id=a.project_id
-                           AND d.month=${month} AND d.year=${year}), 0)::numeric AS logged_hours,
+                           AND d.log_date BETWEEN ${rangeStart}::date AND ${rangeEnd}::date), 0)::numeric AS logged_hours,
                e.avatar
         FROM project_assignments a
         LEFT JOIN employees e ON e.id = a.employee_id
         WHERE a.project_id=${projectId} AND a.month=${month} AND a.year=${year}
         ORDER BY a.monthly_hours DESC NULLS LAST, a.employee_name`,
+      // Top contributors — scope to the same range as everything else
+      // instead of a stubborn rolling-30.
       sql`
         SELECT d.employee_id, d.employee_name, e.avatar,
                ROUND(SUM(d.hours)::numeric, 1) AS hours
         FROM hour_log_days d
         LEFT JOIN employees e ON e.id = d.employee_id
-        WHERE d.project_id=${projectId} AND d.log_date >= ${rolling30Start}::date
+        WHERE d.project_id=${projectId} AND d.log_date BETWEEN ${rangeStart}::date AND ${rangeEnd}::date
         GROUP BY d.employee_id, d.employee_name, e.avatar
         ORDER BY hours DESC
         LIMIT 8`,
       sql`
         SELECT COALESCE(SUM(hours), 0)::numeric AS h
         FROM hour_log_days
-        WHERE project_id=${projectId} AND log_date BETWEEN ${monthStart}::date AND ${monthEnd}::date`,
+        WHERE project_id=${projectId} AND log_date BETWEEN ${rangeStart}::date AND ${rangeEnd}::date`,
+      // Trend is fixed at 12 weeks so the chart shape doesn't collapse
+      // when the caller filters to a single week; the range filter
+      // gets a callout instead.
       sql`
         SELECT DATE_TRUNC('week', log_date)::date AS week,
                ROUND(SUM(hours)::numeric, 1) AS hours
         FROM hour_log_days
         WHERE project_id=${projectId} AND log_date >= ${trendStart}::date
         GROUP BY week ORDER BY week`,
+      // Detailed hours log — one row per (employee, day) with status
+      // pulled from the weekly hour_logs row and the individual day.
+      // Everything in the current range; capped at 300 so a wide
+      // range on an old project doesn't blow up the payload.
+      sql`
+        SELECT d.id, d.employee_id, d.employee_name, d.log_date::text AS log_date,
+               d.hours, d.notes, d.week_num, d.status AS day_status,
+               hl.status AS weekly_status,
+               e.avatar
+        FROM hour_log_days d
+        LEFT JOIN hour_logs hl ON hl.id = d.hour_log_id
+        LEFT JOIN employees e ON e.id = d.employee_id
+        WHERE d.project_id=${projectId} AND d.log_date BETWEEN ${rangeStart}::date AND ${rangeEnd}::date
+        ORDER BY d.log_date DESC, d.employee_name
+        LIMIT 300`,
       sql`
         SELECT l.id, l.name, l.color, l.statuses,
                (SELECT COUNT(*) FROM tasks t WHERE t.list_id=l.id AND t.parent_id IS NULL)::int AS task_count,
@@ -15544,6 +15582,8 @@ app.get('/api/projects/:id/dashboard', async (req, res) => {
         WHERE l.project_id=${projectId} AND t.assignee_id=${empId} AND t.completed_at IS NULL
         ORDER BY (t.due_date IS NULL), t.due_date NULLS LAST, t.updated_at DESC
         LIMIT 20` : Promise.resolve([] as any[]),
+      // Upcoming meetings: any meeting still to happen inside the range,
+      // capped at the 7-day forward window if the range is wide-open.
       sql`
         SELECT m.id, m.title, m.start_at, m.end_at, m.location_kind, m.location,
                m.meeting_link, m.organizer_name, m.status,
@@ -15551,13 +15591,16 @@ app.get('/api/projects/:id/dashboard', async (req, res) => {
         FROM meetings m
         WHERE m.project_id=${projectId} AND m.status='scheduled'
           AND m.end_at >= NOW() AND m.start_at <= ${upcomingEnd}::timestamptz
+          AND m.start_at::date BETWEEN ${rangeStart}::date AND (${rangeEnd}::date + INTERVAL '7 days')
         ORDER BY m.start_at ASC LIMIT 20`,
+      // Recent past meetings: past meetings inside the range.
       sql`
         SELECT m.id, m.title, m.start_at, m.location_kind, m.location, m.organizer_name, m.status,
                (SELECT COUNT(*) FROM meeting_attendees a WHERE a.meeting_id=m.id)::int AS attendee_count
         FROM meetings m
-        WHERE m.project_id=${projectId} AND m.end_at < NOW() AND m.start_at >= NOW() - INTERVAL '30 days'
-        ORDER BY m.start_at DESC LIMIT 10`,
+        WHERE m.project_id=${projectId} AND m.end_at < NOW()
+          AND m.start_at::date BETWEEN ${rangeStart}::date AND ${rangeEnd}::date
+        ORDER BY m.start_at DESC LIMIT 20`,
       sql`
         SELECT g.id, g.title, g.description, g.status, g.target_date,
                g.owner_id, g.owner_name,
@@ -15578,6 +15621,7 @@ app.get('/api/projects/:id/dashboard', async (req, res) => {
         SELECT action, actor_name, body, metadata, created_at
         FROM project_activity
         WHERE project_id=${projectId}
+          AND created_at::date BETWEEN ${rangeStart}::date AND ${rangeEnd}::date
         ORDER BY created_at DESC LIMIT 30`.catch(() => [] as any[]),
       isFinance ? sql`
         SELECT
@@ -15592,9 +15636,11 @@ app.get('/api/projects/:id/dashboard', async (req, res) => {
     res.json({
       project,
       as_of: { month, year, timezone: 'IST' },
+      range: { from: rangeStart, to: rangeEnd, is_default: !fromParam && !toParam },
       team: teamThisMonth,
       top_contributors_30d: topContributors,
       hours_this_month: Number((hoursThisMonth as any[])[0]?.h ?? 0),
+      hours_detail: hoursDetail,
       hours_trend_weekly: (hoursTrendWeekly as any[]).map(r => ({ week: r.week, hours: Number(r.hours) })),
       boards: boardsWithCounts,
       my_open_tasks: myOpenTasks,
