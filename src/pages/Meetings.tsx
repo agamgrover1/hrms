@@ -188,6 +188,7 @@ export default function Meetings() {
               load();
             } catch (e: any) { toast.error('RSVP failed', e?.body?.error ?? e?.message); }
           }}
+          onDataChanged={load}
         />
       )}
     </div>
@@ -451,7 +452,7 @@ function MeetingComposer({ mode, initial, employees, projects, onClose, onSaved 
 }
 
 // ── Detail drawer ────────────────────────────────────────────
-function MeetingDetailDrawer({ meeting, myEmpId, canEdit, onClose, onEdit, onCancel, onRsvp }: {
+function MeetingDetailDrawer({ meeting, myEmpId, canEdit, onClose, onEdit, onCancel, onRsvp, onDataChanged }: {
   meeting: Meeting;
   myEmpId: string | null;
   canEdit: boolean;
@@ -459,8 +460,27 @@ function MeetingDetailDrawer({ meeting, myEmpId, canEdit, onClose, onEdit, onCan
   onEdit: () => void;
   onCancel: () => void;
   onRsvp: (s: 'accepted' | 'declined' | 'tentative') => void;
+  onDataChanged: () => void;
 }) {
   const myAttendance = myEmpId ? meeting.attendees.find(a => a.employee_id === myEmpId) : null;
+  const canWriteNotes = !!myEmpId && (meeting.organizer_id === myEmpId || !!myAttendance);
+  const [notes, setNotes] = useState(meeting.notes ?? '');
+  const [savingNotes, setSavingNotes] = useState(false);
+  const [notesEdited, setNotesEdited] = useState(false);
+  useEffect(() => { setNotes(meeting.notes ?? ''); setNotesEdited(false); }, [meeting.id, meeting.notes]);
+  const saveNotes = async () => {
+    if (!canWriteNotes) return;
+    const trimmed = notes.trim();
+    const original = (meeting.notes ?? '').trim();
+    if (trimmed === original) { setNotesEdited(false); return; }
+    setSavingNotes(true);
+    try {
+      await api.patchMeetingNotes(meeting.id, trimmed || null);
+      setNotesEdited(false);
+      onDataChanged();
+    } catch (e: any) { toast.error('Could not save notes', e?.body?.error ?? e?.message); }
+    finally { setSavingNotes(false); }
+  };
   return (
     <div className="fixed inset-0 z-40 bg-black/40 flex items-start justify-end" onMouseDown={onClose}>
       <div className="bg-surface w-full max-w-md h-full shadow-elev-4 border-l border-outline flex flex-col" onMouseDown={e => e.stopPropagation()}>
@@ -518,6 +538,39 @@ function MeetingDetailDrawer({ meeting, myEmpId, canEdit, onClose, onEdit, onCan
                 </div>
               ))}
             </div>
+          </div>
+
+          {/* Meeting notes — any attendee can edit. Ships as a
+              collaborative surface: whoever took the minutes types
+              them in, everyone else sees them. */}
+          <div>
+            <div className="flex items-center gap-2 mb-1">
+              <p className="text-[10px] font-bold uppercase tracking-wider text-on-surface-muted">Notes</p>
+              {savingNotes && <span className="text-[10px] text-accent inline-flex items-center gap-1"><Loader2 size={9} className="animate-spin" /> Saving…</span>}
+              {!savingNotes && notesEdited && <span className="text-[10px] text-warning">Unsaved</span>}
+              {!savingNotes && !notesEdited && meeting.notes_updated_by_name && (
+                <span className="text-[10px] text-on-surface-subtle">
+                  edited by {meeting.notes_updated_by_name}
+                  {meeting.notes_updated_at && ` · ${new Date(meeting.notes_updated_at).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' })}`}
+                </span>
+              )}
+            </div>
+            {canWriteNotes ? (
+              <textarea
+                value={notes}
+                onChange={e => { setNotes(e.target.value); setNotesEdited(true); }}
+                onBlur={saveNotes}
+                placeholder="Decisions · action items · anything worth remembering after the meeting"
+                rows={6}
+                className="w-full px-3 py-2 rounded-lg border border-outline bg-surface-2 text-sm text-on-surface placeholder:text-on-surface-subtle focus:outline-none focus:ring-2 focus:ring-accent/30" />
+            ) : meeting.notes ? (
+              <p className="text-sm text-on-surface whitespace-pre-wrap">{meeting.notes}</p>
+            ) : (
+              <p className="text-[11px] text-on-surface-subtle italic">No notes yet.</p>
+            )}
+            {canWriteNotes && (
+              <p className="text-[10px] text-on-surface-subtle mt-1">Notes save automatically when you click away.</p>
+            )}
           </div>
 
           {/* RSVP controls — for invitees, when not cancelled */}

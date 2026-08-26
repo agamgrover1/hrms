@@ -815,6 +815,8 @@ export const api = {
   cancelMeeting: (id: string) => request<{ ok: true }>(`/meetings/${id}`, { method: 'DELETE' }),
   rsvpMeeting: (id: string, status: 'accepted' | 'declined' | 'tentative') =>
     request<{ ok: true }>(`/meetings/${id}/rsvp`, { method: 'POST', body: JSON.stringify({ status }) }),
+  patchMeetingNotes: (id: string, notes: string | null) =>
+    request<{ ok: true }>(`/meetings/${id}/notes`, { method: 'PATCH', body: JSON.stringify({ notes }) }),
 
   // Short-lived JWT for the VPS mail service. Used by mailApi.ts.
   getMailToken: () =>
@@ -1967,6 +1969,10 @@ export interface Meeting {
   organizer_id: string;
   organizer_name: string;
   status: 'scheduled' | 'cancelled' | 'completed';
+  notes: string | null;
+  notes_updated_at: string | null;
+  notes_updated_by_id: string | null;
+  notes_updated_by_name: string | null;
   created_at: string;
   updated_at: string;
   attendees: MeetingAttendee[];

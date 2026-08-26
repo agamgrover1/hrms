@@ -905,6 +905,8 @@ async function runStartupMigrations() {
     // empty result set means "still needs to run", so we don't set the
     // flag and fall through.
     await sql`SELECT owner_id FROM goals LIMIT 0`;
+    // Also ensure the meetings.notes column landed on old DBs.
+    await sql`SELECT notes FROM meetings LIMIT 0`;
     // Also verify the legacy goals.employee_id constraint has been
     // relaxed. bad=0 both when the column doesn't exist (fresh DB)
     // AND when it exists as nullable (post-migration old DB). bad>=1
@@ -3639,6 +3641,14 @@ async function runStartupMigrations() {
   // (meeting_id, kind). Single column is enough for the MVP.
   await sql`ALTER TABLE meetings ADD COLUMN IF NOT EXISTS reminder_sent_at TIMESTAMPTZ`.catch(()=>{});
   await sql`CREATE INDEX IF NOT EXISTS idx_meetings_reminder_due ON meetings(status, start_at) WHERE reminder_sent_at IS NULL`.catch(()=>{});
+  // Post-meeting notes — distinct from `description` which is the
+  // pre-meeting agenda. Any attendee can edit; the `notes_updated_by`
+  // + `notes_updated_at` give a light audit trail so the reader can
+  // see who wrote what and when.
+  await sql`ALTER TABLE meetings ADD COLUMN IF NOT EXISTS notes TEXT`.catch(()=>{});
+  await sql`ALTER TABLE meetings ADD COLUMN IF NOT EXISTS notes_updated_at TIMESTAMPTZ`.catch(()=>{});
+  await sql`ALTER TABLE meetings ADD COLUMN IF NOT EXISTS notes_updated_by_id TEXT`.catch(()=>{});
+  await sql`ALTER TABLE meetings ADD COLUMN IF NOT EXISTS notes_updated_by_name TEXT`.catch(()=>{});
 
   _migrated = true;
 }
@@ -23056,6 +23066,40 @@ app.post('/api/meetings/:id/rsvp', async (req, res) => {
         `Meeting: ${m.title}`,
         `/meetings?meeting=${m.id}`).catch(() => {});
     }
+    res.json({ ok: true });
+  } catch (err: any) { res.status(500).json({ error: err.message ?? 'Server error' }); }
+});
+
+// PATCH /api/meetings/:id/notes — meeting notes edit. Deliberately
+// its own endpoint (not part of the main PATCH) so we can open the
+// permission gate: any attendee can write notes, not just the
+// organizer. Meeting notes are shared work by definition, so making
+// the whole invite list edit them matches how these actually get
+// filled in — the person who took the notes types them up.
+app.patch('/api/meetings/:id/notes', async (req, res) => {
+  try {
+    await runStartupMigrations();
+    const gate = await meetingActor(req, res);
+    if (!gate.ok) return;
+    if (!gate.user.employeeId) return res.status(400).json({ error: 'You have no linked employee record.' });
+    const m = (await sql`SELECT id, organizer_id FROM meetings WHERE id=${req.params.id} LIMIT 1` as any[])[0];
+    if (!m) return res.status(404).json({ error: 'Meeting not found' });
+    const isOrganizer = m.organizer_id === gate.user.employeeId;
+    const isAdmin = gate.user.role === 'admin';
+    const isAttendee = (await sql`SELECT 1 FROM meeting_attendees WHERE meeting_id=${m.id} AND employee_id=${gate.user.employeeId} LIMIT 1` as any[]).length > 0;
+    if (!isOrganizer && !isAdmin && !isAttendee) {
+      return res.status(403).json({ error: 'Only meeting attendees can edit notes.' });
+    }
+    const notes = req.body?.notes;
+    if (notes !== null && typeof notes !== 'string') return res.status(400).json({ error: 'notes must be a string (or null to clear).' });
+    await sql`
+      UPDATE meetings SET
+        notes = ${notes ?? null},
+        notes_updated_at = NOW(),
+        notes_updated_by_id = ${gate.user.employeeId},
+        notes_updated_by_name = ${gate.user.name},
+        updated_at = NOW()
+      WHERE id=${m.id}`;
     res.json({ ok: true });
   } catch (err: any) { res.status(500).json({ error: err.message ?? 'Server error' }); }
 });
