@@ -904,7 +904,7 @@ async function runStartupMigrations() {
     // For a *seed* (rows, not columns), we probe with EXISTS-style: an
     // empty result set means "still needs to run", so we don't set the
     // flag and fall through.
-    await sql`SELECT reminder_sent_at FROM meetings LIMIT 0`;
+    await sql`SELECT owner_id FROM goals LIMIT 0`;
     _migrated = true;
     return;
   } catch {
@@ -3398,6 +3398,19 @@ async function runStartupMigrations() {
       created_by_id TEXT,
       created_by_name TEXT
     )`;
+  // Backfill columns for DBs where `goals` was created before these
+  // fields existed on the CREATE TABLE above. IF NOT EXISTS is
+  // idempotent, so this is a no-op on fresh DBs.
+  await sql`ALTER TABLE goals ADD COLUMN IF NOT EXISTS description TEXT`.catch(()=>{});
+  await sql`ALTER TABLE goals ADD COLUMN IF NOT EXISTS owner_id TEXT`.catch(()=>{});
+  await sql`ALTER TABLE goals ADD COLUMN IF NOT EXISTS owner_name TEXT`.catch(()=>{});
+  await sql`ALTER TABLE goals ADD COLUMN IF NOT EXISTS project_id TEXT`.catch(()=>{});
+  await sql`ALTER TABLE goals ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'active'`.catch(()=>{});
+  await sql`ALTER TABLE goals ADD COLUMN IF NOT EXISTS target_date DATE`.catch(()=>{});
+  await sql`ALTER TABLE goals ADD COLUMN IF NOT EXISTS created_by_id TEXT`.catch(()=>{});
+  await sql`ALTER TABLE goals ADD COLUMN IF NOT EXISTS created_by_name TEXT`.catch(()=>{});
+  await sql`ALTER TABLE goals ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ DEFAULT NOW()`.catch(()=>{});
+  await sql`ALTER TABLE goals ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ DEFAULT NOW()`.catch(()=>{});
   await sql`CREATE INDEX IF NOT EXISTS idx_goals_owner ON goals(owner_id)`.catch(()=>{});
   await sql`CREATE INDEX IF NOT EXISTS idx_goals_project ON goals(project_id)`.catch(()=>{});
   await sql`CREATE INDEX IF NOT EXISTS idx_goals_status ON goals(status)`.catch(()=>{});
