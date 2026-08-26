@@ -26,32 +26,46 @@ const workspaceGroup: NavGroup = {
   ],
 };
 
+// Payroll + Perf + Incentives + IT. Renamed the ambiguous "Finance"
+// label (which used to point at the Incentives module and clashed
+// with the actual Finance/Profitability module a couple of groups
+// below).
 const opsGroup: NavGroup = {
   id: 'ops',
-  label: 'Operations',
+  label: 'Payroll & Perf',
   items: [
     { to: '/payroll', icon: Wallet, label: 'Payroll' },
     { to: '/performance', icon: Sparkles, label: 'Performance' },
     { to: '/performance/pulse', icon: Activity, label: 'Pulse (auto)' },
-    { to: '/incentives', icon: TrendingUp, label: 'Finance' },
+    { to: '/incentives', icon: TrendingUp, label: 'Incentives' },
     { to: '/asset-repairs', icon: Wrench, label: 'IT & Repairs' },
   ],
 };
 
+// Split the old 11-item "Project Mgmt" group in two so each list is
+// small enough to scan at a glance. Task analytics lives on the
+// Tasks page header now (in-page button) so it's no longer here.
+// Workload lives under "You" for managers (Team workload) and under
+// Reports at org-level for admin.
 const projectGroup: NavGroup = {
   id: 'projects',
-  label: 'Project Mgmt',
+  label: 'Projects',
   items: [
     { to: '/projects', icon: Briefcase, label: 'Projects' },
     { to: '/tasks', icon: KanbanSquare, label: 'Tasks' },
-    { to: '/tasks/analytics', icon: BarChart3, label: 'Task analytics' },
-    { to: '/workload', icon: Activity, label: 'Workload' },
     { to: '/goals', icon: Target, label: 'Goals' },
     { to: '/reports', icon: BarChart3, label: 'Reports' },
+  ],
+};
+
+const hoursGroup: NavGroup = {
+  id: 'hours',
+  label: 'Hours',
+  items: [
     { to: '/hours', icon: Layers, label: 'Hours grid' },
     { to: '/hours/allocation', icon: CalendarDays, label: 'Allocation' },
-    { to: '/hours/compliance', icon: AlertTriangle, label: 'Compliance' },
     { to: '/hours/utilization', icon: Activity, label: 'Utilization' },
+    { to: '/hours/compliance', icon: AlertTriangle, label: 'Compliance' },
     { to: '/hours/approvals', icon: ClipboardCheck, label: 'Approvals' },
   ],
 };
@@ -233,7 +247,7 @@ export default function Sidebar({ mobileOpen = false, onMobileClose }: { mobileO
   const groups: NavGroup[] = [];
   if (isAdminLike) {
     groups.push(workspaceGroup, opsGroup);
-    if (role === 'admin') groups.push(projectGroup);
+    if (role === 'admin') groups.push(projectGroup, hoursGroup);
     if (role === 'admin') groups.push(financeGroup); // admin-only finance module
     groups.push(settingsGroup);
   } else if (isHRIntern) {
@@ -256,8 +270,10 @@ export default function Sidebar({ mobileOpen = false, onMobileClose }: { mobileO
       ],
     });
   } else if (isCoord) {
-    // Coord sees Project Mgmt + Invoices + their own personal nav (rendered below)
-    groups.push(projectGroup);
+    // Coord sees Projects + Hours + Invoices + their own personal nav.
+    // Two smaller groups instead of the old 11-item Project Mgmt bucket
+    // — reflects how they actually work (project work vs. time work).
+    groups.push(projectGroup, hoursGroup);
     groups.push(coordFinanceGroup);
     // Coord also gets the org Pulse page (read-only). Same surface admin sees,
     // backend role check widened to include them.
