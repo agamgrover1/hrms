@@ -47,6 +47,13 @@ export function getNotifRoute(type: string, role: string): string {
       // pre-date the link column being populated.
       return '/tasks';
 
+    case 'meeting_invited':
+    case 'meeting_rsvp':
+    case 'meeting_cancelled':
+      // Meeting notifications stamp `link` at emit time; this is only
+      // the fallback for pre-link rows.
+      return '/meetings';
+
     case 'leave_submitted':
       // Admin/HR FYI copy on optional-leave submissions (manager is
       // the primary reviewer). Land on the same leaves page.
@@ -239,6 +246,9 @@ export const TYPE_CONFIG: Record<string, { icon: any; color: string; bg: string 
   task_mention:            { icon: AtSign,         color: '#7c3aed', bg: '#f5f3ff' },
   task_comment:            { icon: FileText,       color: '#0891b2', bg: '#f0f9ff' },
   task_assigned:           { icon: CheckCircle,    color: '#2563eb', bg: '#eff6ff' },
+  meeting_invited:         { icon: Calendar,       color: '#7c3aed', bg: '#f5f3ff' },
+  meeting_rsvp:            { icon: CheckCircle,    color: '#2563eb', bg: '#eff6ff' },
+  meeting_cancelled:       { icon: XCircle,        color: '#dc2626', bg: '#fef2f2' },
   leave_applied:           { icon: Calendar,       color: '#d97706', bg: '#fffbeb' },
   leave_submitted:         { icon: Calendar,       color: '#64748b', bg: '#f1f5f9' },
   leave_needs_hr_approval: { icon: Calendar,       color: '#d97706', bg: '#fffbeb' },

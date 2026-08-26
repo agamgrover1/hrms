@@ -22,6 +22,7 @@ import MyTeam from './pages/employee/MyTeam';
 import Projects from './pages/Projects';
 import Tasks from './pages/Tasks';
 import TaskAnalytics from './pages/TaskAnalytics';
+import Meetings from './pages/Meetings';
 import Workload from './pages/Workload';
 import Goals from './pages/Goals';
 import Reports from './pages/Reports';
@@ -112,6 +113,7 @@ function AppRoutes() {
             change (only admin / HR manager / coordinator create boards). */}
         <Route path="tasks" element={<ProtectedRoute><Tasks /></ProtectedRoute>} />
         <Route path="tasks/analytics" element={<ProtectedRoute><TaskAnalytics /></ProtectedRoute>} />
+        <Route path="meetings" element={<ProtectedRoute><Meetings /></ProtectedRoute>} />
         {/* Workload — open to anyone: employees with reports see their team,
             admin/HR/coord see the whole org via the scope toggle. The API
             enforces scope=all vs scope=team based on role. */}

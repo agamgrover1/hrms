@@ -763,6 +763,38 @@ export const api = {
     request<Array<{ type: string; muted_at: string }>>(`/me/notification-mutes`),
   setMyNotificationMutes: (types: string[]) =>
     request<{ ok: true; muted: string[] }>(`/me/notification-mutes`, { method: 'PUT', body: JSON.stringify({ types }) }),
+  // ── Meetings (Aug 2026) ────────────────────────────────────────
+  listMeetings: (opts?: { scope?: 'mine' | 'all'; project_id?: string; from?: string; to?: string; status?: string }) => {
+    const qs = new URLSearchParams();
+    if (opts?.scope) qs.set('scope', opts.scope);
+    if (opts?.project_id) qs.set('project_id', opts.project_id);
+    if (opts?.from) qs.set('from', opts.from);
+    if (opts?.to)   qs.set('to',   opts.to);
+    if (opts?.status) qs.set('status', opts.status);
+    return request<Meeting[]>(`/meetings${qs.toString() ? '?' + qs : ''}`);
+  },
+  getMeeting: (id: string) => request<MeetingDetail>(`/meetings/${id}`),
+  createMeeting: (data: {
+    title: string; description?: string | null;
+    start_at: string; end_at: string;
+    location_kind: 'in_office' | 'virtual' | 'hybrid';
+    location?: string | null; meeting_link?: string | null;
+    project_id?: string | null;
+    attendee_ids?: string[];
+  }) => request<{ ok: true; id: string }>('/meetings', { method: 'POST', body: JSON.stringify(data) }),
+  patchMeeting: (id: string, patch: Partial<{
+    title: string; description: string | null;
+    start_at: string; end_at: string;
+    location_kind: 'in_office' | 'virtual' | 'hybrid';
+    location: string | null; meeting_link: string | null;
+    project_id: string | null;
+    status: 'scheduled' | 'cancelled' | 'completed';
+    attendee_ids: string[];
+  }>) => request<{ ok: true }>(`/meetings/${id}`, { method: 'PATCH', body: JSON.stringify(patch) }),
+  cancelMeeting: (id: string) => request<{ ok: true }>(`/meetings/${id}`, { method: 'DELETE' }),
+  rsvpMeeting: (id: string, status: 'accepted' | 'declined' | 'tentative') =>
+    request<{ ok: true }>(`/meetings/${id}/rsvp`, { method: 'POST', body: JSON.stringify({ status }) }),
+
   // Short-lived JWT for the VPS mail service. Used by mailApi.ts.
   getMailToken: () =>
     request<{ token: string; expires_in: number; api_base: string }>(`/me/mail-token`),
@@ -1892,6 +1924,33 @@ export interface TaskStatus {
   color: string;
   type: 'open' | 'active' | 'done';
 }
+
+export interface MeetingAttendee {
+  employee_id: string;
+  employee_name: string;
+  rsvp_status: 'invited' | 'accepted' | 'declined' | 'tentative';
+  responded_at: string | null;
+}
+export interface Meeting {
+  id: string;
+  title: string;
+  description: string | null;
+  start_at: string;
+  end_at: string;
+  location_kind: 'in_office' | 'virtual' | 'hybrid';
+  location: string | null;
+  meeting_link: string | null;
+  project_id: string | null;
+  project_name: string | null;
+  project_client: string | null;
+  organizer_id: string;
+  organizer_name: string;
+  status: 'scheduled' | 'cancelled' | 'completed';
+  created_at: string;
+  updated_at: string;
+  attendees: MeetingAttendee[];
+}
+export type MeetingDetail = Meeting;
 
 export type TaskPriority = 'urgent' | 'high' | 'normal' | 'low' | 'none';
 

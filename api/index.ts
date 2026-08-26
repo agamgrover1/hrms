@@ -904,7 +904,7 @@ async function runStartupMigrations() {
     // For a *seed* (rows, not columns), we probe with EXISTS-style: an
     // empty result set means "still needs to run", so we don't set the
     // flag and fall through.
-    await sql`SELECT permissions FROM task_lists LIMIT 0`;
+    await sql`SELECT id FROM meetings LIMIT 0`;
     _migrated = true;
     return;
   } catch {
@@ -3566,6 +3566,43 @@ async function runStartupMigrations() {
     )
     WHERE type = 'attendance_note_pending'
       AND body LIKE '%T00:00:00%'`.catch(() => {});
+
+  // ── Meetings module (Aug 2026) ─────────────────────────────────────
+  // In-office / virtual meetings with attendees + RSVP + optional
+  // project tag. Deliberately simple — no room double-booking gate,
+  // no recurring rules (both can layer on later without a rewrite).
+  await sql`
+    CREATE TABLE IF NOT EXISTS meetings (
+      id TEXT PRIMARY KEY,
+      title TEXT NOT NULL,
+      description TEXT,
+      start_at TIMESTAMPTZ NOT NULL,
+      end_at TIMESTAMPTZ NOT NULL,
+      location_kind TEXT NOT NULL DEFAULT 'in_office',   -- in_office | virtual | hybrid
+      location TEXT,           -- room name or physical address
+      meeting_link TEXT,       -- URL for virtual / hybrid
+      project_id TEXT,         -- optional; FK by value into projects
+      organizer_id TEXT NOT NULL,
+      organizer_name TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'scheduled',   -- scheduled | cancelled | completed
+      created_by_id TEXT,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )`;
+  await sql`CREATE INDEX IF NOT EXISTS idx_meetings_start   ON meetings(start_at DESC)`.catch(()=>{});
+  await sql`CREATE INDEX IF NOT EXISTS idx_meetings_project ON meetings(project_id, start_at DESC) WHERE project_id IS NOT NULL`.catch(()=>{});
+  await sql`CREATE INDEX IF NOT EXISTS idx_meetings_organizer ON meetings(organizer_id, start_at DESC)`.catch(()=>{});
+  await sql`
+    CREATE TABLE IF NOT EXISTS meeting_attendees (
+      meeting_id TEXT NOT NULL REFERENCES meetings(id) ON DELETE CASCADE,
+      employee_id TEXT NOT NULL,
+      employee_name TEXT NOT NULL,
+      rsvp_status TEXT NOT NULL DEFAULT 'invited',   -- invited | accepted | declined | tentative
+      responded_at TIMESTAMPTZ,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      PRIMARY KEY (meeting_id, employee_id)
+    )`;
+  await sql`CREATE INDEX IF NOT EXISTS idx_meeting_attendees_emp ON meeting_attendees(employee_id, meeting_id)`.catch(()=>{});
 
   _migrated = true;
 }
@@ -22546,6 +22583,269 @@ app.get('/api/me/notification-mutes', async (req, res) => {
     if (!uid) return res.status(401).json({ error: 'Not authenticated' });
     const rows = await sql`SELECT type, muted_at FROM user_notification_mutes WHERE user_id=${uid} ORDER BY type`;
     res.json(rows);
+  } catch (err: any) { res.status(500).json({ error: err.message ?? 'Server error' }); }
+});
+
+// ── Meetings ──────────────────────────────────────────────────────
+// In-office / virtual / hybrid meetings with attendee RSVP. Every
+// signed-in employee can create + attend meetings; only the
+// organizer can edit or cancel a meeting they created. RSVP
+// applies only to the caller's own row.
+
+async function meetingActor(req: any, res: any): Promise<{ ok: boolean; user?: any }> {
+  const uid = req.header('x-user-id');
+  if (!uid) { res.status(401).json({ error: 'Not signed in' }); return { ok: false }; }
+  const u = (await sql`SELECT id, name, email, role, employee_id_ref FROM app_users WHERE id=${uid} LIMIT 1` as any[])[0];
+  if (!u) { res.status(401).json({ error: 'Not signed in' }); return { ok: false }; }
+  const employeeId = await resolveUserToEmployee(u).catch(() => null);
+  return { ok: true, user: { id: u.id, name: u.name, role: u.role, employeeId } };
+}
+
+function toIsoStrict(s: any): string | null {
+  if (!s) return null;
+  const d = new Date(String(s));
+  return isNaN(d.getTime()) ? null : d.toISOString();
+}
+
+// GET /api/meetings
+//   ?scope=mine|all            (default 'mine' — mine = organized OR invited)
+//   &project_id=&from=&to=&status=
+app.get('/api/meetings', async (req, res) => {
+  try {
+    await runStartupMigrations();
+    const gate = await meetingActor(req, res);
+    if (!gate.ok) return;
+    const scope = req.query.scope === 'all' ? 'all' : 'mine';
+    const project_id = (req.query.project_id as string) || null;
+    const status = (req.query.status as string) || null;
+    const from = toIsoStrict(req.query.from) || null;
+    const to   = toIsoStrict(req.query.to)   || null;
+    const empId = gate.user.employeeId;
+    // "all" is admin/HR/coord-only — everyone else forced to mine.
+    const isPrivileged = ['admin', 'hr_manager', 'hr_intern', 'project_coordinator'].includes(gate.user.role);
+    const effectiveScope = (scope === 'all' && isPrivileged) ? 'all' : 'mine';
+    if (effectiveScope === 'mine' && !empId) return res.json([]);   // bare admin login, no employee row → no personal meetings
+
+    const rows = await sql`
+      SELECT m.*, p.name AS project_name, p.client_name AS project_client,
+             COALESCE(json_agg(json_build_object(
+               'employee_id', a.employee_id,
+               'employee_name', a.employee_name,
+               'rsvp_status', a.rsvp_status,
+               'responded_at', a.responded_at
+             ) ORDER BY a.employee_name) FILTER (WHERE a.employee_id IS NOT NULL), '[]'::json) AS attendees
+      FROM meetings m
+      LEFT JOIN projects p ON p.id = m.project_id
+      LEFT JOIN meeting_attendees a ON a.meeting_id = m.id
+      WHERE (${project_id}::text IS NULL OR m.project_id = ${project_id})
+        AND (${status}::text     IS NULL OR m.status = ${status})
+        AND (${from}::timestamptz IS NULL OR m.end_at   >= ${from}::timestamptz)
+        AND (${to}::timestamptz   IS NULL OR m.start_at <= ${to}::timestamptz)
+        AND (
+          ${effectiveScope}::text = 'all'
+          OR m.organizer_id = ${empId}::text
+          OR EXISTS (SELECT 1 FROM meeting_attendees a2 WHERE a2.meeting_id = m.id AND a2.employee_id = ${empId}::text)
+        )
+      GROUP BY m.id, p.name, p.client_name
+      ORDER BY m.start_at ASC`;
+    res.json(rows);
+  } catch (err: any) { res.status(500).json({ error: err.message ?? 'Server error' }); }
+});
+
+// GET /api/meetings/:id — detail, including attendee list. Anyone
+// authenticated can read a meeting (matches how the task API works).
+app.get('/api/meetings/:id', async (req, res) => {
+  try {
+    await runStartupMigrations();
+    const gate = await meetingActor(req, res);
+    if (!gate.ok) return;
+    const m = (await sql`
+      SELECT m.*, p.name AS project_name, p.client_name AS project_client
+      FROM meetings m LEFT JOIN projects p ON p.id = m.project_id
+      WHERE m.id=${req.params.id} LIMIT 1` as any[])[0];
+    if (!m) return res.status(404).json({ error: 'Meeting not found' });
+    const attendees = await sql`
+      SELECT employee_id, employee_name, rsvp_status, responded_at
+      FROM meeting_attendees WHERE meeting_id=${req.params.id} ORDER BY employee_name`;
+    res.json({ ...m, attendees });
+  } catch (err: any) { res.status(500).json({ error: err.message ?? 'Server error' }); }
+});
+
+// POST /api/meetings — organizer defaults to the caller's employee id.
+app.post('/api/meetings', async (req, res) => {
+  try {
+    await runStartupMigrations();
+    const gate = await meetingActor(req, res);
+    if (!gate.ok) return;
+    if (!gate.user.employeeId) return res.status(400).json({ error: 'You need a linked employee record to organize a meeting.' });
+    const {
+      title, description, start_at, end_at,
+      location_kind, location, meeting_link,
+      project_id, attendee_ids,
+    } = req.body ?? {};
+    const t = String(title ?? '').trim();
+    if (!t) return res.status(400).json({ error: 'Meeting needs a title.' });
+    const startIso = toIsoStrict(start_at);
+    const endIso   = toIsoStrict(end_at);
+    if (!startIso || !endIso) return res.status(400).json({ error: 'Meeting needs valid start + end times.' });
+    if (new Date(endIso) <= new Date(startIso)) return res.status(400).json({ error: 'End time must be after start time.' });
+    const kind = ['in_office', 'virtual', 'hybrid'].includes(location_kind) ? location_kind : 'in_office';
+    if (project_id) {
+      const p = (await sql`SELECT id FROM projects WHERE id=${project_id} LIMIT 1` as any[])[0];
+      if (!p) return res.status(400).json({ error: 'Project not found.' });
+    }
+    const organizer = (await sql`SELECT id, name FROM employees WHERE id=${gate.user.employeeId} LIMIT 1` as any[])[0];
+    if (!organizer) return res.status(400).json({ error: 'Organizer employee record not found.' });
+
+    // Validate attendees and load names in one query.
+    const wantedIds: string[] = Array.isArray(attendee_ids) ? Array.from(new Set(attendee_ids.filter((s: any) => typeof s === 'string' && s.trim()))) : [];
+    const attendeeRows = wantedIds.length
+      ? await sql`SELECT id, name FROM employees WHERE id = ANY(${wantedIds}::text[])` as any[]
+      : [] as any[];
+    const attendeeMap = new Map<string, string>();
+    for (const a of attendeeRows) attendeeMap.set(a.id, a.name);
+
+    const id = `mtg_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
+    await sql`
+      INSERT INTO meetings (id, title, description, start_at, end_at, location_kind, location, meeting_link,
+                            project_id, organizer_id, organizer_name, created_by_id)
+      VALUES (${id}, ${t}, ${description ?? null}, ${startIso}::timestamptz, ${endIso}::timestamptz,
+              ${kind}, ${location ?? null}, ${meeting_link ?? null},
+              ${project_id ?? null}, ${organizer.id}, ${organizer.name}, ${gate.user.id})`;
+    // Always include the organizer as an attendee (auto-accepted) so
+    // they show up on their own page + attendee list.
+    await sql`
+      INSERT INTO meeting_attendees (meeting_id, employee_id, employee_name, rsvp_status, responded_at)
+      VALUES (${id}, ${organizer.id}, ${organizer.name}, 'accepted', NOW())
+      ON CONFLICT DO NOTHING`;
+    for (const [empId, empName] of attendeeMap) {
+      if (empId === organizer.id) continue;
+      await sql`
+        INSERT INTO meeting_attendees (meeting_id, employee_id, employee_name, rsvp_status)
+        VALUES (${id}, ${empId}, ${empName}, 'invited')
+        ON CONFLICT DO NOTHING`;
+      // Notify invitee via the existing notification pipeline.
+      const humanTime = new Date(startIso).toLocaleString('en-IN', { day: 'numeric', month: 'short', hour: 'numeric', minute: '2-digit', hour12: true });
+      await notifyEmployeeUser(empId, 'meeting_invited', `Meeting invite: ${t}`,
+        `${organizer.name} invited you — ${humanTime}${location ? ` at ${location}` : ''}`,
+        `/meetings?meeting=${id}`).catch(() => {});
+    }
+    res.status(201).json({ ok: true, id });
+  } catch (err: any) { res.status(500).json({ error: err.message ?? 'Server error' }); }
+});
+
+// PATCH /api/meetings/:id — organizer or admin only.
+app.patch('/api/meetings/:id', async (req, res) => {
+  try {
+    await runStartupMigrations();
+    const gate = await meetingActor(req, res);
+    if (!gate.ok) return;
+    const cur = (await sql`SELECT * FROM meetings WHERE id=${req.params.id} LIMIT 1` as any[])[0];
+    if (!cur) return res.status(404).json({ error: 'Meeting not found' });
+    const canWrite = gate.user.role === 'admin' || (gate.user.employeeId && cur.organizer_id === gate.user.employeeId);
+    if (!canWrite) return res.status(403).json({ error: 'Only the organizer can edit this meeting.' });
+    const b = req.body ?? {};
+    const nextTitle = b.title !== undefined ? String(b.title).trim() : cur.title;
+    if (!nextTitle) return res.status(400).json({ error: 'Title cannot be empty.' });
+    const nextStart = b.start_at !== undefined ? toIsoStrict(b.start_at) : cur.start_at;
+    const nextEnd   = b.end_at   !== undefined ? toIsoStrict(b.end_at)   : cur.end_at;
+    if (!nextStart || !nextEnd) return res.status(400).json({ error: 'Invalid start/end.' });
+    if (new Date(nextEnd) <= new Date(nextStart)) return res.status(400).json({ error: 'End must be after start.' });
+    const nextKind = b.location_kind !== undefined
+      ? (['in_office', 'virtual', 'hybrid'].includes(b.location_kind) ? b.location_kind : cur.location_kind)
+      : cur.location_kind;
+    await sql`
+      UPDATE meetings SET
+        title         = ${nextTitle},
+        description   = ${b.description   !== undefined ? (b.description   ?? null) : cur.description}::text,
+        start_at      = ${nextStart}::timestamptz,
+        end_at        = ${nextEnd}::timestamptz,
+        location_kind = ${nextKind},
+        location      = ${b.location      !== undefined ? (b.location      ?? null) : cur.location}::text,
+        meeting_link  = ${b.meeting_link  !== undefined ? (b.meeting_link  ?? null) : cur.meeting_link}::text,
+        project_id    = ${b.project_id    !== undefined ? (b.project_id    ?? null) : cur.project_id}::text,
+        status        = ${b.status        !== undefined ? b.status : cur.status},
+        updated_at    = NOW()
+      WHERE id=${cur.id}`;
+
+    // If the attendee list changed, diff against the current set and
+    // notify newly-added invitees. Removed ones are dropped silently.
+    if (Array.isArray(b.attendee_ids)) {
+      const wanted = new Set(b.attendee_ids.filter((s: any) => typeof s === 'string' && s.trim()));
+      wanted.add(cur.organizer_id);   // organizer always retained
+      const currentRows = await sql`SELECT employee_id FROM meeting_attendees WHERE meeting_id=${cur.id}` as any[];
+      const current = new Set(currentRows.map(r => r.employee_id));
+      const added   = Array.from(wanted).filter(id => !current.has(id));
+      const removed = Array.from(current).filter(id => !wanted.has(id));
+      if (removed.length) await sql`DELETE FROM meeting_attendees WHERE meeting_id=${cur.id} AND employee_id = ANY(${removed}::text[])`;
+      if (added.length) {
+        const empRows = await sql`SELECT id, name FROM employees WHERE id = ANY(${added}::text[])` as any[];
+        const humanTime = new Date(nextStart).toLocaleString('en-IN', { day: 'numeric', month: 'short', hour: 'numeric', minute: '2-digit', hour12: true });
+        for (const e of empRows) {
+          await sql`
+            INSERT INTO meeting_attendees (meeting_id, employee_id, employee_name, rsvp_status)
+            VALUES (${cur.id}, ${e.id}, ${e.name}, 'invited')
+            ON CONFLICT DO NOTHING`;
+          await notifyEmployeeUser(e.id, 'meeting_invited', `Meeting invite: ${nextTitle}`,
+            `${cur.organizer_name} invited you — ${humanTime}${b.location ?? cur.location ? ` at ${b.location ?? cur.location}` : ''}`,
+            `/meetings?meeting=${cur.id}`).catch(() => {});
+        }
+      }
+    }
+    res.json({ ok: true });
+  } catch (err: any) { res.status(500).json({ error: err.message ?? 'Server error' }); }
+});
+
+// DELETE /api/meetings/:id — organizer or admin only. Soft-cancel via
+// status='cancelled' so notifications still deep-link correctly.
+app.delete('/api/meetings/:id', async (req, res) => {
+  try {
+    await runStartupMigrations();
+    const gate = await meetingActor(req, res);
+    if (!gate.ok) return;
+    const cur = (await sql`SELECT id, organizer_id, organizer_name, title, start_at FROM meetings WHERE id=${req.params.id} LIMIT 1` as any[])[0];
+    if (!cur) return res.status(404).json({ error: 'Meeting not found' });
+    const canWrite = gate.user.role === 'admin' || (gate.user.employeeId && cur.organizer_id === gate.user.employeeId);
+    if (!canWrite) return res.status(403).json({ error: 'Only the organizer can cancel this meeting.' });
+    await sql`UPDATE meetings SET status='cancelled', updated_at=NOW() WHERE id=${cur.id}`;
+    // Notify every invited attendee (except organizer) that it's off.
+    const invitees = await sql`SELECT employee_id FROM meeting_attendees WHERE meeting_id=${cur.id} AND employee_id <> ${cur.organizer_id}` as any[];
+    const when = new Date(cur.start_at).toLocaleString('en-IN', { day: 'numeric', month: 'short', hour: 'numeric', minute: '2-digit', hour12: true });
+    for (const inv of invitees) {
+      await notifyEmployeeUser(inv.employee_id, 'meeting_cancelled', `Meeting cancelled: ${cur.title}`,
+        `${cur.organizer_name} cancelled the ${when} meeting.`,
+        `/meetings?meeting=${cur.id}`).catch(() => {});
+    }
+    res.json({ ok: true });
+  } catch (err: any) { res.status(500).json({ error: err.message ?? 'Server error' }); }
+});
+
+// POST /api/meetings/:id/rsvp — { status: accepted|declined|tentative }
+app.post('/api/meetings/:id/rsvp', async (req, res) => {
+  try {
+    await runStartupMigrations();
+    const gate = await meetingActor(req, res);
+    if (!gate.ok) return;
+    if (!gate.user.employeeId) return res.status(400).json({ error: 'You have no linked employee record.' });
+    const wanted = String(req.body?.status ?? '').trim();
+    if (!['accepted', 'declined', 'tentative'].includes(wanted)) {
+      return res.status(400).json({ error: 'status must be accepted, declined, or tentative.' });
+    }
+    const m = (await sql`SELECT id, organizer_id, organizer_name, title, start_at FROM meetings WHERE id=${req.params.id} LIMIT 1` as any[])[0];
+    if (!m) return res.status(404).json({ error: 'Meeting not found' });
+    const row = (await sql`SELECT employee_id FROM meeting_attendees WHERE meeting_id=${m.id} AND employee_id=${gate.user.employeeId} LIMIT 1` as any[])[0];
+    if (!row) return res.status(403).json({ error: 'You are not on the invitee list.' });
+    await sql`
+      UPDATE meeting_attendees SET rsvp_status=${wanted}, responded_at=NOW()
+      WHERE meeting_id=${m.id} AND employee_id=${gate.user.employeeId}`;
+    // Notify organizer (skip if the organizer is RSVP-ing themselves).
+    if (m.organizer_id !== gate.user.employeeId) {
+      await notifyEmployeeUser(m.organizer_id, 'meeting_rsvp',
+        `${gate.user.name} ${wanted === 'accepted' ? 'accepted' : wanted === 'declined' ? 'declined' : 'tentatively accepted'}`,
+        `Meeting: ${m.title}`,
+        `/meetings?meeting=${m.id}`).catch(() => {});
+    }
+    res.json({ ok: true });
   } catch (err: any) { res.status(500).json({ error: err.message ?? 'Server error' }); }
 });
 

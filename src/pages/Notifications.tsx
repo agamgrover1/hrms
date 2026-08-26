@@ -41,6 +41,7 @@ function isTaskLike(t: string): boolean {
     t.startsWith('hours_') ||
     t.startsWith('allocation_') ||
     t.startsWith('invoice_') ||
+    t.startsWith('meeting_') ||
     t === 'announcement_comment'
   );
 }
@@ -54,6 +55,7 @@ const CATEGORY_RULES: Array<{ key: string; label: string; bucket: 'tasks' | 'hr'
   { key: 'hours',      label: 'Project Hours',   bucket: 'tasks', match: t => t.startsWith('hours_') },
   { key: 'allocation', label: 'Allocation',      bucket: 'tasks', match: t => t.startsWith('allocation_') },
   { key: 'invoice',    label: 'Invoices',        bucket: 'tasks', match: t => t.startsWith('invoice_') },
+  { key: 'meeting',    label: 'Meetings',        bucket: 'tasks', match: t => t.startsWith('meeting_') },
   // HR bucket
   { key: 'leave',      label: 'Leave',           bucket: 'hr',    match: t => t.startsWith('leave_') },
   { key: 'wfh',        label: 'WFH',             bucket: 'hr',    match: t => t.startsWith('wfh_') },

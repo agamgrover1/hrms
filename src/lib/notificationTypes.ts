@@ -46,6 +46,9 @@ export const ACTION_REQUIRED_TYPES: readonly string[] = [
   // Task collaboration
   'task_assigned',
   'task_mention',
+  // Meetings — an invite is action-required (you need to RSVP);
+  // rsvp/cancelled are informational and stay off the list.
+  'meeting_invited',
 ];
 
 const ACTION_SET = new Set(ACTION_REQUIRED_TYPES);
