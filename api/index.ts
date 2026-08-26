@@ -905,6 +905,16 @@ async function runStartupMigrations() {
     // empty result set means "still needs to run", so we don't set the
     // flag and fall through.
     await sql`SELECT owner_id FROM goals LIMIT 0`;
+    // Also verify the legacy goals.employee_id constraint has been
+    // relaxed. bad=0 both when the column doesn't exist (fresh DB)
+    // AND when it exists as nullable (post-migration old DB). bad>=1
+    // only when the constraint is still there — throw so full
+    // migrations re-run to drop it.
+    const legacyProbe = await sql`
+      SELECT COUNT(*)::int AS bad
+      FROM information_schema.columns
+      WHERE table_name='goals' AND column_name='employee_id' AND is_nullable='NO'`;
+    if (Number((legacyProbe as any[])[0]?.bad ?? 0) > 0) throw new Error('goals.employee_id still NOT NULL');
     _migrated = true;
     return;
   } catch {
@@ -3411,6 +3421,13 @@ async function runStartupMigrations() {
   await sql`ALTER TABLE goals ADD COLUMN IF NOT EXISTS created_by_name TEXT`.catch(()=>{});
   await sql`ALTER TABLE goals ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ DEFAULT NOW()`.catch(()=>{});
   await sql`ALTER TABLE goals ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ DEFAULT NOW()`.catch(()=>{});
+  // Legacy schema from an older Performance-goals module: `goals`
+  // shipped with employee_id NOT NULL + due_date. The new Goals module
+  // uses owner_id + target_date. Drop the constraint so new-style
+  // inserts (which only supply owner_id) don't die on the NOT NULL —
+  // rows keep landing under owner_id, and the INSERT below also mirrors
+  // it into employee_id so the legacy endpoint still finds the row.
+  await sql`ALTER TABLE goals ALTER COLUMN employee_id DROP NOT NULL`.catch(()=>{});
   await sql`CREATE INDEX IF NOT EXISTS idx_goals_owner ON goals(owner_id)`.catch(()=>{});
   await sql`CREATE INDEX IF NOT EXISTS idx_goals_project ON goals(project_id)`.catch(()=>{});
   await sql`CREATE INDEX IF NOT EXISTS idx_goals_status ON goals(status)`.catch(()=>{});
@@ -22100,10 +22117,20 @@ app.post('/api/goals', async (req, res) => {
       ownerName = e.name;
     }
     const id = newId('goal');
+    // The `goals` table on older DBs still has legacy columns from a
+    // prior Performance-goals module (employee_id, due_date). Mirror
+    // owner_id into employee_id + target_date into due_date so the
+    // legacy /api/performance/goals reader still finds the row.
+    // `sql.unsafe`-style dynamic-column INSERTs aren't available on
+    // Neon; instead we write those columns with a follow-up UPDATE
+    // wrapped in .catch(() => {}) so it's a no-op when they don't
+    // exist (fresh DB with only the new schema).
     const rows = await sql`
       INSERT INTO goals (id, title, description, owner_id, owner_name, project_id, target_date, status, created_by_id, created_by_name)
       VALUES (${id}, ${title}, ${description}, ${ownerId}, ${ownerName}, ${projectId}, ${targetDate}, 'active', ${gate.user.id}, ${gate.user.name})
       RETURNING *`;
+    await sql`UPDATE goals SET employee_id = ${ownerId} WHERE id = ${id} AND employee_id IS NULL`.catch(() => {});
+    await sql`UPDATE goals SET due_date    = ${targetDate}::date WHERE id = ${id} AND due_date IS NULL`.catch(() => {});
     res.status(201).json(enrichGoal(rows[0], []));
   } catch (err: any) { res.status(500).json({ error: err.message ?? 'Server error' }); }
 });
