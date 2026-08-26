@@ -4185,7 +4185,10 @@ app.put('/api/employees/:id', async (req, res) => {
     let cleanedAllocations = false;
     if (justExited && updated?.id) {
       try {
-        await dismissFutureAssignmentsForEmployee(updated.id, updated.name);
+        // Pass exit_date so the wipe boundary is the exit month, not
+        // today's — an employee leaving in September should keep
+        // their whole August plan intact.
+        await dismissFutureAssignmentsForEmployee(updated.id, updated.name, (updated as any).exit_date ?? null);
         cleanedAllocations = true;
       } catch { /* non-fatal */ }
     }
@@ -15810,14 +15813,42 @@ async function dismissFutureAssignments(projectId: string) {
 // people who've left. Past-month rows stay for historical reporting +
 // payroll history. Any pending allocation_change_requests targeting the
 // same employee get cancelled so they don't linger in the approval queue.
-async function dismissFutureAssignmentsForEmployee(employeeId: string, actorName?: string | null) {
-  const now = new Date();
-  const m = now.getMonth() + 1;
-  const y = now.getFullYear();
+async function dismissFutureAssignmentsForEmployee(
+  employeeId: string,
+  actorName?: string | null,
+  exitDate?: string | null,
+) {
+  // Wipe boundary — the last month the employee is expected to work.
+  // Everything STRICTLY AFTER this month gets deleted; the month
+  // itself and every past month stays so partial-month work +
+  // historical reporting are preserved.
+  //
+  // Bug this fixes: the previous version anchored on today's month
+  // and used `>=`, so typing an exit_date one month out (or even
+  // several months out) instantly wiped the CURRENT month's
+  // allocations for someone still actively working. Real-world
+  // report: HR added Shivani's exit_date while she was still
+  // scheduled to work all of August; the whole month's plan
+  // disappeared the second the date was saved.
+  let m: number, y: number;
+  if (exitDate) {
+    const d = new Date(exitDate + 'T00:00:00Z');
+    if (!isNaN(d.getTime())) {
+      m = d.getUTCMonth() + 1;
+      y = d.getUTCFullYear();
+    } else {
+      const now = new Date(); m = now.getMonth() + 1; y = now.getFullYear();
+    }
+  } else {
+    // Status flipped to non-active with no exit_date supplied.
+    // Treat this month as their last active month (they may have
+    // worked partial hours) — wipe only the future.
+    const now = new Date(); m = now.getMonth() + 1; y = now.getFullYear();
+  }
   await sql`
     DELETE FROM project_assignments
     WHERE employee_id = ${employeeId}
-      AND (year > ${y} OR (year = ${y} AND month >= ${m}))`.catch(()=>{});
+      AND (year > ${y} OR (year = ${y} AND month > ${m}))`.catch(()=>{});
   // Kill any pending allocation change requests — the employee is gone,
   // there's no point in a coord reviewing / approving these.
   await sql`
