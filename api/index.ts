@@ -11515,6 +11515,13 @@ app.get('/api/notifications', async (req, res) => {
     const { user_id, limit } = req.query as any;
     if (!user_id) return res.status(400).json({ error: 'user_id required' });
     const lim = Math.max(1, Math.min(500, Number(limit) || 50));
+    // Opportunistic meeting-reminder sweep. Throttled to ~once/min
+    // per Lambda instance so a burst of polls costs one small query
+    // per minute, not one per poll. Runs BEFORE the memoized read so
+    // any reminders we create show up in this same response for
+    // whichever user we just notified (notifyUser invalidates their
+    // cache automatically).
+    await sweepMeetingRemindersOpportunistic();
     // 30s per-user cache. The bell polls at 3 min so the cache rarely
     // matters for ONE tab — but the focus + visibilitychange refetches
     // (which fire every time the user switches back) are the heavy hitters
@@ -22855,87 +22862,87 @@ app.post('/api/meetings/:id/rsvp', async (req, res) => {
   } catch (err: any) { res.status(500).json({ error: err.message ?? 'Server error' }); }
 });
 
-// ── Meeting reminder cron ─────────────────────────────────────────
-// Fires from Vercel Cron every 5 min. Picks scheduled meetings
-// starting in the next `MEETING_REMINDER_MIN` minutes (default 15)
-// whose reminder hasn't been sent yet, and notifies every invitee
-// who hasn't declined. Idempotent — reminder_sent_at is set inside
-// the same query so a second run in the same 5-min window can't
-// double-fire.
+// ── Meeting reminders (opportunistic, no cron needed) ────────────
+// Vercel Cron was on the free-tier chopping block, so instead of a
+// scheduled invocation we piggyback on the notifications-poll
+// endpoint that every open tab already hits ~every 30s. On a normal
+// workday at least one session is polling, so reminders fire on
+// their own with zero net new function invocations.
 //
-// Auth: accepts the platform's `x-vercel-cron` header OR a Bearer
-// token matching CRON_SECRET (same pattern as biometric-sync/cron
-// and pulse/cron).
+// Concurrency safety: SKIP LOCKED + reminder_sent_at UPDATE ensures
+// each meeting is claimed at most once even if two polls arrive at
+// the exact same instant.
 //
-// Also runnable manually by an admin for testing — POST from a
-// signed-in admin session skips the platform-cron check.
-app.all('/api/meetings/reminders/cron', async (req, res) => {
-  try {
-    const auth = req.header('authorization') || '';
-    const platformCron = !!req.header('x-vercel-cron');
-    const secret = process.env.CRON_SECRET;
-    const okToken = secret ? auth === `Bearer ${secret}` : false;
-    // Manual dev/admin invocation — accept a signed-in admin session.
-    const uid = req.header('x-user-id');
-    let adminOverride = false;
-    if (uid && !platformCron && !okToken) {
-      const u = (await sql`SELECT role, active FROM app_users WHERE id=${uid} LIMIT 1` as any[])[0];
-      adminOverride = !!(u && u.active === true && u.role === 'admin');
-    }
-    if (!platformCron && !okToken && !adminOverride) {
-      return res.status(401).json({ error: 'Unauthorized' });
-    }
+// Rate limiting: a module-scope timestamp caps the sweep at ~once
+// per minute per Lambda instance, so a burst of polls costs one
+// tiny query per minute, not one per poll.
 
-    await runStartupMigrations();
-    const windowMin = Number(process.env.MEETING_REMINDER_MIN ?? 15);
+let _lastReminderSweepAt = 0;
 
-    // Claim + read in one round-trip. Any meeting whose start is
-    // between now and now+windowMin AND status='scheduled' AND no
-    // reminder yet gets stamped with reminder_sent_at=NOW() and
-    // returned. Two concurrent runs can't hand the same meeting to
-    // two workers.
-    const claimed = await sql`
-      WITH picked AS (
-        SELECT id FROM meetings
-        WHERE status = 'scheduled'
-          AND reminder_sent_at IS NULL
-          AND start_at > NOW()
-          AND start_at <= NOW() + (${windowMin}::int || ' minutes')::interval
-        ORDER BY start_at ASC
-        LIMIT 100
-        FOR UPDATE SKIP LOCKED
-      )
-      UPDATE meetings m SET reminder_sent_at = NOW()
-      FROM picked
-      WHERE m.id = picked.id
-      RETURNING m.id, m.title, m.start_at, m.organizer_id, m.organizer_name,
-                m.location_kind, m.location, m.meeting_link` as any[];
+async function runMeetingReminderSweep(): Promise<{ meetings: number; notifications_sent: number; window_min: number }> {
+  const windowMin = Number(process.env.MEETING_REMINDER_MIN ?? 15);
+  const claimed = await sql`
+    WITH picked AS (
+      SELECT id FROM meetings
+      WHERE status = 'scheduled'
+        AND reminder_sent_at IS NULL
+        AND start_at > NOW()
+        AND start_at <= NOW() + (${windowMin}::int || ' minutes')::interval
+      ORDER BY start_at ASC
+      LIMIT 100
+      FOR UPDATE SKIP LOCKED
+    )
+    UPDATE meetings m SET reminder_sent_at = NOW()
+    FROM picked
+    WHERE m.id = picked.id
+    RETURNING m.id, m.title, m.start_at, m.organizer_id, m.organizer_name,
+              m.location_kind, m.location, m.meeting_link` as any[];
 
-    let notified = 0;
-    for (const m of claimed) {
-      // Attendees who haven't declined get the reminder. Skip the
-      // organizer (they know — they scheduled it), unless they want
-      // their own reminder (nice touch, harmless — include them).
-      const invitees = await sql`
-        SELECT employee_id FROM meeting_attendees
-        WHERE meeting_id=${m.id} AND rsvp_status <> 'declined'` as any[];
-      const startsInMin = Math.max(1, Math.round((new Date(m.start_at).getTime() - Date.now()) / 60000));
-      const whereLine = m.location_kind === 'virtual'
-        ? (m.meeting_link ? 'Virtual meeting' : 'Virtual')
-        : m.location_kind === 'hybrid'
-          ? `${m.location ?? 'In office'} (also virtual)`
-          : (m.location ?? 'In office');
-      const body = `Starts in ~${startsInMin} min · ${whereLine}`;
-      for (const inv of invitees) {
-        await notifyEmployeeUser(inv.employee_id, 'meeting_reminder', `Coming up: ${m.title}`,
-          body, `/meetings?meeting=${m.id}`).catch(() => {});
-        notified++;
-      }
+  let notified = 0;
+  for (const m of claimed) {
+    const invitees = await sql`
+      SELECT employee_id FROM meeting_attendees
+      WHERE meeting_id=${m.id} AND rsvp_status <> 'declined'` as any[];
+    const startsInMin = Math.max(1, Math.round((new Date(m.start_at).getTime() - Date.now()) / 60000));
+    const whereLine = m.location_kind === 'virtual'
+      ? (m.meeting_link ? 'Virtual meeting' : 'Virtual')
+      : m.location_kind === 'hybrid'
+        ? `${m.location ?? 'In office'} (also virtual)`
+        : (m.location ?? 'In office');
+    const body = `Starts in ~${startsInMin} min · ${whereLine}`;
+    for (const inv of invitees) {
+      // notifyEmployeeUser already invalidates the target's
+      // notifications memo, so the reminder appears on their very
+      // next poll instead of waiting up to 30s for a TTL flip.
+      await notifyEmployeeUser(inv.employee_id, 'meeting_reminder', `Coming up: ${m.title}`,
+        body, `/meetings?meeting=${m.id}`).catch(() => {});
+      notified++;
     }
-    res.json({ ok: true, window_min: windowMin, meetings: claimed.length, notifications_sent: notified });
-  } catch (err: any) {
-    res.status(500).json({ error: err?.message ?? 'Reminder run failed' });
   }
+  return { meetings: claimed.length, notifications_sent: notified, window_min: windowMin };
+}
+
+async function sweepMeetingRemindersOpportunistic(): Promise<void> {
+  const now = Date.now();
+  if (now - _lastReminderSweepAt < 60_000) return;
+  _lastReminderSweepAt = now;
+  try { await runMeetingReminderSweep(); }
+  catch { /* opportunistic — never let this fail the caller */ }
+}
+
+// Manual trigger — admin-only. Handy for testing or after a hard
+// reset. Runs the same sweep as the opportunistic path but without
+// the 60s throttle.
+app.all('/api/meetings/reminders/run', async (req, res) => {
+  try {
+    const uid = req.header('x-user-id');
+    if (!uid) return res.status(401).json({ error: 'Not authenticated' });
+    const u = (await sql`SELECT role, active FROM app_users WHERE id=${uid} LIMIT 1` as any[])[0];
+    if (!u || u.active !== true || u.role !== 'admin') return res.status(403).json({ error: 'Admin only' });
+    await runStartupMigrations();
+    const result = await runMeetingReminderSweep();
+    res.json({ ok: true, ...result });
+  } catch (err: any) { res.status(500).json({ error: err?.message ?? 'Reminder run failed' }); }
 });
 
 // ── Mail-service bridge ─────────────────────────────────────────────

@@ -8,9 +8,6 @@
   "functions": {
     "api/index.ts": { "maxDuration": 60 }
   },
-  "crons": [
-    { "path": "/api/meetings/reminders/cron", "schedule": "*/5 * * * *" }
-  ],
   "headers": [
     {
       "source": "/assets/(.*)",
