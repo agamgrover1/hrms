@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { Users as UsersIcon, AlertTriangle, Calendar, ChevronRight } from 'lucide-react';
 import { api } from '../services/api';
 import EmployeeHoursDetailModal from '../components/EmployeeHoursDetailModal';
-import { formatWeekDays, isCurrentWeekOfMonth, isEmptyWeek } from '../utils/weekRange';
+import { formatWeekDays, isCurrentWeekOfMonth, isEmptyWeek, weekNumForDate } from '../utils/weekRange';
 
 type UtilGroupKey = 'none' | 'manager' | 'department';
 
@@ -27,7 +27,14 @@ export default function HoursUtilization() {
   // NOW" view is what people open this page for. The current week is
   // auto-selected so the first read is immediately actionable.
   const [scope, setScope] = useState<'month' | 'week'>('week');
-  const [week, setWeek] = useState<number>(Math.min(5, Math.max(1, Math.ceil(now.getDate() / 7))));
+  // Default to the week bucket that actually contains today. The
+  // previous math (Math.ceil(day/7)) was calendar-day-based, which
+  // disagrees with the Mon-Sun buckets the rest of the app uses —
+  // Aug 26 sits in W5 (24–31) here but ceil(26/7)=4 was picking W4.
+  const [week, setWeek] = useState<number>(() => {
+    const iso = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+    return weekNumForDate(iso);
+  });
   const [data, setData] = useState<Awaited<ReturnType<typeof api.getHoursUtilization>> | null>(null);
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState('');
