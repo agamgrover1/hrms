@@ -523,13 +523,29 @@ export default function RevenueTab({ month, year, onChanged }: { month: number; 
                     )}
                   </td>
                   <td className="px-3 py-2 text-center">
-                    <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-bold ${
-                      isCleared ? 'bg-success-container text-success'
-                        : isClearPending ? 'bg-accent-container text-accent'
-                        : 'bg-warning-container text-warning'
-                    }`}>
-                      {isCleared ? '✓ Cleared' : isClearPending ? '⚠ Awaiting approval' : '⏳ Pending'}
-                    </span>
+                    {(() => {
+                      // A pending row with zero invoiced is noise — there
+                      // isn't actually anything waiting to be cleared.
+                      // Suppress the amber "Pending" pill in that case
+                      // so the eye only jumps to rows that need action.
+                      const zeroAmount = !isCleared && !isClearPending && invoicedNative <= 0;
+                      if (zeroAmount) {
+                        return (
+                          <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-semibold bg-surface-2 text-on-surface-subtle" title="No amount invoiced yet — nothing to clear">
+                            —
+                          </span>
+                        );
+                      }
+                      return (
+                        <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-bold ${
+                          isCleared ? 'bg-success-container text-success'
+                            : isClearPending ? 'bg-accent-container text-accent'
+                            : 'bg-warning-container text-warning'
+                        }`}>
+                          {isCleared ? '✓ Cleared' : isClearPending ? '⚠ Awaiting approval' : '⏳ Pending'}
+                        </span>
+                      );
+                    })()}
                   </td>
                   <td className="px-3 py-2 text-right">
                     {!isCleared && !isClearPending && (
