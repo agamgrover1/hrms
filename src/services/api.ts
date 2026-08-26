@@ -763,6 +763,27 @@ export const api = {
     request<Array<{ type: string; muted_at: string }>>(`/me/notification-mutes`),
   setMyNotificationMutes: (types: string[]) =>
     request<{ ok: true; muted: string[] }>(`/me/notification-mutes`, { method: 'PUT', body: JSON.stringify({ types }) }),
+  // Project dashboard — one aggregated payload for the /projects/:id
+  // screen: team, hours, boards, tasks, meetings, goals, financials,
+  // activity. Financials is null unless the caller is admin / coord.
+  getProjectDashboard: (id: string) =>
+    request<{
+      project: any;
+      as_of: { month: number; year: number; timezone: string };
+      team: Array<{ employee_id: string; employee_name: string; monthly_hours: number; logged_hours: number; avatar: string | null }>;
+      top_contributors_30d: Array<{ employee_id: string; employee_name: string; hours: number; avatar: string | null }>;
+      hours_this_month: number;
+      hours_trend_weekly: Array<{ week: string; hours: number }>;
+      boards: Array<{ id: string; name: string; color: string | null; statuses: any[]; task_count: number; done_count: number; by_status: Record<string, number> | null }>;
+      my_open_tasks: Array<{ id: string; title: string; status: string; priority: string; due_date: string | null; list_id: string; list_name: string }>;
+      upcoming_meetings: Array<{ id: string; title: string; start_at: string; end_at: string; location_kind: string; location: string | null; meeting_link: string | null; organizer_name: string; status: string; attendee_count: number }>;
+      recent_meetings: Array<{ id: string; title: string; start_at: string; location_kind: string; location: string | null; organizer_name: string; status: string; attendee_count: number }>;
+      goals: Array<{ id: string; title: string; description: string | null; status: string; target_date: string | null; owner_id: string | null; owner_name: string | null; progress_pct: number; kr_count: number }>;
+      recent_activity: Array<{ action: string; actor_name: string | null; body: string | null; metadata: any; created_at: string }>;
+      financials: null | { invoiced_pending: number; received: number; pending_count: number; cleared_count: number };
+      viewer: { role: string; is_privileged: boolean; employee_id: string | null };
+    }>(`/projects/${id}/dashboard`),
+
   // ── Meetings (Aug 2026) ────────────────────────────────────────
   listMeetings: (opts?: { scope?: 'mine' | 'all'; project_id?: string; from?: string; to?: string; status?: string }) => {
     const qs = new URLSearchParams();

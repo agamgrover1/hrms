@@ -20,6 +20,7 @@ import AssetRepairs from './pages/AssetRepairs';
 import MyPortal from './pages/employee/MyPortal';
 import MyTeam from './pages/employee/MyTeam';
 import Projects from './pages/Projects';
+import ProjectDashboard from './pages/ProjectDashboard';
 import Tasks from './pages/Tasks';
 import TaskAnalytics from './pages/TaskAnalytics';
 import Meetings from './pages/Meetings';
@@ -108,6 +109,7 @@ function AppRoutes() {
 
         {/* Project Mgmt routes */}
         <Route path="projects" element={<ProtectedRoute roles={['admin', 'hr_manager', 'project_coordinator']}><Projects /></ProtectedRoute>} />
+        <Route path="projects/:id" element={<ProtectedRoute><ProjectDashboard /></ProtectedRoute>} />
         {/* Tasks — ClickUp-style boards. Open to anyone signed in: everyone
             has work assigned to them, and the API decides what they may
             change (only admin / HR manager / coordinator create boards). */}

@@ -15442,6 +15442,164 @@ function invalidateProjectsCache() {
   }
 }
 
+// GET /api/projects/:id/dashboard — the "one screen shows everything"
+// aggregate for a project: team + hours + boards + tasks + meetings +
+// goals + financials + recent activity. Every card on the client comes
+// from this single response so a project page doesn't fan out to ten
+// spinners on load.
+//
+// Financials block is populated only for admin / project_coordinator;
+// everyone else gets financials:null.
+app.get('/api/projects/:id/dashboard', async (req, res) => {
+  try {
+    await runStartupMigrations();
+    const uid = req.header('x-user-id');
+    if (!uid) return res.status(401).json({ error: 'Not signed in' });
+    const u = (await sql`SELECT id, role, active FROM app_users WHERE id=${uid} LIMIT 1` as any[])[0];
+    if (!u || u.active !== true) return res.status(401).json({ error: 'Session invalid' });
+    const empId = await resolveUserToEmployee(u).catch(() => null);
+    const isPrivileged = ['admin', 'hr_manager', 'project_coordinator'].includes(u.role);
+    const isFinance = ['admin', 'project_coordinator'].includes(u.role);
+
+    const projectId = req.params.id;
+    const project = (await sql`SELECT * FROM projects WHERE id=${projectId} LIMIT 1` as any[])[0];
+    if (!project) return res.status(404).json({ error: 'Project not found' });
+
+    const now = new Date();
+    const month = now.getMonth() + 1;
+    const year  = now.getFullYear();
+    const monthStart = new Date(Date.UTC(year, month - 1, 1)).toISOString().slice(0, 10);
+    const monthEnd   = new Date(Date.UTC(year, month, 0)).toISOString().slice(0, 10);
+    const rolling30Start = new Date(Date.now() - 30 * 86400000).toISOString().slice(0, 10);
+    const trendStart = new Date(Date.now() - 12 * 7 * 86400000).toISOString().slice(0, 10);
+    const upcomingEnd = new Date(Date.now() + 7 * 86400000).toISOString();
+
+    // Every heavy read runs in parallel — no card blocks another.
+    const [
+      teamThisMonth,
+      topContributors,
+      hoursThisMonth,
+      hoursTrendWeekly,
+      boardsWithCounts,
+      myOpenTasks,
+      upcomingMeetings,
+      recentMeetings,
+      projectGoals,
+      recentActivity,
+      financials,
+    ] = await Promise.all([
+      sql`
+        SELECT a.employee_id, a.employee_name, a.monthly_hours,
+               COALESCE((SELECT SUM(hours) FROM hour_log_days d
+                         WHERE d.employee_id=a.employee_id AND d.project_id=a.project_id
+                           AND d.month=${month} AND d.year=${year}), 0)::numeric AS logged_hours,
+               e.avatar
+        FROM project_assignments a
+        LEFT JOIN employees e ON e.id = a.employee_id
+        WHERE a.project_id=${projectId} AND a.month=${month} AND a.year=${year}
+        ORDER BY a.monthly_hours DESC NULLS LAST, a.employee_name`,
+      sql`
+        SELECT d.employee_id, d.employee_name, e.avatar,
+               ROUND(SUM(d.hours)::numeric, 1) AS hours
+        FROM hour_log_days d
+        LEFT JOIN employees e ON e.id = d.employee_id
+        WHERE d.project_id=${projectId} AND d.log_date >= ${rolling30Start}::date
+        GROUP BY d.employee_id, d.employee_name, e.avatar
+        ORDER BY hours DESC
+        LIMIT 8`,
+      sql`
+        SELECT COALESCE(SUM(hours), 0)::numeric AS h
+        FROM hour_log_days
+        WHERE project_id=${projectId} AND log_date BETWEEN ${monthStart}::date AND ${monthEnd}::date`,
+      sql`
+        SELECT DATE_TRUNC('week', log_date)::date AS week,
+               ROUND(SUM(hours)::numeric, 1) AS hours
+        FROM hour_log_days
+        WHERE project_id=${projectId} AND log_date >= ${trendStart}::date
+        GROUP BY week ORDER BY week`,
+      sql`
+        SELECT l.id, l.name, l.color, l.statuses,
+               (SELECT COUNT(*) FROM tasks t WHERE t.list_id=l.id AND t.parent_id IS NULL)::int AS task_count,
+               (SELECT COUNT(*) FROM tasks t WHERE t.list_id=l.id AND t.parent_id IS NULL AND t.completed_at IS NOT NULL)::int AS done_count,
+               (SELECT json_object_agg(status, cnt)
+                FROM (SELECT status, COUNT(*)::int AS cnt FROM tasks
+                      WHERE list_id=l.id AND parent_id IS NULL GROUP BY status) s) AS by_status
+        FROM task_lists l
+        WHERE l.project_id=${projectId} AND l.archived=FALSE
+        ORDER BY l.sort_order, l.name`,
+      empId ? sql`
+        SELECT t.id, t.title, t.status, t.priority, t.due_date, t.list_id, l.name AS list_name
+        FROM tasks t
+        JOIN task_lists l ON l.id = t.list_id
+        WHERE l.project_id=${projectId} AND t.assignee_id=${empId} AND t.completed_at IS NULL
+        ORDER BY (t.due_date IS NULL), t.due_date NULLS LAST, t.updated_at DESC
+        LIMIT 20` : Promise.resolve([] as any[]),
+      sql`
+        SELECT m.id, m.title, m.start_at, m.end_at, m.location_kind, m.location,
+               m.meeting_link, m.organizer_name, m.status,
+               (SELECT COUNT(*) FROM meeting_attendees a WHERE a.meeting_id=m.id)::int AS attendee_count
+        FROM meetings m
+        WHERE m.project_id=${projectId} AND m.status='scheduled'
+          AND m.end_at >= NOW() AND m.start_at <= ${upcomingEnd}::timestamptz
+        ORDER BY m.start_at ASC LIMIT 20`,
+      sql`
+        SELECT m.id, m.title, m.start_at, m.location_kind, m.location, m.organizer_name, m.status,
+               (SELECT COUNT(*) FROM meeting_attendees a WHERE a.meeting_id=m.id)::int AS attendee_count
+        FROM meetings m
+        WHERE m.project_id=${projectId} AND m.end_at < NOW() AND m.start_at >= NOW() - INTERVAL '30 days'
+        ORDER BY m.start_at DESC LIMIT 10`,
+      sql`
+        SELECT g.id, g.title, g.description, g.status, g.target_date,
+               g.owner_id, g.owner_name,
+               COALESCE(
+                 (SELECT ROUND(AVG(
+                    CASE WHEN kr.target_value = kr.start_value THEN 100
+                         ELSE GREATEST(0, LEAST(100,
+                              (kr.current_value - kr.start_value) * 100.0 /
+                              NULLIF(kr.target_value - kr.start_value, 0)))
+                    END
+                  ), 0) FROM goal_key_results kr WHERE kr.goal_id=g.id), 0
+               )::numeric AS progress_pct,
+               (SELECT COUNT(*) FROM goal_key_results kr WHERE kr.goal_id=g.id)::int AS kr_count
+        FROM goals g
+        WHERE g.project_id=${projectId} AND g.status='active'
+        ORDER BY g.target_date NULLS LAST, g.created_at DESC LIMIT 10`.catch(() => [] as any[]),
+      sql`
+        SELECT action, actor_name, body, metadata, created_at
+        FROM project_activity
+        WHERE project_id=${projectId}
+        ORDER BY created_at DESC LIMIT 30`.catch(() => [] as any[]),
+      isFinance ? sql`
+        SELECT
+          COALESCE(SUM(CASE WHEN status='pending'         THEN COALESCE(fixed_amount, hourly_rate * billable_hours, 0) ELSE 0 END), 0)::numeric AS invoiced_pending,
+          COALESCE(SUM(CASE WHEN status IN ('cleared','cleared_pending') THEN COALESCE(amount_received, 0) ELSE 0 END), 0)::numeric AS received,
+          COUNT(*) FILTER (WHERE status='pending')::int AS pending_count,
+          COUNT(*) FILTER (WHERE status='cleared')::int AS cleared_count
+        FROM fin_project_revenue
+        WHERE project_id=${projectId}`.catch(() => [{ invoiced_pending: 0, received: 0, pending_count: 0, cleared_count: 0 }] as any[]) : Promise.resolve(null),
+    ]);
+
+    res.json({
+      project,
+      as_of: { month, year, timezone: 'IST' },
+      team: teamThisMonth,
+      top_contributors_30d: topContributors,
+      hours_this_month: Number((hoursThisMonth as any[])[0]?.h ?? 0),
+      hours_trend_weekly: (hoursTrendWeekly as any[]).map(r => ({ week: r.week, hours: Number(r.hours) })),
+      boards: boardsWithCounts,
+      my_open_tasks: myOpenTasks,
+      upcoming_meetings: upcomingMeetings,
+      recent_meetings: recentMeetings,
+      goals: projectGoals,
+      recent_activity: recentActivity,
+      financials: financials ? (Array.isArray(financials) ? financials[0] : financials) : null,
+      viewer: { role: u.role, is_privileged: isPrivileged, employee_id: empId },
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err?.message ?? 'Server error' });
+  }
+});
+
 app.post('/api/projects', async (req, res) => {
   try {
     await runStartupMigrations();

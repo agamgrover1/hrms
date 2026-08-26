@@ -1,4 +1,5 @@
 import { useState, useEffect, useMemo } from 'react';
+import { Link } from 'react-router-dom';
 import { Plus, Pencil, Trash2, X, Search, Briefcase, ExternalLink, Flag, AlertTriangle, IndianRupee, CalendarDays, Download, Upload, History } from 'lucide-react';
 import { api } from '../services/api';
 import { useAuth } from '../context/AuthContext';
@@ -421,14 +422,16 @@ export default function Projects() {
                           className={`mt-0.5 ${p.flag === 'red' ? 'text-danger' : 'text-warning'}`} />
                       )}
                       <div>
-                        <p className={`font-semibold text-on-surface ${archived ? 'line-through' : ''} inline-flex items-center gap-1.5`}>
+                        <Link to={`/projects/${p.id}`}
+                          title="Open project dashboard"
+                          className={`font-semibold text-on-surface hover:text-accent ${archived ? 'line-through' : ''} inline-flex items-center gap-1.5`}>
                           {p.name}
                           {(p as any).billing_source === 'upwork' && (
                             <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-bold bg-accent-container text-accent">
                               <Briefcase size={9} strokeWidth={2.5} /> Upwork
                             </span>
                           )}
-                        </p>
+                        </Link>
                         <div className="flex flex-wrap items-center gap-2 mt-0.5">
                           {p.client_name && <span className="text-xs text-on-surface-muted">{p.client_name}</span>}
                           {p.dashboard_url && (
