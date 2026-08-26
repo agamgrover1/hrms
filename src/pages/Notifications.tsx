@@ -12,6 +12,7 @@ interface Notif {
   type: string;
   title: string;
   body: string | null;
+  link: string | null;
   is_read: boolean;
   created_at: string;
 }
@@ -196,7 +197,13 @@ export default function Notifications() {
 
   const onRowClick = (n: Notif) => {
     if (!n.is_read) markRead(n.id);
-    const route = getNotifRoute(n.type, user?.role ?? '');
+    // Prefer the deep-link the notification producer stamped on the
+    // row (e.g. /tasks?task=<id>, /meetings?meeting=<id>) so a
+    // "commented on your task" click opens THAT task's modal directly
+    // instead of dumping the user on a generic /tasks board.
+    // getNotifRoute is the fallback for older rows that pre-date the
+    // .link column being populated.
+    const route = n.link || getNotifRoute(n.type, user?.role ?? '');
     navigate(route);
   };
 
