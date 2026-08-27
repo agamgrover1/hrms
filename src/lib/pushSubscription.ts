@@ -49,18 +49,54 @@ export async function subscribeToPush(): Promise<{ ok: true } | { ok: false; err
 
     // Public VAPID key from the server. If it's missing we can't proceed.
     const cfg = await api.getPushVapidKey().catch(() => null);
-    if (!cfg?.public_key) return { ok: false, error: 'Server has no VAPID key configured' };
+    if (!cfg?.public_key) return { ok: false, error: 'Server has no VAPID key configured. Ask an admin to add VAPID_PUBLIC_KEY + VAPID_PRIVATE_KEY to Vercel.' };
 
-    const reg = await navigator.serviceWorker.ready;
-    // Some browsers (Firefox) require the existing subscription to be
-    // unsubscribed if applicationServerKey drifts; not our case, but
-    // guard against a stale sub.
+    // Service worker MUST be active before we can subscribe. If the SW
+    // registration is still installing/waiting, the browser sometimes
+    // reports "could not retrieve the public key" — which sounds like a
+    // key issue but is actually a registration timing issue.
+    let reg: ServiceWorkerRegistration;
+    try {
+      reg = await navigator.serviceWorker.ready;
+    } catch { return { ok: false, error: 'Service worker not ready. Refresh the page and try again.' }; }
+    if (!reg.active) {
+      return { ok: false, error: 'Service worker still installing. Refresh the page and try again.' };
+    }
+
+    const appServerKey = urlBase64ToUint8Array(cfg.public_key);
+    // If the browser already has a subscription against a DIFFERENT
+    // VAPID key (from an old deploy or a manual test), the retry
+    // silently reuses the old bad one. Kill it first.
+    const existing = await reg.pushManager.getSubscription();
+    if (existing) {
+      const existingKey = existing.options?.applicationServerKey;
+      let matches = false;
+      if (existingKey) {
+        const a = new Uint8Array(existingKey as ArrayBuffer);
+        matches = a.length === appServerKey.length && a.every((v, i) => v === appServerKey[i]);
+      }
+      if (!matches) {
+        try { await existing.unsubscribe(); } catch { /* best-effort */ }
+      }
+    }
+
     let sub = await reg.pushManager.getSubscription();
     if (!sub) {
-      sub = await reg.pushManager.subscribe({
-        userVisibleOnly: true,
-        applicationServerKey: urlBase64ToUint8Array(cfg.public_key),
-      });
+      try {
+        sub = await reg.pushManager.subscribe({
+          userVisibleOnly: true,
+          applicationServerKey: appServerKey,
+        });
+      } catch (e: any) {
+        // Chrome/Firefox surface this exact string when the browser's
+        // push service (FCM / autopush) can't handle the request.
+        // Common triggers we can name explicitly:
+        const msg = String(e?.message ?? '');
+        if (/public key/i.test(msg)) {
+          return { ok: false, error: `Browser push service rejected the request. If you're on Firefox Private Browsing, push isn't supported there. On Chrome, make sure your OS + browser have internet reach to FCM. Raw error: ${msg}` };
+        }
+        return { ok: false, error: `Subscribe failed: ${msg || e?.name || 'unknown error'}` };
+      }
     }
     const json = sub.toJSON() as any;
     if (!json.endpoint || !json.keys?.p256dh || !json.keys?.auth) {
