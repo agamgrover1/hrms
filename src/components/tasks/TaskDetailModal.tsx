@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   X, Loader2, Trash2, Send, Plus, MessageSquare, History, GitBranch, Check, Eye, EyeOff,
-  Link2, Flag, Diamond, Play, Square, Clock, Repeat, Paperclip, Download, Upload,
+  Link2, Flag, Diamond, Play, Square, Clock, Repeat, Paperclip, Download, Upload, ChevronDown,
 } from 'lucide-react';
 import { taskFilesApi, type TaskAttachment } from '../../services/taskFilesApi';
 import { notifyTaskTimerChanged } from '../layout/TaskTimerChip';
@@ -107,6 +107,30 @@ export default function TaskDetailModal({ taskId, employees, onClose, onChanged 
   // display clean (`@Name`) while preserving the id-carrying storage
   // form is why we track them here instead of just parsing the text.
   const [pickedMentions, setPickedMentions] = useState<Array<{ name: string; id: string }>>([]);
+  // Board-move picker state — fetched lazily the first time it opens.
+  const [movePickerOpen, setMovePickerOpen] = useState(false);
+  const [boardsList, setBoardsList] = useState<Array<{ id: string; name: string; project_name?: string | null }>>([]);
+  const [boardsLoading, setBoardsLoading] = useState(false);
+  const [boardSearch, setBoardSearch] = useState('');
+  const openBoardPicker = async () => {
+    setMovePickerOpen(true);
+    if (boardsList.length === 0) {
+      setBoardsLoading(true);
+      try {
+        const list = await api.listTaskBoards();
+        setBoardsList(list.map((b: any) => ({ id: b.id, name: b.name, project_name: b.project_name })));
+      } catch { /* the server-side gate will still reject bad moves */ }
+      finally { setBoardsLoading(false); }
+    }
+  };
+  const moveToBoard = async (newListId: string) => {
+    if (!task || newListId === task.list_id) return;
+    setMovePickerOpen(false);
+    try {
+      await patch({ list_id: newListId });
+      toast.success('Task moved');
+    } catch { /* patch already toasts on failure */ }
+  };
 
   // Attachments (stored on the VPS files module, per-task scope).
   const [attachments, setAttachments] = useState<TaskAttachment[]>([]);
@@ -546,9 +570,43 @@ export default function TaskDetailModal({ taskId, employees, onClose, onChanged 
         <div className="px-5 py-3 border-b border-outline flex items-center gap-3">
           <div className="flex-1 min-w-0">
             {task && (
-              <p className="text-[11px] text-on-surface-subtle truncate">
-                {task.project_name ? `${task.project_name} · ` : ''}{task.list_name}
-              </p>
+              <div className="relative">
+                <button onClick={openBoardPicker}
+                  title="Move to another board"
+                  className="text-[11px] text-on-surface-subtle hover:text-on-surface inline-flex items-center gap-1 group truncate max-w-full">
+                  <span className="truncate">{task.project_name ? `${task.project_name} · ` : ''}{task.list_name}</span>
+                  <ChevronDown size={10} className="text-on-surface-subtle opacity-60 group-hover:opacity-100" />
+                </button>
+                {movePickerOpen && (
+                  <>
+                    <div className="fixed inset-0 z-10" onClick={() => setMovePickerOpen(false)} />
+                    <div className="absolute z-20 top-full left-0 mt-1 w-72 rounded-lg border border-outline bg-surface shadow-elev-3 py-1">
+                      <div className="px-2 pb-1 border-b border-outline">
+                        <input value={boardSearch} onChange={e => setBoardSearch(e.target.value)}
+                          autoFocus placeholder="Search boards…"
+                          className="w-full px-2 py-1.5 rounded border border-outline bg-surface-2 text-xs" />
+                      </div>
+                      <div className="max-h-56 overflow-y-auto py-1">
+                        {boardsLoading && <p className="px-3 py-2 text-[11px] text-on-surface-subtle italic">Loading…</p>}
+                        {!boardsLoading && boardsList
+                          .filter(b => b.id !== task.list_id)
+                          .filter(b => !boardSearch.trim() || `${b.project_name ?? ''} ${b.name}`.toLowerCase().includes(boardSearch.toLowerCase()))
+                          .slice(0, 40)
+                          .map(b => (
+                            <button key={b.id} onClick={() => moveToBoard(b.id)}
+                              className="w-full text-left px-3 py-1.5 hover:bg-surface-2 text-xs text-on-surface">
+                              <div className="font-semibold">{b.name}</div>
+                              {b.project_name && <div className="text-[10px] text-on-surface-subtle">{b.project_name}</div>}
+                            </button>
+                          ))}
+                        {!boardsLoading && boardsList.length === 0 && (
+                          <p className="px-3 py-2 text-[11px] text-on-surface-subtle italic">No other boards you can move this to.</p>
+                        )}
+                      </div>
+                    </div>
+                  </>
+                )}
+              </div>
             )}
             <div className="flex items-center gap-2 flex-wrap">
               <p className="text-[10px] text-on-surface-subtle font-mono">{taskId}</p>

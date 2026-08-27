@@ -21982,12 +21982,47 @@ app.patch('/api/tasks/:id', async (req, res) => {
         next.assignee_name = null;
       }
     }
+
+    // Move to a different board. Subtasks live under the same
+    // list_id as their parent (they inherit at create time), so
+    // they follow the parent to the new board below.
+    let destList: any = null;
+    if (b.list_id !== undefined && b.list_id !== cur.list_id) {
+      destList = (await sql`SELECT * FROM task_lists WHERE id=${b.list_id}` as any[])[0];
+      if (!destList) return res.status(400).json({ error: 'Destination board not found' });
+      if (levelIndex(boardPermissionOf(gate.user, destList)) < levelIndex('edit')) {
+        return res.status(403).json({ error: 'You need edit access on the destination board.' });
+      }
+      // Sub-tasks can't move independently — they'd break the family.
+      if (cur.parent_id) {
+        return res.status(400).json({ error: 'Move the parent task; subtasks travel with it.' });
+      }
+      next.list_id = destList.id;
+      // Remap status to a column that exists on the new board.
+      const destCols = ((destList.statuses as any[]) ?? DEFAULT_TASK_STATUSES);
+      const targetStatusId = next.status ?? cur.status;
+      const stillValid = destCols.find(c => c.id === targetStatusId);
+      if (!stillValid) {
+        const fallback = destCols.find(c => c.type === 'open') ?? destCols[0];
+        next.status = fallback.id;
+        next.completed_at = fallback.type === 'done' ? (cur.completed_at ?? new Date().toISOString()) : null;
+      }
+      // Drop the moved card at the bottom of its column on the new
+      // board so it doesn't collide with existing sort_order values.
+      const statusForOrder = next.status ?? cur.status;
+      const nextOrder = Number((await sql`
+        SELECT COALESCE(MAX(sort_order), 0) + 1024 AS next FROM tasks
+        WHERE list_id=${destList.id} AND status=${statusForOrder}` as any[])[0]?.next ?? 1024);
+      next.sort_order = nextOrder;
+    }
+
     if (!Object.keys(next).length) return res.json(cur);
 
     const rows = await sql`
       UPDATE tasks SET
         title          = COALESCE(${next.title ?? null}::text, title),
         description    = ${'description' in next ? next.description : cur.description}::text,
+        list_id        = COALESCE(${next.list_id ?? null}::text, list_id),
         status         = COALESCE(${next.status ?? null}::text, status),
         priority       = COALESCE(${next.priority ?? null}::text, priority),
         assignee_id    = ${'assignee_id' in next ? next.assignee_id : cur.assignee_id}::text,
@@ -22004,6 +22039,13 @@ app.patch('/api/tasks/:id', async (req, res) => {
       WHERE id=${cur.id}
       RETURNING *`;
     const updated = rows[0] as any;
+
+    // If the task moved boards, drag its subtasks along and log the
+    // move on the timeline for the audit trail.
+    if (destList && next.list_id) {
+      await sql`UPDATE tasks SET list_id=${next.list_id}, updated_at=NOW() WHERE parent_id=${cur.id}`.catch(() => {});
+      await logTaskActivity(cur.id, gate.user, 'moved_board', 'list_id', list?.name ?? cur.list_id, destList.name);
+    }
 
     // Audit only the fields a human would care about — sort_order churns
     // on every drag and would drown the timeline.
