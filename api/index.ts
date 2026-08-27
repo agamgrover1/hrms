@@ -1007,6 +1007,8 @@ async function runStartupMigrations() {
     await sql`SELECT notes FROM meetings LIMIT 0`;
     // Push subscriptions table (Web Push, phase 2 of live notifs).
     await sql`SELECT 1 FROM push_subscriptions LIMIT 0`;
+    // meetings.sequence — iCal SEQUENCE for calendar invite revisions.
+    await sql`SELECT sequence FROM meetings LIMIT 0`;
     // Also verify the legacy goals.employee_id constraint has been
     // relaxed. bad=0 both when the column doesn't exist (fresh DB)
     // AND when it exists as nullable (post-migration old DB). bad>=1
@@ -3749,6 +3751,10 @@ async function runStartupMigrations() {
   await sql`ALTER TABLE meetings ADD COLUMN IF NOT EXISTS notes_updated_at TIMESTAMPTZ`.catch(()=>{});
   await sql`ALTER TABLE meetings ADD COLUMN IF NOT EXISTS notes_updated_by_id TEXT`.catch(()=>{});
   await sql`ALTER TABLE meetings ADD COLUMN IF NOT EXISTS notes_updated_by_name TEXT`.catch(()=>{});
+  // iCal SEQUENCE — increments on every meeting edit so downstream
+  // calendar clients see the .ics update as a revision of the same
+  // event (UID is stable) and quietly overwrite the old copy.
+  await sql`ALTER TABLE meetings ADD COLUMN IF NOT EXISTS sequence INTEGER NOT NULL DEFAULT 0`.catch(()=>{});
 
   // Web Push subscriptions — one row per (user, browser). Endpoint is
   // the unique identifier assigned by the browser's push service;
@@ -23138,6 +23144,168 @@ app.get('/api/meetings/:id', async (req, res) => {
   } catch (err: any) { res.status(500).json({ error: err.message ?? 'Server error' }); }
 });
 
+// ── Meeting invites via iCalendar (.ics) ────────────────────────────
+// When a meeting is created / edited / cancelled we send every
+// attendee an email carrying an .ics attachment. Every major mail
+// client (Gmail, Outlook, Apple Mail, Yahoo) imports it into the
+// user's default calendar with RSVP controls. Works regardless of
+// which email provider the attendee uses — no OAuth required per
+// account.
+//
+// Send goes through the VPS mail service's /system/send-mail
+// endpoint (fire-and-forget, non-blocking). A slow / down VPS
+// never delays Vercel's response to the API caller.
+
+function icsEscape(s: string): string {
+  return String(s ?? '').replace(/\\/g, '\\\\').replace(/;/g, '\\;').replace(/,/g, '\\,').replace(/\r?\n/g, '\\n');
+}
+function icsUtc(iso: string): string {
+  const d = new Date(iso);
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return `${d.getUTCFullYear()}${pad(d.getUTCMonth() + 1)}${pad(d.getUTCDate())}T${pad(d.getUTCHours())}${pad(d.getUTCMinutes())}${pad(d.getUTCSeconds())}Z`;
+}
+function foldIcs(line: string): string {
+  // RFC 5545 line folding at ~75 octets.
+  if (line.length <= 75) return line;
+  const parts: string[] = [];
+  let i = 0;
+  while (i < line.length) {
+    parts.push((i === 0 ? '' : ' ') + line.slice(i, i + 74));
+    i += 74;
+  }
+  return parts.join('\r\n');
+}
+
+interface MeetingIcsInput {
+  id: string;
+  title: string;
+  description: string | null;
+  start_at: string;
+  end_at: string;
+  location_kind: string;
+  location: string | null;
+  meeting_link: string | null;
+  sequence: number;
+  organizer_email: string;
+  organizer_name: string;
+  attendees: Array<{ email: string; name: string; status?: string }>;
+}
+function generateMeetingIcs(m: MeetingIcsInput, method: 'REQUEST' | 'CANCEL'): string {
+  const uid = `hrms-meeting-${m.id}@digitalleapmarketing.com`;
+  const dtstamp = icsUtc(new Date().toISOString());
+  const status = method === 'CANCEL' ? 'CANCELLED' : 'CONFIRMED';
+  const location =
+    m.location_kind === 'virtual' ? (m.meeting_link ? 'Virtual Meeting' : 'Virtual') :
+    m.location_kind === 'hybrid'  ? `${m.location ?? 'In office'} (also virtual)` :
+                                    (m.location ?? 'In office');
+  const descParts: string[] = [];
+  if (m.description) descParts.push(m.description);
+  if (m.meeting_link) descParts.push(`Join link: ${m.meeting_link}`);
+  const description = descParts.join('\n\n');
+  const attendeeLines = m.attendees
+    .filter(a => a.email)
+    .map(a => `ATTENDEE;CN=${icsEscape(a.name)};ROLE=REQ-PARTICIPANT;PARTSTAT=${a.status === 'accepted' ? 'ACCEPTED' : 'NEEDS-ACTION'};RSVP=TRUE:mailto:${a.email}`);
+  const lines = [
+    'BEGIN:VCALENDAR',
+    'VERSION:2.0',
+    'PRODID:-//Digital Leap//HRMS Meetings//EN',
+    `METHOD:${method}`,
+    'CALSCALE:GREGORIAN',
+    'BEGIN:VEVENT',
+    `UID:${uid}`,
+    `DTSTAMP:${dtstamp}`,
+    `DTSTART:${icsUtc(m.start_at)}`,
+    `DTEND:${icsUtc(m.end_at)}`,
+    `SUMMARY:${icsEscape(m.title)}`,
+    `DESCRIPTION:${icsEscape(description)}`,
+    `LOCATION:${icsEscape(location)}`,
+    `STATUS:${status}`,
+    `SEQUENCE:${m.sequence}`,
+    `ORGANIZER;CN=${icsEscape(m.organizer_name)}:mailto:${m.organizer_email}`,
+    ...attendeeLines,
+  ];
+  if (m.meeting_link) lines.push(`URL:${m.meeting_link}`);
+  lines.push('END:VEVENT', 'END:VCALENDAR');
+  return lines.map(foldIcs).join('\r\n');
+}
+
+async function sendMeetingInvites(m: MeetingIcsInput, method: 'REQUEST' | 'CANCEL'): Promise<void> {
+  const secret = process.env.HRMS_EVENTS_SECRET;
+  if (!secret) return;
+  const base = process.env.MAIL_API_BASE ?? 'https://mail-api.srv1802162.hstgr.cloud';
+  const emails = m.attendees.map(a => a.email).filter(Boolean);
+  if (!emails.length) return;
+  const ics = generateMeetingIcs(m, method);
+  const humanTime = new Date(m.start_at).toLocaleString('en-IN', { day: 'numeric', month: 'short', hour: 'numeric', minute: '2-digit', hour12: true, timeZone: 'Asia/Kolkata' });
+  const subject = method === 'CANCEL'
+    ? `Cancelled: ${m.title}`
+    : `Invitation: ${m.title} (${humanTime} IST)`;
+  const bodyLines: string[] = [];
+  bodyLines.push(`${m.organizer_name} ${method === 'CANCEL' ? 'cancelled' : 'is inviting you to'} the following meeting:`);
+  bodyLines.push('');
+  bodyLines.push(`• ${m.title}`);
+  bodyLines.push(`• ${humanTime} IST`);
+  if (m.location_kind !== 'virtual') bodyLines.push(`• Where: ${m.location ?? 'In office'}`);
+  if (m.meeting_link) bodyLines.push(`• Join: ${m.meeting_link}`);
+  if (m.description) { bodyLines.push(''); bodyLines.push(m.description); }
+  bodyLines.push('');
+  bodyLines.push('The attached invite.ics will add this to your calendar.');
+  bodyLines.push('Open the meeting in HRMS: https://hr.digitalleapmarketing.com/meetings?meeting=' + m.id);
+
+  (async () => {
+    try {
+      await fetch(`${base}/system/send-mail`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${secret}` },
+        body: JSON.stringify({
+          from: `Digital Leap HRMS <${process.env.SYSTEM_MAIL_FROM ?? 'notifications@digitalleapmarketing.com'}>`,
+          to: emails,
+          reply_to: m.organizer_email,
+          subject,
+          text: bodyLines.join('\n'),
+          ics_content: ics,
+          ics_method: method,
+        }),
+        signal: AbortSignal.timeout?.(10000),
+      });
+    } catch { /* mail delivery is fire-and-forget; the in-app notification is the fallback */ }
+  })();
+}
+
+// Looks up organizer email + every attendee email in one query so
+// the invite payload can be assembled without another round-trip.
+async function loadMeetingIcsInput(meetingId: string): Promise<MeetingIcsInput | null> {
+  const m = (await sql`
+    SELECT m.*, org.email AS organizer_email
+    FROM meetings m
+    LEFT JOIN employees org ON org.id = m.organizer_id
+    WHERE m.id = ${meetingId} LIMIT 1` as any[])[0];
+  if (!m) return null;
+  const atts = await sql`
+    SELECT a.employee_id, a.employee_name, a.rsvp_status, e.email
+    FROM meeting_attendees a
+    LEFT JOIN employees e ON e.id = a.employee_id
+    WHERE a.meeting_id = ${meetingId}` as any[];
+  return {
+    id: m.id,
+    title: m.title,
+    description: m.description ?? null,
+    start_at: new Date(m.start_at).toISOString(),
+    end_at:   new Date(m.end_at).toISOString(),
+    location_kind: m.location_kind,
+    location: m.location,
+    meeting_link: m.meeting_link,
+    sequence: Number(m.sequence ?? 0),
+    organizer_email: m.organizer_email ?? '',
+    organizer_name: m.organizer_name,
+    attendees: atts.map(a => ({
+      email: a.email ?? '',
+      name: a.employee_name,
+      status: a.rsvp_status,
+    })).filter(a => a.email),
+  };
+}
+
 // POST /api/meetings — organizer defaults to the caller's employee id.
 app.post('/api/meetings', async (req, res) => {
   try {
@@ -23197,6 +23365,10 @@ app.post('/api/meetings', async (req, res) => {
         `${organizer.name} invited you — ${humanTime}${location ? ` at ${location}` : ''}`,
         `/meetings?meeting=${id}`).catch(() => {});
     }
+    // Fire the calendar invite emails after all rows land. Best-effort;
+    // in-app notifications above are the fallback if SMTP fails.
+    const icsInput = await loadMeetingIcsInput(id).catch(() => null);
+    if (icsInput) sendMeetingInvites(icsInput, 'REQUEST');
     res.status(201).json({ ok: true, id });
   } catch (err: any) { res.status(500).json({ error: err.message ?? 'Server error' }); }
 });
@@ -23232,6 +23404,8 @@ app.patch('/api/meetings/:id', async (req, res) => {
         meeting_link  = ${b.meeting_link  !== undefined ? (b.meeting_link  ?? null) : cur.meeting_link}::text,
         project_id    = ${b.project_id    !== undefined ? (b.project_id    ?? null) : cur.project_id}::text,
         status        = ${b.status        !== undefined ? b.status : cur.status},
+        sequence      = sequence + 1,
+        reminder_sent_at = NULL,
         updated_at    = NOW()
       WHERE id=${cur.id}`;
 
@@ -23259,6 +23433,11 @@ app.patch('/api/meetings/:id', async (req, res) => {
         }
       }
     }
+    // Send updated calendar invite to every remaining attendee. UID
+    // is stable + SEQUENCE bumped above, so calendar clients treat
+    // this as a revision and overwrite the previous copy.
+    const icsInput = await loadMeetingIcsInput(cur.id).catch(() => null);
+    if (icsInput) sendMeetingInvites(icsInput, 'REQUEST');
     res.json({ ok: true });
   } catch (err: any) { res.status(500).json({ error: err.message ?? 'Server error' }); }
 });
@@ -23274,7 +23453,11 @@ app.delete('/api/meetings/:id', async (req, res) => {
     if (!cur) return res.status(404).json({ error: 'Meeting not found' });
     const canWrite = gate.user.role === 'admin' || (gate.user.employeeId && cur.organizer_id === gate.user.employeeId);
     if (!canWrite) return res.status(403).json({ error: 'Only the organizer can cancel this meeting.' });
-    await sql`UPDATE meetings SET status='cancelled', updated_at=NOW() WHERE id=${cur.id}`;
+    await sql`UPDATE meetings SET status='cancelled', sequence=sequence+1, updated_at=NOW() WHERE id=${cur.id}`;
+    // Send a CANCEL .ics to every attendee so their calendars
+    // remove / strike through the event.
+    const icsInput = await loadMeetingIcsInput(cur.id).catch(() => null);
+    if (icsInput) sendMeetingInvites(icsInput, 'CANCEL');
     // Notify every invited attendee (except organizer) that it's off.
     const invitees = await sql`SELECT employee_id FROM meeting_attendees WHERE meeting_id=${cur.id} AND employee_id <> ${cur.organizer_id}` as any[];
     const when = new Date(cur.start_at).toLocaleString('en-IN', { day: 'numeric', month: 'short', hour: 'numeric', minute: '2-digit', hour12: true });
