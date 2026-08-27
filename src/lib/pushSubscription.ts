@@ -88,14 +88,21 @@ export async function subscribeToPush(): Promise<{ ok: true } | { ok: false; err
           applicationServerKey: appServerKey,
         });
       } catch (e: any) {
-        // Chrome/Firefox surface this exact string when the browser's
-        // push service (FCM / autopush) can't handle the request.
-        // Common triggers we can name explicitly:
         const msg = String(e?.message ?? '');
-        if (/public key/i.test(msg)) {
-          return { ok: false, error: `Browser push service rejected the request. If you're on Firefox Private Browsing, push isn't supported there. On Chrome, make sure your OS + browser have internet reach to FCM. Raw error: ${msg}` };
+        const name = String(e?.name ?? '');
+        const ua = navigator.userAgent;
+        const isFirefox = /Firefox/i.test(ua);
+        const isChromium = /Chrome|Chromium|Edg\//i.test(ua);
+        if (/public key/i.test(msg) || /registration failed/i.test(msg)) {
+          if (isFirefox) {
+            return { ok: false, error: 'Firefox refused to register with its push service (autopush.services.mozilla.com). This usually means one of: Private Browsing mode (push is disabled there), Enhanced Tracking Protection blocking autopush, or a corporate network blocking the endpoint. Easiest fix: try in Chrome or Edge. If you must use Firefox, disable Enhanced Tracking Protection for this site (shield icon → toggle off) and retry.' };
+          }
+          if (isChromium) {
+            return { ok: false, error: 'Chrome/Edge refused to register with its push service (fcm.googleapis.com). Common cause is a corporate network / VPN blocking Google FCM. Try disconnecting from the VPN, or use a personal network.' };
+          }
+          return { ok: false, error: `Browser push service rejected the request. Raw error: ${msg || name}` };
         }
-        return { ok: false, error: `Subscribe failed: ${msg || e?.name || 'unknown error'}` };
+        return { ok: false, error: `Subscribe failed: ${msg || name || 'unknown error'}` };
       }
     }
     const json = sub.toJSON() as any;
