@@ -111,9 +111,15 @@ export default function Login() {
       <div className="flex-1 flex items-center justify-center p-8 bg-bg">
         <div className="w-full max-w-md group relative">
 
-          {/* Mobile logo */}
+          {/* Mobile logo — the source PNG is white-on-transparent (designed
+              for the dark left panel on desktop). On mobile the page
+              background is light, so the white pixels of the wordmark
+              vanished. Wrap it in a dark aurora-tinted pill so the
+              contrast matches the desktop brand treatment. */}
           <div className="lg:hidden mb-10 flex justify-center">
-            <img src="/logo.png" alt="Digital Leap Marketing Solutions" className="h-10 object-contain" />
+            <div className="aurora-bg rounded-2xl px-6 py-3 shadow-elev-2">
+              <img src="/logo.png" alt="Digital Leap Marketing Solutions" className="h-10 object-contain" />
+            </div>
           </div>
 
           {/* Elevated card wrapper */}
