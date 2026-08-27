@@ -9,6 +9,7 @@ import ThemeToggle from '../ThemeToggle';
 import ClockWidget from './ClockWidget';
 import TaskTimerChip from './TaskTimerChip';
 import EnableNotificationsChip from '../EnableNotificationsChip';
+import InstallAppChip from '../InstallAppChip';
 import { useLiveNotifications, type LiveNotificationPayload } from '../../hooks/useLiveNotifications';
 
 // Map notification type + user role → destination route
@@ -557,6 +558,11 @@ export default function TopBar({ title, onMenuClick }: Props) {
         {/* Task-timer chip — appears only while a task timer is running.
             Click to jump to the task, X to stop. */}
         <TaskTimerChip />
+
+        {/* PWA install prompt — appears when the browser reports the
+            app is installable (Chrome/Edge fire beforeinstallprompt;
+            Safari opts into a how-to modal). Hidden once installed. */}
+        <InstallAppChip />
 
         {/* One-shot pill nudging the user to grant OS-level push
             notification permission. Renders itself out once accepted
