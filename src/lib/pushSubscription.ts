@@ -90,17 +90,25 @@ export async function subscribeToPush(): Promise<{ ok: true } | { ok: false; err
       } catch (e: any) {
         const msg = String(e?.message ?? '');
         const name = String(e?.name ?? '');
+        // Log full diagnostics to console so a support screenshot with
+        // devtools open captures everything. Keeps the toast short.
+        try {
+          console.error('[push] pushManager.subscribe failed', {
+            name, message: msg, userAgent: navigator.userAgent,
+            keyLength: appServerKey.byteLength,
+          });
+        } catch { /* console might be gone in odd envs */ }
         const ua = navigator.userAgent;
         const isFirefox = /Firefox/i.test(ua);
         const isChromium = /Chrome|Chromium|Edg\//i.test(ua);
-        if (/public key/i.test(msg) || /registration failed/i.test(msg)) {
+        if (/public key/i.test(msg) || /registration failed/i.test(msg) || /push service/i.test(msg)) {
           if (isFirefox) {
-            return { ok: false, error: 'Firefox refused to register with its push service (autopush.services.mozilla.com). This usually means one of: Private Browsing mode (push is disabled there), Enhanced Tracking Protection blocking autopush, or a corporate network blocking the endpoint. Easiest fix: try in Chrome or Edge. If you must use Firefox, disable Enhanced Tracking Protection for this site (shield icon → toggle off) and retry.' };
+            return { ok: false, error: 'Firefox couldn\'t reach its push service (autopush). Likely: Private Browsing, Enhanced Tracking Protection blocking autopush, or a corporate firewall. Fastest fix: try Chrome or Edge. Details in the browser console.' };
           }
           if (isChromium) {
-            return { ok: false, error: 'Chrome/Edge refused to register with its push service (fcm.googleapis.com). Common cause is a corporate network / VPN blocking Google FCM. Try disconnecting from the VPN, or use a personal network.' };
+            return { ok: false, error: 'Chrome couldn\'t reach FCM. Try (in order): 1) Incognito mode to rule out an extension, 2) mobile hotspot / non-corporate network — office VPNs often block fcm.googleapis.com, 3) chrome://settings/content/notifications and check this site isn\'t blocked. Details in the browser console.' };
           }
-          return { ok: false, error: `Browser push service rejected the request. Raw error: ${msg || name}` };
+          return { ok: false, error: `Browser push service rejected the request. See browser console for details. (${name || 'error'})` };
         }
         return { ok: false, error: `Subscribe failed: ${msg || name || 'unknown error'}` };
       }
