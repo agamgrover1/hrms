@@ -142,15 +142,48 @@ async function notifyUser(userId: string, type: string, title: string, body?: st
     // nothing appears in the bell going forward.
     const muted = await sql`SELECT 1 FROM user_notification_mutes WHERE user_id=${userId} AND type=${type} LIMIT 1`.catch(() => [] as any[]);
     if ((muted as any[]).length) return;
-    await sql`INSERT INTO notifications (user_id, type, title, body, link)
-              VALUES (${userId}, ${type}, ${title}, ${body ?? null}, ${link ?? null})`;
+    const inserted = (await sql`INSERT INTO notifications (user_id, type, title, body, link)
+              VALUES (${userId}, ${type}, ${title}, ${body ?? null}, ${link ?? null})
+              RETURNING id, created_at` as any[])[0];
     // Purge the user's notifications cache so the next bell fetch
     // surfaces this row instead of waiting up to 30s for the TTL.
     // Inlined to avoid a forward reference to invalidateNotificationsCache.
     for (const k of Array.from(_memoCache.keys())) {
       if (k.startsWith(`notifications:${userId}:`)) _memoCache.delete(k);
     }
+    // Fire-and-forget SSE broadcast to the VPS relay so any open tab
+    // sees the notification within milliseconds instead of waiting up
+    // to 30s for the next poll. Failure is non-fatal — the poll is the
+    // fallback if this hop is unavailable.
+    broadcastNotificationToVps(userId, {
+      id: Number(inserted?.id ?? 0),
+      type, title,
+      body: body ?? null,
+      link: link ?? null,
+      is_read: false,
+      created_at: inserted?.created_at ?? new Date().toISOString(),
+    });
   } catch { /* non-fatal */ }
+}
+
+// Fire-and-forget POST to the mail-service SSE relay. Awaited only for
+// error-swallow; the caller never blocks on this — a slow VPS should
+// never delay Vercel's response to the actual API caller.
+function broadcastNotificationToVps(userId: string, notification: any) {
+  const secret = process.env.HRMS_EVENTS_SECRET;
+  const base = process.env.MAIL_API_BASE ?? 'https://mail-api.srv1802162.hstgr.cloud';
+  if (!secret) return;   // nothing to do until the shared secret is configured
+  (async () => {
+    try {
+      await fetch(`${base}/events/hrms/broadcast`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${secret}` },
+        body: JSON.stringify({ user_id: userId, notification }),
+        // 3s cap — a stuck VPS shouldn't dangle the event loop.
+        signal: AbortSignal.timeout?.(3000),
+      });
+    } catch { /* the poll fallback still delivers within 30s */ }
+  })();
 }
 
 async function notifyAdminsAndHR(type: string, title: string, body?: string, link?: string) {

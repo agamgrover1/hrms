@@ -8,6 +8,7 @@ import { api } from '../../services/api';
 import ThemeToggle from '../ThemeToggle';
 import ClockWidget from './ClockWidget';
 import TaskTimerChip from './TaskTimerChip';
+import { useLiveNotifications, type LiveNotificationPayload } from '../../hooks/useLiveNotifications';
 
 // Map notification type + user role → destination route
 export function getNotifRoute(type: string, role: string): string {
@@ -434,6 +435,29 @@ export default function TopBar({ title, onMenuClick }: Props) {
       window.removeEventListener('focus', onFocus);
       document.removeEventListener('visibilitychange', onVisible);
     };
+  }, [user?.id]);
+
+  // Live push — SSE from the VPS mail service. Instant delivery
+  // replaces the previous "wait for next poll" latency. Focus /
+  // visibility poll stays around as the fallback when SSE can't
+  // establish (corporate proxies, brief VPS restarts).
+  useLiveNotifications(!!user?.id);
+  useEffect(() => {
+    if (!user?.id) return;
+    const onLive = (evt: Event) => {
+      const detail = (evt as CustomEvent<LiveNotificationPayload>).detail;
+      if (!detail || !detail.id) return;
+      // Prepend to the local list if it isn't already there.
+      setNotifications(prev => (prev.some(n => Number(n.id) === Number(detail.id)) ? prev : [detail, ...prev]));
+      // Toast + high-water mark bump — same shape the fetch path uses.
+      if (Number(detail.id) > lastSeenIdRef.current) {
+        setToasts(prev => [detail, ...prev].slice(0, 4));
+        lastSeenIdRef.current = Number(detail.id);
+        try { localStorage.setItem(`notif_seen_${user.id}`, String(detail.id)); } catch { /* quota */ }
+      }
+    };
+    window.addEventListener('hrms-notification', onLive as EventListener);
+    return () => window.removeEventListener('hrms-notification', onLive as EventListener);
   }, [user?.id]);
 
   // Per-toast dismiss + auto-dismiss after 7s. Click-to-navigate uses the
