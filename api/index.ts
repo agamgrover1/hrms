@@ -3,18 +3,29 @@ import cors from 'cors';
 import { neon } from '@neondatabase/serverless';
 import bcrypt from 'bcryptjs';
 import { createHmac, randomBytes } from 'node:crypto';
-// eslint-disable-next-line @typescript-eslint/no-var-requires
-const webpush = require('web-push');
 
-// Web Push VAPID setup. When either env var is missing we still boot
-// — the push send path becomes a no-op and clients that try to
-// subscribe get a 503 with a clear message.
+// Web Push VAPID setup. Package is loaded lazily inside the send
+// helper so a missing / broken `web-push` at cold start can't crash
+// the whole api. The require-in-CJS approach also breaks under
+// package.json { "type": "module" } — we're strict ESM.
 const VAPID_PUBLIC = process.env.VAPID_PUBLIC_KEY;
 const VAPID_PRIVATE = process.env.VAPID_PRIVATE_KEY;
 const VAPID_SUBJECT = process.env.VAPID_SUBJECT ?? 'mailto:info@digitalleapmarketing.com';
-if (VAPID_PUBLIC && VAPID_PRIVATE) {
-  try { webpush.setVapidDetails(VAPID_SUBJECT, VAPID_PUBLIC, VAPID_PRIVATE); }
-  catch (e: any) { console.warn('[push] setVapidDetails failed:', e?.message ?? e); }
+let _webpush: any = null;
+let _vapidReady = false;
+async function getWebPush(): Promise<any | null> {
+  if (!VAPID_PUBLIC || !VAPID_PRIVATE) return null;
+  if (_webpush && _vapidReady) return _webpush;
+  try {
+    const mod: any = await import('web-push');
+    _webpush = mod?.default ?? mod;
+    _webpush.setVapidDetails(VAPID_SUBJECT, VAPID_PUBLIC, VAPID_PRIVATE);
+    _vapidReady = true;
+    return _webpush;
+  } catch (e: any) {
+    console.warn('[push] web-push load / VAPID setup failed:', e?.message ?? e);
+    return null;
+  }
 }
 
 // Lazy Neon client — always typed as Promise<any[]> to satisfy TypeScript 6 strict mode
@@ -191,6 +202,8 @@ function sendWebPushToUser(userId: string, notification: any) {
   if (!VAPID_PUBLIC || !VAPID_PRIVATE) return;
   (async () => {
     try {
+      const wp = await getWebPush();
+      if (!wp) return;
       const subs = await sql`SELECT id, endpoint, p256dh, auth FROM push_subscriptions WHERE user_id=${userId}` as any[];
       if (!subs.length) return;
       const body = JSON.stringify({
@@ -202,7 +215,7 @@ function sendWebPushToUser(userId: string, notification: any) {
       });
       for (const s of subs) {
         try {
-          await webpush.sendNotification({
+          await wp.sendNotification({
             endpoint: s.endpoint,
             keys: { p256dh: s.p256dh, auth: s.auth },
           }, body, { TTL: 60 });
@@ -210,8 +223,6 @@ function sendWebPushToUser(userId: string, notification: any) {
         } catch (err: any) {
           const code = Number(err?.statusCode ?? 0);
           if (code === 404 || code === 410) {
-            // Subscription is gone — the browser removed it or the user
-            // uninstalled. Purge so we don't retry every notification.
             await sql`DELETE FROM push_subscriptions WHERE id=${s.id}`.catch(() => {});
           }
         }
