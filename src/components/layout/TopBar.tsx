@@ -8,6 +8,7 @@ import { api } from '../../services/api';
 import ThemeToggle from '../ThemeToggle';
 import ClockWidget from './ClockWidget';
 import TaskTimerChip from './TaskTimerChip';
+import EnableNotificationsChip from '../EnableNotificationsChip';
 import { useLiveNotifications, type LiveNotificationPayload } from '../../hooks/useLiveNotifications';
 
 // Map notification type + user role → destination route
@@ -556,6 +557,11 @@ export default function TopBar({ title, onMenuClick }: Props) {
         {/* Task-timer chip — appears only while a task timer is running.
             Click to jump to the task, X to stop. */}
         <TaskTimerChip />
+
+        {/* One-shot pill nudging the user to grant OS-level push
+            notification permission. Renders itself out once accepted
+            or dismissed. */}
+        <EnableNotificationsChip />
 
         {/* Theme toggle */}
         <ThemeToggle />

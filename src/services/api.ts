@@ -828,6 +828,13 @@ export const api = {
     request<{ ok: true }>(`/meetings/${id}/notes`, { method: 'PATCH', body: JSON.stringify({ notes }) }),
 
   // Short-lived JWT for the VPS mail service. Used by mailApi.ts.
+  // Web Push (phase 2 of live notifications)
+  getPushVapidKey: () =>
+    request<{ public_key: string }>(`/config/push-vapid-key`),
+  savePushSubscription: (data: { endpoint: string; keys: { p256dh: string; auth: string } }) =>
+    request<{ ok: true }>(`/me/push-subscription`, { method: 'POST', body: JSON.stringify(data) }),
+  deletePushSubscription: (endpoint: string) =>
+    request<{ ok: true }>(`/me/push-subscription?endpoint=${encodeURIComponent(endpoint)}`, { method: 'DELETE' }),
   getMailToken: () =>
     request<{ token: string; expires_in: number; api_base: string }>(`/me/mail-token`),
   // Task-scoped file token for the VPS files module (task attachments).

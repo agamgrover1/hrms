@@ -3,6 +3,19 @@ import cors from 'cors';
 import { neon } from '@neondatabase/serverless';
 import bcrypt from 'bcryptjs';
 import { createHmac, randomBytes } from 'node:crypto';
+// eslint-disable-next-line @typescript-eslint/no-var-requires
+const webpush = require('web-push');
+
+// Web Push VAPID setup. When either env var is missing we still boot
+// — the push send path becomes a no-op and clients that try to
+// subscribe get a 503 with a clear message.
+const VAPID_PUBLIC = process.env.VAPID_PUBLIC_KEY;
+const VAPID_PRIVATE = process.env.VAPID_PRIVATE_KEY;
+const VAPID_SUBJECT = process.env.VAPID_SUBJECT ?? 'mailto:info@digitalleapmarketing.com';
+if (VAPID_PUBLIC && VAPID_PRIVATE) {
+  try { webpush.setVapidDetails(VAPID_SUBJECT, VAPID_PUBLIC, VAPID_PRIVATE); }
+  catch (e: any) { console.warn('[push] setVapidDetails failed:', e?.message ?? e); }
+}
 
 // Lazy Neon client — always typed as Promise<any[]> to satisfy TypeScript 6 strict mode
 let _sql: ReturnType<typeof neon> | null = null;
@@ -155,15 +168,56 @@ async function notifyUser(userId: string, type: string, title: string, body?: st
     // sees the notification within milliseconds instead of waiting up
     // to 30s for the next poll. Failure is non-fatal — the poll is the
     // fallback if this hop is unavailable.
-    broadcastNotificationToVps(userId, {
+    const payload = {
       id: Number(inserted?.id ?? 0),
       type, title,
       body: body ?? null,
       link: link ?? null,
       is_read: false,
       created_at: inserted?.created_at ?? new Date().toISOString(),
-    });
+    };
+    broadcastNotificationToVps(userId, payload);
+    // Web Push — OS-level notifications for people who've opted in.
+    // Non-blocking; a slow / gone push service can't dangle the API.
+    sendWebPushToUser(userId, payload);
   } catch { /* non-fatal */ }
+}
+
+// Fire-and-forget Web Push send to every subscription this user has
+// registered. On 404/410 (subscription is dead), we prune the row so
+// old browsers don't keep costing us retries. Never blocks the API
+// response — the poll fallback still catches anything the push misses.
+function sendWebPushToUser(userId: string, notification: any) {
+  if (!VAPID_PUBLIC || !VAPID_PRIVATE) return;
+  (async () => {
+    try {
+      const subs = await sql`SELECT id, endpoint, p256dh, auth FROM push_subscriptions WHERE user_id=${userId}` as any[];
+      if (!subs.length) return;
+      const body = JSON.stringify({
+        title: notification.title ?? 'HRMS',
+        body:  notification.body  ?? '',
+        link:  notification.link  ?? '/',
+        type:  notification.type  ?? 'info',
+        id:    notification.id,
+      });
+      for (const s of subs) {
+        try {
+          await webpush.sendNotification({
+            endpoint: s.endpoint,
+            keys: { p256dh: s.p256dh, auth: s.auth },
+          }, body, { TTL: 60 });
+          await sql`UPDATE push_subscriptions SET last_used_at=NOW() WHERE id=${s.id}`.catch(() => {});
+        } catch (err: any) {
+          const code = Number(err?.statusCode ?? 0);
+          if (code === 404 || code === 410) {
+            // Subscription is gone — the browser removed it or the user
+            // uninstalled. Purge so we don't retry every notification.
+            await sql`DELETE FROM push_subscriptions WHERE id=${s.id}`.catch(() => {});
+          }
+        }
+      }
+    } catch { /* fully non-fatal */ }
+  })();
 }
 
 // Fire-and-forget POST to the mail-service SSE relay. Awaited only for
@@ -940,6 +994,8 @@ async function runStartupMigrations() {
     await sql`SELECT owner_id FROM goals LIMIT 0`;
     // Also ensure the meetings.notes column landed on old DBs.
     await sql`SELECT notes FROM meetings LIMIT 0`;
+    // Push subscriptions table (Web Push, phase 2 of live notifs).
+    await sql`SELECT 1 FROM push_subscriptions LIMIT 0`;
     // Also verify the legacy goals.employee_id constraint has been
     // relaxed. bad=0 both when the column doesn't exist (fresh DB)
     // AND when it exists as nullable (post-migration old DB). bad>=1
@@ -3682,6 +3738,24 @@ async function runStartupMigrations() {
   await sql`ALTER TABLE meetings ADD COLUMN IF NOT EXISTS notes_updated_at TIMESTAMPTZ`.catch(()=>{});
   await sql`ALTER TABLE meetings ADD COLUMN IF NOT EXISTS notes_updated_by_id TEXT`.catch(()=>{});
   await sql`ALTER TABLE meetings ADD COLUMN IF NOT EXISTS notes_updated_by_name TEXT`.catch(()=>{});
+
+  // Web Push subscriptions — one row per (user, browser). Endpoint is
+  // the unique identifier assigned by the browser's push service;
+  // p256dh + auth are the encryption keys the push service needs to
+  // decrypt the payload. Cleaning up 410-Gone endpoints happens in
+  // the send path, not here.
+  await sql`
+    CREATE TABLE IF NOT EXISTS push_subscriptions (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL,
+      endpoint TEXT NOT NULL UNIQUE,
+      p256dh TEXT NOT NULL,
+      auth TEXT NOT NULL,
+      user_agent TEXT,
+      created_at TIMESTAMPTZ DEFAULT NOW(),
+      last_used_at TIMESTAMPTZ
+    )`;
+  await sql`CREATE INDEX IF NOT EXISTS idx_push_subscriptions_user ON push_subscriptions(user_id)`.catch(()=>{});
 
   _migrated = true;
 }
@@ -23346,6 +23420,56 @@ app.all('/api/meetings/reminders/run', async (req, res) => {
     const result = await runMeetingReminderSweep();
     res.json({ ok: true, ...result });
   } catch (err: any) { res.status(500).json({ error: err?.message ?? 'Reminder run failed' }); }
+});
+
+// ── Web Push endpoints ──────────────────────────────────────────────
+// Config: the public VAPID key is required client-side to subscribe.
+// Returned to any signed-in user; the private half never leaves the
+// server.
+app.get('/api/config/push-vapid-key', (_req, res) => {
+  if (!VAPID_PUBLIC) return res.status(503).json({ error: 'Web Push not configured on server' });
+  res.json({ public_key: VAPID_PUBLIC });
+});
+
+// Subscribe — client calls this after PushManager.subscribe() with the
+// PushSubscription.toJSON() output. Idempotent on endpoint: same URL
+// upserts the row (keys can rotate, user_agent may drift).
+app.post('/api/me/push-subscription', async (req, res) => {
+  try {
+    const uid = req.header('x-user-id');
+    if (!uid) return res.status(401).json({ error: 'Not authenticated' });
+    const b = req.body ?? {};
+    const endpoint = String(b.endpoint ?? '').trim();
+    const p256dh   = String(b.keys?.p256dh ?? '').trim();
+    const auth     = String(b.keys?.auth   ?? '').trim();
+    if (!endpoint || !p256dh || !auth) return res.status(400).json({ error: 'endpoint + keys.p256dh + keys.auth required' });
+    const ua = req.header('user-agent') ?? null;
+    // ON CONFLICT on the endpoint so re-registers refresh the keys +
+    // ownership rather than piling up rows.
+    await sql`
+      INSERT INTO push_subscriptions (id, user_id, endpoint, p256dh, auth, user_agent, created_at)
+      VALUES (${`psub_${randomBytes(8).toString('hex')}`}, ${uid}, ${endpoint}, ${p256dh}, ${auth}, ${ua}, NOW())
+      ON CONFLICT (endpoint) DO UPDATE SET
+        user_id    = EXCLUDED.user_id,
+        p256dh     = EXCLUDED.p256dh,
+        auth       = EXCLUDED.auth,
+        user_agent = EXCLUDED.user_agent`;
+    res.json({ ok: true });
+  } catch (err: any) { res.status(500).json({ error: err?.message ?? 'Server error' }); }
+});
+
+// Unsubscribe — client calls this before PushManager.unsubscribe() so
+// we stop trying to push to a subscription the browser is about to
+// tear down.
+app.delete('/api/me/push-subscription', async (req, res) => {
+  try {
+    const uid = req.header('x-user-id');
+    if (!uid) return res.status(401).json({ error: 'Not authenticated' });
+    const endpoint = String((req.query.endpoint as string) ?? req.body?.endpoint ?? '').trim();
+    if (!endpoint) return res.status(400).json({ error: 'endpoint required' });
+    await sql`DELETE FROM push_subscriptions WHERE user_id=${uid} AND endpoint=${endpoint}`;
+    res.json({ ok: true });
+  } catch (err: any) { res.status(500).json({ error: err?.message ?? 'Server error' }); }
 });
 
 // ── Mail-service bridge ─────────────────────────────────────────────

@@ -13,6 +13,8 @@
          is missed or the crawler ignores meta tags (e.g. some LLM
          crawlers only honor the header). -->
     <meta name="robots" content="noindex, nofollow, noarchive, nosnippet" />
+    <link rel="manifest" href="/manifest.webmanifest" />
+    <meta name="theme-color" content="#EE2770" />
     <title>Digital Leap HRMS</title>
   </head>
   <body>
@@ -30,11 +32,29 @@
       (function () {
         try {
           if ('serviceWorker' in navigator) {
+            // Sweep any legacy service worker (from earlier deploys)
+            // and register the current /sw.js. The push handler + PWA
+            // install experience are worth an SW, but we deliberately
+            // keep the worker itself dumb — no offline shell, no
+            // fetch-time cache, so a stale SW can't intercept fresh
+            // bundle URLs. Every load re-registers, so upgrades ship
+            // like any other file.
+            var OWN_SW = new URL('/sw.js', location.origin).href;
             navigator.serviceWorker.getRegistrations()
-              .then(function (regs) { regs.forEach(function (r) { r.unregister(); }); })
-              .catch(function () {});
+              .then(function (regs) {
+                regs.forEach(function (r) {
+                  var scriptUrl = r.active && r.active.scriptURL;
+                  if (scriptUrl !== OWN_SW) { try { r.unregister(); } catch (e) {} }
+                });
+                navigator.serviceWorker.register('/sw.js', { scope: '/' }).catch(function () {});
+              })
+              .catch(function () {
+                navigator.serviceWorker.register('/sw.js', { scope: '/' }).catch(function () {});
+              });
           }
           if (typeof caches !== 'undefined' && caches && caches.keys) {
+            // Purge legacy CacheStorage entries — we don't use caches
+            // ourselves, so anything here is from an older SW deploy.
             caches.keys()
               .then(function (keys) { keys.forEach(function (k) { caches.delete(k); }); })
               .catch(function () {});
