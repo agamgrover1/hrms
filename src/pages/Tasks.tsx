@@ -1040,6 +1040,12 @@ function NewBoardModal({ onClose, onCreated }: { onClose: () => void; onCreated:
           <Archive size={11} className="mt-0.5 flex-shrink-0" />
           Starts with To do · In progress · In review · Done. Columns are per-board and editable later.
         </p>
+        <p className="text-[11px] text-on-surface-muted inline-flex items-start gap-1.5">
+          <Lock size={11} className="mt-0.5 flex-shrink-0" />
+          <span>
+            Private by default — only you can see it. Open <b className="text-on-surface">Board settings</b> after creating to share with members or teams.
+          </span>
+        </p>
 
         {error && <p className="text-xs text-danger">{error}</p>}
 

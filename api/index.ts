@@ -21141,11 +21141,20 @@ app.post('/api/task-lists', async (req, res) => {
     const order = (await sql`
       SELECT COALESCE(MAX(sort_order), -1) + 1 AS next FROM task_lists
       WHERE (${project_id ?? null}::text IS NULL AND project_id IS NULL) OR project_id = ${project_id ?? null}` as any[])[0]?.next ?? 0;
+    // Default visibility for new boards is RESTRICTED with an empty
+    // permissions list — nobody else can see it until the creator
+    // opens Board settings and hands out access. The creator retains
+    // full access implicitly (boardPermissionOf treats creator as
+    // 'admin' regardless of the permissions array). This matches the
+    // "private by default" expectation new boards should carry so a
+    // half-scaffolded board doesn't leak to the whole org.
     const rows = await sql`
-      INSERT INTO task_lists (id, project_id, name, description, color, statuses, sort_order, created_by_id, created_by_name)
+      INSERT INTO task_lists (id, project_id, name, description, color, statuses, sort_order, created_by_id, created_by_name,
+                              visibility, member_employee_ids, member_departments, permissions)
       VALUES (${newId('tlist')}, ${project_id ?? null}, ${String(name).trim()}, ${description ?? null},
               ${color ?? null}, ${JSON.stringify(cols)}::jsonb, ${Number(order)},
-              ${gate.user.id}, ${gate.user.name})
+              ${gate.user.id}, ${gate.user.name},
+              'restricted', '{}'::text[], '{}'::text[], '[]'::jsonb)
       RETURNING *`;
     res.status(201).json(rows[0]);
   } catch (err: any) { res.status(500).json({ error: err.message ?? 'Server error' }); }
