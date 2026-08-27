@@ -207,6 +207,9 @@ export default function TaskDetailModal({ taskId, employees, onClose, onChanged 
         setTask(t); setSubtasks(st); setComments(cs); setActivity(acts);
         setCustomFields(cf ?? []);
         setTitle(t.title); setDescription(t.description ?? '');
+        // Reflect the task name in the browser tab so an open modal
+        // is easy to spot in the task-switcher / pinned-tabs view.
+        try { document.title = `${t.title} · Tasks · Digital Leap HRMS`; } catch { /* noop */ }
       })
       .catch((e: any) => setErr(e?.message ?? 'Failed to load task'))
       .finally(() => setLoading(false));
@@ -455,6 +458,13 @@ export default function TaskDetailModal({ taskId, employees, onClose, onChanged 
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
   }, [onClose]);
+
+  // Restore the plain "Tasks · Digital Leap HRMS" title when the modal
+  // closes — Layout's title effect only fires on pathname change, so
+  // dropping the ?task= search param doesn't retitle on its own.
+  useEffect(() => {
+    return () => { try { document.title = 'Tasks · Digital Leap HRMS'; } catch { /* noop */ } };
+  }, []);
 
   const patch = async (data: Record<string, any>) => {
     if (!task) return;

@@ -16,6 +16,7 @@ const pageTitles: Record<string, string> = {
   '/leave': 'Leave Management',
   '/payroll': 'Payroll',
   '/performance': 'Performance',
+  '/performance/pulse': 'Performance Pulse',
   '/users': 'User Management',
   '/config': 'Configuration',
   '/incentives': 'Finance',
@@ -23,6 +24,7 @@ const pageTitles: Record<string, string> = {
   '/finance': 'Project Profitability',
   '/projects': 'Projects',
   '/hours': 'Project Hours',
+  '/hours/allocation': 'Hour Allocation',
   '/hours/approvals': 'Hour Approvals',
   '/hours/compliance': 'Daily Log Compliance',
   '/hours/utilization': 'Staff Utilization',
@@ -30,17 +32,39 @@ const pageTitles: Record<string, string> = {
   '/features': 'Features',
   '/my': 'My Portal',
   '/my-team': 'My Team',
+  '/tasks': 'Tasks',
+  '/tasks/analytics': 'Task Analytics',
+  '/meetings': 'Meetings',
+  '/goals': 'Goals',
+  '/hiring': 'Hiring',
+  '/hiring/analytics': 'Hiring Analytics',
+  '/lifecycle': 'Lifecycle',
+  '/hr/documents': 'HR Documents',
+  '/mail': 'Mail',
+  '/workload': 'Workload',
+  '/reports': 'Reports',
+  '/templates': 'Templates',
+  '/help/how-it-works': 'How It Works',
+  '/help/pulse': 'Pulse Rubric',
 };
 
 function getTitle(pathname: string): string {
   if (pageTitles[pathname]) return pageTitles[pathname];
-  if (/^\/employees\/.+/.test(pathname)) return 'Employee Profile';
+  if (/^\/employees\/.+/.test(pathname))   return 'Employee Profile';
+  if (/^\/projects\/.+/.test(pathname))    return 'Project Dashboard';
+  if (/^\/hiring\/.+/.test(pathname))      return 'Candidate';
   return 'Digital Leap HRMS';
 }
 
 export default function Layout() {
   const location = useLocation();
   const title = getTitle(location.pathname);
+  // Reflect the current page in the browser tab title so pinned tabs
+  // + task-switcher previews + PWA window chrome show what you're
+  // actually looking at. Empty title falls back to the app name.
+  useEffect(() => {
+    document.title = title === 'Digital Leap HRMS' ? 'Digital Leap HRMS' : `${title} · Digital Leap HRMS`;
+  }, [title]);
   // Mobile sidebar drawer state. TopBar's hamburger flips this; Sidebar reads
   // it and slides in/out. Route changes auto-close so navigating from the
   // drawer doesn't leave it open over the next page.

@@ -468,6 +468,12 @@ function MeetingDetailDrawer({ meeting, myEmpId, canEdit, onClose, onEdit, onCan
   const [savingNotes, setSavingNotes] = useState(false);
   const [notesEdited, setNotesEdited] = useState(false);
   useEffect(() => { setNotes(meeting.notes ?? ''); setNotesEdited(false); }, [meeting.id, meeting.notes]);
+  // Reflect the meeting title in the browser tab while the drawer is
+  // open. Restore the Meetings page title on close.
+  useEffect(() => {
+    try { document.title = `${meeting.title} · Meetings · Digital Leap HRMS`; } catch { /* noop */ }
+    return () => { try { document.title = 'Meetings · Digital Leap HRMS'; } catch { /* noop */ } };
+  }, [meeting.id, meeting.title]);
   const saveNotes = async () => {
     if (!canWriteNotes) return;
     const trimmed = notes.trim();
