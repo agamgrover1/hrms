@@ -310,7 +310,15 @@ export default function Tasks() {
         activeViewId={activeViewId}
         onLoadView={v => {
           setFilters(v.filters ?? {});
-          if (v.board_id && v.board_id !== boardParam) setBoardParam(v.board_id);
+          // Only jump to the view's saved board when the user isn't
+          // already on a cross-board surface (All tasks / My tasks).
+          // If they explicitly picked All or Mine, applying a saved
+          // filter should stay in that scope — the previous behaviour
+          // yanked them into a specific board and hid the very scope
+          // they were trying to filter.
+          if (v.board_id && v.board_id !== boardParam && boardParam !== 'all' && boardParam !== 'mine') {
+            setBoardParam(v.board_id);
+          }
           setActiveViewId(v.id);
         }}
         onSaved={v => { setSavedViews(prev => [...prev.filter(x => x.id !== v.id), v]); setActiveViewId(v.id); }}
