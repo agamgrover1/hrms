@@ -35,6 +35,7 @@ import HoursUtilization from './pages/HoursUtilization';
 import HoursAllocation from './pages/HoursAllocation';
 import TemplatesHub from './pages/TemplatesHub';
 import Notifications from './pages/Notifications';
+import CalendarPage from './pages/Calendar';
 import Features from './pages/Features';
 import HowItWorks from './pages/HowItWorks';
 import Finance from './pages/finance/Finance';
@@ -142,6 +143,7 @@ function AppRoutes() {
         {/* Weekly billing planner — coord/admin edit, everyone else read-only (see page). */}
         <Route path="hours/allocation" element={<ProtectedRoute roles={['admin', 'hr_manager', 'project_coordinator']}><HoursAllocation /></ProtectedRoute>} />
         <Route path="notifications" element={<ProtectedRoute><Notifications /></ProtectedRoute>} />
+        <Route path="calendar" element={<ProtectedRoute><CalendarPage /></ProtectedRoute>} />
         {/* Template Hub — HR / admin only for now. */}
         <Route path="templates" element={<ProtectedRoute roles={['admin', 'hr_manager']}><TemplatesHub /></ProtectedRoute>} />
         <Route path="features" element={<ProtectedRoute roles={['admin', 'hr_manager']}><Features /></ProtectedRoute>} />

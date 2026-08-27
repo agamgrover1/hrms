@@ -828,6 +828,20 @@ export const api = {
     request<{ ok: true }>(`/meetings/${id}/notes`, { method: 'PATCH', body: JSON.stringify({ notes }) }),
 
   // Short-lived JWT for the VPS mail service. Used by mailApi.ts.
+  // Calendar OAuth connections (Google + Microsoft)
+  listCalendarConnections: () =>
+    request<Array<{ id: string; provider: 'google' | 'microsoft'; account_email: string; display_name: string | null; calendar_id: string | null; status: 'active' | 'expired' | 'revoked'; last_synced_at: string | null; connected_at: string }>>(`/me/calendars`),
+  connectCalendar: (provider: 'google' | 'microsoft') =>
+    request<{ url: string }>(`/me/calendars/connect/${provider}`, { method: 'POST' }),
+  disconnectCalendar: (id: string) =>
+    request<{ ok: true }>(`/me/calendars/${id}`, { method: 'DELETE' }),
+  getCalendarEvents: (id: string, opts?: { from?: string; to?: string }) => {
+    const qs = new URLSearchParams();
+    if (opts?.from) qs.set('from', opts.from);
+    if (opts?.to)   qs.set('to',   opts.to);
+    return request<{ events: Array<{ id: string; summary: string; description: string | null; location: string | null; start: string | null; end: string | null; all_day: boolean; html_link: string | null; organizer: any; attendees: Array<{ email: string; name: string | null; response: string | null }>; conference_uri: string | null }> }>(`/me/calendars/${id}/events${qs.toString() ? '?' + qs : ''}`);
+  },
+
   // Web Push (phase 2 of live notifications)
   getPushVapidKey: () =>
     request<{ public_key: string }>(`/config/push-vapid-key`),
