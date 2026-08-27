@@ -400,6 +400,9 @@ export default function TaskDetailModal({ taskId, employees, onClose, onChanged 
   const onCommentChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
     const val = e.target.value;
     setComment(val);
+    // If the user manually deleted an inserted `@Name`, drop it from
+    // pickedMentions so the "Tagging:" chips reflect reality.
+    setPickedMentions(prev => prev.filter(p => val.includes(`@${p.name}`)));
     const caret = e.target.selectionStart ?? val.length;
     let i = caret - 1;
     while (i >= 0) {
@@ -986,6 +989,23 @@ export default function TaskDetailModal({ taskId, employees, onClose, onChanged 
                       </div>
                     ))}
                     <div className="relative">
+                      {/* Chips showing everyone the current draft will tag.
+                          Type @ to add another; hit × here to drop one
+                          without deleting the text. */}
+                      {pickedMentions.length > 0 && (
+                        <div className="flex flex-wrap gap-1 mb-1">
+                          <span className="text-[10px] text-on-surface-subtle self-center mr-1">Tagging:</span>
+                          {pickedMentions.map(pm => (
+                            <span key={pm.id} className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-accent/10 text-accent text-[11px] font-semibold">
+                              @{pm.name}
+                              <button
+                                onClick={() => setPickedMentions(prev => prev.filter(p => p.id !== pm.id))}
+                                title="Remove tag"
+                                className="text-accent/60 hover:text-accent leading-none">×</button>
+                            </span>
+                          ))}
+                        </div>
+                      )}
                       <div className="flex items-end gap-2 pt-1">
                         <textarea
                           ref={composerRef}
