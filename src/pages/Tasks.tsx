@@ -168,7 +168,7 @@ export default function Tasks() {
     api.listTaskViews().then(setSavedViews).catch(() => setSavedViews([]));
   }, []);
 
-  const filtered = useMemo(() => filterTasks(tasks, filters, search), [tasks, filters, search]);
+  const filtered = useMemo(() => filterTasks(tasks, filters, search, user?.id ?? null), [tasks, filters, search, user?.id]);
 
   const statuses = activeBoard?.statuses?.length ? activeBoard.statuses : DEFAULT_STATUSES;
 
@@ -1185,7 +1185,7 @@ function firstGridDay(year: number, month: number): Date {
 // Every field on `filters` is optional; an empty filters + empty query
 // returns the input untouched. Deliberately client-side — the server
 // already loads a bounded set (per-board or "mine"), so this is cheap.
-function filterTasks(tasks: Task[], f: TaskFilters, q: string): Task[] {
+function filterTasks(tasks: Task[], f: TaskFilters, q: string, currentUserId?: string | null): Task[] {
   const query = q.trim().toLowerCase();
   const activeFilter = f && Object.values(f).some(v => v !== undefined && v !== null && (!Array.isArray(v) || v.length > 0));
   if (!query && !activeFilter) return tasks;
@@ -1204,6 +1204,11 @@ function filterTasks(tasks: Task[], f: TaskFilters, q: string): Task[] {
       const wantsUnassigned = f.assignee_ids.includes('__unassigned__');
       if (!wantsUnassigned) { if (!t.assignee_id || !f.assignee_ids.includes(t.assignee_id)) return false; }
       else if (t.assignee_id && !f.assignee_ids.includes(t.assignee_id)) return false;
+    }
+    if (f.assigned_by_me) {
+      // task.created_by_id stores the app_users.id of the creator;
+      // no match when we don't know who the caller is (no session).
+      if (!currentUserId || t.created_by_id !== currentUserId) return false;
     }
     if (f.statuses?.length && !f.statuses.includes(t.status)) return false;
     if (f.priorities?.length && !f.priorities.includes(t.priority)) return false;

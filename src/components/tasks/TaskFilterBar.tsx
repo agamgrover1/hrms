@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { Filter, X, ChevronDown, Save, Trash2, Bookmark, Users as UsersIcon, Flag, Tag, Calendar, Diamond, Repeat } from 'lucide-react';
+import { Filter, X, ChevronDown, Save, Trash2, Bookmark, Users as UsersIcon, Flag, Tag, Calendar, Diamond, Repeat, User } from 'lucide-react';
 import { api, type TaskFilters, type TaskSavedView } from '../../services/api';
 import { toast } from '../Toaster';
 
@@ -48,6 +48,7 @@ function filterCount(f: TaskFilters): number {
   if (f.due) n += 1;
   if (f.is_milestone !== undefined) n += 1;
   if (f.has_recurrence !== undefined) n += 1;
+  if (f.assigned_by_me) n += 1;
   return n;
 }
 
@@ -118,6 +119,9 @@ export default function TaskFilterBar(props: Props) {
       )}
       {filters.has_recurrence !== undefined && (
         <FilterChip label={filters.has_recurrence ? 'Recurring only' : 'One-off only'} onClear={() => onChange({ ...filters, has_recurrence: undefined })} />
+      )}
+      {filters.assigned_by_me && (
+        <FilterChip label="Assigned by me" onClear={() => onChange({ ...filters, assigned_by_me: undefined })} />
       )}
       {nActive > 0 && (
         <button onClick={() => onChange({})} className="text-[11px] text-on-surface-subtle hover:text-danger">Clear all</button>
@@ -251,6 +255,10 @@ function FilterPopover({ filters, onChange, employees, statuses, onClose }: {
           <MultiPill active={filters.has_recurrence === true}
             onClick={() => onChange({ ...filters, has_recurrence: filters.has_recurrence === true ? undefined : true })}>
             <Repeat size={10} /> Recurring only
+          </MultiPill>
+          <MultiPill active={filters.assigned_by_me === true}
+            onClick={() => onChange({ ...filters, assigned_by_me: filters.assigned_by_me === true ? undefined : true })}>
+            <User size={10} /> Assigned by me
           </MultiPill>
         </div>
       </FilterSection>

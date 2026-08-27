@@ -1820,6 +1820,9 @@ export interface TaskFilters {
   due_from?: string; due_to?: string;
   is_milestone?: boolean;
   has_recurrence?: boolean;
+  // Quick toggle — only show tasks the signed-in user created. The
+  // filter engine reads this against the current user's app_users.id.
+  assigned_by_me?: boolean;
   query?: string;
 }
 export interface TaskSavedView {
