@@ -3,7 +3,7 @@ import { useSearchParams } from 'react-router-dom';
 import {
   KanbanSquare, Plus, Search, Loader2, LayoutList, Columns3, Inbox,
   MessageSquare, GitBranch, Archive, X, Briefcase, ChevronDown, CalendarDays,
-  ChevronLeft, ChevronRight, Diamond, Repeat, GanttChartSquare, MoreVertical, Trash2, Lock, Globe, Users2, Settings, BarChart3, Square,
+  ChevronLeft, ChevronRight, Diamond, Repeat, GanttChartSquare, MoreVertical, Trash2, Lock, Globe, Users2, Settings, BarChart3, Square, Layers,
 } from 'lucide-react';
 import { api } from '../services/api';
 import type { Task, TaskBoard, TaskFilters, TaskSavedView, BoardPermission, BoardPermissionLevel } from '../services/api';
@@ -54,6 +54,10 @@ export default function Tasks() {
   const boardParam = params.get('board');
   const openTaskId = params.get('task');
   const isMine = boardParam === 'mine';
+  // "All tasks" scope — every task the caller can see across every
+  // board and project. Filters + search on the top bar work over the
+  // combined set so people can drill in without knowing which board.
+  const isAll = boardParam === 'all';
 
   const setBoardParam = (id: string | null) => {
     const next = new URLSearchParams(params);
@@ -147,17 +151,22 @@ export default function Tasks() {
   const loadTasks = useCallback(() => {
     if (!boardParam) return;
     setTasksLoading(true);
-    const req = isMine ? api.listTasks({ mine: true }) : api.listTasks({ list_id: boardParam });
+    const req = isMine ? api.listTasks({ mine: true })
+      : isAll ? api.listTasks({})
+      : api.listTasks({ list_id: boardParam });
     req
       .then(setTasks)
       .catch((e: any) => setErr(e?.message ?? 'Failed to load tasks'))
       .finally(() => setTasksLoading(false));
-  }, [boardParam, isMine]);
+  }, [boardParam, isMine, isAll]);
   useEffect(loadTasks, [loadTasks]);
 
   // My tasks spans boards, so its columns would be meaningless — it always
   // renders as a list grouped by urgency instead.
-  const effectiveView: View = isMine ? 'list' : view;
+  // Both cross-board views (Mine + All) force list layout — a Kanban
+  // grouped by statuses would be meaningless when the statuses come
+  // from many different boards' schemas.
+  const effectiveView: View = (isMine || isAll) ? 'list' : view;
 
   // Structured filters (Phase 5a) — applied client-side over the loaded
   // tasks. Nothing here is persisted unless the user saves a view.
@@ -252,7 +261,7 @@ export default function Tasks() {
               placeholder="Search tasks…"
               className="w-56 pl-8 pr-3 py-2 rounded-lg border border-outline bg-surface text-sm placeholder:text-on-surface-subtle focus:outline-none focus:ring-2 focus:ring-accent/30" />
           </div>
-          {!isMine && (
+          {!isMine && !isAll && (
             <div className="inline-flex rounded-lg border border-outline overflow-hidden">
               <button onClick={() => setView('board')}
                 className={`inline-flex items-center gap-1.5 px-3 py-2 text-sm font-semibold ${view === 'board' ? 'bg-accent text-on-accent' : 'text-on-surface hover:bg-surface-2'}`}>
@@ -308,15 +317,23 @@ export default function Tasks() {
         onDeleted={id => { setSavedViews(prev => prev.filter(v => v.id !== id)); if (activeViewId === id) setActiveViewId(null); }}
         employees={employees}
         statuses={statuses.map(s => ({ id: s.id, label: s.label }))}
-        boardId={boardParam === 'mine' ? null : (boardParam ?? null)}
+        boardId={(boardParam === 'mine' || boardParam === 'all') ? null : (boardParam ?? null)}
       />
 
       <div className="flex-1 min-h-0 flex gap-4">
         {/* ── Left rail: My tasks + boards by project ── */}
         <aside className="w-60 flex-shrink-0 overflow-y-auto rounded-xl-2 border border-outline bg-surface p-2">
           <button onClick={() => setBoardParam('mine')}
-            className={`w-full flex items-center gap-2 px-3 py-2 rounded-lg text-sm font-semibold mb-2 ${isMine ? 'bg-accent-container text-on-accent-container' : 'text-on-surface hover:bg-surface-2'}`}>
+            className={`w-full flex items-center gap-2 px-3 py-2 rounded-lg text-sm font-semibold mb-1 ${isMine ? 'bg-accent-container text-on-accent-container' : 'text-on-surface hover:bg-surface-2'}`}>
             <Inbox size={15} /> My tasks
+          </button>
+          {/* Cross-board dashboard — same TaskFilterBar the boards use,
+              scoped to every task the caller can see. Filters like
+              "assigned by me", "priority: urgent", or "due this week"
+              become one-click org-wide surfaces from here. */}
+          <button onClick={() => setBoardParam('all')}
+            className={`w-full flex items-center gap-2 px-3 py-2 rounded-lg text-sm font-semibold mb-2 ${isAll ? 'bg-accent-container text-on-accent-container' : 'text-on-surface hover:bg-surface-2'}`}>
+            <Layers size={15} /> All tasks
           </button>
 
           {boardGroups.length === 0 && (
@@ -366,7 +383,7 @@ export default function Tasks() {
             </div>
           )}
 
-          {isMine
+          {(isMine || isAll)
             ? <MyTasksList tasks={filtered} onOpen={setOpenTask} />
             : !activeBoard
               ? <EmptyPane label="Select a board on the left." />
