@@ -1009,8 +1009,6 @@ async function runStartupMigrations() {
     await sql`SELECT 1 FROM push_subscriptions LIMIT 0`;
     // meetings.sequence — iCal SEQUENCE for calendar invite revisions.
     await sql`SELECT sequence FROM meetings LIMIT 0`;
-    // Calendar connections table for Google / Microsoft OAuth accounts.
-    await sql`SELECT 1 FROM calendar_connections LIMIT 0`;
     // Also verify the legacy goals.employee_id constraint has been
     // relaxed. bad=0 both when the column doesn't exist (fresh DB)
     // AND when it exists as nullable (post-migration old DB). bad>=1
@@ -3758,28 +3756,6 @@ async function runStartupMigrations() {
   // event (UID is stable) and quietly overwrite the old copy.
   await sql`ALTER TABLE meetings ADD COLUMN IF NOT EXISTS sequence INTEGER NOT NULL DEFAULT 0`.catch(()=>{});
 
-  // Calendar OAuth connections — one row per (user, provider account).
-  // Tokens are AES-256-GCM encrypted at rest with CALENDAR_ENCRYPTION_KEY,
-  // so a Neon dump alone is useless without the env-held key.
-  await sql`
-    CREATE TABLE IF NOT EXISTS calendar_connections (
-      id TEXT PRIMARY KEY,
-      user_id TEXT NOT NULL,
-      provider TEXT NOT NULL,                 -- 'google' | 'microsoft'
-      account_email TEXT NOT NULL,
-      display_name TEXT,
-      access_token_ciphertext TEXT NOT NULL,
-      refresh_token_ciphertext TEXT,
-      token_expires_at TIMESTAMPTZ,
-      scopes TEXT,
-      calendar_id TEXT DEFAULT 'primary',
-      status TEXT NOT NULL DEFAULT 'active',   -- 'active' | 'expired' | 'revoked'
-      last_synced_at TIMESTAMPTZ,
-      connected_at TIMESTAMPTZ DEFAULT NOW(),
-      updated_at TIMESTAMPTZ DEFAULT NOW(),
-      UNIQUE(user_id, provider, account_email)
-    )`;
-  await sql`CREATE INDEX IF NOT EXISTS idx_calendar_conn_user ON calendar_connections(user_id)`.catch(()=>{});
 
   // Web Push subscriptions — one row per (user, browser). Endpoint is
   // the unique identifier assigned by the browser's push service;
@@ -15734,24 +15710,28 @@ app.get('/api/projects/:id/dashboard', async (req, res) => {
         WHERE l.project_id=${projectId} AND t.assignee_id=${empId} AND t.completed_at IS NULL
         ORDER BY (t.due_date IS NULL), t.due_date NULLS LAST, t.updated_at DESC
         LIMIT 20` : Promise.resolve([] as any[]),
-      // Upcoming meetings: any meeting still to happen inside the range,
-      // capped at the 7-day forward window if the range is wide-open.
+      // Upcoming meetings on this project — any scheduled meeting in
+      // the next 30 days. Deliberately NOT bounded by the page's
+      // date-range filter: meetings are a project-level surface that
+      // shouldn't disappear because the user narrowed the "hours"
+      // window to yesterday.
       sql`
         SELECT m.id, m.title, m.start_at, m.end_at, m.location_kind, m.location,
                m.meeting_link, m.organizer_name, m.status,
                (SELECT COUNT(*) FROM meeting_attendees a WHERE a.meeting_id=m.id)::int AS attendee_count
         FROM meetings m
         WHERE m.project_id=${projectId} AND m.status='scheduled'
-          AND m.end_at >= NOW() AND m.start_at <= ${upcomingEnd}::timestamptz
-          AND m.start_at::date BETWEEN ${rangeStart}::date AND (${rangeEnd}::date + INTERVAL '7 days')
+          AND m.end_at >= NOW() AND m.start_at <= NOW() + INTERVAL '30 days'
         ORDER BY m.start_at ASC LIMIT 20`,
-      // Recent past meetings: past meetings inside the range.
+      // Recent past meetings on this project — last 30 days regardless
+      // of the page range filter. Cancelled meetings are included so
+      // the audit trail stays honest.
       sql`
         SELECT m.id, m.title, m.start_at, m.location_kind, m.location, m.organizer_name, m.status,
                (SELECT COUNT(*) FROM meeting_attendees a WHERE a.meeting_id=m.id)::int AS attendee_count
         FROM meetings m
         WHERE m.project_id=${projectId} AND m.end_at < NOW()
-          AND m.start_at::date BETWEEN ${rangeStart}::date AND ${rangeEnd}::date
+          AND m.start_at >= NOW() - INTERVAL '30 days'
         ORDER BY m.start_at DESC LIMIT 20`,
       sql`
         SELECT g.id, g.title, g.description, g.status, g.target_date,
@@ -23689,380 +23669,6 @@ app.delete('/api/me/push-subscription', async (req, res) => {
     await sql`DELETE FROM push_subscriptions WHERE user_id=${uid} AND endpoint=${endpoint}`;
     res.json({ ok: true });
   } catch (err: any) { res.status(500).json({ error: err?.message ?? 'Server error' }); }
-});
-
-// ── Calendar OAuth (Google + Microsoft) ─────────────────────────────
-// Standard OAuth 2.0 authorisation-code flow. User clicks "Connect
-// Google Calendar" → we redirect them to accounts.google.com with a
-// signed `state` param → they pick an account + grant → Google
-// redirects back to /api/auth/google/callback with the auth code →
-// we exchange the code for tokens, encrypt them at rest, save the
-// row. Same shape ready for Microsoft when we register the Azure app.
-//
-// Tokens are AES-256-GCM encrypted with CALENDAR_ENCRYPTION_KEY
-// (32-byte key, base64 or hex). A Neon dump alone is useless
-// without the env-held key.
-
-import { createCipheriv, createDecipheriv, randomBytes as randomBytesNode } from 'node:crypto';
-
-function calendarKeyBuf(): Buffer | null {
-  const raw = process.env.CALENDAR_ENCRYPTION_KEY;
-  if (!raw) return null;
-  try {
-    // Accept both hex (64 chars) and base64.
-    if (/^[0-9a-fA-F]{64}$/.test(raw)) return Buffer.from(raw, 'hex');
-    const b = Buffer.from(raw, 'base64');
-    return b.length === 32 ? b : null;
-  } catch { return null; }
-}
-function encryptToken(plain: string): string {
-  const key = calendarKeyBuf();
-  if (!key) throw new Error('CALENDAR_ENCRYPTION_KEY not configured (32 bytes hex or base64).');
-  const iv = randomBytesNode(12);
-  const c = createCipheriv('aes-256-gcm', key, iv);
-  const enc = Buffer.concat([c.update(plain, 'utf8'), c.final()]);
-  const tag = c.getAuthTag();
-  return `v1.${iv.toString('base64')}.${tag.toString('base64')}.${enc.toString('base64')}`;
-}
-function decryptToken(payload: string): string {
-  const key = calendarKeyBuf();
-  if (!key) throw new Error('CALENDAR_ENCRYPTION_KEY not configured');
-  const parts = payload.split('.');
-  if (parts.length !== 4 || parts[0] !== 'v1') throw new Error('Bad token ciphertext');
-  const iv = Buffer.from(parts[1], 'base64');
-  const tag = Buffer.from(parts[2], 'base64');
-  const ct = Buffer.from(parts[3], 'base64');
-  const d = createDecipheriv('aes-256-gcm', key, iv);
-  d.setAuthTag(tag);
-  return Buffer.concat([d.update(ct), d.final()]).toString('utf8');
-}
-
-// State param carries the user id + a random nonce + a HMAC using
-// MAIL_JWT_SECRET so the callback can verify the flow originated
-// here. 10-min TTL so a stale link can't be replayed.
-function signOauthState(userId: string, provider: string): string {
-  const secret = process.env.MAIL_JWT_SECRET;
-  if (!secret) throw new Error('MAIL_JWT_SECRET not set');
-  const body = { u: userId, p: provider, n: randomBytesNode(8).toString('hex'), t: Date.now() };
-  const raw = Buffer.from(JSON.stringify(body)).toString('base64url');
-  const mac = createHmac('sha256', secret).update(raw).digest('base64url');
-  return `${raw}.${mac}`;
-}
-function verifyOauthState(state: string): { userId: string; provider: string } | null {
-  try {
-    const secret = process.env.MAIL_JWT_SECRET;
-    if (!secret) return null;
-    const [raw, mac] = state.split('.');
-    if (!raw || !mac) return null;
-    const expected = createHmac('sha256', secret).update(raw).digest('base64url');
-    if (expected !== mac) return null;
-    const body = JSON.parse(Buffer.from(raw, 'base64url').toString('utf8'));
-    if (!body?.u || !body?.p) return null;
-    if (Date.now() - Number(body.t ?? 0) > 10 * 60 * 1000) return null;
-    return { userId: String(body.u), provider: String(body.p) };
-  } catch { return null; }
-}
-
-function calendarRedirectUri(req: any, provider: string): string {
-  // Build the callback URL from the request's forwarded host so the
-  // same app served from either hr.digitalleapmarketing.com OR the
-  // Vercel default URL round-trips correctly.
-  const proto = (req.header('x-forwarded-proto') as string)?.split(',')[0] ?? 'https';
-  const host  = (req.header('x-forwarded-host')  as string)?.split(',')[0] ?? req.header('host');
-  return `${proto}://${host}/api/auth/${provider}/callback`;
-}
-
-// GET /api/me/calendars — every connected calendar for the signed-in user.
-app.get('/api/me/calendars', async (req, res) => {
-  try {
-    await runStartupMigrations();
-    const uid = req.header('x-user-id');
-    if (!uid) return res.status(401).json({ error: 'Not authenticated' });
-    const rows = await sql`
-      SELECT id, provider, account_email, display_name, calendar_id,
-             status, last_synced_at, connected_at
-      FROM calendar_connections
-      WHERE user_id = ${uid} ORDER BY connected_at DESC` as any[];
-    res.json(rows);
-  } catch (err: any) { res.status(500).json({ error: err.message ?? 'Server error' }); }
-});
-
-// POST /api/me/calendars/connect/:provider — start OAuth. Returns
-// the Google / Microsoft consent URL for the browser to redirect to.
-// (We could 302 straight from here, but returning the URL lets the
-// client kick off in a popup or the current tab as it prefers.)
-app.post('/api/me/calendars/connect/:provider', async (req, res) => {
-  try {
-    const uid = req.header('x-user-id');
-    if (!uid) return res.status(401).json({ error: 'Not authenticated' });
-    const provider = String(req.params.provider);
-    if (provider !== 'google' && provider !== 'microsoft') {
-      return res.status(400).json({ error: 'Unknown provider' });
-    }
-    const clientId = provider === 'google' ? process.env.GOOGLE_CLIENT_ID : process.env.MICROSOFT_CLIENT_ID;
-    if (!clientId) return res.status(503).json({ error: `${provider}: OAuth client id not configured on server` });
-    const state = signOauthState(uid, provider);
-    const redirect = calendarRedirectUri(req, provider);
-    let url: string;
-    if (provider === 'google') {
-      const scope = [
-        'openid',
-        'email',
-        'profile',
-        'https://www.googleapis.com/auth/calendar.readonly',
-        'https://www.googleapis.com/auth/calendar.events',
-      ].join(' ');
-      const q = new URLSearchParams({
-        client_id: clientId,
-        redirect_uri: redirect,
-        response_type: 'code',
-        scope,
-        access_type: 'offline',
-        prompt: 'consent',    // force refresh_token issue every time
-        state,
-        include_granted_scopes: 'true',
-      });
-      url = `https://accounts.google.com/o/oauth2/v2/auth?${q}`;
-    } else {
-      const scope = 'offline_access openid email profile Calendars.ReadWrite';
-      const q = new URLSearchParams({
-        client_id: clientId,
-        redirect_uri: redirect,
-        response_type: 'code',
-        response_mode: 'query',
-        scope,
-        state,
-      });
-      url = `https://login.microsoftonline.com/common/oauth2/v2.0/authorize?${q}`;
-    }
-    res.json({ url });
-  } catch (err: any) { res.status(500).json({ error: err.message ?? 'Server error' }); }
-});
-
-// GET /api/auth/:provider/callback — where the provider redirects
-// after the user grants (or denies) consent. We exchange the code
-// for tokens, encrypt + save, then 302 the browser back to
-// /calendar?connected=1 (or ?error=...).
-app.get('/api/auth/:provider/callback', async (req, res) => {
-  const provider = String(req.params.provider);
-  const back = (msg: string) => res.redirect(302, `/calendar?${msg}`);
-  try {
-    if (provider !== 'google' && provider !== 'microsoft') return back('error=unknown_provider');
-    const code = String(req.query.code ?? '');
-    const state = String(req.query.state ?? '');
-    if (!code || !state) return back('error=missing_code');
-    const decoded = verifyOauthState(state);
-    if (!decoded || decoded.provider !== provider) return back('error=bad_state');
-
-    const clientId = provider === 'google' ? process.env.GOOGLE_CLIENT_ID     : process.env.MICROSOFT_CLIENT_ID;
-    const secret   = provider === 'google' ? process.env.GOOGLE_CLIENT_SECRET : process.env.MICROSOFT_CLIENT_SECRET;
-    if (!clientId || !secret) return back('error=server_not_configured');
-    const redirect = calendarRedirectUri(req, provider);
-
-    // Exchange the auth code for tokens.
-    const tokenUrl = provider === 'google'
-      ? 'https://oauth2.googleapis.com/token'
-      : 'https://login.microsoftonline.com/common/oauth2/v2.0/token';
-    const tokenBody = new URLSearchParams({
-      client_id: clientId,
-      client_secret: secret,
-      code,
-      redirect_uri: redirect,
-      grant_type: 'authorization_code',
-    });
-    const tokRes = await fetch(tokenUrl, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-      body: tokenBody.toString(),
-    });
-    if (!tokRes.ok) {
-      const t = await tokRes.text().catch(() => '');
-      console.warn('[oauth] token exchange failed:', tokRes.status, t.slice(0, 200));
-      return back('error=token_exchange_failed');
-    }
-    const tok = await tokRes.json() as any;
-    const accessToken = String(tok.access_token ?? '');
-    const refreshToken = tok.refresh_token ? String(tok.refresh_token) : null;
-    const expiresIn = Number(tok.expires_in ?? 3600);
-    const scopes = String(tok.scope ?? '');
-    if (!accessToken) return back('error=no_access_token');
-
-    // Look up the connected account's email so we can label the row.
-    let accountEmail = '', displayName = '';
-    if (provider === 'google') {
-      const info = await fetch('https://openidconnect.googleapis.com/v1/userinfo', {
-        headers: { Authorization: `Bearer ${accessToken}` },
-      }).then(r => r.json() as Promise<any>).catch(() => null);
-      accountEmail = String(info?.email ?? '');
-      displayName  = String(info?.name  ?? '');
-    } else {
-      const info = await fetch('https://graph.microsoft.com/v1.0/me', {
-        headers: { Authorization: `Bearer ${accessToken}` },
-      }).then(r => r.json() as Promise<any>).catch(() => null);
-      accountEmail = String(info?.mail ?? info?.userPrincipalName ?? '');
-      displayName  = String(info?.displayName ?? '');
-    }
-    if (!accountEmail) return back('error=userinfo_failed');
-
-    let accessEnc: string, refreshEnc: string | null;
-    try {
-      accessEnc = encryptToken(accessToken);
-      refreshEnc = refreshToken ? encryptToken(refreshToken) : null;
-    } catch (e: any) {
-      console.warn('[oauth] token encryption failed:', e?.message ?? e);
-      return back('error=encryption_key_missing');
-    }
-    const expAt = new Date(Date.now() + expiresIn * 1000).toISOString();
-
-    await sql`
-      INSERT INTO calendar_connections (
-        id, user_id, provider, account_email, display_name,
-        access_token_ciphertext, refresh_token_ciphertext, token_expires_at,
-        scopes, calendar_id, status, connected_at, updated_at
-      )
-      VALUES (
-        ${'cal_' + randomBytesNode(8).toString('hex')}, ${decoded.userId}, ${provider}, ${accountEmail}, ${displayName ?? null},
-        ${accessEnc}, ${refreshEnc}, ${expAt}::timestamptz,
-        ${scopes}, 'primary', 'active', NOW(), NOW()
-      )
-      ON CONFLICT (user_id, provider, account_email) DO UPDATE SET
-        access_token_ciphertext = EXCLUDED.access_token_ciphertext,
-        refresh_token_ciphertext = COALESCE(EXCLUDED.refresh_token_ciphertext, calendar_connections.refresh_token_ciphertext),
-        token_expires_at = EXCLUDED.token_expires_at,
-        scopes = EXCLUDED.scopes,
-        status = 'active',
-        display_name = COALESCE(EXCLUDED.display_name, calendar_connections.display_name),
-        updated_at = NOW()`;
-
-    return back('connected=1');
-  } catch (err: any) {
-    console.warn('[oauth] callback error:', err?.message ?? err);
-    return back('error=callback_failed');
-  }
-});
-
-// DELETE /api/me/calendars/:id — disconnect a calendar. Revocation
-// with the provider is fire-and-forget: even if it fails we still
-// forget the tokens on our side.
-app.delete('/api/me/calendars/:id', async (req, res) => {
-  try {
-    const uid = req.header('x-user-id');
-    if (!uid) return res.status(401).json({ error: 'Not authenticated' });
-    const row = (await sql`SELECT * FROM calendar_connections WHERE id=${req.params.id} AND user_id=${uid} LIMIT 1` as any[])[0];
-    if (!row) return res.status(404).json({ error: 'Connection not found' });
-    // Try to revoke provider-side. Ignore errors — we still delete locally.
-    try {
-      if (row.provider === 'google') {
-        const at = decryptToken(row.access_token_ciphertext);
-        await fetch(`https://oauth2.googleapis.com/revoke?token=${encodeURIComponent(at)}`, { method: 'POST' });
-      }
-    } catch { /* best-effort */ }
-    await sql`DELETE FROM calendar_connections WHERE id=${row.id}`;
-    res.json({ ok: true });
-  } catch (err: any) { res.status(500).json({ error: err.message ?? 'Server error' }); }
-});
-
-// Refresh a Google access token if expired. Returns a usable access
-// token or null if refresh isn't possible (no refresh_token, revoked, etc).
-async function refreshGoogleAccessToken(row: any): Promise<string | null> {
-  const clientId = process.env.GOOGLE_CLIENT_ID;
-  const secret   = process.env.GOOGLE_CLIENT_SECRET;
-  if (!clientId || !secret || !row.refresh_token_ciphertext) return null;
-  try {
-    const rt = decryptToken(row.refresh_token_ciphertext);
-    const q = new URLSearchParams({
-      client_id: clientId, client_secret: secret,
-      refresh_token: rt, grant_type: 'refresh_token',
-    });
-    const r = await fetch('https://oauth2.googleapis.com/token', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-      body: q.toString(),
-    });
-    if (!r.ok) {
-      // 400/invalid_grant means the user revoked us — mark row expired.
-      await sql`UPDATE calendar_connections SET status='revoked', updated_at=NOW() WHERE id=${row.id}`.catch(() => {});
-      return null;
-    }
-    const t = await r.json() as any;
-    const at = String(t.access_token ?? '');
-    if (!at) return null;
-    const enc = encryptToken(at);
-    const exp = new Date(Date.now() + Number(t.expires_in ?? 3600) * 1000).toISOString();
-    await sql`
-      UPDATE calendar_connections SET
-        access_token_ciphertext=${enc}, token_expires_at=${exp}::timestamptz, updated_at=NOW()
-      WHERE id=${row.id}`;
-    return at;
-  } catch { return null; }
-}
-
-// GET /api/me/calendars/:id/events?from=&to= — pull events between
-// the two ISO dates from the connected provider. Auto-refreshes
-// expired access tokens. Read-only for now.
-app.get('/api/me/calendars/:id/events', async (req, res) => {
-  try {
-    const uid = req.header('x-user-id');
-    if (!uid) return res.status(401).json({ error: 'Not authenticated' });
-    const row = (await sql`SELECT * FROM calendar_connections WHERE id=${req.params.id} AND user_id=${uid} LIMIT 1` as any[])[0];
-    if (!row) return res.status(404).json({ error: 'Connection not found' });
-    if (row.status !== 'active') return res.status(409).json({ error: `Connection is ${row.status}` });
-
-    const from = String(req.query.from ?? new Date().toISOString());
-    const to   = String(req.query.to   ?? new Date(Date.now() + 7 * 86400000).toISOString());
-
-    let accessToken: string;
-    try { accessToken = decryptToken(row.access_token_ciphertext); }
-    catch { return res.status(500).json({ error: 'Token decryption failed — is CALENDAR_ENCRYPTION_KEY set correctly?' }); }
-    // Refresh proactively if within 60s of expiry.
-    const exp = row.token_expires_at ? new Date(row.token_expires_at).getTime() : 0;
-    if (row.provider === 'google' && Date.now() > exp - 60_000) {
-      const fresh = await refreshGoogleAccessToken(row);
-      if (fresh) accessToken = fresh;
-    }
-
-    let events: any[] = [];
-    if (row.provider === 'google') {
-      const q = new URLSearchParams({
-        timeMin: from, timeMax: to,
-        singleEvents: 'true', orderBy: 'startTime',
-        maxResults: '50',
-      });
-      let r = await fetch(`https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(row.calendar_id ?? 'primary')}/events?${q}`, {
-        headers: { Authorization: `Bearer ${accessToken}` },
-      });
-      // One-shot retry on 401 in case the token expired between check + call.
-      if (r.status === 401) {
-        const fresh = await refreshGoogleAccessToken(row);
-        if (fresh) {
-          r = await fetch(`https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(row.calendar_id ?? 'primary')}/events?${q}`, {
-            headers: { Authorization: `Bearer ${fresh}` },
-          });
-        }
-      }
-      if (!r.ok) return res.status(502).json({ error: `Google Calendar API returned ${r.status}` });
-      const data = await r.json() as any;
-      events = (data.items ?? []).map((e: any) => ({
-        id: e.id,
-        summary: e.summary ?? '(no title)',
-        description: e.description ?? null,
-        location: e.location ?? null,
-        start: e.start?.dateTime ?? e.start?.date ?? null,
-        end:   e.end?.dateTime   ?? e.end?.date   ?? null,
-        all_day: !e.start?.dateTime,
-        html_link: e.htmlLink ?? null,
-        organizer: e.organizer ?? null,
-        attendees: (e.attendees ?? []).map((a: any) => ({ email: a.email, name: a.displayName ?? null, response: a.responseStatus ?? null })),
-        conference_uri: e.hangoutLink ?? e.conferenceData?.entryPoints?.[0]?.uri ?? null,
-      }));
-    } else if (row.provider === 'microsoft') {
-      // TODO: Microsoft Graph implementation lands when the Azure app is registered.
-      return res.status(501).json({ error: 'Microsoft not implemented yet' });
-    }
-
-    await sql`UPDATE calendar_connections SET last_synced_at=NOW() WHERE id=${row.id}`.catch(() => {});
-    res.json({ events });
-  } catch (err: any) { res.status(500).json({ error: err.message ?? 'Server error' }); }
 });
 
 // ── Mail-service bridge ─────────────────────────────────────────────

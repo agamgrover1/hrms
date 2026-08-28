@@ -35,7 +35,6 @@ const pageTitles: Record<string, string> = {
   '/tasks': 'Tasks',
   '/tasks/analytics': 'Task Analytics',
   '/meetings': 'Meetings',
-  '/calendar': 'Calendar',
   '/goals': 'Goals',
   '/hiring': 'Hiring',
   '/hiring/analytics': 'Hiring Analytics',

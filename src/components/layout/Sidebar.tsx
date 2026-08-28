@@ -302,7 +302,6 @@ export default function Sidebar({ mobileOpen = false, onMobileClose }: { mobileO
       { to: '/my', icon: User, label: 'My portal', end: true },
       { to: '/mail', icon: Inbox, label: 'Mail' },
       { to: '/meetings', icon: CalendarDays, label: 'Meetings' },
-      { to: '/calendar', icon: CalendarDays, label: 'Calendar' },
       { to: '/notifications', icon: Bell, label: 'Notifications' },
       ...(role === 'admin' || isCoord ? [] : [{ to: '/tasks', icon: KanbanSquare, label: 'My tasks' } as NavItem]),
       ...(isManager ? [{ to: '/my-team', icon: Users, label: 'My team' } as NavItem] : []),
