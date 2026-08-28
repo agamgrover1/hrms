@@ -188,17 +188,28 @@ export default function Tasks() {
     return map;
   }, [filtered, statuses]);
 
+  // Left-rail board search — filters both the board name AND the
+  // parent project so users can jump by either "SEO" (the project)
+  // or "Website content" (the specific board).
+  const [boardSearch, setBoardSearch] = useState('');
+
   // Boards grouped by the project they belong to, for the left rail.
   const boardGroups = useMemo(() => {
+    const q = boardSearch.trim().toLowerCase();
+    const visible = q
+      ? boards.filter(b =>
+          b.name?.toLowerCase().includes(q) ||
+          (b.project_name ?? 'Internal').toLowerCase().includes(q))
+      : boards;
     const groups = new Map<string, TaskBoard[]>();
-    for (const b of boards) {
+    for (const b of visible) {
       const key = b.project_name ?? 'Internal';
       if (!groups.has(key)) groups.set(key, []);
       groups.get(key)!.push(b);
     }
     return Array.from(groups.entries()).sort((a, b) =>
       a[0] === 'Internal' ? 1 : b[0] === 'Internal' ? -1 : a[0].localeCompare(b[0]));
-  }, [boards]);
+  }, [boards, boardSearch]);
 
   // ── Drag to another column ─────────────────────────────────────────────
   const onDropTo = async (statusId: string) => {
@@ -331,6 +342,21 @@ export default function Tasks() {
       <div className="flex-1 min-h-0 flex gap-4">
         {/* ── Left rail: My tasks + boards by project ── */}
         <aside className="w-60 flex-shrink-0 overflow-y-auto rounded-xl-2 border border-outline bg-surface p-2">
+          {/* Board name / project search — collapses the boards list
+              to matches only. Useful once you have >20 boards. */}
+          {boards.length > 6 && (
+            <div className="relative mb-2">
+              <Search size={12} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-on-surface-subtle pointer-events-none" />
+              <input value={boardSearch} onChange={e => setBoardSearch(e.target.value)}
+                placeholder="Search boards…"
+                className="w-full pl-7 pr-2 py-1.5 rounded-lg border border-outline bg-surface-2 text-xs text-on-surface placeholder:text-on-surface-subtle focus:outline-none focus:ring-2 focus:ring-accent/30" />
+              {boardSearch && (
+                <button onClick={() => setBoardSearch('')}
+                  title="Clear"
+                  className="absolute right-2 top-1/2 -translate-y-1/2 text-on-surface-subtle hover:text-on-surface"><X size={11} /></button>
+              )}
+            </div>
+          )}
           <button onClick={() => setBoardParam('mine')}
             className={`w-full flex items-center gap-2 px-3 py-2 rounded-lg text-sm font-semibold mb-1 ${isMine ? 'bg-accent-container text-on-accent-container' : 'text-on-surface hover:bg-surface-2'}`}>
             <Inbox size={15} /> My tasks

@@ -3,7 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import {
   Search, ArrowRight, LayoutDashboard, Users, Clock3, CalendarDays, Wallet,
   Sparkles, UserCog, SlidersHorizontal, TrendingUp, Wrench, Briefcase,
-  ClipboardCheck, Layers, User, KeyRound, LogOut, Sun, Moon, type LucideIcon,
+  ClipboardCheck, Layers, User, KeyRound, LogOut, Sun, Moon, KanbanSquare, Target, type LucideIcon,
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import { useTheme } from '../context/ThemeContext';
@@ -13,7 +13,7 @@ interface Item {
   id: string;
   label: string;
   hint?: string;
-  group: 'Pages' | 'Quick actions' | 'People' | 'Theme' | 'Account';
+  group: 'Pages' | 'Quick actions' | 'People' | 'Tasks' | 'Boards' | 'Projects' | 'Meetings' | 'Goals' | 'Theme' | 'Account';
   icon: LucideIcon;
   action: () => void;
   /** Visibility filter — restrict to specific roles */
@@ -28,6 +28,19 @@ export default function CommandPalette() {
   const [query, setQuery] = useState('');
   const [selectedIdx, setSelectedIdx] = useState(0);
   const [employees, setEmployees] = useState<any[]>([]);
+  // Cached lists — loaded once per palette-open session and filtered
+  // client-side by the current query. Everything the backend returns
+  // is already visibility-scoped (restricted boards, private goals,
+  // etc.), so client-side filtering never surfaces something the
+  // user shouldn't see.
+  const [boards, setBoards] = useState<any[]>([]);
+  const [projects, setProjects] = useState<any[]>([]);
+  const [meetings, setMeetings] = useState<any[]>([]);
+  const [goals, setGoals] = useState<any[]>([]);
+  // Tasks are searched server-side (there could be thousands) — hits
+  // /api/tasks?q= with a 250ms debounce so keystrokes don't fan out.
+  const [tasks, setTasks] = useState<any[]>([]);
+  const [tasksLoading, setTasksLoading] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
 
@@ -56,12 +69,35 @@ export default function CommandPalette() {
     }
   }, [open]);
 
-  // Lazy-load employees the first time the palette opens (for People search)
+  // Lazy-load the small lists (people, boards, projects, meetings,
+  // goals) once when the palette first opens. All calls go in
+  // parallel, each is bounded, and the backend already visibility-
+  // filters — restricted boards / other people's private stuff never
+  // reach this client.
   useEffect(() => {
-    if (open && employees.length === 0) {
-      api.getEmployeesSlim().then(setEmployees).catch(() => {});
-    }
-  }, [open, employees.length]);
+    if (!open) return;
+    if (employees.length === 0) api.getEmployeesSlim().then(setEmployees).catch(() => {});
+    if (boards.length === 0)    api.listTaskBoards().then(setBoards).catch(() => {});
+    if (projects.length === 0)  api.getProjects().then(setProjects).catch(() => {});
+    if (meetings.length === 0)  api.listMeetings({ scope: 'mine' }).then((r: any) => setMeetings(Array.isArray(r) ? r : r?.meetings ?? [])).catch(() => {});
+    if (goals.length === 0)     api.listGoals().then((r: any) => setGoals(Array.isArray(r) ? r : r?.goals ?? [])).catch(() => {});
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open]);
+
+  // Tasks — server-side search, debounced. Only fires when the query
+  // is >= 2 chars so a fresh open doesn't spam the API.
+  useEffect(() => {
+    const q = query.trim();
+    if (!open || q.length < 2) { setTasks([]); return; }
+    setTasksLoading(true);
+    const t = setTimeout(() => {
+      api.listTasks({ q, include_subtasks: true } as any)
+        .then((rows: any[]) => setTasks(rows.slice(0, 6)))
+        .catch(() => setTasks([]))
+        .finally(() => setTasksLoading(false));
+    }, 250);
+    return () => clearTimeout(t);
+  }, [open, query]);
 
   const role = user?.role ?? 'employee';
 
@@ -130,14 +166,94 @@ export default function CommandPalette() {
       }));
   }, [query, employees, navigate]);
 
+  const boardResults: Item[] = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    if (q.length < 2) return [];
+    return boards
+      .filter((b: any) => b.name?.toLowerCase().includes(q) || b.project_name?.toLowerCase().includes(q))
+      .slice(0, 5)
+      .map((b: any) => ({
+        id: `board-${b.id}`,
+        label: b.name,
+        hint: b.project_name ? `Board · ${b.project_name}` : 'Board · Internal',
+        group: 'Boards' as const,
+        icon: KanbanSquare,
+        action: () => navigate(`/tasks?board=${b.id}`),
+      }));
+  }, [query, boards, navigate]);
+
+  const projectResults: Item[] = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    if (q.length < 2) return [];
+    return projects
+      .filter((p: any) => p.name?.toLowerCase().includes(q) || p.client_name?.toLowerCase().includes(q))
+      .slice(0, 5)
+      .map((p: any) => ({
+        id: `project-${p.id}`,
+        label: p.name,
+        hint: [p.client_name, p.project_type].filter(Boolean).join(' · ') || 'Project',
+        group: 'Projects' as const,
+        icon: Briefcase,
+        action: () => navigate(`/projects/${p.id}`),
+      }));
+  }, [query, projects, navigate]);
+
+  const meetingResults: Item[] = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    if (q.length < 2) return [];
+    return meetings
+      .filter((m: any) => m.title?.toLowerCase().includes(q) || m.organizer_name?.toLowerCase().includes(q) || m.location?.toLowerCase().includes(q))
+      .slice(0, 5)
+      .map((m: any) => {
+        const when = m.start_at ? new Date(m.start_at).toLocaleString('en-IN', { day: 'numeric', month: 'short', hour: 'numeric', minute: '2-digit', hour12: true }) : '';
+        return {
+          id: `meeting-${m.id}`,
+          label: m.title,
+          hint: `${when}${m.organizer_name ? ' · ' + m.organizer_name : ''}`,
+          group: 'Meetings' as const,
+          icon: CalendarDays,
+          action: () => navigate(`/meetings?meeting=${m.id}`),
+        };
+      });
+  }, [query, meetings, navigate]);
+
+  const goalResults: Item[] = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    if (q.length < 2) return [];
+    return goals
+      .filter((g: any) => g.title?.toLowerCase().includes(q))
+      .slice(0, 5)
+      .map((g: any) => ({
+        id: `goal-${g.id}`,
+        label: g.title,
+        hint: g.owner_name ? `Goal · ${g.owner_name}` : 'Goal',
+        group: 'Goals' as const,
+        icon: Target,
+        action: () => navigate(`/goals`),
+      }));
+  }, [query, goals, navigate]);
+
+  const taskResults: Item[] = useMemo(() => {
+    if (query.trim().length < 2) return [];
+    return tasks.slice(0, 6).map((t: any) => ({
+      id: `task-${t.id}`,
+      label: t.title,
+      hint: [t.list_name, t.project_name].filter(Boolean).join(' · ') || 'Task',
+      group: 'Tasks' as const,
+      icon: KanbanSquare,
+      action: () => navigate(`/tasks?board=${t.list_id}&task=${t.id}`),
+    }));
+  }, [query, tasks, navigate]);
+
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
     const list = q
       ? allItems.filter(i => i.label.toLowerCase().includes(q) || i.hint?.toLowerCase().includes(q))
       : allItems;
-    // People only show up once the user typed something
-    return [...list, ...peopleResults];
-  }, [query, allItems, peopleResults]);
+    // Order: static pages first (fast keyboard nav for muscle memory),
+    // then data results grouped by kind.
+    return [...list, ...taskResults, ...boardResults, ...projectResults, ...meetingResults, ...goalResults, ...peopleResults];
+  }, [query, allItems, taskResults, boardResults, projectResults, meetingResults, goalResults, peopleResults]);
 
   // Group for rendering
   const grouped = useMemo(() => {
