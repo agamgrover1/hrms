@@ -15,6 +15,15 @@
     <meta name="robots" content="noindex, nofollow, noarchive, nosnippet" />
     <link rel="manifest" href="/manifest.webmanifest" />
     <meta name="theme-color" content="#EE2770" />
+    <!-- iOS PWA metadata. Without these, iOS Safari either grays out
+         "Add to Home Screen" or launches the installed app in a
+         Safari-with-address-bar shell instead of full standalone.
+         `apple-mobile-web-app-capable` is the historic name; iOS 17+
+         also honors `mobile-web-app-capable`. Keep both. -->
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="HRMS" />
     <title>Digital Leap HRMS</title>
   </head>
   <body>
