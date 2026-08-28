@@ -4337,9 +4337,9 @@ function MyHoursTab({ employeeId, employeeName }: { employeeId: string; employee
 
       {/* Stats */}
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-        <Tile label="Allocated" value={`${totalAlloc} h`} />
-        <Tile label="Approved" value={`${totalLoggedApproved} h`} color="#15803d" />
-        <Tile label="Pending review" value={`${totalLoggedPending} h`} color="#b45309" />
+        <Tile label="Allocated" value={`${(+totalAlloc.toFixed(2))} h`} />
+        <Tile label="Approved" value={`${(+totalLoggedApproved.toFixed(2))} h`} color="#15803d" />
+        <Tile label="Pending review" value={`${(+totalLoggedPending.toFixed(2))} h`} color="#b45309" />
         <Tile label="Projects" value={String(assignments.length)} />
       </div>
 
@@ -4464,9 +4464,13 @@ function MyHoursTab({ employeeId, employeeName }: { employeeId: string; employee
 }
 
 function Tile({ label, value, color }: { label: string; value: string; color?: string }) {
+  // No hardcoded slate-950 fallback — that rendered invisible on
+  // dark theme. When no explicit tone is passed, defer to the
+  // theme-aware `text-on-surface` token so the number stays legible
+  // in both light and dark modes.
   return (
     <div className="bg-surface rounded-xl p-4 border border-outline shadow-sm">
-      <p className="text-2xl font-bold" style={{ color: color ?? '#0f172a' }}>{value}</p>
+      <p className={`text-2xl font-bold${color ? '' : ' text-on-surface'}`} style={color ? { color } : undefined}>{value}</p>
       <p className="text-xs text-on-surface-subtle mt-0.5">{label}</p>
     </div>
   );
