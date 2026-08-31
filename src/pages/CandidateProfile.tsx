@@ -45,18 +45,46 @@ export default function CandidateProfile() {
   }, [id]);
   useEffect(load, [load]);
 
-  const setStage = async (nextStage: string) => {
-    if (!candidate || nextStage === candidate.stage) { setStageMenuOpen(false); return; }
-    const prev = candidate;
-    setCandidate({ ...candidate, stage: nextStage });
+  const [leftModal, setLeftModal] = useState(false);
+  const setStage = async (nextKey: string) => {
+    if (!candidate) { setStageMenuOpen(false); return; }
     setStageMenuOpen(false);
+
+    // "Left after joining" needs a date (+ optional reason) and hits a
+    // dedicated endpoint that also flips the linked employees row to
+    // exit. Route it to a tiny modal instead of a silent status patch.
+    if (nextKey === 'left_after_joining') {
+      if (candidate.status !== 'joined' && !candidate.hired_employee_id) {
+        toast.error('Not applicable', 'Only candidates who actually joined can be marked as left after joining.');
+        return;
+      }
+      setLeftModal(true);
+      return;
+    }
+
+    // Terminal statuses (rejected / hold) update status, not stage —
+    // keeps the original pipeline position visible in the audit trail
+    // and lets the kanban re-route via columnKeyFor().
+    const isTerminalStatus = nextKey === 'rejected' || nextKey === 'hold';
+    const prev = candidate;
+    const patch: any = isTerminalStatus ? { status: nextKey } : { stage: nextKey };
+    // Leaving a terminal status (moving back into pipeline) should
+    // clear the status too so the card returns to its stage column.
+    if (!isTerminalStatus && ['rejected', 'hold', 'left_after_joining'].includes(candidate.status)) {
+      patch.status = 'active';
+    }
+    if (isTerminalStatus && candidate.status === nextKey) return;
+    if (!isTerminalStatus && candidate.stage === nextKey && !patch.status) return;
+
+    setCandidate({ ...candidate, ...patch });
     try {
-      await api.patchCandidate(candidate.id, { stage: nextStage });
-      toast.success('Stage updated', `${candidate.name} → ${stageLabel(nextStage)}`);
+      await api.patchCandidate(candidate.id, patch);
+      toast.success(isTerminalStatus ? 'Status updated' : 'Stage updated',
+        `${candidate.name} → ${stageLabel(nextKey)}`);
       load();
     } catch (e: any) {
       setCandidate(prev);
-      toast.error('Stage change failed', e?.message ?? 'Please try again.');
+      toast.error('Update failed', e?.message ?? 'Please try again.');
     }
   };
 
@@ -98,6 +126,8 @@ export default function CandidateProfile() {
   // pipeline-position, and offer_status splits "Selected but no offer
   // yet" from "Offer released".
   const displayed = (() => {
+    if (candidate.status === 'left_after_joining' || candidate.final_status === 'left_after_joining')
+                                          return { key: 'left_after_joining', label: 'Left After Joining' };
     if (candidate.status === 'rejected')  return { key: 'rejected', label: 'Rejected' };
     if (candidate.status === 'hold')      return { key: 'hold',     label: 'On Hold' };
     if (candidate.status === 'joined' || candidate.final_status === 'joined')
@@ -205,6 +235,72 @@ export default function CandidateProfile() {
       {tab === 'activity' && isHR && (
         <ActivityTab events={events} />
       )}
+
+      {leftModal && (
+        <LeftAfterJoiningModal
+          candidate={candidate}
+          onClose={() => setLeftModal(false)}
+          onSaved={() => { setLeftModal(false); load(); }}
+        />
+      )}
+    </div>
+  );
+}
+
+// ── Left-after-joining modal ────────────────────────────────────────────
+// Captures the exit date (required) + optional reason for a candidate
+// who joined and later resigned. Server also flips the linked employee
+// to status='exit' + wipes their future planned hours (same helper the
+// HR module uses when adding an exit_date directly on the employee).
+function LeftAfterJoiningModal({ candidate, onClose, onSaved }: { candidate: any; onClose: () => void; onSaved: () => void }) {
+  const [leftAt, setLeftAt] = useState(new Date().toISOString().slice(0, 10));
+  const [reason, setReason] = useState('');
+  const [busy, setBusy] = useState(false);
+  const submit = async () => {
+    if (!leftAt) { toast.error('Date required', 'Enter the date the person left.'); return; }
+    setBusy(true);
+    try {
+      await api.markLeftAfterJoining(candidate.id, { left_at: leftAt, left_reason: reason || undefined });
+      toast.success('Marked as left after joining', candidate.hired_employee_id
+        ? 'Employee record moved to exit; future planned hours cleared.'
+        : 'Candidate history updated.');
+      onSaved();
+    } catch (e: any) {
+      toast.error('Update failed', e?.body?.error ?? e?.message ?? 'Please try again.');
+    } finally { setBusy(false); }
+  };
+  return (
+    <div className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center p-4" onClick={onClose}>
+      <div onClick={e => e.stopPropagation()}
+        className="bg-surface rounded-xl-2 border border-outline shadow-elev-4 w-full max-w-md p-5 space-y-4">
+        <div>
+          <h3 className="font-display text-lg font-bold text-on-surface">Mark as Left After Joining</h3>
+          <p className="text-xs text-on-surface-muted mt-1">
+            {candidate.hired_employee_id
+              ? `Records ${candidate.name} as having resigned or been exited from the company. Their employee row will be set to exit, and any hours planned beyond the leaving date will be cleared.`
+              : `Records ${candidate.name} as having left, even though a linked employee record wasn't found. Kanban card moves to Left After Joining.`}
+          </p>
+        </div>
+        <label className="block">
+          <span className="text-xs font-semibold text-on-surface-muted">Left on <span className="text-danger">*</span></span>
+          <input type="date" value={leftAt} onChange={e => setLeftAt(e.target.value)}
+            className="mt-1 w-full px-2 py-1.5 rounded border border-outline bg-surface text-sm" />
+        </label>
+        <label className="block">
+          <span className="text-xs font-semibold text-on-surface-muted">Reason (optional)</span>
+          <textarea value={reason} onChange={e => setReason(e.target.value)} rows={3}
+            placeholder="Personal reasons / better opportunity / performance / etc."
+            className="mt-1 w-full px-2 py-1.5 rounded border border-outline bg-surface text-sm" />
+        </label>
+        <div className="flex items-center justify-end gap-2 pt-2 border-t border-outline">
+          <button onClick={onClose} disabled={busy}
+            className="px-3 py-2 rounded-lg border border-outline text-sm font-semibold hover:bg-surface-2 disabled:opacity-50">Cancel</button>
+          <button onClick={submit} disabled={busy}
+            className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg bg-danger text-on-danger text-sm font-semibold hover:opacity-90 disabled:opacity-50">
+            {busy ? 'Saving…' : 'Mark as left'}
+          </button>
+        </div>
+      </div>
     </div>
   );
 }
@@ -506,12 +602,13 @@ function ScreeningTab({ candidate, onSaved }: { candidate: any; onSaved: () => v
     </div>
   );
 }
-function NumInput({ label, value, onChange }: { label: string; value: any; onChange: (v: string) => void }) {
+function NumInput({ label, value, onChange, disabled }: { label: string; value: any; onChange: (v: string) => void; disabled?: boolean }) {
   return (
     <label className="block">
       <span className="text-xs font-semibold text-on-surface-muted">{label}</span>
       <input type="number" value={value ?? ''} onChange={e => onChange(e.target.value)}
-        className="mt-1 w-full px-2 py-1.5 rounded border border-outline bg-surface text-sm num-mono" />
+        disabled={disabled}
+        className="mt-1 w-full px-2 py-1.5 rounded border border-outline bg-surface text-sm num-mono disabled:opacity-50 disabled:cursor-not-allowed" />
     </label>
   );
 }
@@ -985,6 +1082,7 @@ function OfferTab({ candidate, onSaved }: { candidate: any; onSaved: () => void 
   const [ctc, setCtc] = useState<string>(candidate.offered_ctc != null ? String(candidate.offered_ctc) : '');
   const [offerDate, setOfferDate] = useState<string>(candidate.offer_date ? String(candidate.offer_date).slice(0, 10) : new Date().toISOString().slice(0, 10));
   const [remarks, setRemarks] = useState<string>(candidate.offer_remarks ?? '');
+  const [isUnpaid, setIsUnpaid] = useState<boolean>(!!candidate.offer_is_unpaid);
   const [busy, setBusy] = useState(false);
   const [showHire, setShowHire] = useState(false);
 
@@ -996,13 +1094,23 @@ function OfferTab({ candidate, onSaved }: { candidate: any; onSaved: () => void 
   const draftOffer = async () => {
     setBusy(true);
     try {
+      // Two-step for unpaid: draftOffer (dedicated endpoint) can't take
+      // the unpaid flag — persist it via patchCandidate first so the
+      // release-offer guard sees it, then draft with zero numbers.
+      if (isUnpaid) {
+        await api.patchCandidate(candidate.id, { offer_is_unpaid: true });
+      } else if (candidate.offer_is_unpaid) {
+        await api.patchCandidate(candidate.id, { offer_is_unpaid: false });
+      }
       await api.draftOffer(candidate.id, {
-        offered_salary: salary === '' ? null : Number(salary),
-        offered_ctc: ctc === '' ? null : Number(ctc),
+        offered_salary: isUnpaid ? 0 : (salary === '' ? null : Number(salary)),
+        offered_ctc:    isUnpaid ? 0 : (ctc === '' ? null : Number(ctc)),
         offer_date: offerDate,
         offer_remarks: remarks || undefined,
       });
-      toast.success('Offer saved', 'Draft is stored — release it when you\'re ready to send.');
+      toast.success('Offer saved', isUnpaid
+        ? 'Unpaid internship draft stored — release when you\'re ready.'
+        : 'Draft is stored — release it when you\'re ready to send.');
       onSaved();
     } catch (e: any) {
       toast.error('Save failed', e?.body?.error ?? e?.message ?? 'Please try again.');
@@ -1061,9 +1169,28 @@ function OfferTab({ candidate, onSaved }: { candidate: any; onSaved: () => void 
       </div>
 
       <div className="p-6 space-y-4">
+        {/* Unpaid-internship flag. Ticked, the salary + CTC inputs go
+            to zero and get disabled so HR can't accidentally send a
+            paid offer they didn't mean to; the release-offer guard on
+            the server also drops the "salary or CTC required" rule
+            when this flag is set. Un-ticking restores the last-typed
+            numbers (React keeps the local strings across toggles). */}
+        <label className={`flex items-start gap-2 p-2.5 rounded-lg border ${isUnpaid ? 'border-amber-300 bg-amber-50 dark:bg-amber-900/20' : 'border-outline bg-surface-2'} ${released ? 'opacity-60 pointer-events-none' : 'cursor-pointer'}`}>
+          <input type="checkbox" checked={isUnpaid}
+            onChange={e => setIsUnpaid(e.target.checked)}
+            disabled={released}
+            className="mt-0.5 h-4 w-4 accent-amber-600" />
+          <div className="flex-1">
+            <span className="block text-sm font-semibold text-on-surface">Unpaid internship</span>
+            <span className="block text-[11px] text-on-surface-muted">Skip the salary / CTC requirement — the offer can be released and the candidate hired with ₹0 pay.</span>
+          </div>
+        </label>
+
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-          <NumInput label="Offered salary (₹/month)" value={salary} onChange={setSalary} />
-          <NumInput label="Offered CTC (₹/year)" value={ctc} onChange={setCtc} />
+          <NumInput label={isUnpaid ? 'Offered salary (₹/month) — unpaid' : 'Offered salary (₹/month)'}
+            value={isUnpaid ? '' : salary} onChange={setSalary} disabled={isUnpaid || released} />
+          <NumInput label={isUnpaid ? 'Offered CTC (₹/year) — unpaid' : 'Offered CTC (₹/year)'}
+            value={isUnpaid ? '' : ctc} onChange={setCtc} disabled={isUnpaid || released} />
           <label className="block">
             <span className="text-xs font-semibold text-on-surface-muted">Offer date</span>
             <input type="date" value={offerDate} onChange={e => setOfferDate(e.target.value)}

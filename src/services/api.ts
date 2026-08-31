@@ -713,6 +713,12 @@ export const api = {
     request<any>(`/candidates/${candidateId}/draft-offer`, { method: 'POST', body: JSON.stringify(data) }),
   releaseOffer: (candidateId: string) =>
     request<any>(`/candidates/${candidateId}/release-offer`, { method: 'POST' }),
+  // Post-hire attrition. Only valid for candidates whose status='joined'
+  // (or that have a hired_employee_id stamped). Server mirrors to the
+  // employees row (status='exit' + exit_date) and clears their future
+  // planned hours; here we just carry the payload through.
+  markLeftAfterJoining: (candidateId: string, data: { left_at: string; left_reason?: string }) =>
+    request<any>(`/candidates/${candidateId}/mark-left-after-joining`, { method: 'POST', body: JSON.stringify(data) }),
   hireCandidate: (candidateId: string, data: {
     employee_code: string; join_date: string; department: string; designation: string;
     shift?: string; location?: string; reporting_manager_id?: string | null; role?: string;

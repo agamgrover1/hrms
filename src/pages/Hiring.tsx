@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Search, Plus, UserSearch, ExternalLink, TrendingUp } from 'lucide-react';
 import { api } from '../services/api';
-import { HIRING_STAGES, TERMINAL_STAGES, STAGE_COLOR } from '../lib/hiringStages';
+import { HIRING_STAGES, TERMINAL_STAGES, STAGE_COLOR, columnKeyFor } from '../lib/hiringStages';
 import NewCandidateModal from '../components/hr/NewCandidateModal';
 import { toast } from '../components/Toaster';
 
@@ -59,30 +59,46 @@ export default function Hiring() {
   }, [rows, search]);
 
   const byStage = useMemo(() => {
+    // Route by columnKeyFor() — a card with status='rejected' lands in
+    // the Rejected column even if its stage is still 'screening_call'.
+    // Fixes the earlier bug where mid-pipeline status changes left the
+    // card visually stranded in the wrong column.
     const map: Record<string, Candidate[]> = {};
     for (const c of filtered) {
-      if (!map[c.stage]) map[c.stage] = [];
-      map[c.stage].push(c);
+      const key = columnKeyFor(c);
+      if (!map[key]) map[key] = [];
+      map[key].push(c);
     }
     return map;
   }, [filtered]);
 
-  // Drag handlers — advance stage on drop. Optimistic update: flip the
-  // card locally right away, roll back on API error.
-  const onDropTo = async (targetStage: string) => {
+  // Drag handlers — dropping onto a pipeline column advances stage;
+  // dropping onto a terminal column (Rejected / Hold / Left After
+  // Joining) flips STATUS not stage so the "why is it terminal" audit
+  // trail is preserved. Optimistic update either way.
+  const onDropTo = async (targetKey: string) => {
     const id = dragging;
     setDragging(null); setDragOver(null);
     if (!id) return;
     const card = rows.find(c => c.id === id);
-    if (!card || card.stage === targetStage) return;
+    if (!card) return;
+    const isTerminal = targetKey === 'rejected' || targetKey === 'hold' || targetKey === 'left_after_joining';
+    if (isTerminal && card.status === targetKey) return;
+    if (!isTerminal && card.stage === targetKey && card.status === 'active') return;
+
     const prev = rows;
-    setRows(rs => rs.map(c => c.id === id ? { ...c, stage: targetStage } : c));
+    const patch = isTerminal
+      ? { status: targetKey }
+      : { stage: targetKey, ...(card.status !== 'active' ? { status: 'active' } : {}) };
+
+    setRows(rs => rs.map(c => c.id === id ? { ...c, ...patch } as Candidate : c));
     try {
-      await api.patchCandidate(id, { stage: targetStage });
-      toast.success('Stage updated', `${card.name} → ${targetStage.replace(/_/g, ' ')}`);
+      await api.patchCandidate(id, patch);
+      toast.success(isTerminal ? 'Status updated' : 'Stage updated',
+        `${card.name} → ${targetKey.replace(/_/g, ' ')}`);
     } catch (e: any) {
       setRows(prev);
-      toast.error('Stage change failed', e?.message ?? 'Please try again.');
+      toast.error(isTerminal ? 'Status change failed' : 'Stage change failed', e?.message ?? 'Please try again.');
     }
   };
 
@@ -128,7 +144,7 @@ export default function Hiring() {
           <div className="flex gap-3 min-h-full">
             {[...HIRING_STAGES, ...TERMINAL_STAGES].map(col => {
               const cards = byStage[col.key] ?? [];
-              const isTerminal = ['hold', 'rejected'].includes(col.key);
+              const isTerminal = ['hold', 'rejected', 'left_after_joining'].includes(col.key);
               const color = STAGE_COLOR[col.key] ?? { bg: 'bg-slate-100', text: 'text-slate-700', ring: 'ring-slate-300' };
               return (
                 <div key={col.key}

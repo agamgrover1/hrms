@@ -1009,6 +1009,11 @@ async function runStartupMigrations() {
     await sql`SELECT 1 FROM push_subscriptions LIMIT 0`;
     // meetings.sequence — iCal SEQUENCE for calendar invite revisions.
     await sql`SELECT sequence FROM meetings LIMIT 0`;
+    // candidates.offer_is_unpaid — added so HR can release ₹0 offers
+    // for unpaid internships without failing the salary/CTC guard.
+    await sql`SELECT offer_is_unpaid FROM candidates LIMIT 0`;
+    // candidates.left_at — added when "Left after joining" status shipped.
+    await sql`SELECT left_at FROM candidates LIMIT 0`;
     // Also verify the legacy goals.employee_id constraint has been
     // relaxed. bad=0 both when the column doesn't exist (fresh DB)
     // AND when it exists as nullable (post-migration old DB). bad>=1
@@ -3127,6 +3132,19 @@ async function runStartupMigrations() {
   await sql`ALTER TABLE candidates ALTER COLUMN relevant_experience_years TYPE TEXT USING relevant_experience_years::text`.catch(() => {});
   await sql`ALTER TABLE candidates ADD COLUMN IF NOT EXISTS experience_type TEXT`.catch(() => {});
   await sql`ALTER TABLE candidates ADD COLUMN IF NOT EXISTS screening_outcome TEXT`.catch(() => {});
+  // Unpaid-offer support: an explicit boolean beats overloading a zero
+  // salary, since HR often DOES want to draft a paid offer and hasn't
+  // typed the number yet — we shouldn't release-fail vs release-succeed
+  // on "did the user save the field blank." Default FALSE so existing
+  // rows preserve the old strict guard.
+  await sql`ALTER TABLE candidates ADD COLUMN IF NOT EXISTS offer_is_unpaid BOOLEAN DEFAULT FALSE`.catch(() => {});
+  // Post-hire exit tracking. left_at + left_reason capture the "resigned
+  // after joining" flow (final_status='left_after_joining'). Not a FK
+  // to employees.status — that field is authoritative for whether the
+  // person is currently active; this pair captures the candidate-side
+  // audit of when + why the hire didn't stick.
+  await sql`ALTER TABLE candidates ADD COLUMN IF NOT EXISTS left_at DATE`.catch(() => {});
+  await sql`ALTER TABLE candidates ADD COLUMN IF NOT EXISTS left_reason TEXT`.catch(() => {});
 
   // Recovery: portal manual clock-ins that were clobbered by a
   // biometric sync (the bug where a broken/quiet biometric returned an
@@ -13880,7 +13898,9 @@ const CANDIDATE_MUTABLE_FIELDS = [
   'last_increment_date', 'last_increment_amount',
   'reason_for_change', 'current_location', 'notice_period_days', 'face_to_face_available',
   'offered_salary', 'offered_ctc', 'offer_date', 'offer_status', 'offer_remarks',
+  'offer_is_unpaid',
   'final_status', 'rejection_reason',
+  'left_at', 'left_reason',
 ] as const;
 
 // Access helper — a candidate is reachable by (a) HR (any tier), (b) the
@@ -14061,8 +14081,11 @@ app.patch('/api/candidates/:id', async (req, res) => {
         case 'offer_date': row = (await sql`UPDATE candidates SET offer_date=${value || null}, updated_at=NOW() WHERE id=${req.params.id} RETURNING *`)[0]; break;
         case 'offer_status': row = (await sql`UPDATE candidates SET offer_status=${value}, updated_at=NOW() WHERE id=${req.params.id} RETURNING *`)[0]; break;
         case 'offer_remarks': row = (await sql`UPDATE candidates SET offer_remarks=${value}, updated_at=NOW() WHERE id=${req.params.id} RETURNING *`)[0]; break;
+        case 'offer_is_unpaid': row = (await sql`UPDATE candidates SET offer_is_unpaid=${!!value}, updated_at=NOW() WHERE id=${req.params.id} RETURNING *`)[0]; break;
         case 'final_status': row = (await sql`UPDATE candidates SET final_status=${value}, updated_at=NOW() WHERE id=${req.params.id} RETURNING *`)[0]; break;
         case 'rejection_reason': row = (await sql`UPDATE candidates SET rejection_reason=${value}, updated_at=NOW() WHERE id=${req.params.id} RETURNING *`)[0]; break;
+        case 'left_at': row = (await sql`UPDATE candidates SET left_at=${value || null}, updated_at=NOW() WHERE id=${req.params.id} RETURNING *`)[0]; break;
+        case 'left_reason': row = (await sql`UPDATE candidates SET left_reason=${value ?? null}, updated_at=NOW() WHERE id=${req.params.id} RETURNING *`)[0]; break;
       }
     }
     // Log stage transitions so the Activity tab has a clean audit trail.
@@ -14402,8 +14425,8 @@ app.post('/api/candidates/:id/release-offer', async (req, res) => {
     if (cur.offer_status !== 'draft') {
       return res.status(400).json({ error: 'Draft the offer first (Offer tab → save numbers) before releasing.' });
     }
-    if (cur.offered_salary == null && cur.offered_ctc == null) {
-      return res.status(400).json({ error: 'Set at least an offered salary or CTC before releasing.' });
+    if (!cur.offer_is_unpaid && cur.offered_salary == null && cur.offered_ctc == null) {
+      return res.status(400).json({ error: 'Set at least an offered salary or CTC before releasing — or tick "Unpaid internship" if there is no pay.' });
     }
     const row = (await sql`
       UPDATE candidates SET offer_status='released', updated_at=NOW()
@@ -14415,6 +14438,66 @@ app.post('/api/candidates/:id/release-offer', async (req, res) => {
     notifyAdminsAndHR('offer_released',
       `Offer released — ${cur.name}`,
       `${gate.user?.name ?? 'HR'} released an offer to ${cur.name} for ${cur.profile_applied_for ?? 'the open role'}.`
+    ).catch(() => {});
+    res.json(row);
+  } catch (err: any) { res.status(500).json({ error: err.message ?? 'Server error' }); }
+});
+
+// POST /api/candidates/:id/mark-left-after-joining — track post-hire
+// attrition. Only valid for candidates who actually joined (status must
+// be 'joined' OR a hired_employee_id must be stamped). Updates the
+// candidate row so the kanban card moves to the "Left After Joining"
+// column, and — when there's a linked employee — pushes the employees
+// row to status='exit' with exit_date, so payroll / leave surfaces
+// stop showing them as active. The exit_date + reason stay on the
+// candidate row too (left_at, left_reason) so post-hire analytics can
+// count these without joining back to employees.
+app.post('/api/candidates/:id/mark-left-after-joining', async (req, res) => {
+  try {
+    const gate = await requireHROrAbove(req, res);
+    if (!gate.ok) return;
+    const { left_at, left_reason } = req.body ?? {};
+    if (!left_at) return res.status(400).json({ error: 'left_at (date the person left) is required.' });
+
+    const cur = (await sql`SELECT * FROM candidates WHERE id=${req.params.id}` as any[])[0];
+    if (!cur) return res.status(404).json({ error: 'Candidate not found' });
+    if (cur.status !== 'joined' && !cur.hired_employee_id) {
+      return res.status(400).json({ error: 'Only candidates who actually joined can be marked as left after joining.' });
+    }
+
+    const row = (await sql`
+      UPDATE candidates SET
+        status       = 'left_after_joining',
+        final_status = 'left_after_joining',
+        left_at      = ${left_at},
+        left_reason  = ${left_reason ?? null},
+        updated_at   = NOW()
+      WHERE id = ${req.params.id}
+      RETURNING *`)[0];
+
+    // Mirror to the employees row so attendance/leave/payroll stop
+    // treating them as active. Silent on failure — the candidate-side
+    // audit is what matters here.
+    if (cur.hired_employee_id) {
+      await sql`
+        UPDATE employees SET
+          status    = 'exit',
+          exit_date = ${left_at},
+          updated_at = NOW()
+        WHERE id = ${cur.hired_employee_id} AND status <> 'exit'`.catch(() => {});
+      // Reuse the future-plan wipe used elsewhere so hours planned
+      // beyond the exit month clear out too.
+      try { await dismissFutureAssignmentsForEmployee(cur.hired_employee_id, left_at); }
+      catch { /* non-fatal */ }
+    }
+
+    await logCandidateEvent(req.params.id, 'left_after_joining', gate.user, {
+      body: left_reason ? `Left the company on ${left_at}: ${left_reason}` : `Left the company on ${left_at}.`,
+      metadata: { left_at, left_reason: left_reason ?? null, employee_id: cur.hired_employee_id ?? null },
+    });
+    notifyAdminsAndHR('candidate_left',
+      `Left after joining — ${cur.name}`,
+      `${gate.user?.name ?? 'HR'} recorded that ${cur.name} left on ${new Date(left_at).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' })}.`
     ).catch(() => {});
     res.json(row);
   } catch (err: any) { res.status(500).json({ error: err.message ?? 'Server error' }); }
@@ -14439,8 +14522,8 @@ app.post('/api/candidates/:id/hire', async (req, res) => {
     if (cand.hired_employee_id) {
       return res.status(409).json({ error: 'This candidate has already been hired.', employee_id: cand.hired_employee_id });
     }
-    if (cand.offered_salary == null && cand.offered_ctc == null) {
-      return res.status(400).json({ error: 'Draft + release an offer with a salary or CTC before hiring.' });
+    if (!cand.offer_is_unpaid && cand.offered_salary == null && cand.offered_ctc == null) {
+      return res.status(400).json({ error: 'Draft + release an offer with a salary or CTC before hiring — or tick "Unpaid internship" if there is no pay.' });
     }
     const {
       employee_code, join_date, department, designation, shift, location,
