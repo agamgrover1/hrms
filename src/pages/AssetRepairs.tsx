@@ -1564,7 +1564,7 @@ function AssetHistoryModal({ asset, vendors, onClose, onAddPast }: any) {
         {/* Current state strip: who owns it now + status pill. Answers the
             user's "who is the current owner + is it in scrap" question
             without having to scan the timeline. */}
-        <div className="px-5 py-3 border-b border-outline grid grid-cols-3 gap-3 bg-surface-2/30">
+        <div className="px-5 py-3 border-b border-outline grid grid-cols-1 sm:grid-cols-3 gap-3 bg-surface-2/30">
           <div>
             <p className="text-[10px] uppercase tracking-[0.16em] font-bold text-on-surface-subtle">Current owner</p>
             <p className="text-sm font-semibold text-on-surface mt-0.5">

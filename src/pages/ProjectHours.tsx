@@ -768,7 +768,7 @@ function AssignmentForm({
           </div>
           <div>
             <label className="text-xs font-medium text-on-surface-muted mb-1.5 block">Weekly hours</label>
-            <div className="grid grid-cols-5 gap-2">
+            <div className="grid grid-cols-2 sm:grid-cols-5 gap-2">
               {(['w1_hours','w2_hours','w3_hours','w4_hours','w5_hours'] as Array<keyof typeof form>).map((k, i) => {
                 const w = i + 1;
                 const empty = isEmptyWeek(month, year, w);

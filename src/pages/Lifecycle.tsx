@@ -68,7 +68,7 @@ export default function Lifecycle() {
       </div>
 
       {/* Summary KPIs */}
-      <div className="grid grid-cols-3 gap-4">
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
         <Kpi label="Onboarding in progress" value={data?.summary.onboarding_in_progress ?? 0} icon={UserPlus} tone="text-accent" />
         <Kpi label="Offboarding in progress" value={data?.summary.offboarding_in_progress ?? 0} icon={LogOut} tone="text-warning" />
         <Kpi label="Overdue (> 14 days)" value={data?.summary.overdue ?? 0} icon={AlertTriangle} tone={(data?.summary.overdue ?? 0) > 0 ? 'text-danger' : 'text-on-surface-muted'} />

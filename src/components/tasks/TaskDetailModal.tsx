@@ -1252,7 +1252,7 @@ function RecurrencePicker({ value, dueDate, parentId, onChange }: {
             className="ml-auto p-1 rounded text-on-surface-subtle hover:text-danger hover:bg-danger/10"><X size={11} /></button>
         )}
       </div>
-      <div className="grid grid-cols-3 gap-1.5">
+      <div className="grid grid-cols-2 sm:grid-cols-3 gap-1.5">
         {(['daily','weekly','monthly'] as const).map(k => (
           <button key={k} onClick={() => onChange({ ...current, kind: k, interval: current.interval || 1 })}
             className={`text-[11px] font-semibold py-1 rounded ${current.kind === k ? 'bg-accent text-on-accent' : 'bg-surface text-on-surface-muted border border-outline hover:bg-surface-2'}`}>

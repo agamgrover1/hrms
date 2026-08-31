@@ -272,7 +272,7 @@ function FilterEditor({ accountId, folders, value, onClose, onSaved }: {
             placeholder="e.g. Archive LinkedIn notifications"
             className="mt-1 w-full px-3 py-2 rounded-lg border border-outline bg-surface text-sm" />
         </label>
-        <div className="grid grid-cols-3 gap-2">
+        <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
           <label className="block col-span-1">
             <span className="text-[10px] uppercase tracking-wider text-on-surface-muted font-bold">If</span>
             <select value={form.match_field} onChange={e => setForm(f => ({ ...f, match_field: e.target.value as any }))}

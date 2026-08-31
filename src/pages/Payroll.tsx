@@ -610,7 +610,7 @@ function PayslipEditorModal({ payslip, canEdit, onClose, onSaved }:
                 {lopExplainLoading ? 'Loading…' : (lopExplain ? 'Hide details' : 'Why this LOP?')}
               </button>
             </div>
-            <div className="grid grid-cols-3 gap-3">
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
               <label className="block">
                 <span className="block text-[11px] text-on-surface-muted mb-1">Working days</span>
                 <input type="number" min="1" step="1" value={workingDays} disabled={!canEdit}

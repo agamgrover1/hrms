@@ -1782,7 +1782,7 @@ export default function MyPortal() {
           <div className="space-y-3">
             <div className="bg-surface rounded-xl p-5 border border-outline shadow-sm">
               <p className="text-xs font-semibold text-on-surface-subtle uppercase tracking-wide mb-3">This Month</p>
-              <div className="grid grid-cols-3 gap-3">
+              <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
                 <div className="text-center"><p className="text-2xl font-bold text-success">{presentDays}</p><p className="text-xs text-on-surface-subtle">Present</p></div>
                 <div className="text-center"><p className="text-2xl font-bold text-warning">{lateDays}</p><p className="text-xs text-on-surface-subtle">Late</p></div>
                 <div className="text-center"><p className="text-2xl font-bold text-danger">{absentDays}</p><p className="text-xs text-on-surface-subtle">Absent</p></div>
@@ -1932,7 +1932,7 @@ export default function MyPortal() {
         <TabErrorBoundary>
         <div className="space-y-4">
           {/* Balance summary */}
-          <div className="grid grid-cols-3 gap-3">
+          <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
             {balance.on_probation ? (
               <>
                 <div className="bg-warning-container border border-amber-100 rounded-xl p-4 text-center">
@@ -3208,7 +3208,7 @@ export default function MyPortal() {
           )}
 
           {/* KPI summary */}
-          <div className="grid grid-cols-3 gap-3">
+          <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
             {(() => {
               const reviewed = monthlyPerf.length;
               const avg = reviewed ? Math.round(monthlyPerf.reduce((a, r) => a + r.overall_score, 0) / reviewed) : 0;

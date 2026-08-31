@@ -637,7 +637,7 @@ export default function InvoicesTab({ month, year, onChanged }: { month: number;
                   className="w-full px-3 py-2 rounded-lg bg-surface-2 border border-outline text-sm text-on-surface focus:outline-none focus:ring-2 focus:ring-accent/30" />
               </Field>
             </div>
-            <div className="grid grid-cols-3 gap-3">
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
               <Field label="Currency">
                 <select value={np.currency} onChange={e => setNp({ ...np, currency: e.target.value })}
                   className="w-full px-3 py-2 rounded-lg bg-surface-2 border border-outline text-sm text-on-surface focus:outline-none focus:ring-2 focus:ring-accent/30">

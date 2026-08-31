@@ -256,7 +256,7 @@ function KpiTemplateEditor({ existing, sources, onClose, onSaved }: {
               rows={2} placeholder="What does this measure? How should the lead interpret it?"
               className={inputCls + ' resize-none'} />
           </div>
-          <div className="grid grid-cols-3 gap-3">
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
             <div>
               <label className="text-[10px] font-bold uppercase tracking-wider text-on-surface-muted">Target *</label>
               <input type="number" step="0.1" value={form.default_target}
