@@ -197,7 +197,34 @@ function DayApprovalView({ reviewerEmpId, isAdmin, user }: {
     const from = d.status;
     setRows(rs => rs.map(r => r.id === d.id ? { ...r, status: 'approved', reviewed_by_name: user?.name ?? r.reviewed_by_name, reviewed_at: new Date().toISOString() } : r));
     bumpCounts(from, 'approved');
-    toast.success('Approved', `${d.employee_name} · ${Number(d.hours)}h · ${fmtDayLabel(d.log_date)}.`);
+    toast.success('Approved', `${d.employee_name} · ${Number(d.hours)}h · ${fmtDayLabel(d.log_date)}.`, {
+      // A 5-second undo window — the user asked for "2-3 seconds" but
+      // that's too tight for a hand-eye reaction; 5s is the sweet spot
+      // Gmail/Linear/Notion use for the same pattern. Server enforces
+      // "only revert if still approved" so a late click can't do harm.
+      duration: 5000,
+      action: {
+        label: 'Undo',
+        onClick: async () => {
+          // Optimistic revert back to whatever the row's status was
+          // before the approve click.
+          setRows(rs => rs.map(r => r.id === d.id
+            ? { ...r, status: from, reviewed_by_name: null, reviewed_at: null } as DayRow
+            : r));
+          bumpCounts('approved', from);
+          try {
+            await api.revertHourLogDayApproval(d.id);
+            toast.info('Approval reverted', `${d.employee_name}'s day moved back to pending.`);
+          } catch (e: any) {
+            // Server rejected the undo (already re-actioned, deleted,
+            // etc.) — restore the approved-view and tell the user.
+            setRows(rs => rs.map(r => r.id === d.id ? { ...r, status: 'approved' } as DayRow : r));
+            bumpCounts(from, 'approved');
+            toast.error('Undo failed', e?.body?.error ?? e?.message ?? 'Please refresh.');
+          }
+        },
+      },
+    });
     try {
       await api.approveHourLogDay(d.id, { reviewer_id: reviewerEmpId ?? user?.id, reviewer_name: user?.name });
     } catch (e: any) {
@@ -1043,7 +1070,24 @@ function InternalLogReviewView({ reviewerEmpId, isAdmin }: { reviewerEmpId: stri
     setLogs(rs => rs.map(r => r.id === l.id ? { ...r, status: 'approved' } : r));
     try {
       await api.approveInternalHourLog(l.id);
-      toast.success('Approved', `${l.employee_name} · ${Number(l.hours)}h · ${l.activity_name}`);
+      toast.success('Approved', `${l.employee_name} · ${Number(l.hours)}h · ${l.activity_name}`, {
+        // 5-second undo window; server enforces "only revert if still
+        // approved" so a late click can't misfire on a re-actioned row.
+        duration: 5000,
+        action: {
+          label: 'Undo',
+          onClick: async () => {
+            setLogs(rs => rs.map(r => r.id === l.id ? { ...r, ...prev } : r));
+            try {
+              await api.revertInternalHourLogApproval(l.id);
+              toast.info('Approval reverted', `${l.employee_name}'s log moved back to pending.`);
+            } catch (e: any) {
+              setLogs(rs => rs.map(r => r.id === l.id ? { ...r, status: 'approved' } : r));
+              toast.error('Undo failed', e?.body?.error ?? e?.message ?? 'Please refresh.');
+            }
+          },
+        },
+      });
     } catch (e: any) {
       setLogs(rs => rs.map(r => r.id === l.id ? { ...r, ...prev } : r));
       toast.error('Approve failed', e.message);

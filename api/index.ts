@@ -8947,6 +8947,40 @@ async function handleInternalLogReview(action: 'approve' | 'reject', req: any, r
 }
 app.patch('/api/internal-hour-logs/:id/approve', (req, res) => handleInternalLogReview('approve', req, res));
 app.patch('/api/internal-hour-logs/:id/reject',  (req, res) => handleInternalLogReview('reject',  req, res));
+
+// PATCH /api/internal-hour-logs/:id/revert-approval — mirror of the
+// hour-log revert flow for the Undo toast. Same permission check as
+// approve/reject (canViewInternalHoursOf); only reverts rows currently
+// 'approved' so a late click on a re-actioned row can't misfire.
+app.patch('/api/internal-hour-logs/:id/revert-approval', async (req, res) => {
+  try {
+    await runStartupMigrations();
+    const uid = req.header('x-user-id');
+    if (!uid) return res.status(401).json({ error: 'Sign in required' });
+    const u = (await sql`SELECT id, name, role, employee_id_ref FROM app_users WHERE id=${uid}`)[0] as any;
+    if (!u) return res.status(401).json({ error: 'Unknown user' });
+    const row = (await sql`SELECT * FROM internal_hour_logs WHERE id=${req.params.id}`)[0] as any;
+    if (!row) return res.status(404).json({ error: 'Log not found' });
+    const self = (await sql`
+      SELECT id FROM employees
+      WHERE employee_id = ${u.employee_id_ref} OR id = ${u.employee_id_ref}
+      LIMIT 1`)[0] as any;
+    const selfId = self?.id ?? null;
+    const allowed = await canViewInternalHoursOf(u, selfId, row.employee_id, null);
+    if (!allowed) return res.status(403).json({ error: 'Not permitted to review this log.' });
+    if (row.status !== 'approved') {
+      return res.status(404).json({ error: 'Log is not currently approved (already reverted?)' });
+    }
+    const updated = (await sql`
+      UPDATE internal_hour_logs SET
+        status='pending',
+        reviewed_by_id=NULL, reviewed_by_name=NULL, reviewed_at=NULL,
+        rejection_reason=NULL, updated_at=NOW()
+      WHERE id=${req.params.id} AND status='approved'
+      RETURNING *`)[0];
+    res.json(updated);
+  } catch (err: any) { res.status(500).json({ error: err.message ?? 'Server error' }); }
+});
 app.delete('/api/internal-hour-logs/:id', async (req, res) => {
   try {
     const uid = req.header('x-user-id');
@@ -16877,6 +16911,34 @@ app.patch('/api/hour-log-days/:id/approve', async (req, res) => {
   } catch (err: any) { res.status(500).json({ error: err.message || 'Server error' }); }
 });
 
+// PATCH /api/hour-log-days/:id/revert-approval — flip a day row back to
+// 'pending' so a mis-clicked Approve can be undone from the toast Undo
+// button. Only reverts rows that ARE currently approved — no-op on
+// pending/rejected/on_hold so this endpoint is safe to spam. Also
+// re-rolls the parent hour_log so the weekly-grain queue reflects the
+// new mix.
+app.patch('/api/hour-log-days/:id/revert-approval', async (req, res) => {
+  try {
+    invalidateHourLogsCache();
+    const rows = await sql`
+      UPDATE hour_log_days SET
+        status='pending',
+        reviewed_by_id=NULL,
+        reviewed_by_name=NULL,
+        reviewed_at=NULL,
+        rejection_reason=NULL,
+        updated_at=NOW()
+      WHERE id=${req.params.id} AND status='approved'
+      RETURNING *` as any[];
+    if (!rows.length) return res.status(404).json({ error: 'Approved day entry not found (already reverted?)' });
+    const r = rows[0];
+    res.json(r);
+    void (async () => {
+      try { await rollupWeeklyStatusFromDays(r.hour_log_id); } catch { /* non-fatal */ }
+    })();
+  } catch (err: any) { res.status(500).json({ error: err.message || 'Server error' }); }
+});
+
 // PATCH /api/hour-log-days/:id/reject — reject with a reason.
 app.patch('/api/hour-log-days/:id/reject', async (req, res) => {
   try {
@@ -17482,6 +17544,53 @@ app.patch('/api/hour-logs/:id/approve', async (req, res) => {
           'Hours Approved',
           `Your ${r.hours_logged}h on ${projectName} (W${r.week_num}) was approved by ${reviewer_name || 'reviewer'}`);
       } catch { /* non-fatal — response already sent */ }
+    })();
+  } catch (err: any) { res.status(500).json({ error: err.message || 'Server error' }); }
+});
+
+// PATCH /api/hour-logs/:id/revert-approval — undo a weekly-grain
+// approval. Only touches rows currently 'approved'. Cascade to child
+// day rows follows the same rule as the approve cascade (only touch
+// rows the approve step actually flipped, i.e. currently approved
+// AND either have no reviewer stamp of their own OR share the same
+// reviewer_id as the parent). Safest bet: revert every 'approved'
+// child. Audit + notify are non-fatal.
+app.patch('/api/hour-logs/:id/revert-approval', async (req, res) => {
+  try {
+    invalidateHourLogsCache();
+    const { reviewer_id, reviewer_name } = req.body ?? {};
+    const [pre, rows] = await Promise.all([
+      sql`SELECT hours_logged, status, work_description FROM hour_logs WHERE id=${req.params.id}` as Promise<any[]>,
+      sql`
+        UPDATE hour_logs SET status='pending',
+          reviewed_by_id=NULL, reviewed_by_name=NULL, reviewed_at=NULL,
+          rejection_reason=NULL, updated_at=NOW()
+        WHERE id=${req.params.id} AND status='approved'
+        RETURNING *` as Promise<any[]>,
+    ]);
+    if (!rows.length) return res.status(404).json({ error: 'Approved log not found (already reverted?)' });
+    const cur = pre[0];
+    const r = rows[0];
+    await sql`
+      UPDATE hour_log_days SET
+        status='pending',
+        reviewed_by_id=NULL, reviewed_by_name=NULL,
+        reviewed_at=NULL, rejection_reason=NULL,
+        updated_at=NOW()
+      WHERE hour_log_id=${req.params.id} AND status='approved'`.catch(()=>{});
+    res.json(r);
+    void (async () => {
+      try {
+        await recordHourLogAudit({
+          hour_log_id: r.id,
+          action: 'approval_reverted',
+          actor_id: reviewer_id ?? null,
+          actor_name: reviewer_name ?? null,
+          actor_role: 'reviewer',
+          before: cur ? { hours_logged: cur.hours_logged, status: cur.status, work_description: cur.work_description } : null,
+          after: { hours_logged: r.hours_logged, status: r.status, work_description: r.work_description },
+        });
+      } catch { /* non-fatal */ }
     })();
   } catch (err: any) { res.status(500).json({ error: err.message || 'Server error' }); }
 });

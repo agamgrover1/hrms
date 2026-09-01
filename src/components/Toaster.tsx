@@ -18,11 +18,25 @@ import { CheckCircle, XCircle, Info, AlertTriangle, X } from 'lucide-react';
 // without being wired through props or hooks.
 
 export type ToastKind = 'success' | 'error' | 'info' | 'warning';
+export interface ToastAction {
+  /** Short label — one or two words: "Undo", "Retry", "View". */
+  label: string;
+  /** Fires when the user clicks the action. Toast auto-dismisses after. */
+  onClick: () => void;
+}
+export interface ToastOptions {
+  /** Milliseconds before auto-dismiss. Default 4500. */
+  duration?: number;
+  /** Optional inline action button (e.g. Undo). */
+  action?: ToastAction;
+}
 export interface Toast {
   id: number;
   kind: ToastKind;
   title: string;
   description?: string;
+  duration: number;
+  action?: ToastAction;
 }
 
 type Listener = (toasts: Toast[]) => void;
@@ -35,16 +49,22 @@ function emit() {
   for (const l of _listeners) l([..._toasts]);
 }
 
-function push(kind: ToastKind, title: string, description?: string) {
+function push(kind: ToastKind, title: string, description?: string, opts?: ToastOptions) {
   // De-dupe spam: if the most recent toast matches title+kind, drop it.
   // Common when the same handler accidentally fires twice (React 18 strict
-  // mode in dev, double-click on a button, etc.).
+  // mode in dev, double-click on a button, etc.). Toasts carrying an
+  // action (e.g. Undo) skip de-dupe — each approve gets its own undo
+  // window even if the metadata line looks identical.
   const last = _toasts[_toasts.length - 1];
-  if (last && last.kind === kind && last.title === title && last.description === description) {
+  if (!opts?.action && last && last.kind === kind && last.title === title && last.description === description) {
     return last.id;
   }
   const id = _nextId++;
-  _toasts.push({ id, kind, title, description });
+  _toasts.push({
+    id, kind, title, description,
+    duration: opts?.duration ?? 4500,
+    action: opts?.action,
+  });
   // Cap the visible queue at 4. Older toasts fall off the bottom.
   if (_toasts.length > 4) _toasts = _toasts.slice(_toasts.length - 4);
   emit();
@@ -57,10 +77,10 @@ function dismiss(id: number) {
 }
 
 export const toast = {
-  success: (title: string, description?: string) => push('success', title, description),
-  error:   (title: string, description?: string) => push('error',   title, description),
-  info:    (title: string, description?: string) => push('info',    title, description),
-  warning: (title: string, description?: string) => push('warning', title, description),
+  success: (title: string, description?: string, opts?: ToastOptions) => push('success', title, description, opts),
+  error:   (title: string, description?: string, opts?: ToastOptions) => push('error',   title, description, opts),
+  info:    (title: string, description?: string, opts?: ToastOptions) => push('info',    title, description, opts),
+  warning: (title: string, description?: string, opts?: ToastOptions) => push('warning', title, description, opts),
   dismiss,
 };
 
@@ -82,13 +102,14 @@ export default function Toaster() {
     return () => { _listeners.delete(setToasts); };
   }, []);
 
-  // Auto-dismiss the oldest toast after 4.5s. We expire one at a time so a
-  // stack of toasts walks itself off the screen at a readable pace instead
-  // of all vanishing at once.
+  // Auto-dismiss the oldest toast after its own duration (default 4.5s,
+  // customisable per-toast via toast.success(..., { duration })). We
+  // expire one at a time so a stack of toasts walks itself off the
+  // screen at a readable pace instead of all vanishing at once.
   useEffect(() => {
     if (toasts.length === 0) return;
     const oldest = toasts[0];
-    const timer = setTimeout(() => dismiss(oldest.id), 4500);
+    const timer = setTimeout(() => dismiss(oldest.id), oldest.duration);
     return () => clearTimeout(timer);
   }, [toasts]);
 
@@ -115,6 +136,15 @@ export default function Toaster() {
                 <p className="text-xs text-on-surface-muted mt-0.5 leading-snug line-clamp-2">{t.description}</p>
               )}
             </div>
+            {t.action && (
+              // Firing the action dismisses this toast right away — the
+              // user acknowledged it and expects to see the result of
+              // their action, not the stale confirmation.
+              <button
+                onClick={() => { try { t.action!.onClick(); } finally { dismiss(t.id); } }}
+                className="text-xs font-semibold text-accent hover:underline px-2 py-1 rounded flex-shrink-0"
+              >{t.action.label}</button>
+            )}
             <button onClick={() => dismiss(t.id)}
               className="text-on-surface-subtle hover:text-on-surface p-0.5 flex-shrink-0"
               aria-label="Dismiss">
