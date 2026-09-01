@@ -21260,6 +21260,32 @@ function canUserSeeBoard(user: any, board: any): boolean {
 // Fetch board + gate in one call. Returns { ok, board, level } on
 // success or writes a 403/404 and returns { ok:false }. `required`
 // is the minimum level (comment / edit / admin).
+// Resolve the human names of every admin on a board — the board creator
+// plus anyone explicitly granted 'admin' via task_lists.permissions.
+// Used by the access-denied panel to tell the requester "ask X or Y".
+// Empty when there's no board or no admins beyond the (deleted) creator.
+async function resolveBoardAdmins(board: any): Promise<Array<{ employee_id: string; name: string }>> {
+  if (!board) return [];
+  const perms = normalisedPermissions(board);
+  const empIds = new Set<string>();
+  for (const p of perms) {
+    if (p.kind === 'employee' && p.level === 'admin' && p.ref) empIds.add(String(p.ref));
+  }
+  // Creator is implicitly admin. app_users.id may or may not equal
+  // employees.id — join through app_users to get the linked employee row.
+  const creatorEmp = board.created_by_id
+    ? (await sql`
+        SELECT e.id, e.name FROM employees e
+        WHERE e.id = ${board.created_by_id}
+           OR e.id IN (SELECT employee_id_ref FROM app_users WHERE id = ${board.created_by_id})
+        LIMIT 1` as any[])[0]
+    : null;
+  if (creatorEmp) empIds.add(creatorEmp.id);
+  if (!empIds.size) return [];
+  const rows = await sql`SELECT id AS employee_id, name FROM employees WHERE id = ANY(${[...empIds]}::text[]) AND status <> 'exit' ORDER BY name` as any[];
+  return rows.map(r => ({ employee_id: r.employee_id, name: r.name }));
+}
+
 async function requireBoardAccess(taskListId: string, user: any, required: BoardLevel, res: any): Promise<{ ok: true; board: any; level: BoardLevel } | { ok: false }> {
   const board = (await sql`SELECT * FROM task_lists WHERE id=${taskListId} LIMIT 1` as any[])[0];
   if (!board) { res.status(404).json({ error: 'Board not found' }); return { ok: false }; }
@@ -21566,15 +21592,35 @@ app.get('/api/tasks/:id', async (req, res) => {
       LEFT JOIN projects p ON p.id = l.project_id
       WHERE t.id=${req.params.id}` as any[];
     if (!rows.length) return res.status(404).json({ error: 'Task not found' });
-    // Restricted-board gate: 404 rather than 403 so we don't confirm the
-    // task exists to a user who shouldn't see it.
+    // Restricted-board gate. Historically 404 (hide existence), but this
+    // breaks shareable task links — the recipient can't tell whether the
+    // link was wrong or they just need access, and has no path to ask.
+    // Now returns a structured 403 with JUST enough board info to render
+    // an access-denied page + a "request access" button. The task title
+    // and body stay hidden; only the board / project name and the list
+    // of board admins leak, which are considered fair to share with any
+    // logged-in user (the admin is who they'll ask for access anyway).
     if (!canUserSeeBoard(gate.user, {
       visibility: rows[0].list_visibility,
       created_by_id: rows[0].list_created_by_id,
       member_employee_ids: rows[0].list_member_employee_ids,
       member_departments: rows[0].list_member_departments,
     })) {
-      return res.status(404).json({ error: 'Task not found' });
+      // Resolve admin names for the "who to ask" panel. Board creator is
+      // always an admin (see boardPermissionOf), plus anyone explicitly
+      // granted 'admin' via task_lists.permissions.
+      const board = (await sql`SELECT * FROM task_lists WHERE id=${rows[0].list_id}` as any[])[0];
+      const admins = await resolveBoardAdmins(board);
+      return res.status(403).json({
+        error: 'You do not have access to this task.',
+        needs_access: true,
+        task_id: req.params.id,
+        board_id: rows[0].list_id,
+        board_name: rows[0].list_name,
+        project_id: rows[0].project_id,
+        project_name: rows[0].project_name,
+        admins,   // [{ employee_id, name }]
+      });
     }
     const [subtasks, comments, activity, depsOut, depsIn, cfDefs, cfValues] = await Promise.all([
       sql`SELECT * FROM tasks WHERE parent_id=${req.params.id} ORDER BY sort_order, created_at`,
@@ -21602,6 +21648,72 @@ app.get('/api/tasks/:id', async (req, res) => {
     for (const v of (cfValues as any[])) valueByField[v.field_id] = v.value;
     const custom_fields = (cfDefs as any[]).map((d: any) => ({ ...d, value: valueByField[d.id] ?? null }));
     res.json({ task: rows[0], subtasks, comments, activity, dependencies: { out: depsOut, in: depsIn }, custom_fields });
+  } catch (err: any) { res.status(500).json({ error: err.message ?? 'Server error' }); }
+});
+
+// POST /api/tasks/:id/request-access — ping every admin on the task's
+// board that a specific person wants in. Does NOT grant access — that
+// stays a human decision. Rate-limited to one request per (task, user)
+// per 24 hours so the admin doesn't get spammed if the requester
+// refreshes the denied page.
+app.post('/api/tasks/:id/request-access', async (req, res) => {
+  try {
+    await runStartupMigrations();
+    const gate = await taskActor(req, res);
+    if (!gate.ok) return;
+    const t = (await sql`
+      SELECT t.id, t.title, t.list_id, l.name AS board_name, l.project_id, l.visibility AS list_visibility,
+             l.created_by_id AS list_created_by_id, l.member_employee_ids AS list_member_employee_ids,
+             l.member_departments AS list_member_departments, p.name AS project_name
+      FROM tasks t JOIN task_lists l ON l.id = t.list_id
+      LEFT JOIN projects p ON p.id = l.project_id
+      WHERE t.id=${req.params.id}` as any[])[0];
+    if (!t) return res.status(404).json({ error: 'Task not found' });
+    // If the caller CAN see the board, they don't need to request —
+    // just tell them (rare race after just being granted, or between
+    // tabs). Keeps the audit trail clean.
+    if (canUserSeeBoard(gate.user, {
+      visibility: t.list_visibility,
+      created_by_id: t.list_created_by_id,
+      member_employee_ids: t.list_member_employee_ids,
+      member_departments: t.list_member_departments,
+    })) {
+      return res.json({ ok: true, already_has_access: true });
+    }
+
+    const board = (await sql`SELECT * FROM task_lists WHERE id=${t.list_id}` as any[])[0];
+    const admins = await resolveBoardAdmins(board);
+    if (!admins.length) {
+      return res.status(400).json({ error: 'No board admins found — ask your project manager to grant access manually.' });
+    }
+
+    // Simple 24-h de-dupe: check the last time this exact requester
+    // asked about this exact task. Stored on the existing notifications
+    // stream (no new table) — cheaper than a dedicated request-log.
+    const requesterName = gate.user?.name || gate.user?.email || 'A colleague';
+    const recent = (await sql`
+      SELECT 1 FROM notifications
+      WHERE type = 'task_access_request'
+        AND link = ${`/tasks?board=${t.list_id}&task=${t.id}`}
+        AND body LIKE ${`%${requesterName}%`}
+        AND created_at > NOW() - INTERVAL '24 hours'
+      LIMIT 1` as any[])[0];
+    if (recent) {
+      return res.json({ ok: true, already_notified: true, admins: admins.map(a => a.name) });
+    }
+
+    // Notify every admin. Uses the same helper the rest of the app uses
+    // so this hits bell + web push in one shot.
+    const link = `/tasks?board=${t.list_id}&task=${t.id}`;
+    const boardLabel = t.project_name ? `${t.project_name} · ${t.board_name}` : t.board_name;
+    for (const a of admins) {
+      notifyEmployeeUser(a.employee_id, 'task_access_request',
+        `Access request — ${boardLabel}`,
+        `${requesterName} is asking to open a task on ${boardLabel}. Grant them access on the board's Members panel if that's expected.`,
+        link,
+      ).catch(() => { /* one admin failing shouldn't block others */ });
+    }
+    res.json({ ok: true, notified: admins.map(a => a.name) });
   } catch (err: any) { res.status(500).json({ error: err.message ?? 'Server error' }); }
 });
 

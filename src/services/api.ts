@@ -713,6 +713,11 @@ export const api = {
     request<any>(`/candidates/${candidateId}/draft-offer`, { method: 'POST', body: JSON.stringify(data) }),
   releaseOffer: (candidateId: string) =>
     request<any>(`/candidates/${candidateId}/release-offer`, { method: 'POST' }),
+  // Ping every admin on a task's board that the caller wants access.
+  // Server rate-limits to one per (task, requester) per 24h so admins
+  // don't get spammed if the denied page is re-opened.
+  requestTaskAccess: (taskId: string) =>
+    request<{ ok: true; already_has_access?: boolean; already_notified?: boolean; notified?: string[]; admins?: string[] }>(`/tasks/${taskId}/request-access`, { method: 'POST' }),
   // Post-hire attrition. Only valid for candidates whose status='joined'
   // (or that have a hired_employee_id stamped). Server mirrors to the
   // employees row (status='exit' + exit_date) and clears their future

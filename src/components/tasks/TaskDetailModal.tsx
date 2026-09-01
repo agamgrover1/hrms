@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   X, Loader2, Trash2, Send, Plus, MessageSquare, History, GitBranch, Check, Eye, EyeOff,
   Link2, Flag, Diamond, Play, Square, Clock, Repeat, Paperclip, Download, Upload, ChevronDown,
+  Lock, ShieldAlert,
 } from 'lucide-react';
 import { taskFilesApi, type TaskAttachment } from '../../services/taskFilesApi';
 import { notifyTaskTimerChanged } from '../layout/TaskTimerChip';
@@ -80,6 +81,17 @@ export default function TaskDetailModal({ taskId, employees, onClose, onChanged 
   const [nowTick, setNowTick] = useState(Date.now());
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState('');
+  // When the task fetch 403s with needs_access:true, the modal renders
+  // a request-access panel instead of the generic error string. See
+  // load() below — the server ships the board name + admin list in the
+  // 403 body so we have everything we need to render the panel.
+  const [denied, setDenied] = useState<null | {
+    board_id: string; board_name: string;
+    project_id: string | null; project_name: string | null;
+    admins: { employee_id: string; name: string }[];
+  }>(null);
+  const [reqBusy, setReqBusy] = useState(false);
+  const [reqSent, setReqSent] = useState<null | string[]>(null);
   const [saving, setSaving] = useState(false);
   // Post-save "Saved" flash. Flips true right after a patch succeeds
   // and reverts after ~2s so people who don't read spinners still see
@@ -200,7 +212,7 @@ export default function TaskDetailModal({ taskId, employees, onClose, onChanged 
   }, [employees, mentionAnchor, mentionQuery]);
 
   const load = useCallback(() => {
-    setLoading(true);
+    setLoading(true); setDenied(null); setErr('');
     api.getTask(taskId)
       .then((r: any) => {
         const { task: t, subtasks: st, comments: cs, activity: acts, custom_fields: cf } = r;
@@ -211,7 +223,22 @@ export default function TaskDetailModal({ taskId, employees, onClose, onChanged 
         // is easy to spot in the task-switcher / pinned-tabs view.
         try { document.title = `${t.title} · Tasks · Digital Leap HRMS`; } catch { /* noop */ }
       })
-      .catch((e: any) => setErr(e?.message ?? 'Failed to load task'))
+      .catch((e: any) => {
+        // 403 with needs_access → render the friendly access-denied
+        // panel instead of a generic error string. The body carries
+        // just enough (board + admins) to show who to ask.
+        if (e?.status === 403 && e?.body?.needs_access) {
+          setDenied({
+            board_id: e.body.board_id,
+            board_name: e.body.board_name,
+            project_id: e.body.project_id ?? null,
+            project_name: e.body.project_name ?? null,
+            admins: Array.isArray(e.body.admins) ? e.body.admins : [],
+          });
+          return;
+        }
+        setErr(e?.message ?? 'Failed to load task');
+      })
       .finally(() => setLoading(false));
     api.getTaskWatchers(taskId).then(setWatchers).catch(() => setWatchers([]));
     api.getTaskDependencies(taskId)
@@ -641,6 +668,34 @@ export default function TaskDetailModal({ taskId, employees, onClose, onChanged 
             </div>
           </div>
           {task && (
+            <button
+              onClick={async () => {
+                // Deep-link format matches the router's ?board=&task=
+                // params so pasting the URL into any browser reopens
+                // this exact task in a modal. Only the recipient's own
+                // board permissions decide whether they get in; anyone
+                // without access sees the request-access panel.
+                const url = `${window.location.origin}/tasks?board=${task.list_id}&task=${task.id}`;
+                try {
+                  if (navigator.clipboard?.writeText) await navigator.clipboard.writeText(url);
+                  else {
+                    // clipboard API is HTTPS-only and gated on some
+                    // browsers — fall back to a hidden textarea so
+                    // the button still works over LAN / older Safari.
+                    const ta = document.createElement('textarea');
+                    ta.value = url; ta.style.position = 'fixed'; ta.style.opacity = '0';
+                    document.body.appendChild(ta); ta.select();
+                    document.execCommand('copy'); document.body.removeChild(ta);
+                  }
+                  toast.success('Link copied', 'Share it — only people with board access will be able to open it.');
+                } catch (e: any) {
+                  toast.error('Copy failed', e?.message ?? 'Copy the URL from the address bar instead.');
+                }
+              }}
+              title="Copy shareable link — access-gated to board members"
+              className="p-1.5 rounded-lg text-on-surface-subtle hover:text-accent hover:bg-accent/10"><Link2 size={16} /></button>
+          )}
+          {task && (
             <button onClick={remove} title="Delete task"
               className="p-1.5 rounded-lg text-danger/70 hover:text-danger hover:bg-danger/10"><Trash2 size={16} /></button>
           )}
@@ -652,7 +707,70 @@ export default function TaskDetailModal({ taskId, employees, onClose, onChanged 
             <Loader2 size={16} className="animate-spin" /> Loading task…
           </div>
         )}
-        {err && <div className="p-5 text-sm text-danger">{err}</div>}
+        {denied && (
+          <div className="p-6 space-y-4">
+            <div className="inline-flex items-center gap-2 text-danger">
+              <Lock size={18} />
+              <h2 className="font-display text-lg font-bold">You don't have access to this task</h2>
+            </div>
+            <p className="text-sm text-on-surface-muted leading-relaxed">
+              This task lives on{' '}
+              <span className="font-semibold text-on-surface">{denied.board_name}</span>
+              {denied.project_name && <> · {denied.project_name}</>}
+              , and you aren't a member of that board. The task's title and content stay private until an admin adds you.
+            </p>
+            {denied.admins.length > 0 && (
+              <div className="rounded-lg border border-outline bg-surface-2 p-3 space-y-1.5">
+                <p className="text-[11px] font-bold uppercase tracking-wider text-on-surface-subtle">Ask one of these people</p>
+                <ul className="text-sm text-on-surface space-y-0.5">
+                  {denied.admins.map(a => (
+                    <li key={a.employee_id} className="flex items-center gap-2">
+                      <ShieldAlert size={12} className="text-accent" /> {a.name}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+            {reqSent ? (
+              <div className="rounded-lg border border-success/30 bg-success-container/40 p-3 text-sm text-on-surface">
+                <p className="font-semibold text-success">Request sent.</p>
+                <p className="text-xs text-on-surface-muted mt-1">
+                  Notified {reqSent.length > 0 ? reqSent.join(', ') : 'the board admins'}. They'll add you if that's the right call.
+                </p>
+              </div>
+            ) : (
+              <div className="flex items-center gap-2 pt-1">
+                <button
+                  onClick={async () => {
+                    setReqBusy(true);
+                    try {
+                      const r = await api.requestTaskAccess(taskId);
+                      if (r.already_has_access) {
+                        toast.success('Access already granted', 'Reloading…');
+                        load();
+                      } else {
+                        setReqSent(r.notified ?? r.admins ?? []);
+                        toast.success(r.already_notified ? 'Already asked' : 'Access requested',
+                          r.already_notified ? 'You asked in the last 24 hours — admins already have it in their bell.' : 'Board admins have been notified.');
+                      }
+                    } catch (e: any) {
+                      toast.error('Request failed', e?.body?.error ?? e?.message ?? 'Please try again.');
+                    } finally { setReqBusy(false); }
+                  }}
+                  disabled={reqBusy}
+                  className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg bg-accent text-on-accent text-sm font-semibold hover:opacity-90 disabled:opacity-50">
+                  {reqBusy ? <Loader2 size={13} className="animate-spin" /> : <Send size={13} />}
+                  {reqBusy ? 'Sending…' : 'Request access'}
+                </button>
+                <button onClick={onClose}
+                  className="px-3 py-2 rounded-lg border border-outline text-sm font-semibold text-on-surface hover:bg-surface-2">
+                  Close
+                </button>
+              </div>
+            )}
+          </div>
+        )}
+        {err && !denied && <div className="p-5 text-sm text-danger">{err}</div>}
 
         {task && !loading && (
           <div className="flex-1 min-h-0 flex flex-col md:flex-row overflow-hidden">
