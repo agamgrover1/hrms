@@ -21,27 +21,79 @@ const DEP_LABEL: Record<DepKind, { out: string; in: string }> = {
   related_to:  { out: 'Related to',   in: 'Related to' },
 };
 
-// Render a comment body with inline @[Name](emp_id) mentions expanded
-// into brand-coloured chips. Everything else preserves whitespace so
-// multi-line comments still read as written.
+// Render a text body with inline @[Name](emp_id) mentions expanded
+// into brand-coloured chips AND bare URLs (http/https/www) turned into
+// clickable links. Everything else preserves whitespace so multi-line
+// text still reads as written. Used for both comments and the task
+// description's read view.
+//
+// Mentions are checked first (they can contain URL-ish characters
+// inside their [] group but the regex is anchored to the @[ prefix
+// so it never eats a real URL). URL regex is intentionally
+// permissive: matches through most URL-safe chars, then trims common
+// trailing punctuation ('.', ',', ')', ']', '!', '?') so
+// "check https://example.com." doesn't include the period.
 const MENTION_RE = /@\[([^\]]+)\]\(([^)]+)\)/g;
-function renderCommentBody(body: string): (string | JSX.Element)[] {
+const URL_RE = /(?:https?:\/\/|www\.)[^\s<>()"']+/gi;
+const TRAILING_PUNCT = /[.,;:!?)\]}>]+$/;
+
+function renderInlineBody(body: string): (string | JSX.Element)[] {
   const nodes: (string | JSX.Element)[] = [];
   let last = 0;
+  // Merge mention + URL matches into one ordered list so we walk the
+  // string once and never insert a URL inside a mention chip or vice
+  // versa.
+  type Hit = { start: number; end: number; kind: 'mention' | 'url'; text: string; ref?: string };
+  const hits: Hit[] = [];
   let m: RegExpExecArray | null;
   MENTION_RE.lastIndex = 0;
   while ((m = MENTION_RE.exec(body)) !== null) {
-    if (m.index > last) nodes.push(body.slice(last, m.index));
-    nodes.push(
-      <span key={`${m.index}-${m[2]}`} className="inline-flex items-baseline px-1.5 py-0.5 mx-0.5 rounded bg-accent/10 text-accent font-semibold text-[12.5px]">
-        @{m[1]}
-      </span>
-    );
-    last = m.index + m[0].length;
+    hits.push({ start: m.index, end: m.index + m[0].length, kind: 'mention', text: m[1], ref: m[2] });
+  }
+  URL_RE.lastIndex = 0;
+  while ((m = URL_RE.exec(body)) !== null) {
+    let raw = m[0];
+    // Trim trailing sentence punctuation so it doesn't get swallowed
+    // into the link (readability + copy-paste sanity).
+    const trailMatch = raw.match(TRAILING_PUNCT);
+    if (trailMatch) raw = raw.slice(0, -trailMatch[0].length);
+    if (!raw) continue;
+    hits.push({ start: m.index, end: m.index + raw.length, kind: 'url', text: raw });
+  }
+  hits.sort((a, b) => a.start - b.start);
+  // Drop URL matches that fall inside a mention range (defensive — the
+  // shape of @[…]( … ) shouldn't normally contain a bare URL, but
+  // guard against overlap so we never render nested chips).
+  const filtered: Hit[] = [];
+  for (const h of hits) {
+    if (filtered.some(f => f.end > h.start && f.start < h.end)) continue;
+    filtered.push(h);
+  }
+  for (const h of filtered) {
+    if (h.start > last) nodes.push(body.slice(last, h.start));
+    if (h.kind === 'mention') {
+      nodes.push(
+        <span key={`m${h.start}-${h.ref}`} className="inline-flex items-baseline px-1.5 py-0.5 mx-0.5 rounded bg-accent/10 text-accent font-semibold text-[12.5px]">
+          @{h.text}
+        </span>
+      );
+    } else {
+      const href = h.text.startsWith('http') ? h.text : `https://${h.text}`;
+      nodes.push(
+        <a key={`u${h.start}`} href={href} target="_blank" rel="noopener noreferrer nofollow"
+          onClick={e => e.stopPropagation()}
+          className="text-accent hover:underline break-all">
+          {h.text}
+        </a>
+      );
+    }
+    last = h.end;
   }
   if (last < body.length) nodes.push(body.slice(last));
   return nodes;
 }
+// Kept as an alias so downstream call sites don't need touching.
+const renderCommentBody = renderInlineBody;
 
 // Full task detail — the panel behind every card. Field edits save on blur /
 // change immediately (no Save button), matching how the rest of the portal's
@@ -81,6 +133,12 @@ export default function TaskDetailModal({ taskId, employees, onClose, onChanged 
   const [nowTick, setNowTick] = useState(Date.now());
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState('');
+  // Description switches between a linkified read view and the raw
+  // textarea. Editing is triggered on click into the read view and
+  // committed on blur. Ref lets us programmatically re-focus if the
+  // parent later grows a "focus description" shortcut.
+  const [descEditing, setDescEditing] = useState(false);
+  const descRef = useRef<HTMLTextAreaElement>(null);
   // When the task fetch 403s with needs_access:true, the modal renders
   // a request-access panel instead of the generic error string. See
   // load() below — the server ships the board name + admin list in the
@@ -785,13 +843,33 @@ export default function TaskDetailModal({ taskId, employees, onClose, onChanged 
 
               <div>
                 <label className="block text-xs font-semibold text-on-surface-muted mb-1.5">Description</label>
-                <textarea
-                  value={description}
-                  onChange={e => setDescription(e.target.value)}
-                  onBlur={() => { if (description !== (task.description ?? '')) patch({ description: description || null }); }}
-                  rows={4} placeholder="Add more detail…"
-                  className={`${field} resize-y`}
-                />
+                {descEditing ? (
+                  <textarea
+                    ref={descRef}
+                    autoFocus
+                    value={description}
+                    onChange={e => setDescription(e.target.value)}
+                    onBlur={() => {
+                      if (description !== (task.description ?? '')) patch({ description: description || null });
+                      setDescEditing(false);
+                    }}
+                    rows={4} placeholder="Add more detail…"
+                    className={`${field} resize-y`}
+                  />
+                ) : (
+                  // Read view — clicking anywhere in this div swaps to
+                  // the textarea and autofocuses. Making URLs actual
+                  // <a> elements is the whole point of this branch;
+                  // the mention chips ride along via renderInlineBody.
+                  // stopPropagation on the <a> onClick keeps a link
+                  // click from also opening the editor.
+                  <div
+                    onClick={() => setDescEditing(true)}
+                    className={`${field} resize-y whitespace-pre-wrap break-words cursor-text min-h-[6rem] ${!description ? 'text-on-surface-subtle italic' : ''}`}
+                    title="Click to edit">
+                    {description ? renderInlineBody(description) : 'Add more detail…'}
+                  </div>
+                )}
               </div>
 
               {/* Subtasks */}
