@@ -1050,6 +1050,8 @@ export const api = {
   // on a re-approved row can't accidentally flip it back to pending.
   revertHourLogApproval: (id: string, data?: { reviewer_id?: string; reviewer_name?: string }) =>
     request<any>(`/hour-logs/${id}/revert-approval`, { method: 'PATCH', body: JSON.stringify(data ?? {}) }),
+  revertHourLogRejection: (id: string, data?: { reviewer_id?: string; reviewer_name?: string }) =>
+    request<any>(`/hour-logs/${id}/revert-rejection`, { method: 'PATCH', body: JSON.stringify(data ?? {}) }),
   rejectHourLog: (id: string, data: { reviewer_id?: string; reviewer_name?: string; rejection_reason: string }) =>
     request<any>(`/hour-logs/${id}/reject`, { method: 'PATCH', body: JSON.stringify(data) }),
   holdHourLog: (id: string, data: { reviewer_id?: string; reviewer_name?: string; reviewer_role?: string; note: string }) =>
@@ -1060,6 +1062,8 @@ export const api = {
     request<any>(`/hour-log-days/${id}/approve`, { method: 'PATCH', body: JSON.stringify(data) }),
   revertHourLogDayApproval: (id: string) =>
     request<any>(`/hour-log-days/${id}/revert-approval`, { method: 'PATCH', body: '{}' }),
+  revertHourLogDayRejection: (id: string) =>
+    request<any>(`/hour-log-days/${id}/revert-rejection`, { method: 'PATCH', body: '{}' }),
   rejectHourLogDay: (id: string, data: { reviewer_id?: string; reviewer_name?: string; rejection_reason: string }) =>
     request<any>(`/hour-log-days/${id}/reject`, { method: 'PATCH', body: JSON.stringify(data) }),
   holdHourLogDay: (id: string, data: { reviewer_id?: string; reviewer_name?: string; rejection_reason: string }) =>
@@ -1376,6 +1380,8 @@ export const api = {
     request<any>(`/internal-hour-logs/${id}/approve`, { method: 'PATCH', body: JSON.stringify({}) }),
   revertInternalHourLogApproval: (id: string) =>
     request<any>(`/internal-hour-logs/${id}/revert-approval`, { method: 'PATCH', body: '{}' }),
+  revertInternalHourLogRejection: (id: string) =>
+    request<any>(`/internal-hour-logs/${id}/revert-rejection`, { method: 'PATCH', body: '{}' }),
   rejectInternalHourLog: (id: string, rejection_reason: string) =>
     request<any>(`/internal-hour-logs/${id}/reject`, { method: 'PATCH', body: JSON.stringify({ rejection_reason }) }),
 

@@ -239,7 +239,29 @@ function DayApprovalView({ reviewerEmpId, isAdmin, user }: {
     setRows(rs => rs.map(r => r.id === d.id ? { ...r, status: 'rejected', rejection_reason: reason, reviewed_by_name: user?.name ?? r.reviewed_by_name, reviewed_at: new Date().toISOString() } : r));
     bumpCounts(from, 'rejected');
     setRejectTarget(null);
-    toast.success('Rejected', `${d.employee_name} has been notified.`);
+    toast.success('Rejected', `${d.employee_name} has been notified.`, {
+      // Same 5-second Undo window as approve. Server refuses the
+      // revert unless the row is still 'rejected', so re-approves in
+      // the interim are safe.
+      duration: 5000,
+      action: {
+        label: 'Undo',
+        onClick: async () => {
+          setRows(rs => rs.map(r => r.id === d.id
+            ? { ...r, status: from, rejection_reason: d.rejection_reason ?? null, reviewed_by_name: d.reviewed_by_name ?? null, reviewed_at: d.reviewed_at ?? null } as DayRow
+            : r));
+          bumpCounts('rejected', from);
+          try {
+            await api.revertHourLogDayRejection(d.id);
+            toast.info('Rejection reverted', `${d.employee_name}'s day moved back to pending.`);
+          } catch (e: any) {
+            setRows(rs => rs.map(r => r.id === d.id ? { ...r, status: 'rejected', rejection_reason: reason } as DayRow : r));
+            bumpCounts(from, 'rejected');
+            toast.error('Undo failed', e?.body?.error ?? e?.message ?? 'Please refresh.');
+          }
+        },
+      },
+    });
     try {
       await api.rejectHourLogDay(d.id, { reviewer_id: reviewerEmpId ?? user?.id, reviewer_name: user?.name, rejection_reason: reason });
     } catch (e: any) {
@@ -1094,12 +1116,27 @@ function InternalLogReviewView({ reviewerEmpId, isAdmin }: { reviewerEmpId: stri
     }
   };
   const confirmReject = async (l: any, reason: string) => {
-    const prev = { status: l.status };
+    const prev = { status: l.status, rejection_reason: l.rejection_reason };
     setLogs(rs => rs.map(r => r.id === l.id ? { ...r, status: 'rejected', rejection_reason: reason } : r));
     setRejectTarget(null);
     try {
       await api.rejectInternalHourLog(l.id, reason);
-      toast.success('Rejected', `${l.employee_name} has been notified.`);
+      toast.success('Rejected', `${l.employee_name} has been notified.`, {
+        duration: 5000,
+        action: {
+          label: 'Undo',
+          onClick: async () => {
+            setLogs(rs => rs.map(r => r.id === l.id ? { ...r, ...prev } : r));
+            try {
+              await api.revertInternalHourLogRejection(l.id);
+              toast.info('Rejection reverted', `${l.employee_name}'s log moved back to pending.`);
+            } catch (e: any) {
+              setLogs(rs => rs.map(r => r.id === l.id ? { ...r, status: 'rejected', rejection_reason: reason } : r));
+              toast.error('Undo failed', e?.body?.error ?? e?.message ?? 'Please refresh.');
+            }
+          },
+        },
+      });
     } catch (e: any) {
       setLogs(rs => rs.map(r => r.id === l.id ? { ...r, ...prev } : r));
       toast.error('Reject failed', e.message);
