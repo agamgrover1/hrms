@@ -86,4 +86,30 @@ export const taskFilesApi = {
     const tb = await getToken(taskId);
     return `${tb.api_base}/files/tasks/${taskId}/attachments/${encodeURIComponent(id)}?t=${encodeURIComponent(tb.token)}`;
   },
+  // Same URL with ?preview=1 so the VPS files handler switches to
+  // Content-Disposition: inline for allow-listed MIME types (images,
+  // PDFs, plain text, safe video/audio). For non-previewable types the
+  // server still forces attachment, so the browser downloads and
+  // there's no XSS surface. Callers should feature-detect on mime
+  // themselves before showing a Preview affordance so the UX doesn't
+  // dangle a preview button that actually downloads.
+  previewUrl: async (taskId: string, id: string): Promise<string> => {
+    const tb = await getToken(taskId);
+    return `${tb.api_base}/files/tasks/${taskId}/attachments/${encodeURIComponent(id)}?t=${encodeURIComponent(tb.token)}&preview=1`;
+  },
 };
+
+// Which MIME types the browser can render inline via ?preview=1.
+// Kept in sync with the allowlist in hrms-mail-service/src/files.ts.
+export function isPreviewableMime(mime: string): boolean {
+  if (!mime) return false;
+  return /^image\/(png|jpeg|gif|webp|bmp|x-icon|avif|heic|heif)$/i.test(mime)
+    || mime === 'application/pdf'
+    || mime === 'text/plain'
+    || mime === 'text/csv'
+    || /^video\/(mp4|webm|ogg|quicktime)$/i.test(mime)
+    || /^audio\/(mpeg|mp4|ogg|wav|webm)$/i.test(mime);
+}
+export function isImageMime(mime: string): boolean {
+  return /^image\//i.test(mime);
+}

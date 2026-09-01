@@ -4,7 +4,7 @@ import {
   Link2, Flag, Diamond, Play, Square, Clock, Repeat, Paperclip, Download, Upload, ChevronDown,
   Lock, ShieldAlert,
 } from 'lucide-react';
-import { taskFilesApi, type TaskAttachment } from '../../services/taskFilesApi';
+import { taskFilesApi, isPreviewableMime, isImageMime, type TaskAttachment } from '../../services/taskFilesApi';
 import { notifyTaskTimerChanged } from '../layout/TaskTimerChip';
 import { firePromptForStoppedTimer } from '../hours/TimerStopPrompt';
 import { api } from '../../services/api';
@@ -99,6 +99,83 @@ const renderCommentBody = renderInlineBody;
 // change immediately (no Save button), matching how the rest of the portal's
 // inline editors behave, and each save re-fetches so the activity timeline
 // below stays truthful.
+
+// One attachment row. Isolated as a component so each row can lazy-load
+// its own signed preview URL without the parent maintaining a Map<id,url>.
+// The URL is only fetched once we mount (which is once the attachments
+// list is rendered) and re-fetched by the token cache if it expires.
+function AttachmentRow({ att, taskId, onDownload, onDelete }: {
+  att: TaskAttachment;
+  taskId: string;
+  onDownload: (a: TaskAttachment) => void;
+  onDelete: (a: TaskAttachment) => void;
+}) {
+  const [previewUrl, setPreviewUrl] = useState<string | null>(null);
+  const previewable = isPreviewableMime(att.mime);
+  const isImage = isImageMime(att.mime);
+  useEffect(() => {
+    if (!previewable) return;
+    let cancelled = false;
+    taskFilesApi.previewUrl(taskId, att.id)
+      .then(u => { if (!cancelled) setPreviewUrl(u); })
+      .catch(() => { /* fall back to Download-only affordance */ });
+    return () => { cancelled = true; };
+  }, [att.id, taskId, previewable]);
+
+  const openPreview = () => {
+    if (!previewUrl) { onDownload(att); return; }
+    // noopener strips the opener reference so the previewed page can't
+    // navigate this tab (defence-in-depth even though the file endpoint
+    // sends nosniff + attachment-for-anything-executable).
+    window.open(previewUrl, '_blank', 'noopener,noreferrer');
+  };
+
+  const sizeStr = att.size < 1024 ? `${att.size} B`
+    : att.size < 1024 * 1024 ? `${(att.size / 1024).toFixed(1)} KB`
+    : `${(att.size / (1024 * 1024)).toFixed(1)} MB`;
+
+  return (
+    <div className="flex items-center gap-2 px-2 py-1.5 rounded-md border border-outline bg-surface hover:bg-surface-2 group">
+      {isImage && previewUrl ? (
+        // 32px inline thumbnail. Click opens full-size in a new tab.
+        // referrerPolicy=no-referrer keeps the token off the outbound
+        // header (it's still in the URL, which is expected).
+        <button onClick={openPreview}
+          title="Preview image" className="shrink-0 rounded overflow-hidden border border-outline">
+          <img src={previewUrl} alt=""
+            referrerPolicy="no-referrer" loading="lazy"
+            className="h-8 w-8 object-cover block bg-surface-2" />
+        </button>
+      ) : (
+        <Paperclip size={12} className="text-on-surface-muted shrink-0" />
+      )}
+      <button
+        onClick={previewable ? openPreview : () => onDownload(att)}
+        title={previewable ? 'Click to preview' : 'Click to download'}
+        className="flex-1 text-left text-xs font-medium text-on-surface hover:text-accent truncate">
+        {att.filename}
+      </button>
+      <span className="text-[10px] font-mono text-on-surface-subtle shrink-0">{sizeStr}</span>
+      {previewable && (
+        <button onClick={openPreview}
+          title="Preview in new tab"
+          className="p-1 rounded hover:bg-surface-3 text-on-surface-muted hover:text-accent opacity-0 group-hover:opacity-100 transition-opacity">
+          <Eye size={12} />
+        </button>
+      )}
+      <button onClick={() => onDownload(att)}
+        title="Download"
+        className="p-1 rounded hover:bg-surface-3 text-on-surface-muted hover:text-accent opacity-0 group-hover:opacity-100 transition-opacity">
+        <Download size={12} />
+      </button>
+      <button onClick={() => onDelete(att)}
+        title="Delete"
+        className="p-1 rounded hover:bg-surface-3 text-on-surface-muted hover:text-danger opacity-0 group-hover:opacity-100 transition-opacity">
+        <Trash2 size={12} />
+      </button>
+    </div>
+  );
+}
 
 interface Props {
   taskId: string;
@@ -1019,28 +1096,13 @@ export default function TaskDetailModal({ taskId, employees, onClose, onChanged 
                 ) : (
                   <div className="space-y-1">
                     {attachments.map(att => (
-                      <div key={att.id} className="flex items-center gap-2 px-2 py-1.5 rounded-md border border-outline bg-surface hover:bg-surface-2 group">
-                        <Paperclip size={12} className="text-on-surface-muted shrink-0" />
-                        <button onClick={() => downloadAttachment(att)}
-                          className="flex-1 text-left text-xs font-medium text-on-surface hover:text-accent truncate">
-                          {att.filename}
-                        </button>
-                        <span className="text-[10px] font-mono text-on-surface-subtle shrink-0">
-                          {att.size < 1024 ? `${att.size} B`
-                            : att.size < 1024 * 1024 ? `${(att.size / 1024).toFixed(1)} KB`
-                            : `${(att.size / (1024 * 1024)).toFixed(1)} MB`}
-                        </span>
-                        <button onClick={() => downloadAttachment(att)}
-                          title="Download"
-                          className="p-1 rounded hover:bg-surface-3 text-on-surface-muted hover:text-accent opacity-0 group-hover:opacity-100 transition-opacity">
-                          <Download size={12} />
-                        </button>
-                        <button onClick={() => deleteAttachment(att)}
-                          title="Delete"
-                          className="p-1 rounded hover:bg-surface-3 text-on-surface-muted hover:text-danger opacity-0 group-hover:opacity-100 transition-opacity">
-                          <Trash2 size={12} />
-                        </button>
-                      </div>
+                      <AttachmentRow
+                        key={att.id}
+                        att={att}
+                        taskId={task.id}
+                        onDownload={downloadAttachment}
+                        onDelete={deleteAttachment}
+                      />
                     ))}
                   </div>
                 )}
