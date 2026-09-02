@@ -1017,6 +1017,8 @@ async function runStartupMigrations() {
     // attendance_sessions.auto_closed_at_shift_end — added when the
     // 9pm-IST auto-clockout sweep shipped.
     await sql`SELECT auto_closed_at_shift_end FROM attendance_sessions LIMIT 0`;
+    // cron_heartbeats — added when the VPS-driven cron endpoint shipped.
+    await sql`SELECT job FROM cron_heartbeats LIMIT 0`;
     // Also verify the legacy goals.employee_id constraint has been
     // relaxed. bad=0 both when the column doesn't exist (fresh DB)
     // AND when it exists as nullable (post-migration old DB). bad>=1
@@ -2934,6 +2936,17 @@ async function runStartupMigrations() {
     // timeline as an "Auto-closed at shift end" pill so HR + the
     // employee can distinguish a real clock-out from a system one.
     await sql`ALTER TABLE attendance_sessions ADD COLUMN IF NOT EXISTS auto_closed_at_shift_end BOOLEAN NOT NULL DEFAULT FALSE`.catch(()=>{});
+    // Heartbeat log for scheduled sweeps driven by the VPS crontab.
+    // One row per job (currently just 'sweeps'). Lets us see when the
+    // last cron actually ran + what it did without tailing Vercel logs.
+    // If the row is >10 minutes stale, cron is broken and no one has
+    // noticed — worth surfacing on an admin dashboard eventually.
+    await sql`
+      CREATE TABLE IF NOT EXISTS cron_heartbeats (
+        job TEXT PRIMARY KEY,
+        last_run_at TIMESTAMPTZ NOT NULL,
+        last_result JSONB
+      )`.catch(() => {});
     await sql`ALTER TABLE leave_balances ADD COLUMN IF NOT EXISTS full_day INTEGER NOT NULL DEFAULT 0`;
     await sql`ALTER TABLE leave_balances ADD COLUMN IF NOT EXISTS short_leave INTEGER NOT NULL DEFAULT 0`;
     await sql`ALTER TABLE leave_balances ADD COLUMN IF NOT EXISTS last_credited_month INTEGER`;
@@ -11811,17 +11824,12 @@ app.get('/api/notifications', async (req, res) => {
     const { user_id, limit } = req.query as any;
     if (!user_id) return res.status(400).json({ error: 'user_id required' });
     const lim = Math.max(1, Math.min(500, Number(limit) || 50));
-    // Opportunistic meeting-reminder sweep. Throttled to ~once/min
-    // per Lambda instance so a burst of polls costs one small query
-    // per minute, not one per poll. Runs BEFORE the memoized read so
-    // any reminders we create show up in this same response for
-    // whichever user we just notified (notifyUser invalidates their
-    // cache automatically).
-    await sweepMeetingRemindersOpportunistic();
-    // Auto-clockout sweep — no-op before 21:00 IST and no-op after
-    // the day's first pass. Same "run before the memoized read" rule
-    // so the notification lands in the caller's very next poll.
-    await sweepAutoClockoutOpportunistic();
+    // NOTE: opportunistic sweeps (meeting reminders, auto-clockout)
+    // used to fire from here. They now run from a VPS crontab hitting
+    // /api/cron/run-sweeps every 5 minutes so firing doesn't depend
+    // on someone happening to poll — see the runAutoClockoutSweep
+    // and runMeetingReminderSweep functions, and the cron endpoint
+    // right after them. Nothing to do here anymore.
     // 30s per-user cache. The bell polls at 3 min so the cache rarely
     // matters for ONE tab — but the focus + visibilitychange refetches
     // (which fire every time the user switches back) are the heavy hitters
@@ -24086,11 +24094,27 @@ async function sweepMeetingRemindersOpportunistic(): Promise<void> {
 // cheap (indexed on date + clock_out) and returns 0 rows most of
 // the time, so the throttle is generous.
 let _lastAutoClockoutRunAt = 0;
+// Retained for legacy callers but no longer wired into /api/notifications
+// — the VPS crontab now drives sweeps via /api/cron/run-sweeps. Keeping
+// the wrapper (throttle + swallow) so ad-hoc callers still get the same
+// safety net if we ever put opportunistic hooks back.
 async function sweepAutoClockoutOpportunistic(): Promise<void> {
   const now = Date.now();
   if (now - _lastAutoClockoutRunAt < 5 * 60 * 1000) return;
   _lastAutoClockoutRunAt = now;
+  try { await runAutoClockoutSweep(); }
+  catch { /* opportunistic — never let this fail the caller */ }
+}
 
+// The actual sweep work. Extracted from the opportunistic wrapper so
+// the cron endpoint can invoke it directly without dealing with the
+// per-lambda 5-min throttle. Returns a summary for the heartbeat log.
+async function runAutoClockoutSweep(): Promise<{
+  sessions_closed: number;
+  candidates: number;
+  ist_time: string;
+  day_key: string;
+}> {
   const nowUtcMs = Date.now();
   const istOffsetMs = 5.5 * 60 * 60 * 1000;
   const ist = new Date(nowUtcMs + istOffsetMs);
@@ -24099,35 +24123,36 @@ async function sweepAutoClockoutOpportunistic(): Promise<void> {
   const istHM = `${String(istHour).padStart(2, '0')}:${String(istMinute).padStart(2, '0')}`;
   const dayKey = `${ist.getUTCFullYear()}-${String(ist.getUTCMonth() + 1).padStart(2, '0')}-${String(ist.getUTCDate()).padStart(2, '0')}`;
 
-  try {
-    // Per-shift threshold: fire when current IST time is at or past
-    // (shift.end_time + 2 hours). Uses Postgres time arithmetic so
-    // each shift row filters itself — no JS loop needed to pre-compute
-    // per-shift thresholds.
-    //
-    // Guards:
-    // - cs.end_time > cs.start_time: excludes overnight shifts.
-    // - cs.end_time <= '21:59': keeps the +2h window inside the same
-    //   IST day, so we don't have to reason about date rollover.
-    // - s.clock_in < cs.end_time: skips the "clocked in AFTER shift
-    //   end" case (nonsense duration).
-    // - e.status <> 'exit': ignore departed employees.
-    const rows = await sql`
-      SELECT s.id, s.employee_id, s.clock_in,
-             cs.end_time AS shift_end,
-             e.name      AS employee_name
-      FROM attendance_sessions s
-      JOIN employees e     ON e.id = s.employee_id
-      JOIN config_shifts cs ON cs.id = COALESCE(e.shift, 'day')
-      WHERE s.date::date = ${dayKey}::date
-        AND s.clock_out IS NULL
-        AND cs.end_time > cs.start_time
-        AND cs.end_time <= '21:59'
-        AND s.clock_in < cs.end_time
-        AND e.status <> 'exit'
-        AND (cs.end_time::time + INTERVAL '2 hours') <= ${istHM}::time` as any[];
+  // Per-shift threshold: fire when current IST time is at or past
+  // (shift.end_time + 2 hours). Uses Postgres time arithmetic so
+  // each shift row filters itself — no JS loop needed to pre-compute
+  // per-shift thresholds.
+  //
+  // Guards:
+  // - cs.end_time > cs.start_time: excludes overnight shifts.
+  // - cs.end_time <= '21:59': keeps the +2h window inside the same
+  //   IST day, so we don't have to reason about date rollover.
+  // - s.clock_in < cs.end_time: skips the "clocked in AFTER shift
+  //   end" case (nonsense duration).
+  // - e.status <> 'exit': ignore departed employees.
+  const rows = await sql`
+    SELECT s.id, s.employee_id, s.clock_in,
+           cs.end_time AS shift_end,
+           e.name      AS employee_name
+    FROM attendance_sessions s
+    JOIN employees e     ON e.id = s.employee_id
+    JOIN config_shifts cs ON cs.id = COALESCE(e.shift, 'day')
+    WHERE s.date::date = ${dayKey}::date
+      AND s.clock_out IS NULL
+      AND cs.end_time > cs.start_time
+      AND cs.end_time <= '21:59'
+      AND s.clock_in < cs.end_time
+      AND e.status <> 'exit'
+      AND (cs.end_time::time + INTERVAL '2 hours') <= ${istHM}::time` as any[];
 
-    if (!rows.length) return;
+  if (!rows.length) {
+    return { sessions_closed: 0, candidates: 0, ist_time: istHM, day_key: dayKey };
+  }
 
     for (const r of rows) {
       // Duration = shift_end minus clock_in (both HH:MM). Compute in
@@ -24168,15 +24193,16 @@ async function sweepAutoClockoutOpportunistic(): Promise<void> {
       ).catch(() => { /* one recipient failing shouldn't block others */ });
     }
 
-    // Bonus: log what we did to server output so a quick tail of
-    // Vercel logs shows the sweep ran + closed N sessions.
-    // eslint-disable-next-line no-console
-    console.log(`[auto-clockout] IST ${istHour}:${String(istMinute).padStart(2, '0')} sweep closed ${rows.length} session(s) for ${dayKey}`);
-  } catch (err) {
-    // Opportunistic — never let this fail the caller.
-    // eslint-disable-next-line no-console
-    console.error('[auto-clockout] sweep failed', (err as any)?.message ?? err);
-  }
+  // Bonus: log what we did to server output so a quick tail of
+  // Vercel logs shows the sweep ran + closed N sessions.
+  // eslint-disable-next-line no-console
+  console.log(`[auto-clockout] IST ${istHour}:${String(istMinute).padStart(2, '0')} sweep closed ${rows.length} session(s) for ${dayKey}`);
+  return {
+    sessions_closed: rows.length,
+    candidates: rows.length,
+    ist_time: istHM,
+    day_key: dayKey,
+  };
 }
 
 // Manual trigger — admin-only. Handy for testing or after a hard
@@ -24192,6 +24218,64 @@ app.all('/api/meetings/reminders/run', async (req, res) => {
     const result = await runMeetingReminderSweep();
     res.json({ ok: true, ...result });
   } catch (err: any) { res.status(500).json({ error: err?.message ?? 'Reminder run failed' }); }
+});
+
+// POST /api/cron/run-sweeps — VPS crontab hits this every 5 minutes to
+// run all scheduled sweeps. Gated by the HRMS_CRON_SECRET env var (shared
+// with the crontab) rather than an admin user session — cron doesn't
+// have cookies. On success writes a row to cron_heartbeats so we can
+// see the last run + result on demand.
+//
+// Runs each sweep independently (Promise.allSettled) so one failure
+// doesn't block the other. Bypasses the per-lambda 5-min throttle
+// baked into the opportunistic wrappers — this endpoint IS the
+// scheduler now, so the wrapper throttle would be redundant.
+app.post('/api/cron/run-sweeps', async (req, res) => {
+  const expected = process.env.HRMS_CRON_SECRET;
+  if (!expected) return res.status(503).json({ error: 'HRMS_CRON_SECRET not configured on the server' });
+  const provided = req.header('x-cron-secret');
+  if (!provided || provided !== expected) return res.status(401).json({ error: 'Bad or missing cron secret' });
+  await runStartupMigrations();
+  const started = Date.now();
+  const [meetingsRes, autoCloseRes] = await Promise.allSettled([
+    runMeetingReminderSweep(),
+    runAutoClockoutSweep(),
+  ]);
+  const result = {
+    ran_at: new Date().toISOString(),
+    ms: Date.now() - started,
+    meetings: meetingsRes.status === 'fulfilled'
+      ? meetingsRes.value
+      : { error: (meetingsRes.reason as any)?.message ?? 'failed' },
+    autoclockout: autoCloseRes.status === 'fulfilled'
+      ? autoCloseRes.value
+      : { error: (autoCloseRes.reason as any)?.message ?? 'failed' },
+  };
+  // Heartbeat write is best-effort — a lost heartbeat shouldn't
+  // block reporting success back to the cron caller.
+  await sql`
+    INSERT INTO cron_heartbeats (job, last_run_at, last_result)
+    VALUES ('sweeps', NOW(), ${JSON.stringify(result)}::jsonb)
+    ON CONFLICT (job) DO UPDATE SET
+      last_run_at = EXCLUDED.last_run_at,
+      last_result = EXCLUDED.last_result
+  `.catch(() => {});
+  res.json({ ok: true, ...result });
+});
+
+// GET /api/cron/heartbeat — admin-only, returns the most recent
+// heartbeat row so you can spot-check that cron is actually firing.
+// Handy when the office is quiet and no auto-clockouts have happened
+// recently — proves the scheduler ran, even if it had nothing to do.
+app.get('/api/cron/heartbeat', async (req, res) => {
+  try {
+    const uid = req.header('x-user-id');
+    if (!uid) return res.status(401).json({ error: 'Not authenticated' });
+    const u = (await sql`SELECT role, active FROM app_users WHERE id=${uid} LIMIT 1` as any[])[0];
+    if (!u || u.active !== true || u.role !== 'admin') return res.status(403).json({ error: 'Admin only' });
+    const rows = await sql`SELECT job, last_run_at, last_result FROM cron_heartbeats` as any[];
+    res.json({ jobs: rows });
+  } catch (err: any) { res.status(500).json({ error: err?.message ?? 'Heartbeat lookup failed' }); }
 });
 
 // Manual admin trigger for the auto-clockout sweep. Bypasses the
