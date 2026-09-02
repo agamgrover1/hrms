@@ -1449,6 +1449,41 @@ export default function MyTeam() {
                           <span className="text-xs text-on-surface-muted"><span className="num-mono">{appraisal.goals?.length ?? 0}</span> goals</span>
                         </summary>
                         <div className="px-4 pb-4 pt-2 space-y-3">
+                          {/* Achievements — the employee's own list of what
+                              they shipped that period. Read-only for the
+                              manager; same shape (title/date/impact/link) as
+                              the employee sees on MyPortal so the two views
+                              stay consistent. Rendered above the goals so
+                              recent wins are the first thing a manager reads
+                              before deciding on statuses. */}
+                          {Array.isArray(appraisal.achievements) && appraisal.achievements.length > 0 && (
+                            <div className="border border-outline rounded-xl-2 p-3 bg-surface-2">
+                              <p className="text-xs font-bold uppercase tracking-wider text-accent mb-2">
+                                Achievements ({appraisal.achievements.length})
+                              </p>
+                              <ul className="space-y-2">
+                                {appraisal.achievements.map((a: any, i: number) => (
+                                  <li key={i} className="text-xs bg-surface rounded-md px-3 py-2 border border-outline/60">
+                                    <div className="flex items-baseline justify-between gap-2 flex-wrap">
+                                      <span className="font-semibold text-sm text-on-surface">{a.title || '—'}</span>
+                                      {a.date && (
+                                        <span className="text-[10px] text-on-surface-subtle num-mono">
+                                          {new Date(String(a.date).slice(0, 10) + 'T12:00:00Z').toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' })}
+                                        </span>
+                                      )}
+                                    </div>
+                                    {a.impact && <p className="text-on-surface-muted mt-1 whitespace-pre-wrap">{a.impact}</p>}
+                                    {a.link && (
+                                      <a href={a.link} target="_blank" rel="noreferrer"
+                                        className="text-accent hover:underline text-[10px] mt-1 inline-block">
+                                        Evidence →
+                                      </a>
+                                    )}
+                                  </li>
+                                ))}
+                              </ul>
+                            </div>
+                          )}
                           {(appraisal.goals ?? []).map((g: any, i: number) => {
                             const empStatus: GoalStatus = g.employee_status ?? 'not_started';
                             const empCfg = GOAL_STATUS_CONFIG[empStatus];
