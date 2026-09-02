@@ -1014,6 +1014,9 @@ async function runStartupMigrations() {
     await sql`SELECT offer_is_unpaid FROM candidates LIMIT 0`;
     // candidates.left_at — added when "Left after joining" status shipped.
     await sql`SELECT left_at FROM candidates LIMIT 0`;
+    // attendance_sessions.auto_closed_at_shift_end — added when the
+    // 9pm-IST auto-clockout sweep shipped.
+    await sql`SELECT auto_closed_at_shift_end FROM attendance_sessions LIMIT 0`;
     // Also verify the legacy goals.employee_id constraint has been
     // relaxed. bad=0 both when the column doesn't exist (fresh DB)
     // AND when it exists as nullable (post-migration old DB). bad>=1
@@ -2926,6 +2929,11 @@ async function runStartupMigrations() {
       )
     `.catch(()=>{});
     await sql`ALTER TABLE attendance_sessions ADD COLUMN IF NOT EXISTS active_minutes NUMERIC DEFAULT 0`.catch(()=>{});
+    // Set TRUE by the opportunistic post-9pm-IST sweep when it closes
+    // a session the employee forgot to stop. Surfaced on the attendance
+    // timeline as an "Auto-closed at shift end" pill so HR + the
+    // employee can distinguish a real clock-out from a system one.
+    await sql`ALTER TABLE attendance_sessions ADD COLUMN IF NOT EXISTS auto_closed_at_shift_end BOOLEAN NOT NULL DEFAULT FALSE`.catch(()=>{});
     await sql`ALTER TABLE leave_balances ADD COLUMN IF NOT EXISTS full_day INTEGER NOT NULL DEFAULT 0`;
     await sql`ALTER TABLE leave_balances ADD COLUMN IF NOT EXISTS short_leave INTEGER NOT NULL DEFAULT 0`;
     await sql`ALTER TABLE leave_balances ADD COLUMN IF NOT EXISTS last_credited_month INTEGER`;
@@ -11775,6 +11783,10 @@ app.get('/api/notifications', async (req, res) => {
     // whichever user we just notified (notifyUser invalidates their
     // cache automatically).
     await sweepMeetingRemindersOpportunistic();
+    // Auto-clockout sweep — no-op before 21:00 IST and no-op after
+    // the day's first pass. Same "run before the memoized read" rule
+    // so the notification lands in the caller's very next poll.
+    await sweepAutoClockoutOpportunistic();
     // 30s per-user cache. The bell polls at 3 min so the cache rarely
     // matters for ONE tab — but the focus + visibilitychange refetches
     // (which fire every time the user switches back) are the heavy hitters
@@ -24016,6 +24028,103 @@ async function sweepMeetingRemindersOpportunistic(): Promise<void> {
   catch { /* opportunistic — never let this fail the caller */ }
 }
 
+// ── Auto-clockout sweep (opportunistic, no cron needed) ──────────
+// Rule: after 9pm IST, any still-open attendance_session for today
+// whose employee's shift ends before 9pm gets closed at that shift's
+// end time. Skips night shift (end_time >= 21:00) — those legitimately
+// run past 9pm and need their own trigger. Skips sessions where the
+// clock-in already happened after shift end (0-length back-dated
+// session would be nonsense; HR resolves manually).
+//
+// Idempotent by design: the second sweep of the day is a no-op
+// because clock_out IS NOT NULL after the first pass.
+//
+// Throttled to once per IST calendar day per lambda so a burst of
+// notification polls doesn't hammer the DB — a warm lambda will do
+// one small SELECT and skip.
+let _lastAutoClockoutDayKey: string | null = null;
+async function sweepAutoClockoutOpportunistic(): Promise<void> {
+  // "today in IST" as a YYYY-MM-DD key. IST = UTC+5:30. Using a stable
+  // string key means the throttle survives DST-free years and doesn't
+  // rely on Date object identity.
+  const nowUtcMs = Date.now();
+  const istOffsetMs = 5.5 * 60 * 60 * 1000;
+  const ist = new Date(nowUtcMs + istOffsetMs);
+  const istHour = ist.getUTCHours();
+  const istMinute = ist.getUTCMinutes();
+  const dayKey = `${ist.getUTCFullYear()}-${String(ist.getUTCMonth() + 1).padStart(2, '0')}-${String(ist.getUTCDate()).padStart(2, '0')}`;
+
+  // Only run after 21:00 IST. Before that the sweep is a no-op.
+  if (istHour < 21) return;
+  // One sweep per IST day per lambda. Reset happens naturally when
+  // dayKey rolls over.
+  if (_lastAutoClockoutDayKey === dayKey) return;
+  _lastAutoClockoutDayKey = dayKey;
+
+  try {
+    // Find every open session for today whose shift ends BEFORE 21:00.
+    // Join through employees → config_shifts (default 'day' if the
+    // employee has no shift assigned). Only rows where clock_in text
+    // (HH:MM) is < shift end_time — protects against the 8pm-clock-in-
+    // never-clocked-out case. clock_in in DB is stored as text HH:MM.
+    const rows = await sql`
+      SELECT s.id, s.employee_id, s.clock_in,
+             cs.end_time AS shift_end,
+             e.name      AS employee_name
+      FROM attendance_sessions s
+      JOIN employees e     ON e.id = s.employee_id
+      JOIN config_shifts cs ON cs.id = COALESCE(e.shift, 'day')
+      WHERE s.date::date = ${dayKey}::date
+        AND s.clock_out IS NULL
+        AND cs.end_time < '21:00'
+        AND s.clock_in < cs.end_time
+        AND e.status <> 'exit'` as any[];
+
+    if (!rows.length) return;
+
+    for (const r of rows) {
+      // Duration = shift_end minus clock_in (both HH:MM). Compute in
+      // minutes so partial hours don't round weirdly.
+      const [inH, inM] = String(r.clock_in).split(':').map(Number);
+      const [outH, outM] = String(r.shift_end).split(':').map(Number);
+      const durationMin = Math.max(0, (outH * 60 + outM) - (inH * 60 + inM));
+
+      await sql`
+        UPDATE attendance_sessions SET
+          clock_out = ${r.shift_end},
+          duration_minutes = ${durationMin},
+          auto_closed_at_shift_end = TRUE
+        WHERE id = ${r.id}`.catch(() => {});
+
+      // Human-readable "8h 15m" for the notification body. Same shape
+      // as the rest of the app's duration displays.
+      const hh = Math.floor(durationMin / 60);
+      const mm = durationMin % 60;
+      const dur = hh > 0 && mm > 0 ? `${hh}h ${mm}m` : hh > 0 ? `${hh}h` : `${mm}m`;
+      const shiftEndHuman = (() => {
+        const h12 = outH % 12 === 0 ? 12 : outH % 12;
+        const ap = outH < 12 ? 'am' : 'pm';
+        return outM ? `${h12}:${String(outM).padStart(2, '0')} ${ap}` : `${h12}:00 ${ap}`;
+      })();
+
+      notifyEmployeeUser(r.employee_id, 'attendance_auto_closed',
+        'You forgot to clock out',
+        `Your session was auto-closed at ${shiftEndHuman} (shift end) — ${dur} logged for today. Open Attendance to correct if needed.`,
+        `/attendance`,
+      ).catch(() => { /* one recipient failing shouldn't block others */ });
+    }
+
+    // Bonus: log what we did to server output so a quick tail of
+    // Vercel logs shows the sweep ran + closed N sessions.
+    // eslint-disable-next-line no-console
+    console.log(`[auto-clockout] IST ${istHour}:${String(istMinute).padStart(2, '0')} sweep closed ${rows.length} session(s) for ${dayKey}`);
+  } catch (err) {
+    // Opportunistic — never let this fail the caller.
+    // eslint-disable-next-line no-console
+    console.error('[auto-clockout] sweep failed', (err as any)?.message ?? err);
+  }
+}
+
 // Manual trigger — admin-only. Handy for testing or after a hard
 // reset. Runs the same sweep as the opportunistic path but without
 // the 60s throttle.
@@ -24029,6 +24138,69 @@ app.all('/api/meetings/reminders/run', async (req, res) => {
     const result = await runMeetingReminderSweep();
     res.json({ ok: true, ...result });
   } catch (err: any) { res.status(500).json({ error: err?.message ?? 'Reminder run failed' }); }
+});
+
+// Manual admin trigger for the auto-clockout sweep. Bypasses the
+// 21:00 IST gate and the once-per-day throttle so it can be smoke-
+// tested at any time (yesterday's forgotten session, testing during
+// office hours, etc.). Same admin-only gate as the meetings trigger.
+app.all('/api/attendance/auto-clockout/run', async (req, res) => {
+  try {
+    const uid = req.header('x-user-id');
+    if (!uid) return res.status(401).json({ error: 'Not authenticated' });
+    const u = (await sql`SELECT role, active FROM app_users WHERE id=${uid} LIMIT 1` as any[])[0];
+    if (!u || u.active !== true || u.role !== 'admin') return res.status(403).json({ error: 'Admin only' });
+    await runStartupMigrations();
+    // Reset the throttle guard so this manual call always runs.
+    _lastAutoClockoutDayKey = null;
+    // Bypass the "before 21:00 IST → no-op" gate by inlining the
+    // same core query with a stub current-time forced past 21:00.
+    // Easier: call the sweep directly regardless of hour by
+    // temporarily flipping the clock — but that gets ugly. Instead
+    // duplicate the core work here (short + honest).
+    const nowUtcMs = Date.now();
+    const istOffsetMs = 5.5 * 60 * 60 * 1000;
+    const ist = new Date(nowUtcMs + istOffsetMs);
+    const dayKey = `${ist.getUTCFullYear()}-${String(ist.getUTCMonth() + 1).padStart(2, '0')}-${String(ist.getUTCDate()).padStart(2, '0')}`;
+    const target = String(req.query.date ?? dayKey);
+    const rows = await sql`
+      SELECT s.id, s.employee_id, s.clock_in,
+             cs.end_time AS shift_end,
+             e.name      AS employee_name
+      FROM attendance_sessions s
+      JOIN employees e     ON e.id = s.employee_id
+      JOIN config_shifts cs ON cs.id = COALESCE(e.shift, 'day')
+      WHERE s.date::date = ${target}::date
+        AND s.clock_out IS NULL
+        AND cs.end_time < '21:00'
+        AND s.clock_in < cs.end_time
+        AND e.status <> 'exit'` as any[];
+    let closed = 0;
+    for (const r of rows) {
+      const [inH, inM] = String(r.clock_in).split(':').map(Number);
+      const [outH, outM] = String(r.shift_end).split(':').map(Number);
+      const durationMin = Math.max(0, (outH * 60 + outM) - (inH * 60 + inM));
+      await sql`
+        UPDATE attendance_sessions SET
+          clock_out = ${r.shift_end},
+          duration_minutes = ${durationMin},
+          auto_closed_at_shift_end = TRUE
+        WHERE id = ${r.id}`.catch(() => {});
+      const hh = Math.floor(durationMin / 60);
+      const mm = durationMin % 60;
+      const dur = hh > 0 && mm > 0 ? `${hh}h ${mm}m` : hh > 0 ? `${hh}h` : `${mm}m`;
+      const h12 = outH % 12 === 0 ? 12 : outH % 12;
+      const ap = outH < 12 ? 'am' : 'pm';
+      const shiftEndHuman = outM ? `${h12}:${String(outM).padStart(2, '0')} ${ap}` : `${h12}:00 ${ap}`;
+      notifyEmployeeUser(r.employee_id, 'attendance_auto_closed',
+        'You forgot to clock out',
+        `Your session was auto-closed at ${shiftEndHuman} (shift end) — ${dur} logged for ${target}. Open Attendance to correct if needed.`,
+        `/attendance`,
+      ).catch(() => {});
+      closed++;
+    }
+    res.json({ ok: true, date: target, sessions_closed: closed, candidates: rows.length });
+  } catch (err: any) { res.status(500).json({ error: err?.message ?? 'Sweep failed' }); }
 });
 
 // ── Web Push endpoints ──────────────────────────────────────────────

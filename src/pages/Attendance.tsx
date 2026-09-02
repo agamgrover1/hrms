@@ -1058,9 +1058,16 @@ export default function Attendance() {
                 };
                 const fmtMins = (m: number) => m === 0 ? '—' : m >= 60 ? `${Math.floor(m/60)}h ${m%60>0?m%60+'m':''}`.trim() : `${m}m`;
 
-                const blocks: { type: 'work'|'break'; from: string; to: string; minutes: number; source: string }[] = [];
+                const blocks: { type: 'work'|'break'; from: string; to: string; minutes: number; source: string; autoClosed?: boolean }[] = [];
                 sessions.forEach((s, i) => {
-                  blocks.push({ type: 'work', from: s.clock_in, to: s.clock_out ?? '', minutes: Number(s.duration_minutes || 0), source: s.source ?? 'manual' });
+                  blocks.push({
+                    type: 'work',
+                    from: s.clock_in,
+                    to: s.clock_out ?? '',
+                    minutes: Number(s.duration_minutes || 0),
+                    source: s.source ?? 'manual',
+                    autoClosed: !!(s as any).auto_closed_at_shift_end,
+                  });
                   if (i < sessions.length - 1 && s.clock_out && sessions[i+1].clock_in) {
                     const breakMin = parseHM(sessions[i+1].clock_in) - parseHM(s.clock_out);
                     if (breakMin > 0) blocks.push({ type: 'break', from: s.clock_out, to: sessions[i+1].clock_in, minutes: breakMin, source: '' });
@@ -1090,6 +1097,16 @@ export default function Attendance() {
                             )}
                             {b.type === 'work' && b.source === 'biometric' && (
                               <span className="text-[9px] font-bold px-1.5 py-0.5 rounded-full bg-success-container text-success">🔵 bio</span>
+                            )}
+                            {b.type === 'work' && b.autoClosed && (
+                              // System auto-clocked-out this session at shift end
+                              // (post-9pm-IST sweep). Distinguishes from a real
+                              // clock-out on the timeline so HR + the employee
+                              // know the end time isn't the actual leave time.
+                              <span title="Auto-closed at shift end by the system"
+                                className="text-[9px] font-bold px-1.5 py-0.5 rounded-full bg-warning-container text-warning">
+                                ⏱ auto-closed
+                              </span>
                             )}
                           </div>
                           <p className="num-mono text-xs text-on-surface-muted mt-0.5">
