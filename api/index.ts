@@ -24064,44 +24064,54 @@ async function sweepMeetingRemindersOpportunistic(): Promise<void> {
 }
 
 // ── Auto-clockout sweep (opportunistic, no cron needed) ──────────
-// Rule: after 9pm IST, any still-open attendance_session for today
-// whose employee's shift ends before 9pm gets closed at that shift's
-// end time. Skips night shift (end_time >= 21:00) — those legitimately
-// run past 9pm and need their own trigger. Skips sessions where the
-// clock-in already happened after shift end (0-length back-dated
-// session would be nonsense; HR resolves manually).
+// Rule: for each employee's own shift, once (shift_end + 2 hours) IST
+// has passed, close any still-open session for today at that shift's
+// end time. E.g. a 6pm-shift employee gets auto-closed after 8pm; a
+// 5pm shift closes after 7pm. Per-shift threshold, not one global.
 //
-// Idempotent by design: the second sweep of the day is a no-op
-// because clock_out IS NOT NULL after the first pass.
+// Skips overnight shifts (end_time <= start_time, i.e. the night shift
+// that crosses midnight) — those need their own trigger. Also skips
+// shifts whose end_time+2h wraps past midnight (end_time > 21:59) so
+// we don't accidentally miss the fire window across a date change.
 //
-// Throttled to once per IST calendar day per lambda so a burst of
-// notification polls doesn't hammer the DB — a warm lambda will do
-// one small SELECT and skip.
-let _lastAutoClockoutDayKey: string | null = null;
+// Skips sessions where the clock-in already happened after shift end
+// (0-length back-dated session would be nonsense; HR resolves those
+// manually).
+//
+// Idempotent by design: closed sessions have clock_out IS NOT NULL so
+// the next pass matches nothing.
+//
+// Throttled to once every 5 minutes per lambda so a burst of
+// notification polls doesn't hammer the DB. The DB query itself is
+// cheap (indexed on date + clock_out) and returns 0 rows most of
+// the time, so the throttle is generous.
+let _lastAutoClockoutRunAt = 0;
 async function sweepAutoClockoutOpportunistic(): Promise<void> {
-  // "today in IST" as a YYYY-MM-DD key. IST = UTC+5:30. Using a stable
-  // string key means the throttle survives DST-free years and doesn't
-  // rely on Date object identity.
+  const now = Date.now();
+  if (now - _lastAutoClockoutRunAt < 5 * 60 * 1000) return;
+  _lastAutoClockoutRunAt = now;
+
   const nowUtcMs = Date.now();
   const istOffsetMs = 5.5 * 60 * 60 * 1000;
   const ist = new Date(nowUtcMs + istOffsetMs);
   const istHour = ist.getUTCHours();
   const istMinute = ist.getUTCMinutes();
+  const istHM = `${String(istHour).padStart(2, '0')}:${String(istMinute).padStart(2, '0')}`;
   const dayKey = `${ist.getUTCFullYear()}-${String(ist.getUTCMonth() + 1).padStart(2, '0')}-${String(ist.getUTCDate()).padStart(2, '0')}`;
 
-  // Only run after 21:00 IST. Before that the sweep is a no-op.
-  if (istHour < 21) return;
-  // One sweep per IST day per lambda. Reset happens naturally when
-  // dayKey rolls over.
-  if (_lastAutoClockoutDayKey === dayKey) return;
-  _lastAutoClockoutDayKey = dayKey;
-
   try {
-    // Find every open session for today whose shift ends BEFORE 21:00.
-    // Join through employees → config_shifts (default 'day' if the
-    // employee has no shift assigned). Only rows where clock_in text
-    // (HH:MM) is < shift end_time — protects against the 8pm-clock-in-
-    // never-clocked-out case. clock_in in DB is stored as text HH:MM.
+    // Per-shift threshold: fire when current IST time is at or past
+    // (shift.end_time + 2 hours). Uses Postgres time arithmetic so
+    // each shift row filters itself — no JS loop needed to pre-compute
+    // per-shift thresholds.
+    //
+    // Guards:
+    // - cs.end_time > cs.start_time: excludes overnight shifts.
+    // - cs.end_time <= '21:59': keeps the +2h window inside the same
+    //   IST day, so we don't have to reason about date rollover.
+    // - s.clock_in < cs.end_time: skips the "clocked in AFTER shift
+    //   end" case (nonsense duration).
+    // - e.status <> 'exit': ignore departed employees.
     const rows = await sql`
       SELECT s.id, s.employee_id, s.clock_in,
              cs.end_time AS shift_end,
@@ -24111,9 +24121,11 @@ async function sweepAutoClockoutOpportunistic(): Promise<void> {
       JOIN config_shifts cs ON cs.id = COALESCE(e.shift, 'day')
       WHERE s.date::date = ${dayKey}::date
         AND s.clock_out IS NULL
-        AND cs.end_time < '21:00'
+        AND cs.end_time > cs.start_time
+        AND cs.end_time <= '21:59'
         AND s.clock_in < cs.end_time
-        AND e.status <> 'exit'` as any[];
+        AND e.status <> 'exit'
+        AND (cs.end_time::time + INTERVAL '2 hours') <= ${istHM}::time` as any[];
 
     if (!rows.length) return;
 
@@ -24193,13 +24205,13 @@ app.all('/api/attendance/auto-clockout/run', async (req, res) => {
     const u = (await sql`SELECT role, active FROM app_users WHERE id=${uid} LIMIT 1` as any[])[0];
     if (!u || u.active !== true || u.role !== 'admin') return res.status(403).json({ error: 'Admin only' });
     await runStartupMigrations();
-    // Reset the throttle guard so this manual call always runs.
-    _lastAutoClockoutDayKey = null;
-    // Bypass the "before 21:00 IST → no-op" gate by inlining the
-    // same core query with a stub current-time forced past 21:00.
-    // Easier: call the sweep directly regardless of hour by
-    // temporarily flipping the clock — but that gets ugly. Instead
-    // duplicate the core work here (short + honest).
+    // Reset the throttle so this manual call always runs, even if the
+    // opportunistic sweep just fired 30 seconds ago.
+    _lastAutoClockoutRunAt = 0;
+    // Bypass the per-shift (end_time + 2h) fire gate — admin trigger
+    // closes ALL matching open sessions on the target date regardless
+    // of the current IST time. Duplicates the core work of the
+    // opportunistic sweep but without the time filter.
     const nowUtcMs = Date.now();
     const istOffsetMs = 5.5 * 60 * 60 * 1000;
     const ist = new Date(nowUtcMs + istOffsetMs);
@@ -24214,7 +24226,8 @@ app.all('/api/attendance/auto-clockout/run', async (req, res) => {
       JOIN config_shifts cs ON cs.id = COALESCE(e.shift, 'day')
       WHERE s.date::date = ${target}::date
         AND s.clock_out IS NULL
-        AND cs.end_time < '21:00'
+        AND cs.end_time > cs.start_time
+        AND cs.end_time <= '21:59'
         AND s.clock_in < cs.end_time
         AND e.status <> 'exit'` as any[];
     let closed = 0;
