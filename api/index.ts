@@ -24210,7 +24210,21 @@ app.all('/api/attendance/auto-clockout/run', async (req, res) => {
       ).catch(() => {});
       closed++;
     }
-    res.json({ ok: true, date: target, sessions_closed: closed, candidates: rows.length });
+    // Belt-and-braces: also resync attendance_records for every
+    // employee who has ANY session on target date (auto-closed or
+    // not). Fixes rows that got closed by an earlier sweep run
+    // before the rollup call was in place, and any manual sessions
+    // that never propagated to records for other reasons.
+    const distinct = await sql`
+      SELECT DISTINCT employee_id
+      FROM attendance_sessions
+      WHERE date::date = ${target}::date` as any[];
+    let resynced = 0;
+    for (const d of distinct) {
+      try { await recalcAttendanceTotals(d.employee_id, target); resynced++; }
+      catch { /* non-fatal per-employee */ }
+    }
+    res.json({ ok: true, date: target, sessions_closed: closed, candidates: rows.length, records_resynced: resynced });
   } catch (err: any) { res.status(500).json({ error: err?.message ?? 'Sweep failed' }); }
 });
 
