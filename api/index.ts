@@ -5435,6 +5435,41 @@ async function runBiometricSyncV(trigger: string, triggeredBy?: string, fromDate
         ELSE 'biometric'
       END,
       biometric_sync_id = EXCLUDED.biometric_sync_id`;
+
+  // Reconcile auto-closed sessions with the biometric truth. Without
+  // this, a session auto-closed at shift-end (say 18:00) survives in
+  // attendance_sessions with clock_out='18:00' even after the
+  // biometric brings in the real punch (say 17:47) on attendance_records.
+  // Any future recalcAttendanceTotals call would then read the stale
+  // session and overwrite the real biometric time back to 18:00 —
+  // silently wiping the punch. Rule: when biometric provides a real
+  // check_out AND the day has ONE session marked auto_closed_at_shift_end,
+  // adopt the biometric time on the session and clear the flag.
+  // If multiple sessions exist for the day, skip — HR can pick the
+  // right one manually rather than us guessing.
+  const rowsWithOut = finalRows.filter(r => r.outTime);
+  for (const r of rowsWithOut) {
+    try {
+      await sql`
+        UPDATE attendance_sessions SET
+          clock_out = ${r.outTime},
+          duration_minutes = CASE
+            WHEN clock_in IS NOT NULL THEN
+              GREATEST(0,
+                (SUBSTRING(${r.outTime} FROM 1 FOR 2)::int * 60 + SUBSTRING(${r.outTime} FROM 4 FOR 2)::int)
+                - (SUBSTRING(clock_in FROM 1 FOR 2)::int * 60 + SUBSTRING(clock_in FROM 4 FOR 2)::int)
+              )
+            ELSE duration_minutes
+          END,
+          auto_closed_at_shift_end = FALSE
+        WHERE employee_id = ${r.iid}
+          AND date::date = ${r.recDate}::date
+          AND auto_closed_at_shift_end = TRUE
+          AND (SELECT COUNT(*) FROM attendance_sessions WHERE employee_id=${r.iid} AND date::date=${r.recDate}::date) = 1
+      `.catch(() => {});
+    } catch { /* per-row reconcile is best-effort */ }
+  }
+
   const created = finalRows.filter(r => !existingMap.has(wfhKey(r.iid, r.recDate))).length;
   const updated = finalRows.length - created;
 
