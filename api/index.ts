@@ -24096,6 +24096,13 @@ async function sweepAutoClockoutOpportunistic(): Promise<void> {
           auto_closed_at_shift_end = TRUE
         WHERE id = ${r.id}`.catch(() => {});
 
+      // The Daily Log page reads from attendance_records, not
+      // attendance_sessions — so closing the session isn't visible
+      // there until this helper rolls up per-day totals + check_out.
+      // Same helper the manual clock-out flow calls.
+      try { await recalcAttendanceTotals(r.employee_id, dayKey); }
+      catch { /* non-fatal — session-level truth is already correct */ }
+
       // Human-readable "8h 15m" for the notification body. Same shape
       // as the rest of the app's duration displays.
       const hh = Math.floor(durationMin / 60);
@@ -24186,6 +24193,10 @@ app.all('/api/attendance/auto-clockout/run', async (req, res) => {
           duration_minutes = ${durationMin},
           auto_closed_at_shift_end = TRUE
         WHERE id = ${r.id}`.catch(() => {});
+      // Roll up to attendance_records so the Daily Log surfaces the
+      // check_out + total_hours (Daily Log reads records, not sessions).
+      try { await recalcAttendanceTotals(r.employee_id, target); }
+      catch { /* non-fatal */ }
       const hh = Math.floor(durationMin / 60);
       const mm = durationMin % 60;
       const dur = hh > 0 && mm > 0 ? `${hh}h ${mm}m` : hh > 0 ? `${hh}h` : `${mm}m`;
