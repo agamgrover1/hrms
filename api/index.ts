@@ -106,8 +106,16 @@ app.use(express.json());
 app.use((req: any, res: any, next: any) => {
   if (req.method !== 'GET') { next(); return; }
   const p = req.path as string;
-  const apply = (sec: number, scope: 'private' | 'public') =>
-    res.setHeader('Cache-Control', `${scope}, max-age=${sec}, stale-while-revalidate=${sec}`);
+  const apply = (sec: number, scope: 'private' | 'public') => {
+    // For public responses, also set s-maxage so Vercel's edge CDN
+    // serves the cached bytes without invoking the function at all.
+    // Private responses only cache in the user's browser (no CDN)
+    // since the body is user-scoped.
+    const parts = [scope, `max-age=${sec}`];
+    if (scope === 'public') parts.push(`s-maxage=${sec}`);
+    parts.push(`stale-while-revalidate=${sec}`);
+    res.setHeader('Cache-Control', parts.join(', '));
+  };
   // Order matters — match the most-specific path first.
   if (p === '/api/employees')              apply(30,  'private');
   else if (p === '/api/announcements')     apply(30,  'public');
@@ -136,6 +144,25 @@ app.use((req: any, res: any, next: any) => {
   else if (p.startsWith('/api/announcements/') && p.endsWith('/comments')) apply(30, 'private');
   else if (p === '/api/holidays')              apply(1800, 'public');   // 30 min
   else if (p === '/api/optional-leave/dates')  apply(1800, 'public');   // 30 min
+  // Configuration lists — read constantly (person pickers, dropdowns,
+  // command palette), written monthly-ish by HR. Config endpoints
+  // return org-wide data with no user-specific filtering, so `public`
+  // + s-maxage lets Vercel's edge CDN serve the bytes for 5 min
+  // without invoking the function at all. Writes to config bump the
+  // response so the next revalidation picks up the change; up to 5
+  // minutes of staleness is fine for department/designation lists
+  // that change ~monthly.
+  //
+  // NOTE: /api/employees?fields=slim (the person-picker payload) is
+  // served by /api/employees, which already has `private, max-age=30`
+  // and a 60s server-side memoTtl. Not repeated here — the query
+  // string won't match this string-equality chain anyway.
+  else if (p === '/api/config/departments')    apply(300, 'public');
+  else if (p === '/api/config/designations')   apply(300, 'public');
+  else if (p === '/api/config/shifts')         apply(300, 'public');
+  else if (p === '/api/config/sources')        apply(300, 'public');
+  else if (p === '/api/config/checklist-templates') apply(300, 'public');
+  else if (p === '/api/config/attendance-geofence') apply(300, 'public');
   else if (p === '/api/vendors')               apply(600,  'private');  // 10 min
   else if (p === '/api/asset-categories')      apply(1800, 'public');   // 30 min
   else if (p === '/api/assets')                apply(60,   'private');  // 1 min
@@ -1002,32 +1029,28 @@ async function runStartupMigrations() {
     // For a *seed* (rows, not columns), we probe with EXISTS-style: an
     // empty result set means "still needs to run", so we don't set the
     // flag and fall through.
-    await sql`SELECT owner_id FROM goals LIMIT 0`;
-    // Also ensure the meetings.notes column landed on old DBs.
-    await sql`SELECT notes FROM meetings LIMIT 0`;
-    // Push subscriptions table (Web Push, phase 2 of live notifs).
-    await sql`SELECT 1 FROM push_subscriptions LIMIT 0`;
-    // meetings.sequence — iCal SEQUENCE for calendar invite revisions.
-    await sql`SELECT sequence FROM meetings LIMIT 0`;
-    // candidates.offer_is_unpaid — added so HR can release ₹0 offers
-    // for unpaid internships without failing the salary/CTC guard.
-    await sql`SELECT offer_is_unpaid FROM candidates LIMIT 0`;
-    // candidates.left_at — added when "Left after joining" status shipped.
-    await sql`SELECT left_at FROM candidates LIMIT 0`;
-    // attendance_sessions.auto_closed_at_shift_end — added when the
-    // 9pm-IST auto-clockout sweep shipped.
-    await sql`SELECT auto_closed_at_shift_end FROM attendance_sessions LIMIT 0`;
-    // cron_heartbeats — added when the VPS-driven cron endpoint shipped.
-    await sql`SELECT job FROM cron_heartbeats LIMIT 0`;
-    // Also verify the legacy goals.employee_id constraint has been
-    // relaxed. bad=0 both when the column doesn't exist (fresh DB)
-    // AND when it exists as nullable (post-migration old DB). bad>=1
-    // only when the constraint is still there — throw so full
-    // migrations re-run to drop it.
-    const legacyProbe = await sql`
-      SELECT COUNT(*)::int AS bad
-      FROM information_schema.columns
-      WHERE table_name='goals' AND column_name='employee_id' AND is_nullable='NO'`;
+    // All column probes fire in parallel so the whole fast-path is
+    // one round-trip time instead of N sequential ones. On a warm
+    // Lambda this block still short-circuits via the _migrated flag
+    // above; this only runs on cold starts.
+    const [legacyProbe] = await Promise.all([
+      // Legacy goals.employee_id NOT NULL check — needs the result
+      // so it stays awaited separately.
+      sql`
+        SELECT COUNT(*)::int AS bad
+        FROM information_schema.columns
+        WHERE table_name='goals' AND column_name='employee_id' AND is_nullable='NO'`,
+      // Column / table probes — added chronologically so newer
+      // migrations catch older Lambdas that missed them.
+      sql`SELECT owner_id FROM goals LIMIT 0`,
+      sql`SELECT notes FROM meetings LIMIT 0`,
+      sql`SELECT 1 FROM push_subscriptions LIMIT 0`,
+      sql`SELECT sequence FROM meetings LIMIT 0`,
+      sql`SELECT offer_is_unpaid FROM candidates LIMIT 0`,
+      sql`SELECT left_at FROM candidates LIMIT 0`,
+      sql`SELECT auto_closed_at_shift_end FROM attendance_sessions LIMIT 0`,
+      sql`SELECT job FROM cron_heartbeats LIMIT 0`,
+    ]);
     if (Number((legacyProbe as any[])[0]?.bad ?? 0) > 0) throw new Error('goals.employee_id still NOT NULL');
     _migrated = true;
     return;
@@ -24256,6 +24279,42 @@ app.post('/api/cron/run-sweeps', async (req, res) => {
   await sql`
     INSERT INTO cron_heartbeats (job, last_run_at, last_result)
     VALUES ('sweeps', NOW(), ${JSON.stringify(result)}::jsonb)
+    ON CONFLICT (job) DO UPDATE SET
+      last_run_at = EXCLUDED.last_run_at,
+      last_result = EXCLUDED.last_result
+  `.catch(() => {});
+  res.json({ ok: true, ...result });
+});
+
+// POST /api/cron/run-biometric — nightly biometric sync driver.
+// Same shared-secret gate as /api/cron/run-sweeps. Runs the same
+// runBiometricSyncV() the "Sync now" button in HR uses, then
+// computes the pulse for today so the dashboard is fresh for the
+// morning. Idempotent — re-running for the same date UPSERTs the
+// same rows.
+app.post('/api/cron/run-biometric', async (req, res) => {
+  const expected = process.env.HRMS_CRON_SECRET;
+  if (!expected) return res.status(503).json({ error: 'HRMS_CRON_SECRET not configured on the server' });
+  const provided = req.header('x-cron-secret');
+  if (!provided || provided !== expected) return res.status(401).json({ error: 'Bad or missing cron secret' });
+  await runStartupMigrations();
+  const started = Date.now();
+  let sync: any = null;
+  let pulse: any = null;
+  try {
+    sync = await runBiometricSyncV('auto', 'vps-cron');
+  } catch (e: any) {
+    sync = { error: e?.message ?? 'sync failed' };
+  }
+  try {
+    pulse = await computePulseForDate(new Date().toISOString().slice(0, 10));
+  } catch (e: any) {
+    pulse = { error: e?.message ?? 'pulse compute failed' };
+  }
+  const result = { ran_at: new Date().toISOString(), ms: Date.now() - started, sync, pulse };
+  await sql`
+    INSERT INTO cron_heartbeats (job, last_run_at, last_result)
+    VALUES ('biometric', NOW(), ${JSON.stringify(result)}::jsonb)
     ON CONFLICT (job) DO UPDATE SET
       last_run_at = EXCLUDED.last_run_at,
       last_result = EXCLUDED.last_result

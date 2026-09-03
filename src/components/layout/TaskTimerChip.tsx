@@ -49,11 +49,22 @@ export default function TaskTimerChip() {
       .catch(() => { /* the endpoint is best-effort — swallow so the chip doesn't spam errors */ });
   }, [user?.id]);
 
-  // Poll every 15s, and refresh immediately when the tab regains focus
-  // (people flip away, come back, expect the state to be current).
+  // Adaptive poll: 60s when there's no running timer (nothing to
+  // update remotely — the visible clock ticks locally via the 1s
+  // setNow interval), 30s when a timer IS running so the elapsed
+  // read stays fresh across tabs. Also refresh on focus /
+  // visibility change / the app's own timer-changed event, so a
+  // start/stop in another tab is picked up immediately without
+  // waiting for the next poll.
+  //
+  // This was 15s across the board — the biggest single burner of
+  // Vercel Fluid CPU per the diagnostic in commit history. The
+  // adaptive cadence cuts total poll count by ~75% without any
+  // user-visible change to the visible clock.
   useEffect(() => {
     refresh();
-    const poll = setInterval(refresh, 15_000);
+    const pollMs = timer ? 30_000 : 60_000;
+    const poll = setInterval(refresh, pollMs);
     const onFocus = () => refresh();
     const onVisibility = () => { if (!document.hidden) refresh(); };
     const onExternal = () => refresh();
@@ -66,7 +77,7 @@ export default function TaskTimerChip() {
       document.removeEventListener('visibilitychange', onVisibility);
       window.removeEventListener('hrms-task-timer-changed', onExternal);
     };
-  }, [refresh]);
+  }, [refresh, !!timer]);
 
   // Live seconds tick — only when a timer is active, otherwise no reason to re-render.
   const tickRef = useRef<ReturnType<typeof setInterval> | null>(null);
