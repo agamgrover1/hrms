@@ -304,6 +304,11 @@ export default function Sidebar({ mobileOpen = false, onMobileClose }: { mobileO
       { to: '/meetings', icon: CalendarDays, label: 'Meetings' },
       { to: '/notifications', icon: Bell, label: 'Notifications' },
       ...(role === 'admin' || isCoord ? [] : [{ to: '/tasks', icon: KanbanSquare, label: 'My tasks' } as NavItem]),
+      // Goals is here in the personal group for anyone who doesn't
+      // already get it via the Projects group (admin + coord). The
+      // /goals page shows: own goals + reports' goals + project goals
+      // the caller has access to. HR sees all (backend gate).
+      ...(role === 'admin' || isCoord ? [] : [{ to: '/goals', icon: Target, label: 'Goals' } as NavItem]),
       ...(isManager ? [{ to: '/my-team', icon: Users, label: 'My team' } as NavItem] : []),
       ...(isManager ? [{ to: '/workload', icon: Activity, label: 'Team workload' } as NavItem] : []),
       // Team leads (project_reporting OR project_lead on any project) need to see

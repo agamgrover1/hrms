@@ -22961,7 +22961,23 @@ function enrichGoal(g: any, krs: any[]): any {
   };
 }
 
+// Access rule for goals:
+// - Admin / HR Manager / Project Coordinator → all goals
+// - Everyone else → only goals that are:
+//     - owned by them (owner_id = their employee id)
+//     - created by them (created_by_id = their app_users id)
+//     - owned by someone in their reporting chain (any depth, cap 10)
+//     - attached to a project they lead / review / are assigned to
+// Nothing else is visible. This closes the previous behaviour where
+// every signed-in user saw every goal in the org.
+function seesAllGoals(role: string | null | undefined): boolean {
+  return role === 'admin' || role === 'hr_manager' || role === 'project_coordinator';
+}
+
 // GET /api/goals?scope=all|mine&project_id=&status=
+// scope=mine is a client-side convenience filter; the visibility gate
+// below applies regardless. So scope=all for a plain employee returns
+// their own + reports + project goals, NOT the whole org.
 app.get('/api/goals', async (req, res) => {
   try {
     await runStartupMigrations();
@@ -22970,21 +22986,69 @@ app.get('/api/goals', async (req, res) => {
     const scope     = req.query.scope === 'mine' ? 'mine' : 'all';
     const projectId = (req.query.project_id as string) || null;
     const status    = (req.query.status as string) || null;
-    const mine = scope === 'mine' ? gate.user.employeeId : null;
+    const empId     = gate.user.employeeId ?? null;
+    const userId    = gate.user.id ?? null;
+    // Legacy chain rows sometimes hold the human employee_id code
+    // instead of the internal id, so match on both when walking the
+    // reporting chain. Small extra lookup, keeps the manager-view
+    // right for legacy data.
+    const empCode   = empId
+      ? ((await sql`SELECT employee_id FROM employees WHERE id=${empId} LIMIT 1` as any[])[0]?.employee_id ?? null)
+      : null;
+    const mine      = scope === 'mine' ? empId : null;
     if (scope === 'mine' && !mine) return res.json([]);
 
-    const goals = await sql`
-      SELECT g.*, p.name AS project_name, p.client_name AS project_client
-      FROM goals g
-      LEFT JOIN projects p ON p.id = g.project_id
-      WHERE (${projectId}::text IS NULL OR g.project_id = ${projectId})
-        AND (${status}::text IS NULL OR g.status = ${status})
-        AND (${mine}::text IS NULL OR g.owner_id = ${mine})
-        AND g.status <> 'archived'
-      ORDER BY
-        CASE g.status WHEN 'active' THEN 0 WHEN 'on_track' THEN 1 WHEN 'at_risk' THEN 2 WHEN 'off_track' THEN 3 WHEN 'complete' THEN 4 ELSE 5 END,
-        g.target_date NULLS LAST,
-        g.created_at DESC` as any[];
+    const bypassGate = seesAllGoals(gate.user.role);
+
+    // The gate is built as a single CTE the main SELECT joins against.
+    // Two reachable sets: my_reports (direct + transitive), my_projects
+    // (leads / reviews / assigned). Pulled once per request, not per
+    // goal row. Bypass path skips the CTE entirely so admin listings
+    // don't pay for it.
+    const goals = bypassGate
+      ? await sql`
+          SELECT g.*, p.name AS project_name, p.client_name AS project_client
+          FROM goals g
+          LEFT JOIN projects p ON p.id = g.project_id
+          WHERE (${projectId}::text IS NULL OR g.project_id = ${projectId})
+            AND (${status}::text IS NULL OR g.status = ${status})
+            AND (${mine}::text IS NULL OR g.owner_id = ${mine})
+            AND g.status <> 'archived'
+          ORDER BY
+            CASE g.status WHEN 'active' THEN 0 WHEN 'on_track' THEN 1 WHEN 'at_risk' THEN 2 WHEN 'off_track' THEN 3 WHEN 'complete' THEN 4 ELSE 5 END,
+            g.target_date NULLS LAST,
+            g.created_at DESC` as any[]
+      : await sql`
+          WITH RECURSIVE my_reports AS (
+            SELECT id FROM employees
+            WHERE reporting_manager_id = ${empId} OR reporting_manager_id = ${empCode}
+            UNION ALL
+            SELECT e.id FROM employees e
+            JOIN my_reports r ON e.reporting_manager_id = r.id OR e.reporting_manager_id = (SELECT employee_id FROM employees WHERE id = r.id)
+          ),
+          my_projects AS (
+            SELECT id FROM projects
+            WHERE project_lead_id = ${empId} OR project_reporting_id = ${empId}
+            UNION
+            SELECT project_id FROM project_assignments WHERE employee_id = ${empId}
+          )
+          SELECT g.*, p.name AS project_name, p.client_name AS project_client
+          FROM goals g
+          LEFT JOIN projects p ON p.id = g.project_id
+          WHERE (${projectId}::text IS NULL OR g.project_id = ${projectId})
+            AND (${status}::text IS NULL OR g.status = ${status})
+            AND (${mine}::text IS NULL OR g.owner_id = ${mine})
+            AND g.status <> 'archived'
+            AND (
+              g.owner_id      = ${empId}
+              OR g.created_by_id = ${userId}
+              OR g.owner_id IN (SELECT id FROM my_reports)
+              OR (g.project_id IS NOT NULL AND g.project_id IN (SELECT id FROM my_projects))
+            )
+          ORDER BY
+            CASE g.status WHEN 'active' THEN 0 WHEN 'on_track' THEN 1 WHEN 'at_risk' THEN 2 WHEN 'off_track' THEN 3 WHEN 'complete' THEN 4 ELSE 5 END,
+            g.target_date NULLS LAST,
+            g.created_at DESC` as any[];
     if (!goals.length) return res.json([]);
     const goalIds = goals.map(g => g.id);
     const krs = await sql`SELECT * FROM goal_key_results WHERE goal_id = ANY(${goalIds}::text[]) ORDER BY sort_order, id` as any[];
@@ -23005,6 +23069,38 @@ app.get('/api/goals/:id', async (req, res) => {
       LEFT JOIN projects p ON p.id = g.project_id
       WHERE g.id = ${req.params.id}` as any[])[0];
     if (!g) return res.status(404).json({ error: 'Goal not found' });
+    // Enforce the same visibility gate as the list endpoint. 404 (not
+    // 403) so we don't confirm a goal exists to a caller who shouldn't
+    // see it — matches the convention we use elsewhere for restricted
+    // reads.
+    if (!seesAllGoals(gate.user.role)) {
+      const empId   = gate.user.employeeId ?? null;
+      const userId  = gate.user.id ?? null;
+      const empCode = empId
+        ? ((await sql`SELECT employee_id FROM employees WHERE id=${empId} LIMIT 1` as any[])[0]?.employee_id ?? null)
+        : null;
+      const visible = (await sql`
+        WITH RECURSIVE my_reports AS (
+          SELECT id FROM employees
+          WHERE reporting_manager_id = ${empId} OR reporting_manager_id = ${empCode}
+          UNION ALL
+          SELECT e.id FROM employees e
+          JOIN my_reports r ON e.reporting_manager_id = r.id OR e.reporting_manager_id = (SELECT employee_id FROM employees WHERE id = r.id)
+        )
+        SELECT 1
+        WHERE ${g.owner_id}::text      = ${empId}
+           OR ${g.created_by_id}::text = ${userId}
+           OR ${g.owner_id}::text IN (SELECT id FROM my_reports)
+           OR (${g.project_id}::text IS NOT NULL AND EXISTS (
+                 SELECT 1 FROM projects p
+                 LEFT JOIN project_assignments pa
+                   ON pa.project_id = p.id AND pa.employee_id = ${empId}
+                 WHERE p.id = ${g.project_id}
+                   AND (p.project_lead_id = ${empId} OR p.project_reporting_id = ${empId} OR pa.id IS NOT NULL)
+               ))
+        LIMIT 1` as any[])[0];
+      if (!visible) return res.status(404).json({ error: 'Goal not found' });
+    }
     const krs = await sql`SELECT * FROM goal_key_results WHERE goal_id=${req.params.id} ORDER BY sort_order, id` as any[];
     res.json(enrichGoal(g, krs));
   } catch (err: any) { res.status(500).json({ error: err.message ?? 'Server error' }); }
