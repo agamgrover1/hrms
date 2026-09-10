@@ -19798,6 +19798,11 @@ app.get('/api/finance/revenue', async (req, res) => {
   try {
     const month = Number(req.query.month), year = Number(req.query.year);
     if (!month || !year) return res.status(400).json({ error: 'month and year are required' });
+    // Include active projects AND any archived project that already has
+    // a billing row for the same month. Otherwise a coordinator who
+    // archives a project mid-clearance disappears the row from Billing
+    // rows for the admin, blocking the admin from marking it Cleared.
+    // Matches the same visibility rule the Finance dashboard uses.
     const rows = await sql`
       SELECT p.id, p.name, p.client_name, p.billing_source,
              r.billing_type, r.fixed_amount, r.hourly_rate, r.billable_hours,
@@ -19807,6 +19812,10 @@ app.get('/api/finance/revenue', async (req, res) => {
       FROM projects p
       LEFT JOIN fin_project_revenue r ON r.project_id = p.id AND r.month = ${month} AND r.year = ${year}
       WHERE p.status = 'active'
+         OR p.id IN (
+           SELECT project_id FROM fin_project_revenue
+           WHERE month = ${month} AND year = ${year}
+         )
       ORDER BY p.name`;
     res.json(rows);
   } catch (err: any) { res.status(500).json({ error: err.message || 'Server error' }); }
