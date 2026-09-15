@@ -43,6 +43,11 @@ export default function Mail() {
   const [composeSeed, setComposeSeed] = useState<Partial<ComposeSeed> | null>(null);
   const openCompose = (seed: Partial<ComposeSeed> = {}) => setComposeSeed(seed);
   const closeCompose = () => setComposeSeed(null);
+  // Mobile pane routing. On lg+ every panel is visible via the 3-column
+  // grid; below lg only ONE panel shows at a time (folders | list |
+  // reader) with back-nav between them. Default 'list' because the
+  // page always lands on Inbox with a preselected folder.
+  const [mobileView, setMobileView] = useState<'folders' | 'list' | 'reader'>('list');
 
   const loadAccounts = () => {
     setLoadingAccounts(true);
@@ -211,17 +216,20 @@ export default function Mail() {
         </div>
       </div>
 
-      {/* 3-panel grid */}
-      <div className="flex-1 min-h-0 grid grid-cols-[200px_320px_1fr] gap-3 mt-3">
+      {/* Panels — 3-column grid on lg+, single-pane drill-nav on mobile.
+          On mobile: folders / list / reader are stacked in the DOM but
+          only ONE is visible at a time (see hidden lg:block toggles),
+          with tap-to-drill and a back arrow to return. */}
+      <div className="flex-1 min-h-0 lg:grid lg:grid-cols-[200px_320px_1fr] gap-3 mt-3 flex flex-col">
         {/* Folder rail */}
-        <aside className="rounded-xl-2 border border-outline bg-surface overflow-y-auto">
+        <aside className={`rounded-xl-2 border border-outline bg-surface overflow-y-auto flex-1 min-h-0 ${mobileView === 'folders' ? 'flex flex-col' : 'hidden'} lg:flex lg:flex-col`}>
           <div className="px-3 py-2 text-[10px] uppercase tracking-wider text-on-surface-muted font-bold border-b border-outline">
             Folders {loadingFolders && <Loader2 size={10} className="inline animate-spin ml-1" />}
           </div>
           {folders.map(f => {
             const Icon = folderIcon(f);
             return (
-              <button key={f.path} onClick={() => setSelectedFolder(f.path)}
+              <button key={f.path} onClick={() => { setSelectedFolder(f.path); setMobileView('list'); }}
                 className={`w-full text-left px-3 py-2 flex items-center gap-2 text-sm hover:bg-surface-2 ${selectedFolder === f.path ? 'bg-brand-container/40 border-l-2 border-brand' : ''}`}>
                 <Icon size={13} className="text-on-surface-muted flex-shrink-0" />
                 <span className={`flex-1 truncate ${f.unread > 0 ? 'font-semibold text-on-surface' : 'text-on-surface-muted'}`}>{friendlyFolderName(f)}</span>
@@ -232,9 +240,18 @@ export default function Mail() {
         </aside>
 
         {/* Message list */}
-        <section className="rounded-xl-2 border border-outline bg-surface overflow-y-auto flex flex-col">
+        <section className={`rounded-xl-2 border border-outline bg-surface overflow-y-auto flex-col flex-1 min-h-0 ${mobileView === 'list' ? 'flex' : 'hidden'} lg:flex`}>
           <div className="px-3 py-2 text-[10px] uppercase tracking-wider text-on-surface-muted font-bold border-b border-outline flex items-center justify-between flex-shrink-0">
-            <span>{friendlyFolderName(folders.find(f => f.path === selectedFolder))} · {search.trim() ? `${messages.length} found` : listTotal}</span>
+            <div className="flex items-center gap-1.5 flex-1 min-w-0">
+              {/* Mobile-only back-to-folders. On lg+ the folder rail
+                  is already visible so the button hides. */}
+              <button onClick={() => setMobileView('folders')}
+                className="lg:hidden p-1 -ml-1 rounded hover:bg-surface-2 text-on-surface-muted flex-shrink-0"
+                aria-label="Back to folders">
+                <ChevronLeft size={13} />
+              </button>
+              <span className="truncate">{friendlyFolderName(folders.find(f => f.path === selectedFolder))} · {search.trim() ? `${messages.length} found` : listTotal}</span>
+            </div>
             {(loadingList || searching) && <Loader2 size={10} className="animate-spin" />}
           </div>
           <div className="px-2.5 py-1.5 border-b border-outline flex-shrink-0 flex items-center gap-1.5">
@@ -252,7 +269,7 @@ export default function Mail() {
             <p className="p-8 text-center text-xs text-on-surface-subtle italic">This folder is empty.</p>
           )}
           {messages.map(m => (
-            <button key={m.uid} onClick={() => setSelectedUid(m.uid)}
+            <button key={m.uid} onClick={() => { setSelectedUid(m.uid); setMobileView('reader'); }}
               className={`w-full text-left px-3 py-2 border-b border-outline hover:bg-surface-2 ${selectedUid === m.uid ? 'bg-brand-container/40' : ''} ${!m.seen ? 'font-semibold' : ''}`}>
               <div className="flex items-baseline justify-between gap-2">
                 <span className={`text-xs truncate flex-1 ${!m.seen ? 'text-on-surface' : 'text-on-surface-muted'}`}>
@@ -271,7 +288,15 @@ export default function Mail() {
         </section>
 
         {/* Reader */}
-        <section className="rounded-xl-2 border border-outline bg-surface overflow-y-auto">
+        <section className={`rounded-xl-2 border border-outline bg-surface overflow-y-auto flex-1 min-h-0 ${mobileView === 'reader' ? 'flex flex-col' : 'hidden'} lg:flex lg:flex-col`}>
+          {/* Mobile-only back-to-list bar. On lg+ the message list is
+              always visible next to the reader so the bar hides. */}
+          <div className="lg:hidden px-3 py-2 border-b border-outline flex-shrink-0">
+            <button onClick={() => setMobileView('list')}
+              className="inline-flex items-center gap-1 text-xs text-on-surface-muted hover:text-on-surface">
+              <ChevronLeft size={13} /> Back to list
+            </button>
+          </div>
           {loadingMessage && (
             <div className="p-10 text-center text-sm text-on-surface-muted"><Loader2 size={14} className="inline animate-spin" /> Loading message…</div>
           )}
