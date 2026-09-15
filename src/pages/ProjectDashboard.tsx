@@ -273,15 +273,32 @@ export default function ProjectDashboard() {
         </Card>
 
         {/* Financials */}
-        {data.financials && (
-          <Card icon={Wallet} title="Financials"
-            right={<Link to="/finance?tab=revenue" className="text-[11px] text-accent hover:underline inline-flex items-center gap-0.5">Open in Finance <ExternalLink size={10} /></Link>}>
-            <div className="grid grid-cols-2 gap-3">
-              <MoneyStat label="Pending (invoiced)" value={data.financials.invoiced_pending} tone="text-warning" sub={`${data.financials.pending_count} entr${data.financials.pending_count === 1 ? 'y' : 'ies'}`} />
-              <MoneyStat label="Received" value={data.financials.received} tone="text-success" sub={`${data.financials.cleared_count} cleared`} />
-            </div>
-          </Card>
-        )}
+        {data.financials && (() => {
+          // Route "Open in Finance" to the tab that matches how this
+          // project actually gets billed — Upwork projects → revenue
+          // (billing setup); direct-client projects → invoices. Old
+          // link always sent people to revenue, which was empty for
+          // direct clients.
+          const financeTab = p.billing_source === 'upwork' ? 'revenue' : 'invoices';
+          const totalCount = data.financials.pending_count + data.financials.cleared_count;
+          const isEmpty = totalCount === 0;
+          return (
+            <Card icon={Wallet} title="Financials"
+              right={<Link to={`/finance?tab=${financeTab}`} className="text-[11px] text-accent hover:underline inline-flex items-center gap-0.5">Open in Finance <ExternalLink size={10} /></Link>}>
+              <div className="grid grid-cols-2 gap-3">
+                <MoneyStat label="Pending (invoiced)" value={data.financials.invoiced_pending} tone="text-warning" sub={`${data.financials.pending_count} entr${data.financials.pending_count === 1 ? 'y' : 'ies'}`} />
+                <MoneyStat label="Received" value={data.financials.received} tone="text-success" sub={`${data.financials.cleared_count} cleared`} />
+              </div>
+              {isEmpty && (
+                <p className="mt-3 text-[11px] text-on-surface-subtle">
+                  {p.billing_source === 'upwork'
+                    ? 'No Upwork billing rows yet — add one in Finance → Billing setup for this month.'
+                    : 'No invoices raised yet — go to Finance → Invoices to add one for this project.'}
+                </p>
+              )}
+            </Card>
+          );
+        })()}
 
         {/* Boards */}
         <Card icon={KanbanSquare} title="Task boards"

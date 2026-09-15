@@ -15983,14 +15983,50 @@ app.get('/api/projects/:id/dashboard', async (req, res) => {
         WHERE project_id=${projectId}
           AND created_at::date BETWEEN ${rangeStart}::date AND ${rangeEnd}::date
         ORDER BY created_at DESC LIMIT 30`.catch(() => [] as any[]),
+      // Financials — union of both money surfaces so the card is right
+      // regardless of billing_source. Upwork projects have rows in
+      // fin_project_revenue; direct-client projects have rows in
+      // fin_project_invoices. Some legacy projects have a mix (Upwork
+      // migration + a manual invoice), so we sum both.
+      // Direct-invoice `received` is stored INR-native for legacy rows
+      // and native-currency for newer clears — same 5× heuristic the
+      // Finance dashboard uses (see finComputeMonth invoiceAgg).
       isFinance ? sql`
+        WITH rev AS (
+          SELECT
+            COALESCE(SUM(CASE WHEN status='pending'
+                              THEN COALESCE(fixed_amount, hourly_rate * billable_hours, 0)
+                              ELSE 0 END), 0)::numeric AS invoiced_pending,
+            COALESCE(SUM(CASE WHEN status IN ('cleared','cleared_pending')
+                              THEN COALESCE(amount_received, 0)
+                              ELSE 0 END), 0)::numeric AS received,
+            COUNT(*) FILTER (WHERE status='pending')::int AS pending_count,
+            COUNT(*) FILTER (WHERE status='cleared')::int AS cleared_count
+          FROM fin_project_revenue
+          WHERE project_id=${projectId}
+        ),
+        inv AS (
+          SELECT
+            COALESCE(SUM(CASE WHEN status <> 'cleared' AND status <> 'cancelled'
+                              THEN COALESCE(amount_invoiced_inr, amount_invoiced, 0)
+                              ELSE 0 END), 0)::numeric AS invoiced_pending,
+            COALESCE(SUM(CASE
+                          WHEN status <> 'cleared' THEN 0
+                          WHEN currency IS NULL OR currency = 'INR' THEN COALESCE(amount_received, 0)
+                          WHEN COALESCE(amount_received, 0) > COALESCE(amount_invoiced, 0) * 5 THEN COALESCE(amount_received, 0)
+                          ELSE COALESCE(amount_received, 0) * COALESCE(fx_rate, 1)
+                        END), 0)::numeric AS received,
+            COUNT(*) FILTER (WHERE status NOT IN ('cleared','cancelled'))::int AS pending_count,
+            COUNT(*) FILTER (WHERE status='cleared')::int AS cleared_count
+          FROM fin_project_invoices
+          WHERE project_id=${projectId}
+        )
         SELECT
-          COALESCE(SUM(CASE WHEN status='pending'         THEN COALESCE(fixed_amount, hourly_rate * billable_hours, 0) ELSE 0 END), 0)::numeric AS invoiced_pending,
-          COALESCE(SUM(CASE WHEN status IN ('cleared','cleared_pending') THEN COALESCE(amount_received, 0) ELSE 0 END), 0)::numeric AS received,
-          COUNT(*) FILTER (WHERE status='pending')::int AS pending_count,
-          COUNT(*) FILTER (WHERE status='cleared')::int AS cleared_count
-        FROM fin_project_revenue
-        WHERE project_id=${projectId}`.catch(() => [{ invoiced_pending: 0, received: 0, pending_count: 0, cleared_count: 0 }] as any[]) : Promise.resolve(null),
+          (rev.invoiced_pending + inv.invoiced_pending)::numeric AS invoiced_pending,
+          (rev.received + inv.received)::numeric AS received,
+          (rev.pending_count + inv.pending_count)::int AS pending_count,
+          (rev.cleared_count + inv.cleared_count)::int AS cleared_count
+        FROM rev, inv`.catch(() => [{ invoiced_pending: 0, received: 0, pending_count: 0, cleared_count: 0 }] as any[]) : Promise.resolve(null),
     ]);
 
     res.json({
