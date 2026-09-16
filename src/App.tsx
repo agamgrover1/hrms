@@ -16,6 +16,7 @@ import UserManagement from './pages/UserManagement';
 import Config from './pages/Config';
 import Incentives from './pages/Incentives';
 import EmployeeProfile from './pages/EmployeeProfile';
+import Notes from './pages/Notes';
 import AssetRepairs from './pages/AssetRepairs';
 import MyPortal from './pages/employee/MyPortal';
 import MyTeam from './pages/employee/MyTeam';
@@ -73,11 +74,13 @@ function AppRoutes() {
         {/* hr_intern: gets read access to employees (no salary), attendance,
             and leaves. Blocked from payroll, performance, user mgmt, config,
             incentives. Backend strips salary fields and gates writes. */}
-        {/* Project coordinator gets read access to People so they can jot
-            private notes on any employee. Backend strips salary + other
-            HR-only fields for coord (same pattern used for hr_intern). */}
-        <Route path="employees" element={<ProtectedRoute roles={['admin', 'hr_manager', 'hr_intern', 'project_coordinator']}><Employees /></ProtectedRoute>} />
-        <Route path="employees/:id" element={<ProtectedRoute roles={['admin', 'hr_manager', 'hr_intern', 'project_coordinator']}><EmployeeProfile /></ProtectedRoute>} />
+        {/* People directory + full profile are HR/admin territory. Coord's
+            private-notes flow lives on its own /notes page (below) with a
+            dedicated employee list — no exposure to compensation, docs,
+            warnings, or the profile edit button by design. */}
+        <Route path="employees" element={<ProtectedRoute roles={['admin', 'hr_manager', 'hr_intern']}><Employees /></ProtectedRoute>} />
+        <Route path="employees/:id" element={<ProtectedRoute roles={['admin', 'hr_manager', 'hr_intern']}><EmployeeProfile /></ProtectedRoute>} />
+        <Route path="notes" element={<ProtectedRoute roles={['admin', 'hr_manager', 'project_coordinator']}><Notes /></ProtectedRoute>} />
         <Route path="attendance" element={<ProtectedRoute roles={['admin', 'hr_manager', 'hr_intern']}><Attendance /></ProtectedRoute>} />
         {/* Interns apply leaves via /my (My Portal) instead of the HR
             org-wide Leave surface — same as full employees. */}

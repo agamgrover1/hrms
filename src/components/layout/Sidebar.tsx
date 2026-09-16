@@ -2,7 +2,7 @@ import { NavLink, useLocation } from 'react-router-dom';
 import {
   LayoutDashboard, Users, Clock3, CalendarDays, Wallet, Sparkles,
   ChevronLeft, ChevronRight, ChevronDown, UserCog, User, SlidersHorizontal, TrendingUp, Wrench,
-  Briefcase, ClipboardCheck, Layers, LineChart, AlertTriangle, Activity, Megaphone, BookOpen, HelpCircle, Mail, UserPlus, FileText, UserSearch, KanbanSquare, Target, BarChart3, Inbox, Bell, type LucideIcon,
+  Briefcase, ClipboardCheck, Layers, LineChart, AlertTriangle, Activity, Megaphone, BookOpen, HelpCircle, Mail, UserPlus, FileText, UserSearch, KanbanSquare, Target, BarChart3, Inbox, Bell, MessageSquare, type LucideIcon,
 } from 'lucide-react';
 import { useState, useEffect, useRef } from 'react';
 import { useAuth } from '../../context/AuthContext';
@@ -18,6 +18,7 @@ const workspaceGroup: NavGroup = {
   items: [
     { to: '/', icon: LayoutDashboard, label: 'Overview', end: true },
     { to: '/employees', icon: Users, label: 'People' },
+    { to: '/notes', icon: MessageSquare, label: 'Team notes' },
     { to: '/hiring', icon: UserSearch, label: 'Hiring' },
     { to: '/lifecycle', icon: UserPlus, label: 'Lifecycle' },
     { to: '/hr/documents', icon: FileText, label: 'Documents' },
@@ -277,17 +278,19 @@ export default function Sidebar({ mobileOpen = false, onMobileClose }: { mobileO
       ],
     });
   } else if (isCoord) {
-    // Coord sees Projects + Hours + Invoices + a lightweight People
-    // link (for private notes on any employee) + their own personal
-    // nav. Two smaller groups instead of the old 11-item Project Mgmt
-    // bucket — reflects how they actually work (project work vs.
-    // time work).
+    // Coord sees Projects + Hours + Invoices + a dedicated Notes page
+    // (people list + private-notes composer, no salary/profile edit
+    // surface) + their own personal nav. Two smaller groups instead
+    // of the old 11-item Project Mgmt bucket — reflects how they
+    // actually work (project work vs. time work). The full Employee
+    // profile is deliberately NOT in coord's nav — /notes is the
+    // right-sized surface for what they need.
     groups.push({
       id: 'workspace-coord',
       label: 'Workspace',
       items: [
         { to: '/', icon: LayoutDashboard, label: 'Overview', end: true },
-        { to: '/employees', icon: Users, label: 'People' },
+        { to: '/notes', icon: MessageSquare, label: 'Team notes' },
       ],
     });
     groups.push(projectGroup, hoursGroup);

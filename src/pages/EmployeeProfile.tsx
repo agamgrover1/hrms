@@ -558,10 +558,11 @@ export default function EmployeeProfile() {
                 <TrendingUp size={12}/> Give increment
               </button>
             )}
-            {/* Edit is HR/admin territory — coord views profiles for
-                private-notes use only and shouldn't rewrite employee
-                metadata. hr_intern kept in per the older gate. */}
-            {(me?.role === 'admin' || me?.role === 'hr_manager' || me?.role === 'hr_intern') && (
+            {/* Edit is strictly admin + HR Manager — nobody else writes
+                to employee metadata (department, designation, join date,
+                reporting manager, exit date, etc). HR Intern reads;
+                coord doesn't reach this page at all. */}
+            {(me?.role === 'admin' || me?.role === 'hr_manager') && (
               <button onClick={() => setShowEdit(true)}
                 className="flex items-center gap-1.5 px-3 py-1.5 bg-white/15 hover:bg-white/25 border border-white/15 backdrop-blur-sm rounded-lg text-white text-xs font-semibold transition-colors">
                 <Pencil size={12}/> Edit
