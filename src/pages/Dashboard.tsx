@@ -1097,12 +1097,14 @@ function AnnouncementCard({ a, canDelete, onChanged }: {
 }) {
   const { user } = useAuth();
   const isAdminOrHR = user?.role === 'admin' || user?.role === 'hr_manager';
-  const isAuto = a.kind === 'birthday' || a.kind === 'anniversary';
-  const tone = isAuto
-    ? a.kind === 'birthday'
-      ? 'border-brand/30 bg-brand-container/40'
-      : 'border-accent/40 bg-accent/5'
-    : a.pinned ? 'border-accent/40 bg-accent/5' : 'border-outline bg-surface-2/30';
+  const isAuto = a.kind === 'birthday' || a.kind === 'anniversary' || a.kind === 'praise';
+  const tone = a.kind === 'praise'
+    ? 'border-accent/40 bg-accent/5'
+    : isAuto
+      ? a.kind === 'birthday'
+        ? 'border-brand/30 bg-brand-container/40'
+        : 'border-accent/40 bg-accent/5'
+      : a.pinned ? 'border-accent/40 bg-accent/5' : 'border-outline bg-surface-2/30';
   const roleLabel =
     a.posted_by_role === 'admin' ? 'Admin' :
     a.posted_by_role === 'hr_manager' ? 'HR' :
@@ -1169,6 +1171,7 @@ function AnnouncementCard({ a, canDelete, onChanged }: {
           {a.pinned && <span className="text-[10px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded-md bg-accent text-on-accent">📌 Pinned</span>}
           {a.kind === 'birthday' && <span className="text-[10px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded-md bg-brand text-on-brand">🎂 Birthday</span>}
           {a.kind === 'anniversary' && <span className="text-[10px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded-md bg-accent text-on-accent">🎯 Anniversary</span>}
+          {a.kind === 'praise' && <span className="text-[10px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded-md bg-accent text-on-accent">🏆 Shout-outs</span>}
           <p className="font-display text-base font-bold text-on-surface tracking-tight truncate">{a.title}</p>
         </div>
         <div className="flex items-center gap-2 flex-shrink-0">
@@ -1185,6 +1188,13 @@ function AnnouncementCard({ a, canDelete, onChanged }: {
         </div>
       </div>
       <p className="text-sm text-on-surface-muted whitespace-pre-line leading-snug">{a.body}</p>
+      {a.kind === 'praise' && (
+        <Link to="/praise"
+          className="inline-flex items-center gap-1 mt-1.5 text-[11px] font-semibold text-accent-ink hover:underline"
+          style={{ color: 'var(--accent, #EE2770)' }}>
+          Open Praise wall → react + comment
+        </Link>
+      )}
       {(a.posted_by_name || isAuto) && (
         <div className="flex items-center gap-1.5 mt-1.5 text-[10px] text-on-surface-subtle">
           <span>— {a.posted_by_name ?? 'Digital Leap HRMS'}</span>

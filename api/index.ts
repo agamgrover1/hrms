@@ -24790,36 +24790,40 @@ app.post('/api/cron/run-praise-digest', async (req, res) => {
     ORDER BY n DESC, recipient_name
     LIMIT 3` as any[] : [];
 
-  let notified = 0;
+  let announcement_id: string | null = null;
   if (total > 0) {
     const names = top.map((r: any) => r.recipient_name).join(', ');
     const title = `🎉 ${total} shout-out${total === 1 ? '' : 's'} this week`;
     const body = recipients === 1
-      ? `${names} got recognised. Open Praise wall to react.`
-      : `${recipients} colleagues got some love — including ${names}. React on the Praise wall.`;
+      ? `${names} got recognised this week. Open the Praise wall to react.`
+      : `${recipients} colleagues got some love this week — including ${names}. React on the Praise wall.`;
 
-    // Fan-out to every active app_user with a linked employee. We
-    // skip users without an employee row because notifyEmployeeUser
-    // resolves via employee_id_ref.
-    const targets = await sql`
-      SELECT u.id AS user_id, u.employee_id_ref, e.id AS employee_id
-      FROM app_users u
-      LEFT JOIN employees e ON e.id = u.employee_id_ref OR e.employee_id = u.employee_id_ref
-      WHERE u.active = TRUE AND e.id IS NOT NULL AND e.status <> 'exit'` as any[];
-
-    for (const t of targets) {
-      // notifyEmployeeUser is idempotent per (user, type, title, body)
-      // in the last minute, so a rerun with force=1 won't double-fan.
-      await notifyEmployeeUser(t.employee_id, 'praise_digest', title, body, '/praise').catch(() => {});
-      notified++;
-    }
+    // Post as a company announcement so the entire office sees it on
+    // the dashboard when they next open the portal — no per-user
+    // push, no bell spam. Kind='praise' so the dashboard card can
+    // render it with the shout-out treatment + a React link.
+    // Auto-expires after 7 days so old digests roll off cleanly
+    // when next Monday's digest lands.
+    announcement_id = `pd_${weekKey.replace(/-/g, '')}`;
+    await sql`
+      INSERT INTO company_announcements (id, title, body, pinned, expires_at,
+                                         posted_by_id, posted_by_name, posted_by_role, kind)
+      VALUES (${announcement_id}, ${title}, ${body}, FALSE,
+              NOW() + INTERVAL '7 days',
+              NULL, 'Praise wall', 'system', 'praise')
+      ON CONFLICT (id) DO UPDATE SET
+        title      = EXCLUDED.title,
+        body       = EXCLUDED.body,
+        expires_at = EXCLUDED.expires_at,
+        updated_at = NOW()`.catch(() => {});
   }
 
   const result = {
     ran_at: new Date().toISOString(),
     ms: Date.now() - started,
     week_key: weekKey,
-    total, recipients, notified,
+    total, recipients,
+    announcement_id,
     top: top.map((r: any) => ({ name: r.recipient_name, count: Number(r.n) })),
   };
   await sql`
