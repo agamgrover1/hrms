@@ -104,6 +104,7 @@ const ROLE_PILL: Record<string, { label: string; bg: string; color: string }> = 
   hr_intern:           { label: 'HR Intern',     bg: 'rgba(251,191,36,0.18)',  color: '#fde68a' },
   project_coordinator: { label: 'Project Coord.', bg: 'rgba(103,232,249,0.16)', color: '#a5f3fc' },
   employee:            { label: 'Employee',      bg: 'rgba(255,255,255,0.08)', color: 'rgba(255,255,255,0.7)' },
+  intern:              { label: 'Intern',        bg: 'rgba(163,230,53,0.16)',  color: '#d9f99d' },
 };
 
 // Version stamp at the bottom of the sidebar. Shows a human-readable
@@ -208,6 +209,10 @@ export default function Sidebar({ mobileOpen = false, onMobileClose }: { mobileO
   // HR Intern: scoped HR — gets only the people-ops surfaces they're
   // allowed on (People, Attendance, Time off). Everything else is hidden.
   const isHRIntern = role === 'hr_intern';
+  // General intern (design / SEO / dev, etc.). Personal-portal-only —
+  // My tasks, Mail, Meetings, own hours, own attendance via /my.
+  // NO Payroll, Finance, Hiring, Configuration, Team, Approvals, Goals.
+  const isIntern = role === 'intern';
 
   // Is this user a project lead (project_lead_id) on any active project?
   // Same gate as project reviewer — both relationships should unlock the
@@ -216,10 +221,12 @@ export default function Sidebar({ mobileOpen = false, onMobileClose }: { mobileO
 
   useEffect(() => {
     // Detect "has direct reports" for ANY role that gets a personal area
-    // (employee, coord, HR, admin, hr_intern). An admin who's also a reporting
+    // (employee, coord, HR, admin, hr_intern, intern). An admin who's also a reporting
     // manager for some employees should see team links — My team / Team
     // compliance / Team utilization — just like a regular manager.
-    const showPersonal = isEmployee || isCoord || isHRIntern || role === 'hr_manager' || role === 'admin';
+    // Interns technically get the "has reports" probe too, but that'll
+    // return zero for them, keeping their nav lean.
+    const showPersonal = isEmployee || isCoord || isHRIntern || isIntern || role === 'hr_manager' || role === 'admin';
     if (!showPersonal || !user?.employee_id_ref) return;
     api.getEmployeesSlim()
       .then(emps => {
@@ -236,7 +243,7 @@ export default function Sidebar({ mobileOpen = false, onMobileClose }: { mobileO
           .catch(() => {});
       })
       .catch(() => {});
-  }, [user?.employee_id_ref, isEmployee, isCoord, role]);
+  }, [user?.employee_id_ref, isEmployee, isCoord, isIntern, role]);
 
   const isTeamLead = isProjectReviewer || isProjectLead;
 
@@ -289,7 +296,7 @@ export default function Sidebar({ mobileOpen = false, onMobileClose }: { mobileO
   // HR Intern is included: she's also an employee with her own portal, leaves,
   // hours, pulse — the role just gates what she can do FOR OTHERS, not what
   // she can see about herself.
-  const showPersonal = isEmployee || isCoord || isHRIntern || role === 'hr_manager' || role === 'admin';
+  const showPersonal = isEmployee || isCoord || isHRIntern || isIntern || role === 'hr_manager' || role === 'admin';
   const personalGroup: NavGroup | null = showPersonal ? {
     id: 'personal',
     label: 'You',
@@ -298,7 +305,8 @@ export default function Sidebar({ mobileOpen = false, onMobileClose }: { mobileO
       // for non-admin/HR (admin/HR already see it under Workspace as
       // "Overview"). Keeps the nav from duplicating the same link twice.
       // HR Intern already has Overview in her Workspace group above — no Home duplicate here.
-      ...(isEmployee || isCoord ? [{ to: '/', icon: LayoutDashboard, label: 'Home', end: true } as NavItem] : []),
+      // Interns get Home here since they have no Workspace group.
+      ...(isEmployee || isCoord || isIntern ? [{ to: '/', icon: LayoutDashboard, label: 'Home', end: true } as NavItem] : []),
       { to: '/my', icon: User, label: 'My portal', end: true },
       { to: '/mail', icon: Inbox, label: 'Mail' },
       { to: '/meetings', icon: CalendarDays, label: 'Meetings' },
@@ -308,7 +316,8 @@ export default function Sidebar({ mobileOpen = false, onMobileClose }: { mobileO
       // already get it via the Projects group (admin + coord). The
       // /goals page shows: own goals + reports' goals + project goals
       // the caller has access to. HR sees all (backend gate).
-      ...(role === 'admin' || isCoord ? [] : [{ to: '/goals', icon: Target, label: 'Goals' } as NavItem]),
+      // Interns opted out of the performance module — skip Goals for them.
+      ...(role === 'admin' || isCoord || isIntern ? [] : [{ to: '/goals', icon: Target, label: 'Goals' } as NavItem]),
       ...(isManager ? [{ to: '/my-team', icon: Users, label: 'My team' } as NavItem] : []),
       ...(isManager ? [{ to: '/workload', icon: Activity, label: 'Team workload' } as NavItem] : []),
       // Team leads (project_reporting OR project_lead on any project) need to see

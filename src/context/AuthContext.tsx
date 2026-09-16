@@ -10,7 +10,11 @@ const INACTIVITY_LIMIT_MS = 2 * 60 * 60 * 1000;   // 2 hours
 const ACTIVITY_KEY = 'digitalleap_hrms_last_activity';
 const CHECK_INTERVAL_MS = 30 * 1000;          // poll every 30s — fine granularity isn't needed
 
-export type Role = 'admin' | 'hr_manager' | 'hr_intern' | 'project_coordinator' | 'employee';
+// 'intern' = general (non-HR) intern — design, SEO, dev, etc. Distinct
+// from 'hr_intern' (scoped HR helper). Interns log hours + attendance
+// + tasks but have no access to org-wide finance / hiring / admin
+// surfaces and get probation-style short-leaves-only (no accrual).
+export type Role = 'admin' | 'hr_manager' | 'hr_intern' | 'project_coordinator' | 'employee' | 'intern';
 
 export interface AppUser {
   id: string;

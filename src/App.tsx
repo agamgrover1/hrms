@@ -76,6 +76,8 @@ function AppRoutes() {
         <Route path="employees" element={<ProtectedRoute roles={['admin', 'hr_manager', 'hr_intern']}><Employees /></ProtectedRoute>} />
         <Route path="employees/:id" element={<ProtectedRoute roles={['admin', 'hr_manager', 'hr_intern']}><EmployeeProfile /></ProtectedRoute>} />
         <Route path="attendance" element={<ProtectedRoute roles={['admin', 'hr_manager', 'hr_intern']}><Attendance /></ProtectedRoute>} />
+        {/* Interns apply leaves via /my (My Portal) instead of the HR
+            org-wide Leave surface — same as full employees. */}
         <Route path="leave" element={<ProtectedRoute roles={['admin', 'hr_manager', 'hr_intern']}><Leave /></ProtectedRoute>} />
         <Route path="payroll" element={<ProtectedRoute roles={['admin', 'hr_manager']}><Payroll /></ProtectedRoute>} />
         <Route path="performance" element={<ProtectedRoute roles={['admin', 'hr_manager']}><Performance /></ProtectedRoute>} />
@@ -146,8 +148,9 @@ function AppRoutes() {
         <Route path="templates" element={<ProtectedRoute roles={['admin', 'hr_manager']}><TemplatesHub /></ProtectedRoute>} />
         <Route path="features" element={<ProtectedRoute roles={['admin', 'hr_manager']}><Features /></ProtectedRoute>} />
 
-        {/* Employee routes — project_coordinator + hr_intern are also employees */}
-        <Route path="my" element={<ProtectedRoute roles={['employee', 'project_coordinator', 'hr_intern', 'hr_manager', 'admin']}><MyPortal /></ProtectedRoute>} />
+        {/* Employee routes — project_coordinator + hr_intern + intern are also employees.
+            /my-team is intentionally NOT extended to interns — they don't have reports. */}
+        <Route path="my" element={<ProtectedRoute roles={['employee', 'project_coordinator', 'hr_intern', 'hr_manager', 'admin', 'intern']}><MyPortal /></ProtectedRoute>} />
         <Route path="my-team" element={<ProtectedRoute roles={['employee', 'project_coordinator', 'hr_intern', 'hr_manager', 'admin']}><MyTeam /></ProtectedRoute>} />
       </Route>
 

@@ -110,6 +110,7 @@ function UserModal({
               <select value={form.role} onChange={e => set('role', e.target.value as Role)}
                 className="w-full border border-outline rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-brand/30 focus:border-brand bg-surface text-on-surface">
                 <option value="employee">Employee</option>
+                <option value="intern">Intern</option>
                 <option value="hr_intern">HR Intern</option>
                 <option value="hr_manager">HR Manager</option>
                 <option value="project_coordinator">Project Coordinator</option>
@@ -218,6 +219,7 @@ export default function UserManagement() {
     hr_intern: users.filter(u => u.role === 'hr_intern').length,
     project_coordinator: users.filter(u => u.role === 'project_coordinator').length,
     employee: users.filter(u => u.role === 'employee').length,
+    intern: users.filter(u => u.role === 'intern').length,
   };
 
   const summaryTiles: Array<{ label: string; value: number; valueColor: string; blobColor: string }> = [
@@ -227,6 +229,7 @@ export default function UserManagement() {
     { label: 'HR Interns',          value: counts.hr_intern,           valueColor: 'text-warning',             blobColor: 'bg-warning/15' },
     { label: 'Project Coordinator', value: counts.project_coordinator, valueColor: 'text-on-brand-container',  blobColor: 'bg-brand/15' },
     { label: 'Employees',           value: counts.employee,            valueColor: 'text-on-surface-muted',    blobColor: 'bg-accent/15' },
+    { label: 'Interns',             value: counts.intern,              valueColor: 'text-success',             blobColor: 'bg-success/15' },
   ];
 
   return (
@@ -276,6 +279,7 @@ export default function UserManagement() {
           <option value="hr_intern">HR Intern</option>
           <option value="project_coordinator">Project Coordinator</option>
           <option value="employee">Employee</option>
+          <option value="intern">Intern</option>
         </select>
         <button
           onClick={() => setModal({ mode: 'create' })}

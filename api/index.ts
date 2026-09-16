@@ -4231,11 +4231,19 @@ app.post('/api/employees', async (req, res) => {
       VALUES (${id}, ${name}, ${email}, ${phone}, ${department}, ${designation}, ${employee_id}, ${join_date}, ${location}, ${manager ?? null}, ${reporting_manager_id ?? null}, ${status ?? 'active'}, ${avatar}, ${salary}, ${ctc}, ${biometric_id ?? null}, ${shift ?? 'day'})
       RETURNING *`;
     const emp = rows[0];
-    // Initialise leave balance so the employee can apply leave immediately
+    // Initialise leave balance so the employee can apply leave immediately.
+    // Interns get short-leaves-only (2 per month, no accrual) — casual /
+    // sick / earned all stay at 0 so they can't apply for paid days off
+    // reserved for confirmed staff. Every other role gets the standard
+    // starter pack: 10 casual + 7 sick + 15 earned.
+    const isInternRole = role === 'intern';
+    const seedCasual = isInternRole ? 0 : 10;
+    const seedSick   = isInternRole ? 0 : 7;
+    const seedEarned = isInternRole ? 0 : 15;
     await sql`
       INSERT INTO leave_balances (employee_id, full_day, short_leave, casual, sick, earned,
         last_credited_month, last_credited_year, probation_short_used)
-      VALUES (${(emp as any).id}, 0, 2, 10, 7, 15,
+      VALUES (${(emp as any).id}, 0, 2, ${seedCasual}, ${seedSick}, ${seedEarned},
         ${new Date().getMonth() + 1}, ${new Date().getFullYear()}, 0)
       ON CONFLICT (employee_id) DO NOTHING
     `.catch(() => {});
@@ -9258,14 +9266,22 @@ async function markLeaveAttendance(employeeId: string, fromDate: string, toDate:
   }
 }
 
-async function creditMonthlyLeave(employeeId: string, joinDate: string | null) {
+async function creditMonthlyLeave(employeeId: string, joinDate: string | null, role: string | null = null) {
   const now = new Date();
   const cm = now.getMonth() + 1;
   const cy = now.getFullYear();
+  // Interns never accrue paid leave regardless of tenure — treat them
+  // as permanently on probation for accrual purposes. Auto-seed the
+  // balance row with short_leave=2 only (no casual / sick / earned)
+  // so their leave-apply screen shows the correct denominator.
+  const isIntern = role === 'intern';
   let balRows = await sql`SELECT * FROM leave_balances WHERE employee_id=${employeeId}`;
   // Auto-create a balance row if one doesn't exist (new employees added directly via UI)
   if (!(balRows as any[]).length) {
-    await sql`INSERT INTO leave_balances (employee_id, full_day, short_leave, casual, sick, earned, last_credited_month, last_credited_year, probation_short_used, prev_month_carry_full_day, current_month_credit_full_day) VALUES (${employeeId}, 0, 2, 10, 7, 15, ${cm}, ${cy}, 0, 0, 0) ON CONFLICT (employee_id) DO NOTHING`.catch(() => {});
+    const seedC = isIntern ? 0 : 10;
+    const seedS = isIntern ? 0 : 7;
+    const seedE = isIntern ? 0 : 15;
+    await sql`INSERT INTO leave_balances (employee_id, full_day, short_leave, casual, sick, earned, last_credited_month, last_credited_year, probation_short_used, prev_month_carry_full_day, current_month_credit_full_day) VALUES (${employeeId}, 0, 2, ${seedC}, ${seedS}, ${seedE}, ${cm}, ${cy}, 0, 0, 0) ON CONFLICT (employee_id) DO NOTHING`.catch(() => {});
     return; // just created — no credit needed yet
   }
   const bal = (balRows as any[])[0];
@@ -9288,10 +9304,11 @@ async function creditMonthlyLeave(employeeId: string, joinDate: string | null) {
   // Guard: if last_credited fields are set correctly already, skip the
   // full-day accrual below (probation reset above still ran).
   if (Number(bal.last_credited_month) === cm && Number(bal.last_credited_year) === cy) return;
-  if (isOnProbation(joinDate)) {
-    // Probation employees don't accrue a full day. Advance the guard
-    // (so we don't re-enter this block) and carry the previous-month
-    // balance for the UI split.
+  if (isOnProbation(joinDate) || isIntern) {
+    // Probation employees + interns don't accrue a full day. Advance
+    // the guard (so we don't re-enter this block) and carry the
+    // previous-month balance for the UI split. Short_leave still
+    // resets to 2 at the reset-block above.
     await sql`UPDATE leave_balances SET
         last_credited_month=${cm}, last_credited_year=${cy},
         prev_month_carry_full_day=COALESCE(full_day, 0),
@@ -9348,14 +9365,19 @@ async function ensureMonthlyLeaveCreditRun(ranBy: string | null = null): Promise
     RETURNING year`.catch(() => [] as any[]);
   if (!(claim as any[]).length) return { ran: false, credited: 0 };
   // We won the claim — actually credit everyone. Iterate active
-  // employees with their join_date so isOnProbation is checked per row.
+  // employees with their join_date so isOnProbation is checked per row,
+  // and their linked app_user role so intern rows correctly skip
+  // full-day accrual regardless of tenure.
   const emps = await sql`
-    SELECT id, join_date FROM employees
-    WHERE COALESCE(status, 'active') = 'active'` as any[];
+    SELECT e.id, e.join_date, u.role AS user_role
+    FROM employees e
+    LEFT JOIN app_users u
+      ON u.employee_id_ref = e.employee_id OR u.employee_id_ref = e.id
+    WHERE COALESCE(e.status, 'active') = 'active'` as any[];
   let credited = 0;
   for (const e of emps) {
     try {
-      await creditMonthlyLeave(e.id, e.join_date ?? null);
+      await creditMonthlyLeave(e.id, e.join_date ?? null, e.user_role ?? null);
       credited++;
     } catch { /* per-employee failure is non-fatal — move on */ }
   }
