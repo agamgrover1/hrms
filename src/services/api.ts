@@ -1741,6 +1741,30 @@ export const api = {
   patchGoal: (id: string, patch: Record<string, any>) =>
     request<Goal>(`/goals/${id}`, { method: 'PATCH', body: JSON.stringify(patch) }),
   deleteGoal: (id: string) => request<{ ok: true }>(`/goals/${id}`, { method: 'DELETE' }),
+
+  // ── Praises (peer-to-peer recognition wall) ──────────────────────
+  // Signed-in only. Server enforces no-self-praise + delete gates.
+  listPraises: (opts?: { limit?: number; since_days?: number; recipient_id?: string }) => {
+    const qs = new URLSearchParams();
+    if (opts?.limit)       qs.set('limit', String(opts.limit));
+    if (opts?.since_days)  qs.set('since_days', String(opts.since_days));
+    if (opts?.recipient_id) qs.set('recipient_id', opts.recipient_id);
+    return request<any[]>(`/praises${qs.toString() ? '?' + qs : ''}`);
+  },
+  createPraise: (data: { recipient_id: string; message: string; category?: string }) =>
+    request<any>('/praises', { method: 'POST', body: JSON.stringify(data) }),
+  deletePraise: (id: string) =>
+    request<{ ok: true }>(`/praises/${id}`, { method: 'DELETE' }),
+  togglePraiseReaction: (id: string, emoji: string) =>
+    request<{ ok: true; toggled: 'on' | 'off' }>(`/praises/${id}/reactions`, {
+      method: 'POST', body: JSON.stringify({ emoji }),
+    }),
+  getPraiseComments: (id: string) =>
+    request<any[]>(`/praises/${id}/comments`),
+  addPraiseComment: (id: string, text: string) =>
+    request<any>(`/praises/${id}/comments`, { method: 'POST', body: JSON.stringify({ text }) }),
+  deletePraiseComment: (id: string, cid: string) =>
+    request<{ ok: true }>(`/praises/${id}/comments/${cid}`, { method: 'DELETE' }),
   createKeyResult: (goalId: string, data: { title: string; unit?: string; start_value?: number; current_value?: number; target_value: number }) =>
     request<KeyResult>(`/goals/${goalId}/key-results`, { method: 'POST', body: JSON.stringify(data) }),
   patchKeyResult: (krId: string, patch: Record<string, any>) =>

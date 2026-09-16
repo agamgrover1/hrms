@@ -2,7 +2,9 @@ import { useEffect, useMemo, useState, type ReactNode } from 'react';
 import {
   AreaChart, Area, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, PieChart, Pie, Cell
 } from 'recharts';
-import { Users, Calendar, DollarSign, TrendingUp, AlertCircle, CheckCircle2, UserCheck, Clock as ClockIcon, Wrench, XCircle, MessageCircle, UserPlus } from 'lucide-react';
+import { Users, Calendar, DollarSign, TrendingUp, AlertCircle, CheckCircle2, UserCheck, Clock as ClockIcon, Wrench, XCircle, MessageCircle, UserPlus, Award, Plus } from 'lucide-react';
+import PraiseWall from '../components/praise/PraiseWall';
+import GivePraiseModal from '../components/praise/GivePraiseModal';
 import { leaveTypeLabel } from '../utils/leaveLabel';
 import { toast } from '../components/Toaster';
 import { useLiveRefresh } from '../hooks/useLiveRefresh';
@@ -926,6 +928,10 @@ export default function Dashboard() {
         </div>
       </div>
 
+      {/* Praise wall — peer-to-peer shout-outs. Placed ABOVE announcements
+          because the whole point is the office sees it first. */}
+      <PraiseSection isAdminOrHR={isAdminOrHR} />
+
       {/* Company news + Upcoming events */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-5">
         {/* Announcements — spans 2 columns */}
@@ -1037,6 +1043,53 @@ export default function Dashboard() {
 // post was auto-generated for a birthday or anniversary, and an inline
 // Delete affordance when the viewer is allowed to remove it (own post or
 // admin/HR).
+// ── Praise dashboard section ────────────────────────────────────────
+// One reusable section — same shape on admin and employee dashboards.
+// Compact "last 7 days" feed with an inline "Give a shout-out" CTA.
+// Full history + longer windows live at /praise.
+function PraiseSection({ isAdminOrHR: _ }: { isAdminOrHR: boolean }) {
+  const [showGive, setShowGive] = useState(false);
+  const [refresh, setRefresh] = useState(0);
+  return (
+    <div className="relative bg-surface rounded-xl-3 p-6 border border-outline shadow-elev-2 overflow-hidden animate-fade-up">
+      <div className="absolute -top-10 -right-10 w-40 h-40 rounded-full bg-accent/15 blur-2xl opacity-50 pointer-events-none" />
+      <div className="relative">
+        <div className="flex items-center justify-between mb-4 gap-3 flex-wrap">
+          <div>
+            <h3 className="font-display text-xl font-bold text-on-surface tracking-tight inline-flex items-center gap-2">
+              <Award size={18} className="text-accent" /> Team shout-outs
+            </h3>
+            <p className="text-xs text-on-surface-muted mt-0.5">Recent peer-to-peer praise · react + comment</p>
+          </div>
+          <div className="flex items-center gap-2">
+            <Link to="/praise" className="text-xs font-semibold text-accent-ink hover:underline whitespace-nowrap"
+              style={{ color: 'var(--accent, #EE2770)' }}>
+              See all →
+            </Link>
+            <button onClick={() => setShowGive(true)}
+              className="inline-flex items-center gap-1.5 text-xs font-semibold px-3 py-1.5 rounded-lg bg-accent text-on-accent hover:opacity-90">
+              <Plus size={12} /> Give
+            </button>
+          </div>
+        </div>
+        <PraiseWall
+          key={refresh}
+          mode="dashboard"
+          sinceDays={7}
+          limit={5}
+          showGive={false}
+        />
+      </div>
+      {showGive && (
+        <GivePraiseModal
+          onClose={() => setShowGive(false)}
+          onSaved={() => { setShowGive(false); setRefresh(r => r + 1); }}
+        />
+      )}
+    </div>
+  );
+}
+
 function AnnouncementCard({ a, canDelete, onChanged }: {
   a: any;
   canDelete: boolean;
@@ -1552,6 +1605,9 @@ function EmployeeDashboardView({
           </div>
         </div>
       </div>
+
+      {/* Praise wall — same widget as admin Dashboard. */}
+      <PraiseSection isAdminOrHR={false} />
 
       {/* ── Announcements + Coming up (same shape as admin Dashboard) ───────── */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-5">

@@ -2,7 +2,7 @@ import { NavLink, useLocation } from 'react-router-dom';
 import {
   LayoutDashboard, Users, Clock3, CalendarDays, Wallet, Sparkles,
   ChevronLeft, ChevronRight, ChevronDown, UserCog, User, SlidersHorizontal, TrendingUp, Wrench,
-  Briefcase, ClipboardCheck, Layers, LineChart, AlertTriangle, Activity, Megaphone, BookOpen, HelpCircle, Mail, UserPlus, FileText, UserSearch, KanbanSquare, Target, BarChart3, Inbox, Bell, MessageSquare, type LucideIcon,
+  Briefcase, ClipboardCheck, Layers, LineChart, AlertTriangle, Activity, Megaphone, BookOpen, HelpCircle, Mail, UserPlus, FileText, UserSearch, KanbanSquare, Target, BarChart3, Inbox, Bell, MessageSquare, Award, type LucideIcon,
 } from 'lucide-react';
 import { useState, useEffect, useRef } from 'react';
 import { useAuth } from '../../context/AuthContext';
@@ -321,6 +321,7 @@ export default function Sidebar({ mobileOpen = false, onMobileClose }: { mobileO
       // Interns get Home here since they have no Workspace group.
       ...(isEmployee || isCoord || isIntern ? [{ to: '/', icon: LayoutDashboard, label: 'Home', end: true } as NavItem] : []),
       { to: '/my', icon: User, label: 'My portal', end: true },
+      { to: '/praise', icon: Award, label: 'Praise wall' },
       { to: '/mail', icon: Inbox, label: 'Mail' },
       { to: '/meetings', icon: CalendarDays, label: 'Meetings' },
       { to: '/notifications', icon: Bell, label: 'Notifications' },

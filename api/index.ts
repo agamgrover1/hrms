@@ -1055,6 +1055,7 @@ async function runStartupMigrations() {
       sql`SELECT left_at FROM candidates LIMIT 0`,
       sql`SELECT auto_closed_at_shift_end FROM attendance_sessions LIMIT 0`,
       sql`SELECT job FROM cron_heartbeats LIMIT 0`,
+      sql`SELECT id FROM praises LIMIT 0`,
     ]);
     if (Number((legacyProbe as any[])[0]?.bad ?? 0) > 0) throw new Error('goals.employee_id still NOT NULL');
     _migrated = true;
@@ -2975,6 +2976,49 @@ async function runStartupMigrations() {
         last_run_at TIMESTAMPTZ NOT NULL,
         last_result JSONB
       )`.catch(() => {});
+    // Public praise wall — peer-to-peer recognition. `visibility` is
+    // 'public' by default (shows on the dashboard); reserved for a
+    // future 'manager-only' shout-out flow if we ever add one.
+    // Snapshot recipient_name + from_name at insert time so a rename
+    // or exit doesn't blank out the historical praise.
+    await sql`
+      CREATE TABLE IF NOT EXISTS praises (
+        id             TEXT PRIMARY KEY,
+        recipient_id   TEXT NOT NULL,
+        recipient_name TEXT NOT NULL,
+        from_user_id   TEXT NOT NULL,
+        from_name      TEXT NOT NULL,
+        message        TEXT NOT NULL,
+        category       TEXT,
+        visibility     TEXT NOT NULL DEFAULT 'public',
+        created_at     TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      )`.catch(() => {});
+    await sql`CREATE INDEX IF NOT EXISTS idx_praises_recent ON praises(created_at DESC)`.catch(() => {});
+    await sql`CREATE INDEX IF NOT EXISTS idx_praises_recipient ON praises(recipient_id, created_at DESC)`.catch(() => {});
+    // Reactions — one row per (praise, user, emoji). Composite PK
+    // means the same user can add multiple different emojis on the
+    // same praise, but can't spam the same emoji twice.
+    await sql`
+      CREATE TABLE IF NOT EXISTS praise_reactions (
+        praise_id  TEXT NOT NULL REFERENCES praises(id) ON DELETE CASCADE,
+        user_id    TEXT NOT NULL,
+        user_name  TEXT NOT NULL,
+        emoji      TEXT NOT NULL,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        PRIMARY KEY (praise_id, user_id, emoji)
+      )`.catch(() => {});
+    // Threaded comments on a praise so people can pile on with words,
+    // not just emojis. Same snapshot-name pattern.
+    await sql`
+      CREATE TABLE IF NOT EXISTS praise_comments (
+        id            TEXT PRIMARY KEY,
+        praise_id     TEXT NOT NULL REFERENCES praises(id) ON DELETE CASCADE,
+        from_user_id  TEXT NOT NULL,
+        from_name     TEXT NOT NULL,
+        text          TEXT NOT NULL,
+        created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      )`.catch(() => {});
+    await sql`CREATE INDEX IF NOT EXISTS idx_praise_comments_praise ON praise_comments(praise_id, created_at)`.catch(() => {});
     await sql`ALTER TABLE leave_balances ADD COLUMN IF NOT EXISTS full_day INTEGER NOT NULL DEFAULT 0`;
     await sql`ALTER TABLE leave_balances ADD COLUMN IF NOT EXISTS short_leave INTEGER NOT NULL DEFAULT 0`;
     await sql`ALTER TABLE leave_balances ADD COLUMN IF NOT EXISTS last_credited_month INTEGER`;
@@ -23049,6 +23093,203 @@ function enrichGoal(g: any, krs: any[]): any {
 function seesAllGoals(role: string | null | undefined): boolean {
   return role === 'admin' || role === 'hr_manager' || role === 'project_coordinator';
 }
+
+// ── Praises ─────────────────────────────────────────────────────────
+// Peer-to-peer recognition wall. Any signed-in user can praise any
+// active employee (except themselves); everyone can react + comment.
+// Praises surface at the top of the dashboard for the ~7 day feed
+// and on a dedicated /api/praise history page.
+
+// Enrich a praise row with its reactions summary + comments count.
+// Kept out of the SELECT so the base query stays fast and this only
+// runs on the client-facing list (LIMIT-scoped there).
+async function enrichPraises(rows: any[], viewerUserId: string | null): Promise<any[]> {
+  if (!rows.length) return [];
+  const ids = rows.map(r => r.id);
+  const [reactions, commentCounts] = await Promise.all([
+    sql`
+      SELECT praise_id, emoji, COUNT(*)::int AS n,
+             BOOL_OR(user_id = ${viewerUserId ?? ''}) AS mine
+      FROM praise_reactions
+      WHERE praise_id = ANY(${ids}::text[])
+      GROUP BY praise_id, emoji
+      ORDER BY n DESC, emoji` as Promise<any[]>,
+    sql`
+      SELECT praise_id, COUNT(*)::int AS n
+      FROM praise_comments
+      WHERE praise_id = ANY(${ids}::text[])
+      GROUP BY praise_id` as Promise<any[]>,
+  ]);
+  const reactionsByPraise = new Map<string, Array<{ emoji: string; count: number; mine: boolean }>>();
+  for (const r of reactions) {
+    const arr = reactionsByPraise.get(r.praise_id) ?? [];
+    arr.push({ emoji: r.emoji, count: Number(r.n), mine: !!r.mine });
+    reactionsByPraise.set(r.praise_id, arr);
+  }
+  const commentsByPraise = new Map<string, number>();
+  for (const c of commentCounts) commentsByPraise.set(c.praise_id, Number(c.n));
+  return rows.map(r => ({
+    ...r,
+    reactions: reactionsByPraise.get(r.id) ?? [],
+    comment_count: commentsByPraise.get(r.id) ?? 0,
+  }));
+}
+
+// GET /api/praises?limit=&recipient_id=&since_days=
+// Signed-in only. Defaults to last 30 rows within 30 days for the
+// dashboard feed; pass since_days=365 + limit=200 for the full page.
+app.get('/api/praises', async (req, res) => {
+  try {
+    await runStartupMigrations();
+    const gate = await taskActor(req, res);
+    if (!gate.ok) return;
+    const limit = Math.max(1, Math.min(200, Number(req.query.limit) || 30));
+    const sinceDays = Math.max(1, Math.min(365, Number(req.query.since_days) || 30));
+    const recipient = (req.query.recipient_id as string) || null;
+    const rows = await sql`
+      SELECT p.*
+      FROM praises p
+      WHERE p.created_at > NOW() - (${sinceDays}::int || ' days')::interval
+        AND (${recipient}::text IS NULL OR p.recipient_id = ${recipient})
+      ORDER BY p.created_at DESC
+      LIMIT ${limit}` as any[];
+    res.json(await enrichPraises(rows, gate.user?.id ?? null));
+  } catch (err: any) { res.status(500).json({ error: err.message ?? 'Server error' }); }
+});
+
+// POST /api/praises  body: { recipient_id, message, category? }
+app.post('/api/praises', async (req, res) => {
+  try {
+    await runStartupMigrations();
+    const gate = await taskActor(req, res);
+    if (!gate.ok) return;
+    const { recipient_id, message, category } = req.body ?? {};
+    if (!recipient_id || !message?.trim()) {
+      return res.status(400).json({ error: 'recipient_id and message are required' });
+    }
+    // No self-praise. Resolve the sender's own employee id via the
+    // helper we already trust for the strip-salary flow.
+    const senderEmpId = await actorOwnEmployeeId(req).catch(() => null);
+    if (senderEmpId && senderEmpId === recipient_id) {
+      return res.status(400).json({ error: "You can't praise yourself." });
+    }
+    const recipient = (await sql`
+      SELECT id, name FROM employees WHERE id=${recipient_id} AND status <> 'exit' LIMIT 1` as any[])[0];
+    if (!recipient) return res.status(404).json({ error: 'Recipient not found or inactive.' });
+    const id = `pr_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
+    const row = (await sql`
+      INSERT INTO praises (id, recipient_id, recipient_name, from_user_id, from_name, message, category)
+      VALUES (${id}, ${recipient.id}, ${recipient.name}, ${gate.user!.id}, ${gate.user!.name ?? 'Someone'},
+              ${String(message).trim()}, ${category ?? null})
+      RETURNING *` as any[])[0];
+    // Notification fan-out — bell + push. Recipient gets the star
+    // treatment; admins get a quieter FYI (they can see the feed on
+    // the dashboard anyway).
+    notifyEmployeeUser(recipient.id, 'praised',
+      `🎉 You got a shout-out from ${gate.user!.name ?? 'someone'}`,
+      String(message).trim().slice(0, 200),
+      '/praise'
+    ).catch(() => {});
+    notifyAdminsAndHR('praise_new',
+      `Shout-out: ${gate.user!.name ?? 'Someone'} → ${recipient.name}`,
+      String(message).trim().slice(0, 200)
+    ).catch(() => {});
+    res.status(201).json({ ...row, reactions: [], comment_count: 0 });
+  } catch (err: any) { res.status(500).json({ error: err.message ?? 'Server error' }); }
+});
+
+// DELETE /api/praises/:id — sender or admin only.
+app.delete('/api/praises/:id', async (req, res) => {
+  try {
+    const gate = await taskActor(req, res);
+    if (!gate.ok) return;
+    const row = (await sql`SELECT from_user_id FROM praises WHERE id=${req.params.id}` as any[])[0];
+    if (!row) return res.json({ ok: true });
+    if (row.from_user_id !== gate.user!.id && gate.user!.role !== 'admin') {
+      return res.status(403).json({ error: 'Only the sender or an admin can delete this praise.' });
+    }
+    await sql`DELETE FROM praises WHERE id=${req.params.id}`;
+    res.json({ ok: true });
+  } catch (err: any) { res.status(500).json({ error: err.message ?? 'Server error' }); }
+});
+
+// POST /api/praises/:id/reactions  body: { emoji }
+// Toggle: if the (user, emoji) row exists we remove it; otherwise
+// insert. One round-trip via ON CONFLICT + a follow-up check.
+app.post('/api/praises/:id/reactions', async (req, res) => {
+  try {
+    const gate = await taskActor(req, res);
+    if (!gate.ok) return;
+    const { emoji } = req.body ?? {};
+    const OK = ['👏', '🎉', '❤️', '🔥', '💯', '🙌', '👀'];
+    if (!emoji || !OK.includes(emoji)) return res.status(400).json({ error: 'Bad emoji.' });
+    const exists = (await sql`
+      SELECT 1 FROM praise_reactions
+      WHERE praise_id=${req.params.id} AND user_id=${gate.user!.id} AND emoji=${emoji}` as any[])[0];
+    if (exists) {
+      await sql`
+        DELETE FROM praise_reactions
+        WHERE praise_id=${req.params.id} AND user_id=${gate.user!.id} AND emoji=${emoji}`;
+      return res.json({ ok: true, toggled: 'off' });
+    }
+    await sql`
+      INSERT INTO praise_reactions (praise_id, user_id, user_name, emoji)
+      VALUES (${req.params.id}, ${gate.user!.id}, ${gate.user!.name ?? 'Someone'}, ${emoji})
+      ON CONFLICT DO NOTHING`;
+    res.json({ ok: true, toggled: 'on' });
+  } catch (err: any) { res.status(500).json({ error: err.message ?? 'Server error' }); }
+});
+
+// GET /api/praises/:id/comments — read the thread.
+app.get('/api/praises/:id/comments', async (req, res) => {
+  try {
+    const gate = await taskActor(req, res);
+    if (!gate.ok) return;
+    const rows = await sql`
+      SELECT * FROM praise_comments WHERE praise_id=${req.params.id} ORDER BY created_at ASC`;
+    res.json(rows);
+  } catch (err: any) { res.status(500).json({ error: err.message ?? 'Server error' }); }
+});
+
+// POST /api/praises/:id/comments  body: { text }
+app.post('/api/praises/:id/comments', async (req, res) => {
+  try {
+    const gate = await taskActor(req, res);
+    if (!gate.ok) return;
+    const text = String(req.body?.text ?? '').trim();
+    if (!text) return res.status(400).json({ error: 'text required' });
+    const praise = (await sql`SELECT id, recipient_id, from_user_id FROM praises WHERE id=${req.params.id}` as any[])[0];
+    if (!praise) return res.status(404).json({ error: 'Praise not found' });
+    const id = `pc_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
+    const row = (await sql`
+      INSERT INTO praise_comments (id, praise_id, from_user_id, from_name, text)
+      VALUES (${id}, ${req.params.id}, ${gate.user!.id}, ${gate.user!.name ?? 'Someone'}, ${text})
+      RETURNING *` as any[])[0];
+    // Notify the recipient AND the original sender (if different
+    // from the commenter) so both loops are closed.
+    if (praise.recipient_id) {
+      notifyEmployeeUser(praise.recipient_id, 'praise_comment',
+        `💬 New comment on your shout-out`,
+        text.slice(0, 200), '/praise').catch(() => {});
+    }
+    res.status(201).json(row);
+  } catch (err: any) { res.status(500).json({ error: err.message ?? 'Server error' }); }
+});
+
+// DELETE /api/praises/:id/comments/:cid — author or admin.
+app.delete('/api/praises/:id/comments/:cid', async (req, res) => {
+  try {
+    const gate = await taskActor(req, res);
+    if (!gate.ok) return;
+    const row = (await sql`SELECT from_user_id FROM praise_comments WHERE id=${req.params.cid}` as any[])[0];
+    if (!row) return res.json({ ok: true });
+    if (row.from_user_id !== gate.user!.id && gate.user!.role !== 'admin') {
+      return res.status(403).json({ error: 'Only the author or an admin can delete this comment.' });
+    }
+    await sql`DELETE FROM praise_comments WHERE id=${req.params.cid}`;
+    res.json({ ok: true });
+  } catch (err: any) { res.status(500).json({ error: err.message ?? 'Server error' }); }
+});
 
 // GET /api/goals?scope=all|mine&project_id=&status=
 // scope=mine is a client-side convenience filter; the visibility gate

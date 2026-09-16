@@ -1,4 +1,4 @@
-import { Bell, ChevronDown, LogOut, CheckCircle, Calendar, TrendingUp, FileText, Target, X, XCircle, Award, Check, Trash2, AlertTriangle, ShieldAlert, KeyRound, Eye, EyeOff, Wrench, Clock as ClockIcon, Search, Megaphone, Sparkles, Menu, AtSign, Zap, Send, UserPlus, Settings } from 'lucide-react';
+import { Bell, ChevronDown, LogOut, CheckCircle, Calendar, TrendingUp, FileText, Target, X, XCircle, Award, Check, Trash2, AlertTriangle, ShieldAlert, KeyRound, Eye, EyeOff, Wrench, Clock as ClockIcon, Search, Megaphone, Sparkles, Menu, AtSign, Zap, Send, UserPlus, Settings, MessageCircle } from 'lucide-react';
 import NotificationPrefsModal from '../NotificationPrefsModal';
 import { isActionRequired } from '../../lib/notificationTypes';
 import { useState, useEffect, useRef } from 'react';
@@ -246,6 +246,10 @@ export const TYPE_CONFIG: Record<string, { icon: any; color: string; bg: string 
   interview_feedback_submitted:    { icon: FileText,    color: '#0891b2', bg: '#f0f9ff' },
   offer_released:                  { icon: Send,        color: '#ea580c', bg: '#fff7ed' },
   candidate_hired:                 { icon: UserPlus,    color: '#15803d', bg: '#f0fdf4' },
+  // Praise wall
+  praised:                         { icon: Award,       color: '#EE2770', bg: '#fff1f7' },
+  praise_new:                      { icon: Award,       color: '#EE2770', bg: '#fff1f7' },
+  praise_comment:                  { icon: MessageCircle, color: '#7c3aed', bg: '#f5f3ff' },
   attendance_note_pending: { icon: ClockIcon,      color: '#d97706', bg: '#fffbeb' },
   task_mention:            { icon: AtSign,         color: '#7c3aed', bg: '#f5f3ff' },
   task_comment:            { icon: FileText,       color: '#0891b2', bg: '#f0f9ff' },

@@ -17,6 +17,7 @@ import Config from './pages/Config';
 import Incentives from './pages/Incentives';
 import EmployeeProfile from './pages/EmployeeProfile';
 import Notes from './pages/Notes';
+import Praise from './pages/Praise';
 import AssetRepairs from './pages/AssetRepairs';
 import MyPortal from './pages/employee/MyPortal';
 import MyTeam from './pages/employee/MyTeam';
@@ -81,6 +82,9 @@ function AppRoutes() {
         <Route path="employees" element={<ProtectedRoute roles={['admin', 'hr_manager', 'hr_intern']}><Employees /></ProtectedRoute>} />
         <Route path="employees/:id" element={<ProtectedRoute roles={['admin', 'hr_manager', 'hr_intern']}><EmployeeProfile /></ProtectedRoute>} />
         <Route path="notes" element={<ProtectedRoute roles={['admin', 'hr_manager', 'project_coordinator']}><Notes /></ProtectedRoute>} />
+        {/* Peer-to-peer praise wall — open to any signed-in user.
+            Server rejects self-praise. */}
+        <Route path="praise" element={<ProtectedRoute><Praise /></ProtectedRoute>} />
         <Route path="attendance" element={<ProtectedRoute roles={['admin', 'hr_manager', 'hr_intern']}><Attendance /></ProtectedRoute>} />
         {/* Interns apply leaves via /my (My Portal) instead of the HR
             org-wide Leave surface — same as full employees. */}
