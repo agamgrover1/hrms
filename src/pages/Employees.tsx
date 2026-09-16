@@ -682,6 +682,9 @@ function AddEmployeeModal({ onClose, onSaved, existingEmployees, departments = [
                 <label className={labelCls}>Role</label>
                 <select value={form.role} onChange={e => set('role', e.target.value)} className={inputCls}>
                   <option value="employee">Employee</option>
+                  <option value="intern">Intern</option>
+                  <option value="project_coordinator">Project Coordinator</option>
+                  <option value="hr_intern">HR Intern</option>
                   <option value="hr_manager">HR Manager</option>
                   <option value="admin">Admin</option>
                 </select>
