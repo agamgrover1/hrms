@@ -1056,6 +1056,12 @@ async function runStartupMigrations() {
       sql`SELECT auto_closed_at_shift_end FROM attendance_sessions LIMIT 0`,
       sql`SELECT job FROM cron_heartbeats LIMIT 0`,
       sql`SELECT id FROM praises LIMIT 0`,
+      // Seed probe — throws when the Praise Wall feature row hasn't
+      // been inserted yet, forcing runStartupMigrations() to run the
+      // seed INSERT (idempotent via ON CONFLICT).
+      sql`SELECT 1 FROM feature_announcements WHERE id='feature_praise_wall_v1'`.then(rs => {
+        if (!(rs as any[]).length) throw new Error('praise wall feature row missing');
+      }),
     ]);
     if (Number((legacyProbe as any[])[0]?.bad ?? 0) > 0) throw new Error('goals.employee_id still NOT NULL');
     _migrated = true;
@@ -2688,7 +2694,34 @@ async function runStartupMigrations() {
   // HR plus anyone with reports.
   await sql`ALTER TABLE feature_announcements ADD COLUMN IF NOT EXISTS target_roles JSONB`.catch(()=>{});
 
-  // Per-user ack so each user only sees each published feature popup once.
+  // Seed the Praise Wall "What's new" popup. Idempotent — the fixed
+  // id means re-running never duplicates the row, and ON CONFLICT DO
+  // NOTHING keeps a live-published row exactly as the admin left it
+  // if they later edited it in /features. Fires the popup once per
+  // user on their next dashboard mount.
+  await sql`
+    INSERT INTO feature_announcements
+      (id, title, body, cta_label, cta_url, status, published_at,
+       drafted_by_name, approved_by_name, approved_at, target_roles)
+    VALUES (
+      'feature_praise_wall_v1',
+      '🎉 New: Team Praise Wall',
+      'Give a colleague a shout-out for a client win, teamwork, or just a good day. Everyone can react with emojis and comment — recognition, not just review.
+
+• Give from the top of your Dashboard or the sidebar (Award icon)
+• Reactions: 👏 🎉 ❤️ 🔥 💯 🙌 👀
+• Weekly digest auto-posts to Company Announcements every Monday
+• Recipients get a bell + push when someone praises them',
+      'Open Praise wall',
+      '/praise',
+      'published',
+      NOW(),
+      'Digital Leap HRMS',
+      'Digital Leap HRMS',
+      NOW(),
+      NULL
+    )
+    ON CONFLICT (id) DO NOTHING`.catch(() => {});
   // Composite PK keeps the row count bounded and idempotent on duplicate
   // POSTs (no need for ON CONFLICT logic on the ack endpoint).
   await sql`
