@@ -250,6 +250,7 @@ export const TYPE_CONFIG: Record<string, { icon: any; color: string; bg: string 
   praised:                         { icon: Award,       color: '#EE2770', bg: '#fff1f7' },
   praise_new:                      { icon: Award,       color: '#EE2770', bg: '#fff1f7' },
   praise_comment:                  { icon: MessageCircle, color: '#7c3aed', bg: '#f5f3ff' },
+  praise_digest:                   { icon: Award,       color: '#EE2770', bg: '#fff1f7' },
   attendance_note_pending: { icon: ClockIcon,      color: '#d97706', bg: '#fffbeb' },
   task_mention:            { icon: AtSign,         color: '#7c3aed', bg: '#f5f3ff' },
   task_comment:            { icon: FileText,       color: '#0891b2', bg: '#f0f9ff' },

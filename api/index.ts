@@ -24735,6 +24735,103 @@ app.post('/api/cron/run-biometric', async (req, res) => {
   res.json({ ok: true, ...result });
 });
 
+// POST /api/cron/run-praise-digest — Monday-morning fan-out. Every
+// active app_user with a linked employee gets a single bell
+// notification summarising the past 7 days of shout-outs. Zero noise
+// mid-week; one gentle nudge on Monday keeps the ritual visible
+// without training everyone to mute the app.
+//
+// Idempotency: server checks the heartbeat row and refuses to re-run
+// within the same ISO week. Safe to spam the endpoint; only the first
+// call per week does anything.
+app.post('/api/cron/run-praise-digest', async (req, res) => {
+  const expected = process.env.HRMS_CRON_SECRET;
+  if (!expected) return res.status(503).json({ error: 'HRMS_CRON_SECRET not configured on the server' });
+  const provided = req.header('x-cron-secret');
+  if (!provided || provided !== expected) return res.status(401).json({ error: 'Bad or missing cron secret' });
+  await runStartupMigrations();
+  const started = Date.now();
+  const force = req.query.force === '1' || req.query.force === 'true';
+
+  // ISO-week guard so a cron double-fire (or a nervous human hitting
+  // the endpoint after the scheduled run) doesn't double-notify.
+  // ISO week starts Monday — matches the Monday cron trigger below.
+  const now = new Date();
+  const dayIdx = (now.getUTCDay() + 6) % 7;              // Mon = 0
+  const monday = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() - dayIdx));
+  const weekKey = monday.toISOString().slice(0, 10);      // "YYYY-MM-DD" for this week's Monday
+
+  if (!force) {
+    const last = (await sql`SELECT last_result FROM cron_heartbeats WHERE job='praise_digest'` as any[])[0];
+    if (last?.last_result?.week_key === weekKey) {
+      return res.json({ ok: true, skipped: 'already_ran_this_week', week_key: weekKey });
+    }
+  }
+
+  // Summarise the last 7 days. If nothing happened, still write the
+  // heartbeat so the guard fires next week — but don't fan out.
+  const summary = (await sql`
+    SELECT COUNT(*)::int AS total,
+           COUNT(DISTINCT recipient_id)::int AS recipients,
+           COUNT(DISTINCT from_user_id)::int AS senders
+    FROM praises
+    WHERE created_at > NOW() - INTERVAL '7 days'` as any[])[0];
+
+  const total = Number(summary?.total ?? 0);
+  const recipients = Number(summary?.recipients ?? 0);
+
+  // Top 3 recipient names (most-praised this week) — makes the
+  // digest body feel specific instead of generic.
+  const top = total > 0 ? await sql`
+    SELECT recipient_name, COUNT(*)::int AS n
+    FROM praises
+    WHERE created_at > NOW() - INTERVAL '7 days'
+    GROUP BY recipient_name
+    ORDER BY n DESC, recipient_name
+    LIMIT 3` as any[] : [];
+
+  let notified = 0;
+  if (total > 0) {
+    const names = top.map((r: any) => r.recipient_name).join(', ');
+    const title = `🎉 ${total} shout-out${total === 1 ? '' : 's'} this week`;
+    const body = recipients === 1
+      ? `${names} got recognised. Open Praise wall to react.`
+      : `${recipients} colleagues got some love — including ${names}. React on the Praise wall.`;
+
+    // Fan-out to every active app_user with a linked employee. We
+    // skip users without an employee row because notifyEmployeeUser
+    // resolves via employee_id_ref.
+    const targets = await sql`
+      SELECT u.id AS user_id, u.employee_id_ref, e.id AS employee_id
+      FROM app_users u
+      LEFT JOIN employees e ON e.id = u.employee_id_ref OR e.employee_id = u.employee_id_ref
+      WHERE u.active = TRUE AND e.id IS NOT NULL AND e.status <> 'exit'` as any[];
+
+    for (const t of targets) {
+      // notifyEmployeeUser is idempotent per (user, type, title, body)
+      // in the last minute, so a rerun with force=1 won't double-fan.
+      await notifyEmployeeUser(t.employee_id, 'praise_digest', title, body, '/praise').catch(() => {});
+      notified++;
+    }
+  }
+
+  const result = {
+    ran_at: new Date().toISOString(),
+    ms: Date.now() - started,
+    week_key: weekKey,
+    total, recipients, notified,
+    top: top.map((r: any) => ({ name: r.recipient_name, count: Number(r.n) })),
+  };
+  await sql`
+    INSERT INTO cron_heartbeats (job, last_run_at, last_result)
+    VALUES ('praise_digest', NOW(), ${JSON.stringify(result)}::jsonb)
+    ON CONFLICT (job) DO UPDATE SET
+      last_run_at = EXCLUDED.last_run_at,
+      last_result = EXCLUDED.last_result
+  `.catch(() => {});
+  res.json({ ok: true, ...result });
+});
+
 // GET /api/cron/heartbeat — admin-only, returns the most recent
 // heartbeat row so you can spot-check that cron is actually firing.
 // Handy when the office is quiet and no auto-clockouts have happened
