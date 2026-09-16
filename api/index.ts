@@ -528,17 +528,22 @@ async function requireFullHR(req: any, res: any): Promise<{ ok: boolean; user?: 
 }
 
 // Strip salary / CTC / cost fields from an employee row (or array of rows)
-// when the requesting user is hr_intern AND the row isn't her own. Defence-
-// in-depth: even if a UI surface tries to render the field, the API never
-// emits it. The "own row" exception lets her see her own payslip / profile
-// like any regular employee.
+// when the requesting user's role isn't allowed to see them AND the row
+// isn't their own. Defence-in-depth: even if a UI surface tries to render
+// the field, the API never emits it. The "own row" exception lets people
+// see their own payslip / profile like any regular employee.
+//
+// Roles stripped: hr_intern (scoped HR helper) and project_coordinator
+// (delivery lead — needs employee profiles for private notes but has no
+// business reading anyone's pay). admin + hr_manager see everything.
 function stripSalaryForIntern<T extends Record<string, any>>(
   actorRole: string,
   row: T | T[] | null,
   actorOwnEmployeeId?: string | null,
 ): typeof row {
   if (!row) return row;
-  if (actorRole !== 'hr_intern') return row;
+  const strippedRoles = ['hr_intern', 'project_coordinator'];
+  if (!strippedRoles.includes(actorRole)) return row;
   const SALARY_KEYS = ['salary','ctc','basic_salary','hra','exit_salary_override','net_salary','gross_salary','allowances','deductions','cost_to_company'];
   const cleanOne = (r: any) => {
     if (!r || typeof r !== 'object') return r;

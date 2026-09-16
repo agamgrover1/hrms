@@ -558,10 +558,15 @@ export default function EmployeeProfile() {
                 <TrendingUp size={12}/> Give increment
               </button>
             )}
-            <button onClick={() => setShowEdit(true)}
-              className="flex items-center gap-1.5 px-3 py-1.5 bg-white/15 hover:bg-white/25 border border-white/15 backdrop-blur-sm rounded-lg text-white text-xs font-semibold transition-colors">
-              <Pencil size={12}/> Edit
-            </button>
+            {/* Edit is HR/admin territory — coord views profiles for
+                private-notes use only and shouldn't rewrite employee
+                metadata. hr_intern kept in per the older gate. */}
+            {(me?.role === 'admin' || me?.role === 'hr_manager' || me?.role === 'hr_intern') && (
+              <button onClick={() => setShowEdit(true)}
+                className="flex items-center gap-1.5 px-3 py-1.5 bg-white/15 hover:bg-white/25 border border-white/15 backdrop-blur-sm rounded-lg text-white text-xs font-semibold transition-colors">
+                <Pencil size={12}/> Edit
+              </button>
+            )}
             {me?.role === 'admin' && (
               <button onClick={() => setShowDelete(true)}
                 title="Admin only. HR can Exit + Inactive from the Edit form instead — preserves finance history."
@@ -622,6 +627,17 @@ export default function EmployeeProfile() {
                 // KPIs are lead/coord/HR territory. Employees see their own via MyPortal later.
                 return me?.role === 'admin' || me?.role === 'hr_manager' || me?.role === 'hr_intern' || me?.role === 'project_coordinator';
               }
+              // Money surfaces — hide from project_coordinator entirely.
+              // Salary history + incentive payouts + expense claims all
+              // expose amounts the coord has no business seeing. Admin
+              // + hr_manager only.
+              if (t === 'Salary' || t === 'Incentives' || t === 'Expenses') {
+                return me?.role === 'admin' || me?.role === 'hr_manager';
+              }
+              // Warnings — HR discipline, not delivery. Same admin/HR gate.
+              if (t === 'Warnings') {
+                return me?.role === 'admin' || me?.role === 'hr_manager';
+              }
               return true;
             }).map(t => (
               <button key={t} onClick={() => setTab(t)}
@@ -668,7 +684,7 @@ export default function EmployeeProfile() {
           <div className="space-y-5">
             {/* Compensation — hidden for hr_intern (server already strips
                 the values, but skipping the block keeps the UI clean too). */}
-            {me?.role !== 'hr_intern' && (
+            {me?.role !== 'hr_intern' && me?.role !== 'project_coordinator' && (
               <div className="group relative bg-surface rounded-xl-2 border border-outline shadow-elev-1 p-6 overflow-hidden animate-fade-up stagger-2">
                 <div className="absolute -top-8 -right-8 w-28 h-28 rounded-full bg-accent/15 blur-2xl opacity-50" />
                 <div className="relative">

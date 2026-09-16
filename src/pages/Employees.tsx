@@ -222,7 +222,7 @@ function EmployeeDetail({ emp, onClose, onEdit, onDelete }: { emp: any; onClose:
               </div>
             ))}
           </div>
-          {currentUser?.role !== 'hr_intern' && (
+          {currentUser?.role !== 'hr_intern' && currentUser?.role !== 'project_coordinator' && (
             <div className="mt-6 p-4 bg-surface-2 rounded-xl-2">
               <p className="text-xs font-semibold text-on-surface-subtle mb-3 uppercase tracking-wide">Compensation</p>
               <div className="grid grid-cols-2 gap-3">
