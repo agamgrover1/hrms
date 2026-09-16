@@ -11616,7 +11616,11 @@ async function canManagePerformanceNotesFor(req: any, employeeId: string): Promi
   if (!uid) return false;
   const u = (await sql`SELECT role, employee_id_ref FROM app_users WHERE id=${uid} LIMIT 1`)[0] as any;
   if (!u || !u.role) return false;
-  if (u.role === 'admin' || u.role === 'hr_manager') return true;
+  // admin / hr_manager / project_coordinator get org-wide access —
+  // project coordinators run delivery across the whole team and need
+  // to record observations on anyone they've worked with, not just
+  // their reports.
+  if (u.role === 'admin' || u.role === 'hr_manager' || u.role === 'project_coordinator') return true;
   if (!u.employee_id_ref) return false;
   // A viewer's employee_id_ref usually holds the human code, so resolve
   // both id and employee_id from their profile before comparing against

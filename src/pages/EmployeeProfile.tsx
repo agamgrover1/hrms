@@ -222,6 +222,15 @@ export default function EmployeeProfile() {
   const [perfYear, setPerfYear] = useState(now.getFullYear());
   const [hoursYTD, setHoursYTD] = useState<{ approved: number; within: number; over: number; overCount: number } | null>(null);
 
+  // Private notes on the Performance tab. Visible to admin / HR / coord.
+  // Not visible to the employee viewing their own profile — the backend
+  // permission check makes sure a self-view can't read this row.
+  const [perfNotes, setPerfNotes] = useState<any[]>([]);
+  const [noteDraft, setNoteDraft] = useState('');
+  const [noteType, setNoteType] = useState<'positive' | 'neutral' | 'concern'>('neutral');
+  const [noteDate, setNoteDate] = useState(new Date().toISOString().slice(0, 10));
+  const [noteBusy, setNoteBusy] = useState(false);
+
   // Incentives
   const [incentives, setIncentives] = useState<any[]>([]);
   const [incLoading, setIncLoading] = useState(false);
@@ -332,6 +341,14 @@ export default function EmployeeProfile() {
 
     if (tab === 'Performance' && !loaded.has('Performance')) {
       loadPerformance();
+      // Private notes ride along with Performance so admin/HR/coord
+      // see them right below the year-scoped KPIs. Read is gated by
+      // the same canManagePerformanceNotesFor() backend rule.
+      if (['admin', 'hr_manager', 'project_coordinator'].includes(me?.role ?? '')) {
+        api.getPerformanceNotes(emp.id)
+          .then(rs => setPerfNotes(Array.isArray(rs) ? rs : []))
+          .catch(() => setPerfNotes([]));
+      }
     }
 
     if (tab === 'Incentives' && !loaded.has('Incentives')) {
@@ -1093,6 +1110,102 @@ export default function EmployeeProfile() {
                 </div>
               </div>
             </>
+          )}
+
+          {/* Private notes — admin / HR / project_coordinator only. The
+              backend enforces the same set on both read and write, so a
+              non-privileged user hitting this URL directly gets an empty
+              list and a 403 on submit. */}
+          {emp && ['admin', 'hr_manager', 'project_coordinator'].includes(me?.role ?? '') && (
+            <div className="bg-surface rounded-xl-2 border border-outline shadow-elev-1 overflow-hidden">
+              <div className="px-5 py-4 border-b border-outline flex items-center gap-2">
+                <p className="text-sm font-semibold text-on-surface">Private notes</p>
+                <span className="text-[10px] text-on-surface-subtle italic">not visible to the employee</span>
+                <span className="ml-auto text-[11px] text-on-surface-muted num-mono">{perfNotes.length}</span>
+              </div>
+
+              {/* Composer */}
+              <div className="px-5 py-4 border-b border-outline space-y-2 bg-surface-2/40">
+                <div className="flex flex-wrap items-center gap-2">
+                  <input type="date" value={noteDate} onChange={e => setNoteDate(e.target.value)}
+                    className="text-xs bg-surface border border-outline rounded-lg px-2 py-1.5 focus:outline-none focus:border-accent"/>
+                  <select value={noteType} onChange={e => setNoteType(e.target.value as any)}
+                    className="text-xs bg-surface border border-outline rounded-lg px-2 py-1.5 focus:outline-none focus:border-accent">
+                    <option value="positive">👍 Positive</option>
+                    <option value="neutral">➜ Neutral</option>
+                    <option value="concern">⚠ Concern</option>
+                  </select>
+                  <span className="text-[11px] text-on-surface-subtle italic ml-auto">Recorded by {me?.name ?? 'you'}</span>
+                </div>
+                <textarea value={noteDraft} onChange={e => setNoteDraft(e.target.value)}
+                  rows={2} placeholder="One-line observation — what happened, what's next…"
+                  className="w-full text-sm bg-surface border border-outline rounded-lg px-3 py-2 focus:outline-none focus:border-accent focus:ring-2 focus:ring-accent/20 resize-y"/>
+                <div className="flex justify-end">
+                  <button disabled={!noteDraft.trim() || noteBusy}
+                    onClick={async () => {
+                      if (!noteDraft.trim()) return;
+                      setNoteBusy(true);
+                      try {
+                        const saved = await api.addPerformanceNote({
+                          employee_id: emp.id,
+                          note_date: noteDate,
+                          note_text: noteDraft.trim(),
+                          note_type: noteType,
+                          created_by_id: me?.id,
+                          created_by_name: me?.name,
+                        });
+                        setPerfNotes(rs => [saved, ...rs]);
+                        setNoteDraft('');
+                        setNoteType('neutral');
+                      } catch (e: any) {
+                        alert(e?.body?.error ?? e?.message ?? 'Save failed');
+                      } finally { setNoteBusy(false); }
+                    }}
+                    className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-accent text-on-accent text-xs font-semibold hover:opacity-90 disabled:opacity-50">
+                    {noteBusy ? 'Saving…' : 'Add note'}
+                  </button>
+                </div>
+              </div>
+
+              {/* List */}
+              <div className="divide-y divide-outline">
+                {perfNotes.length === 0 ? (
+                  <p className="px-5 py-8 text-center text-xs text-on-surface-subtle italic">No notes yet.</p>
+                ) : perfNotes.map((n: any) => {
+                  const isConcern = n.note_type === 'concern';
+                  const isPos     = n.note_type === 'positive';
+                  const chipClass = isConcern
+                    ? 'bg-warning-container text-warning border-warning/30'
+                    : isPos
+                      ? 'bg-success-container text-success border-success/30'
+                      : 'bg-surface-2 text-on-surface-muted border-outline';
+                  const chipLabel = isConcern ? '⚠ Concern' : isPos ? '👍 Positive' : '➜ Neutral';
+                  return (
+                    <div key={n.id} className="px-5 py-3 flex items-start gap-3">
+                      <span className={`text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded-full border ${chipClass} flex-shrink-0 mt-0.5`}>{chipLabel}</span>
+                      <div className="flex-1 min-w-0">
+                        <p className="text-[11px] text-on-surface-subtle num-mono">
+                          {new Date(n.note_date).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' })}
+                          {n.created_by_name && <> · {n.created_by_name}</>}
+                        </p>
+                        <p className="text-sm text-on-surface mt-1 whitespace-pre-line leading-relaxed">{n.note_text}</p>
+                      </div>
+                      <button onClick={async () => {
+                          if (!confirm('Delete this note?')) return;
+                          try {
+                            await api.deletePerformanceNote(n.id);
+                            setPerfNotes(rs => rs.filter(r => r.id !== n.id));
+                          } catch (e: any) { alert(e?.body?.error ?? e?.message ?? 'Delete failed'); }
+                        }}
+                        className="p-1 rounded text-on-surface-subtle hover:text-danger hover:bg-danger/10"
+                        title="Delete note">
+                        <Trash2 size={12}/>
+                      </button>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
           )}
         </div>
       )}

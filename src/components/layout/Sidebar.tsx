@@ -277,9 +277,19 @@ export default function Sidebar({ mobileOpen = false, onMobileClose }: { mobileO
       ],
     });
   } else if (isCoord) {
-    // Coord sees Projects + Hours + Invoices + their own personal nav.
-    // Two smaller groups instead of the old 11-item Project Mgmt bucket
-    // — reflects how they actually work (project work vs. time work).
+    // Coord sees Projects + Hours + Invoices + a lightweight People
+    // link (for private notes on any employee) + their own personal
+    // nav. Two smaller groups instead of the old 11-item Project Mgmt
+    // bucket — reflects how they actually work (project work vs.
+    // time work).
+    groups.push({
+      id: 'workspace-coord',
+      label: 'Workspace',
+      items: [
+        { to: '/', icon: LayoutDashboard, label: 'Overview', end: true },
+        { to: '/employees', icon: Users, label: 'People' },
+      ],
+    });
     groups.push(projectGroup, hoursGroup);
     groups.push(coordFinanceGroup);
     // Coord also gets the org Pulse page (read-only). Same surface admin sees,
